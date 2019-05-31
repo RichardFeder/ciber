@@ -193,6 +193,21 @@ class ciber_mock():
             return full_map, srcmap, noise
 
 
+def make_galaxy_binary_map(cat, refmap):
+    cat = np.array([src for src in cat if src[0]<refmap.shape[0] and src[1]<refmap.shape[1]])
+    gal_map = np.zeros_like(refmap)
+    for src in cat:
+        gal_map[int(src[0]),int(src[1])] +=1.
+    return gal_map
+
+
+def compute_cross_spectrum(map_a, map_b):
+    ffta = np.fft.fft2(map_a)
+    fftb = np.fft.fft2(map_b)
+    
+    xspectrum = ffta*fftb
+    return xspectrum
+
 
 
 
