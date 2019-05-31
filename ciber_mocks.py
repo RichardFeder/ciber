@@ -201,13 +201,6 @@ def make_galaxy_binary_map(cat, refmap):
     return gal_map
 
 
-def compute_cross_spectrum(map_a, map_b):
-    ffta = np.fft.fft2(map_a)
-    fftb = np.fft.fft2(map_b)
-    
-    xspectrum = ffta*fftb
-    return xspectrum
-
 
 
 

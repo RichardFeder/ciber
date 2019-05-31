@@ -22,19 +22,20 @@ def get_bin_idxs(arr, bins):
 def compute_cross_spectrum(map_a, map_b):
     ffta = np.fft.fft2(map_a)
     fftb = np.fft.fft2(map_b)
-    
-    xspectrum = ffta*fftb
-    return xspectrum
+    xspectrum = np.abs(ffta*np.conj(fftb)+fftb*np.conj(ffta))
+    return np.fft.fftshift(xspectrum)
 
 def azimuthalAverage(image, lmin=90, center=None, logbins=True, nbins=60):
     """
     Calculate the azimuthally averaged radial profile.
 
     image - The 2D image
-    lbins - the multipole bins used for radially binning the image
+    lmin - the minimum multipole used to set range of multipoles
     center - The [x,y] pixel coordinates used as the center. The default is 
              None, which then uses the center of the image (including 
              fracitonal pixels).
+    logbins - boolean True if log bins else uniform bins
+    nbins - number of bins to use
              
     code adapted from https://www.astrobetter.com/blog/2010/03/03/fourier-transforms-of-images-in-python/
     
