@@ -13,6 +13,14 @@ sns.set()
 # initialize cosmology class 
 cosmo = FlatLambdaCDM(H0=70, Om0=0.28)
 
+def absolute_mag_from_apparent(Mapp, z):
+    Mabs = Mapp - cosmo.distmod(z).value-2.5*np.log10(1+zed)
+    return Mabs
+
+def apparent_mag_from_absolute(Mabs, z):
+    Mapp = Mabs + cosmo.distmod(z).value-2.5*np.log(1+z)
+    return Mapp
+
 
 class Luminosity_Function():
     
@@ -120,5 +128,71 @@ class Luminosity_Function():
         for z in zrange:
             flux_prod_rates.append(self.total_bkg_light(ms, z, band).value)
         return flux_prod_rates
+
+
+
+def pdf_cdf_dndz(zmin=0.1, zmax=5, mapp_min=15, mapp_max=30, nbins=50, band='J'):
+    zs = np.linspace(zmin, zmax, nbins)
+    Mapp = np.linspace(mapp_min, mapp_max, nbins)
+    dndz = []
+    for zed in zs:
+        val = np.sum(lf.schecter_lf_dm(Mapp, zed, band)*(10**(-3) * lf.schecter_units)*(np.max(Mapp)-np.min(Mapp))/len(Mapp))
+        dndz.append(val.value)
+    dndz = np.array(dndz)/np.sum(dndz)
+    cdf_dndz = np.cumsum(dndz)
+    
+    return dndz, cdf_dndz, Mapp, zs
+
+
+def draw_gal_redshifts(ngal, limiting_mag=20):
+    ''' returns redshifts sorted '''
+    dndz, cdf_dndz, mapp, zs = pdf_cdf_dndz()
+    idx = np.argmin(np.abs(mapp-limiting_mag))    
+    ratio = cdf_dndz[idx]
+    ndraw_total = int(ngal/ratio)
+    print 'Drawing '+str(ndraw_total)+' galaxies from dN/dz..'
+    gal_zs = np.random.choice(zs, ndraw_total, p=dndz)
+    ngal_per_z = np.array([len([zg for zg in gal_zs if zg==z]) for z in zs])
+    return np.sort(gal_zs), ngal_per_z
+    
+def get_schecter_m_given_zs(zs, Mapp, band='J'):
+    pdfs = []
+    for z in zs:
+        pdf = lf.schecter_lf_dm(Mapp, z, band)
+        pdf /= np.sum(pdf)
+        pdfs.append(pdf)
+    return pdfs
+
+
+def absolute_mag_from_apparent(Mapp, z):
+    Mabs = Mapp - cosmo.distmod(z).value-2.5*np.log10(1+zed)
+    return Mabs
+
+def apparent_mag_from_absolute(Mabs, z):
+    Mapp = Mabs + cosmo.distmod(z).value-2.5*np.log(1+z)
+    return Mapp
+
+
+def draw_mags_given_zs(Mapp, ngal_per_z, pdfs, zs):
+    gal_app_mags = np.array([])
+    gal_abs_mags = np.array([])
+    for i in xrange(len(ngal_per_z)):
+        apparent_mags = np.random.choice(Mapp, ngal_per_z[i], p=pdfs[i])
+        absolute_mags = absolute_mag_from_apparent(apparent_mags, zs[i])
+        gal_app_mags = np.append(gal_app_mags, apparent_mags)
+        gal_abs_mags = np.append(gal_abs_mags, absolute_mags)
+    
+    return gal_app_mags, gal_abs_mags
+            
+    
+def generate_galaxy_catalog(ngal):
+    lf = Luminosity_Function()
+    gal_zs, ng_perz = draw_gal_redshifts(ngal)
+    dndz, cdf_dndz, mapp, zs = pdf_cdf_dndz()
+    pdfs = get_schecter_m_given_zs(zs, mapp)
+    gal_mapp, gal_mabs = draw_mags_given_zs(mapp, ng_perz, pdfs, zs)
+    gal_cat = np.array([gal_zs, gal_mapp, gal_mabs]).transpose()
+    
+    return gal_cat
             
 
