@@ -4,11 +4,12 @@ import os
 import sys
 import time
 import numpy as np
-import seaborn as sns
+# import seaborn as sns
 from astropy.cosmology import FlatLambdaCDM
 import astropy.units as u
 from astropy import constants as const
-sns.set()
+from halo_model import *
+# sns.set()
 
 # initialize cosmology class 
 cosmo = FlatLambdaCDM(H0=70, Om0=0.28)
@@ -130,7 +131,7 @@ class Luminosity_Function():
         return flux_prod_rates
 
 
- ''' 
+''' 
 
 I want to construct random catalogs drawn from the galaxy distribution specified by Helgason et al.
 This involves:
@@ -168,7 +169,7 @@ class galaxy_catalog():
 
     def draw_gal_redshifts(self, ngal, limiting_mag=20):
         ''' returns redshifts sorted '''
-        dndz, cdf_dndz, mapp, zs = self.pdf_cdf_dndz()
+        dndz, cdf_dndz, mapp, zs = self.pdf_cdf_dndz(mapp_max=27)
         idx = np.argmin(np.abs(mapp-limiting_mag))    
         ratio = cdf_dndz[idx]
         ndraw_total = int(ngal/ratio)
@@ -203,17 +204,18 @@ class galaxy_catalog():
 
         return cat
 
-    def abundance_match_ms_given_mags(self):
+    def abundance_match_ms_given_mags(self, ngal):
         ''' here we want to sort these in descending order, since abs mags are ordered and most neg absolute
         magnitude corresponds to most massive halo'''
         
         mass_range, dndm = self.load_halo_mass_function('../data/halo_mass_function_hmfcalc.txt')
-        halo_masses = np.sort(np.random.choice(mass_range, self.catalog.shape[0],p=dndm))[::-1]
-        self.catalog = np.column_stack((self.catalog, halo_masses))
+        halo_masses = np.sort(np.random.choice(mass_range, ngal,p=dndm))[::-1]
         virial_radii = self.halomod.mass_2_virial_radius(halo_masses) # in Mpc
-        self.catalog = np.column_stack((self.catalog, virial_radii.value))
+        
+        return halo_masses, virial_radii.value
         
     def load_halo_mass_function(self, filename):
+        hmf = np.loadtxt(filename, skiprows=12)
         ms = hmf[:,0] # [M_sun/h]
         dndm = hmf[:,5]/np.sum(hmf[:,5]) # [h^4/(Mpc^3*M_sun)]
         return ms, dndm
@@ -223,10 +225,17 @@ class galaxy_catalog():
     def generate_galaxy_catalog(self, ngal):
         self.catalog = []
         gal_zs, ng_perz = self.draw_gal_redshifts(ngal)
+        
+        thetax = np.random.uniform(0, 1024, len(gal_zs)) # should draw clustered positions
+        thetay = np.random.uniform(0, 1024, len(gal_zs))
+
         dndz, cdf_dndz, mapp, zs = self.pdf_cdf_dndz()
         pdfs = self.get_schecter_m_given_zs(zs, mapp)
-        self.catalog = self.draw_mags_given_zs(mapp, gal_zs, ng_perz, pdfs, zs)
-        self.abundance_match_ms_given_mags()
+        zmm = self.draw_mags_given_zs(mapp, gal_zs, ng_perz, pdfs, zs)
+        halo_masses, virial_radii = self.abundance_match_ms_given_mags(len(gal_zs))        
+        
+        self.catalog = np.array([thetax, thetay, zmm[:,0], zmm[:,1],zmm[:,2],halo_masses,virial_radii]).transpose()
+        
         return self.catalog
 
 

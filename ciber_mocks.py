@@ -3,7 +3,7 @@ import pandas as pd
 import astropy.units as u
 from astropy import constants as const
 import time
-
+from helgason import *
 
 ''' Downsample map, taking average of downsampled pixels '''
 def rebin_map_coarse(original_map, Nsub):
@@ -22,7 +22,6 @@ def make_radius_map(dimx, dimy, cenx, ceny, rc):
     return (((cenx - xx)/rc)**2 + ((ceny - yy)/rc)**2)
 
 
-
 def normalized_ihl_template(dimx=50, dimy=50, R_vir=None):
     if R_vir is None:
         R_vir = np.sqrt((dimx/2)**2+(dimy/2)**2)
@@ -31,6 +30,10 @@ def normalized_ihl_template(dimx=50, dimy=50, R_vir=None):
     ihl_map[np.isnan(ihl_map)]=0
     ihl_map /= np.sum(ihl_map)
     return ihl_map
+
+def virial_radius_2_reff(r_vir, zs, theta_fov_deg=2.0, npix_sidelength=1024.):
+    d = cosmo.angular_diameter_distance(zs)*theta_fov_deg*np.pi/180.
+    return (r_vir*u.Mpc/d)*npix_sidelength
 
 
 class ciber_mock():
@@ -94,19 +97,19 @@ class ciber_mock():
 
 
 
-    def make_srcmap_hsc(self, ifield, cat, band=0, finePSF=False, nbin=10.):
+    def make_srcmap(self, ifield, cat, band=0, finePSF=False, nbin=10., nx=1024, ny=1024):
         loaddir = self.ciberdir + '/psf_analytic/TM'+str(band+1)+'/'
-        Npix_x = int(np.max(cat[:,0])-np.min(cat[:,0]))
-        Npix_y = int(np.max(cat[:,1])-np.min(cat[:,1]))
+        Npix_x = nx
+        Npix_y = ny
 
         Nsrc = cat.shape[0]
 
         # get psf params
         beta, rc, norm = self.find_psf_params(self.ciberdir+'/data/psfparams.txt', tm=band+1, field=self.ciber_field_dict[ifield])
-        print 'Beta:', beta, 'rc:', rc, 'norm:', norm
+        # print 'Beta:', beta, 'rc:', rc, 'norm:', norm
         
         multfac = 7.
-        Nlarge = 1024+30+30 # not sure what 30 + 30 helps with 
+        Nlarge = nx+30+30 # not sure what 30 + 30 helps with 
         nwide = 100
 
         if finePSF:
@@ -125,7 +128,6 @@ class ciber_mock():
 
             xs = np.round(cat[:,0]*nbin + 4.5).astype(np.int32)
             ys = np.round(cat[:,1]*nbin + 4.5).astype(np.int32)
-
             for i in xrange(Nsrc):
                 fine_srcmap[Nlarge/2+2+xs[i]-nwide:Nlarge/2+2+xs[i]+nwide, Nlarge/2-1+ys[i]-nwide:Nlarge/2-1+ys[i]+nwide] += Imap_center*cat[i,2]
 
@@ -134,6 +136,7 @@ class ciber_mock():
 
 
         else:
+
             srcmap = np.zeros((Npix_x*2, Npix_y*2))
             Imap_large /= np.sum(Imap_large)     
             Imap_center = Imap_large[Nlarge-nwide:Nlarge+nwide, Nlarge-nwide:Nlarge+nwide]
@@ -147,39 +150,56 @@ class ciber_mock():
         return srcmap[Npix_x/2+30:3*Npix_x/2+30, Npix_y/2+30:3*Npix_y/2+30]
 
    
-    def make_ihl_map(self, map_shape, cat, ihl_frac):
+    def make_ihl_map(self, map_shape, cat, ihl_frac, dimx=50, dimy=50):
         extra_trim = 20
-        norm_ihl = normalized_ihl_template(R_vir=15.)
-        ihl_map = np.zeros((map_shape[0]+norm_ihl.shape[0]+extra_trim, map_shape[1]+norm_ihl.shape[1]+extra_trim))
+        if len(cat[0])<4:
+            norm_ihl = normalized_ihl_template(R_vir=10., dimx=dimx, dimy=dimy)
+        else:
+            rvirs = virial_radius_2_reff(cat[:,4], cat[:,3])
+        ihl_map = np.zeros((map_shape[0]+dimx+extra_trim, map_shape[1]+dimy+extra_trim))
 
         for i, src in enumerate(cat):
             x0 = np.floor(src[0]+extra_trim/2)
             y0 = np.floor(src[1]+extra_trim/2)
+            if len(src)>3:
+                norm_ihl = normalized_ihl_template(R_vir=np.ceil(rvirs[i]))
+
 
             ihl_map[int(x0):int(x0+ norm_ihl.shape[0]), int(y0):int(y0 + norm_ihl.shape[1])] += norm_ihl*ihl_frac*src[2]
 
         return ihl_map[(norm_ihl.shape[0] + extra_trim)/2:-(norm_ihl.shape[0] + extra_trim)/2, (norm_ihl.shape[0] + extra_trim)/2:-(norm_ihl.shape[0] + extra_trim)/2]
 
 
+
+
     def make_ciber_map(self, ifield, m_min, m_max, band=0, catname=None, nsrc=0, ihl_frac=0.):
         if catname is not None:
             x_arr, y_arr, m_arr = self.get_catalog(catname)
+            I_arr = self.mag_2_nu_Inu(m_arr, band)
+            xyI = np.array([x_arr, y_arr, I_arr]).transpose()
+            magnitude_mask_idxs = np.array([i for i in xrange(len(m_arr)) if m_arr[i]>=m_min and m_arr[i] <= m_max])
+            if len(magnitude_mask_idxs) > 0:
+                cat = xyI[magnitude_mask_idxs,:]
+            else:
+                cat = xyI
         else:
-            x_arr = np.random.uniform(0, 1024, nsrc)
-            y_arr = np.random.uniform(0, 1024, nsrc)
-            m_arr = np.random.uniform(m_min, m_max, nsrc)
+            mock_galaxy = galaxy_catalog()
+            cat = mock_galaxy.generate_galaxy_catalog(nsrc)
+            print('catalog has shape:', cat.shape)
+            x_arr = cat[:,0]
+            y_arr = cat[:,1]
+            m_arr = cat[:,3] # apparent magnitude
+            I_arr = self.mag_2_nu_Inu(m_arr, band)
+
+            xyIzR = np.array([x_arr, y_arr, I_arr, cat[:,2], cat[:,6]]).transpose()
+            magnitude_mask_idxs = np.array([i for i in xrange(len(m_arr)) if m_arr[i]>=m_min and m_arr[i] <= m_max])
+            if len(magnitude_mask_idxs) > 0:
+                cat = xyIzR[magnitude_mask_idxs,:]
+            else:
+                cat = xyIzR
 
 
-        I_arr = self.mag_2_nu_Inu(m_arr, band)
-        xyI = np.array([x_arr, y_arr, I_arr]).transpose()
-        # select catalog data
-        magnitude_mask_idxs = np.array([i for i in xrange(len(m_arr)) if m_arr[i]>=m_min and m_arr[i] <= m_max])
-        if len(magnitude_mask_idxs) > 0:
-            cat = xyI[magnitude_mask_idxs,:]
-        else:
-            cat = xyI
-
-        srcmap = self.make_srcmap_hsc(ifield, cat, band=band)
+        srcmap = self.make_srcmap(ifield, cat, band=band)
         full_map = np.zeros_like(srcmap)
 
         noise = np.random.normal(self.sky_brightness[band].value, self.instrument_noise[band].value, size=srcmap.shape)
