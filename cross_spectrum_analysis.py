@@ -9,12 +9,10 @@ def get_bin_idxs(arr, bins):
         if val-bins[i+1]>=0:
             idxs.append(ind)
             if i==len(bins)-1:
-                print 'i='+str(i)
                 return idxs
             else:
                 i+=1
         elif val == maxval:
-            print('reached end of array')
             idxs.append(ind)
             return idxs
 
@@ -53,7 +51,6 @@ def azimuthalAverage(image, lmin=90, center=None, logbins=True, nbins=60):
     i_sorted = image.flat[ind]
     
     lmax = lmin*np.sqrt(0.5*image.shape[0]**2)
-    print 'Binning between l='+str(lmin)+' and l='+str(lmax)
     
     if logbins:
         radbins = 10**(np.linspace(np.log10(lmin), np.log10(lmax), nbins+1))

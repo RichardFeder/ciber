@@ -170,9 +170,7 @@ class ciber_mock():
         return ihl_map[(norm_ihl.shape[0] + extra_trim)/2:-(norm_ihl.shape[0] + extra_trim)/2, (norm_ihl.shape[0] + extra_trim)/2:-(norm_ihl.shape[0] + extra_trim)/2]
 
 
-
-
-    def make_ciber_map(self, ifield, m_min, m_max, band=0, catname=None, nsrc=0, ihl_frac=0.):
+    def make_ciber_map(self, ifield, m_min, m_max, mock_cat=None, band=0, catname=None, nsrc=0, ihl_frac=0.):
         if catname is not None:
             x_arr, y_arr, m_arr = self.get_catalog(catname)
             I_arr = self.mag_2_nu_Inu(m_arr, band)
@@ -183,20 +181,23 @@ class ciber_mock():
             else:
                 cat = xyI
         else:
-            mock_galaxy = galaxy_catalog()
-            cat = mock_galaxy.generate_galaxy_catalog(nsrc)
-            print('catalog has shape:', cat.shape)
-            x_arr = cat[:,0]
-            y_arr = cat[:,1]
-            m_arr = cat[:,3] # apparent magnitude
-            I_arr = self.mag_2_nu_Inu(m_arr, band)
-
-            xyIzR = np.array([x_arr, y_arr, I_arr, cat[:,2], cat[:,6]]).transpose()
-            magnitude_mask_idxs = np.array([i for i in xrange(len(m_arr)) if m_arr[i]>=m_min and m_arr[i] <= m_max])
-            if len(magnitude_mask_idxs) > 0:
-                cat = xyIzR[magnitude_mask_idxs,:]
+            if mock_cat is not None:
+                cat = mock_cat
             else:
-                cat = xyIzR
+                mock_galaxy = galaxy_catalog()
+                cat = mock_galaxy.generate_galaxy_catalog(nsrc)
+                print('catalog has shape:', cat.shape)
+                x_arr = cat[:,0]
+                y_arr = cat[:,1]
+                m_arr = cat[:,3] # apparent magnitude
+                I_arr = self.mag_2_nu_Inu(m_arr, band)
+
+                xyIzR = np.array([x_arr, y_arr, I_arr, cat[:,2], cat[:,6], m_arr]).transpose()
+                magnitude_mask_idxs = np.array([i for i in xrange(len(m_arr)) if m_arr[i]>=m_min and m_arr[i] <= m_max])
+                if len(magnitude_mask_idxs) > 0:
+                    cat = xyIzR[magnitude_mask_idxs,:]
+                else:
+                    cat = xyIzR
 
 
         srcmap = self.make_srcmap(ifield, cat, band=band)
@@ -208,13 +209,13 @@ class ciber_mock():
         if ihl_frac > 0:
             ihl_map = self.make_ihl_map(srcmap.shape, cat, ihl_frac)
             full_map += ihl_map
-            return full_map, srcmap, noise, ihl_map
+            return full_map, srcmap, noise, ihl_map, cat
         else:
-            return full_map, srcmap, noise
+            return full_map, srcmap, noise, cat
 
 
-def make_galaxy_binary_map(cat, refmap):
-    cat = np.array([src for src in cat if src[0]<refmap.shape[0] and src[1]<refmap.shape[1]])
+def make_galaxy_binary_map(cat, refmap, m_min=14, m_max=30, magidx=2):
+    cat = np.array([src for src in cat if src[0]<refmap.shape[0] and src[1]<refmap.shape[1] and src[magidx]>m_min and src[magidx]<m_max])
     gal_map = np.zeros_like(refmap)
     for src in cat:
         gal_map[int(src[0]),int(src[1])] +=1.
