@@ -154,7 +154,7 @@ class galaxy_catalog():
     def __init__(self, band='J'):
         self.band = band
 
-    def pdf_cdf_dndz(self, zmin=0.1, zmax=5, mapp_min=15, mapp_max=30, nbins=50, band='J'):
+    def pdf_cdf_dndz(self, zmin=0.0, zmax=5, mapp_min=15, mapp_max=30, nbins=100, band='J'):
         zs = np.linspace(zmin, zmax, nbins)
         Mapp = np.linspace(mapp_min, mapp_max, nbins)
         dndz = []
@@ -222,9 +222,9 @@ class galaxy_catalog():
     
     
 
-    def generate_galaxy_catalog(self, ngal):
+    def generate_galaxy_catalog(self, ngal, limiting_mag=22):
         self.catalog = []
-        gal_zs, ng_perz = self.draw_gal_redshifts(ngal)
+        gal_zs, ng_perz = self.draw_gal_redshifts(ngal, limiting_mag=limiting_mag)
         
         thetax = np.random.uniform(0, 1024, len(gal_zs)) # should draw clustered positions
         thetay = np.random.uniform(0, 1024, len(gal_zs))
