@@ -1,6 +1,16 @@
 import numpy as np
 from ciber_mocks import *
 
+
+flight=40030 
+inst=1  #inst=1-I band magnitude,2-H band magnitude
+ifield=4  #use the PSF in which CIBER field? 4-elat10,5-elat30,6-BootesB,7-BootesA,8-SWIRE
+field='XMM' # which HSC field?
+m_min=10 
+m_max=27 # magnitude limits
+usePSF=False # if false, don't convolve with PSF, just put all the light in the central pixel
+nbin = 1
+
 def get_bin_idxs(arr, bins):
     i=0
     maxval = np.max(arr)
@@ -65,8 +75,9 @@ def azimuthalAverage(image, lmin=90, center=None, logbins=True, nbins=60):
     rad_avg = []
     rad_std = []
     for i in xrange(len(rbin_idxs)-1):
+        nmodes= len(i_sorted[rbin_idxs[i]:rbin_idxs[i+1]])
         rad_avg.append(np.mean(i_sorted[rbin_idxs[i]:rbin_idxs[i+1]]))
-        rad_std.append(np.std(i_sorted[rbin_idxs[i]:rbin_idxs[i+1]]))
+        rad_std.append(np.std(i_sorted[rbin_idxs[i]:rbin_idxs[i+1]])/np.sqrt(nmodes))
         
         
     av_rbins = (radbins[:-1]+radbins[1:])/2
@@ -80,19 +91,20 @@ def cross_correlate_galcat_ciber(cibermap, galaxy_catalog, m_min=14, m_max=30, b
     gal_map = make_galaxy_binary_map(galaxy_catalog, cibermap, m_min=m_min, m_max=m_max, magidx=magidx, zmin=zmin, zmax=zmax, zidx=zidx)
     xcorr = compute_cross_spectrum(cibermap, gal_map)
     rbins, radprof, radstd = azimuthalAverage(xcorr)
-    return rbins, radprof, radstd
+    return rbins, radprof, radstd, xcorr
 
 
 
 
-def xcorr_varying_ihl(ihl_min_frac=0.0, ihl_max_frac=0.5, nbins=10, nsrc=100, m_min=14, m_max=20):
+def xcorr_varying_ihl(ihl_min_frac=0.0, ihl_max_frac=0.5, nbins=10, nsrc=100, m_min=14, m_max=20, gal_comp=21):
     radprofs = []
     radstds = []
+    cmock = ciber_mock()
     ihl_range = np.linspace(ihl_min_frac, ihl_max_frac, nbins)
     for i, ihlfrac in enumerate(ihl_range):
         if i==0:
             full, srcs, noise, cat = cmock.make_ciber_map(ifield, m_min, m_max, band=inst, nsrc=nsrc, ihl_frac=ihlfrac)
-            gal_map = make_galaxy_binary_map(cat, full, m_min, m_max=20, magidx=5) # cut off galaxy catalog at 20th mag
+            gal_map = make_galaxy_binary_map(cat, full, m_min, m_max=gal_comp, magidx=5) # cut off galaxy catalog at 20th mag
         else:
             full, srcs, noise, ihl, cat = cmock.make_ciber_map(ifield, m_min, m_max, mock_cat=cat, band=inst, nsrc=nsrc, ihl_frac=ihlfrac)
          
@@ -106,6 +118,7 @@ def xcorr_varying_ihl(ihl_min_frac=0.0, ihl_max_frac=0.5, nbins=10, nsrc=100, m_
 
 def xcorr_varying_galcat_completeness(ihl_frac=0.1, compmin=18, compmax=22, nbin=10, nsrc=100):
     radprofs, radstds = [], []
+    cmock = ciber_mock()
     comp_range = np.linspace(compmin, compmax, nbin)
     full, srcs, noise, ihl, gal_cat = cmock.make_ciber_map(ifield, m_min, 25, band=inst, nsrc=nsrc, ihl_frac=ihl_frac)
 
@@ -127,6 +140,7 @@ def integrated_xcorr_multiple_redshifts(ihl_frac=0.1, \
     nsrc=100):
     
     wints = []
+    cmock = ciber_mock()
     zrange = np.linspace(zmin, zmax, nbin)
     if ihl_frac > 0:
         full, srcs, noise, ihl, gal_cat = cmock.make_ciber_map(ifield, m_min, 25, band=inst, nsrc=nsrc, ihl_frac=ihl_frac)
@@ -134,8 +148,9 @@ def integrated_xcorr_multiple_redshifts(ihl_frac=0.1, \
         full, srcs, noise, gal_cat = cmock.make_ciber_map(ifield, m_min, 25, band=inst, nsrc=nsrc, ihl_frac=ihl_frac)
         
     for i in xrange(len(zrange)-1):
-        rb, radprof, radstd = cross_correlate_galcat_ciber(full, gal_cat, zmin=zrange[i], zmax=zrange[i+1], zidx=3)
-        wints.append(integrate_w_theta(rb, radprof))
+        rb, radprof, radstd, xcorr = cross_correlate_galcat_ciber(full, gal_cat, m_max=gal_maxmag, zmin=zrange[i], zmax=zrange[i+1], zidx=3)
+        # wints.append(integrate_w_theta(rb, radprof))
+        wints.append(integrate_C_l(rb*90., radprof))
     
     zs = 0.5*(zrange[:-1]+zrange[1:])
     
@@ -152,6 +167,17 @@ def integrate_w_theta(ls, w, weights=None):
     w_integrand *= weights
     w_integrand *= dthetas
     return np.sum(w_integrand)
+
+
+def integrate_C_l(ls, C, weights=None):
+    dls = ls[:-1]-ls[1:]
+    C_integrand = 0.5*(C[:-1]+C[1:])
+    if weights is None: # then use inverse theta weighting
+        weights = 0.5*(ls[1:]+ls[:-1])
+        
+    C_integrand *= weights
+    C_integrand *= dls
+    return np.sum(C_integrand)
 
 
 

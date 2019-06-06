@@ -1,6 +1,10 @@
 import scipy
 from scipy.special import *
 import astropy.units as u
+from astropy.cosmology import FlatLambdaCDM
+# initialize cosmology class 
+cosmo = FlatLambdaCDM(H0=70, Om0=0.28)
+
 
 class tinker_hmf():
     
@@ -80,10 +84,15 @@ class halo_model():
     
     def f(self, c):
         return 1./(np.log(1.+c)-1./(1.+c))
-    
-    def mass_2_virial_radius(self, m):
-        rvir = (3*m/(4*np.pi*self.rho*self.Delta)).value**(1./3)
-        return rvir*u.Mpc
+
+    def mass_2_virial_radius(self, halo_mass, z):
+        term = (3/(4*np.pi))*cosmo.Om(z)*halo_mass*u.solMass/(200*cosmo.critical_density(z))
+        # term = (3/(4*np.pi))*cosmo.Om(z)*halo_mass*u.solMass/(200*cosmo.critical_density0)
+        return term**(1./3.)
+        
+    # def mass_2_virial_radius(self, m):
+    #     rvir = (3*m/(4*np.pi*self.rho*self.Delta)).value**(1./3)
+    #     return rvir*u.Mpc
     
     def mass_variance(self, m):
         #TODO
@@ -93,7 +102,7 @@ class halo_model():
         return (self.tinker.delta_c/self.mass_variance(m))**2
             
     def NFW_r(self, rfrac, m, normalize=True):
-        R_vir = self.mass_2_virial_radius(m)
+        R_vir = self.mass_2_virial_radius(m).to(u.Mpc).value
         c = self.concentration(m)   
         ur = (self.f(c)*c**3/(4*np.pi*(R_vir**3)))/(c*rfrac*(1+c*rfrac)**2)
 
