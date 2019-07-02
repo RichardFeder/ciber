@@ -1,15 +1,7 @@
-import matplotlib
-import matplotlib.pyplot as plt
-import os
-import sys
-import time
 import numpy as np
-# import seaborn as sns
 from astropy.cosmology import FlatLambdaCDM
 import astropy.units as u
 from astropy import constants as const
-from halo_model import *
-# sns.set()
 
 # initialize cosmology class 
 cosmo = FlatLambdaCDM(H0=70, Om0=0.28)
@@ -19,7 +11,7 @@ def absolute_mag_from_apparent(Mapp, z):
     return Mabs
 
 def apparent_mag_from_absolute(Mabs, z):
-    Mapp = Mabs + cosmo.distmod(z).value-2.5*np.log(1+z)
+    Mapp = Mabs + cosmo.distmod(z).value-2.5*np.log10(1+z)
     return Mapp
 
 
@@ -35,7 +27,7 @@ class Luminosity_Function():
     alpha0 = -1.00
     r = 0.035
     DH = 4000*u.Mpc # hubble distance in Mpc
-    schecter_units = u.Mpc**(-3)
+    schechter_units = u.Mpc**(-3)
     cosmo = FlatLambdaCDM(H0=70, Om0=0.28)
 
     
@@ -71,14 +63,14 @@ class Luminosity_Function():
         
         return m0-2.5*np.log((1+(z-self.z0m))**q)
 
-    def schecter_lf_dm(self, M, z, band): # checked
+    def schechter_lf_dm(self, M, z, band): # in absolute magnitudes
         
-        msz = self.m_star(z, band)
+        Msz = self.m_star(z, band)
         phiz = self.phi_star(z, band)
         alph = self.alpha(z)
         
-        phi = 0.4*np.log(10)*phiz*(10**(0.4*(msz-M)))**(alph+1)
-        phi *= np.exp(-10**(0.4*(msz-M)))
+        phi = 0.4*np.log(10)*phiz*(10**(0.4*(Msz-M)))**(alph+1)
+        phi *= np.exp(-10**(0.4*(Msz-M)))
         
         return phi 
     
@@ -102,7 +94,7 @@ class Luminosity_Function():
             redshifted_lambda = self.ps[band]['lambda']*(1+z)
             nearest_band, dist = self.find_nearest_band(redshifted_lambda)
             Mabs = self.get_abs_from_app(Mapp, z)
-            schec = self.schecter_lf_dm(Mabs, z, nearest_band)*(10**(-3) * self.schecter_units)*self.comoving_vol_element(z)*(zs[1]-zs[0])
+            schec = self.schechter_lf_dm(Mabs, z, nearest_band)*(10**(-3) * self.schechter_units)*self.comoving_vol_element(z)*(zs[1]-zs[0])
             nm.append(schec)
         return np.sum(nm), nm
     
@@ -118,8 +110,8 @@ class Luminosity_Function():
         
         for i in xrange(len(ms)-1):
             mabs = self.get_abs_from_app(ms[i], z)
-            val = (ms[i+1]-ms[i])*self.specific_flux(ms[i], nu)*self.schecter_lf_dm(mabs, z, band)
-            val *= (10**(-3) * self.schecter_units)*cosmo.differential_comoving_volume(z)
+            val = (ms[i+1]-ms[i])*self.specific_flux(ms[i], nu)*self._lf_dm(mabs, z, band)
+            val *= (10**(-3) * self.schechter_units)*cosmo.differential_comoving_volume(z)
             dfdz += val
 
         return dfdz.to(u.nW*u.m**(-2)*u.steradian**(-1))
@@ -131,113 +123,4 @@ class Luminosity_Function():
         return flux_prod_rates
 
 
-''' 
-
-I want to construct random catalogs drawn from the galaxy distribution specified by Helgason et al.
-This involves:
-- drawing redshifts from dN/dz - done
-- drawing absolute magnitudes from Phi(M|z) - done
-- converting to apparent magnitudes, and then to flux units from AB - done
-- computing an estimated mass for the galaxy - done
-- get virial radius for IHL component - done
-- generate positions consistent with two point correlation function of galaxies (TODO)
-
-'''
-
-class galaxy_catalog():
-    
-    catalog = []
-    lf = Luminosity_Function()
-    halomod = halo_model()
-
-    
-    def __init__(self, band='J'):
-        self.band = band
-
-    def pdf_cdf_dndz(self, zmin=0.0, zmax=5, mapp_min=15, mapp_max=30, nbins=100, band='J'):
-        zs = np.linspace(zmin, zmax, nbins)
-        Mapp = np.linspace(mapp_min, mapp_max, nbins)
-        dndz = []
-        for zed in zs:
-            val = np.sum(self.lf.schecter_lf_dm(Mapp, zed, band)*(10**(-3) * self.lf.schecter_units)*(np.max(Mapp)-np.min(Mapp))/len(Mapp))
-            dndz.append(val.value)
-        dndz = np.array(dndz)/np.sum(dndz)
-        cdf_dndz = np.cumsum(dndz)
-
-        return dndz, cdf_dndz, Mapp, zs
-
-
-    def draw_gal_redshifts(self, ngal, limiting_mag=20):
-        ''' returns redshifts sorted '''
-        dndz, cdf_dndz, mapp, zs = self.pdf_cdf_dndz(mapp_max=27)
-        idx = np.argmin(np.abs(mapp-limiting_mag))    
-        ratio = cdf_dndz[idx]
-        ndraw_total = int(ngal/ratio)
-        
-        print 'Drawing '+str(ndraw_total)+' total galaxies from dN/dz..'
-        
-        gal_zs = np.random.choice(zs, ndraw_total, p=dndz)
-        ngal_per_z = np.array([len([zg for zg in gal_zs if zg==z]) for z in zs])
-        return np.sort(gal_zs), ngal_per_z
-
-    def get_schecter_m_given_zs(self, zs, Mapp):
-        pdfs = []
-        for z in zs:
-            pdf = self.lf.schecter_lf_dm(Mapp, z, self.band)
-            pdf /= np.sum(pdf)
-            pdfs.append(pdf)
-        return pdfs
-
-    def draw_mags_given_zs(self, Mapp, gal_zs, ngal_per_z, pdfs, zs):
-        '''we are going to order these by absolute magnitude, which makes things easier when abundance matching to 
-        halo mass'''
-        gal_app_mags = np.array([])
-        gal_abs_mags = np.array([])
-        for i in xrange(len(ngal_per_z)):
-            apparent_mags = np.random.choice(Mapp, ngal_per_z[i], p=pdfs[i])
-            absolute_mags = absolute_mag_from_apparent(apparent_mags, zs[i])
-            gal_app_mags = np.append(gal_app_mags, apparent_mags)
-            gal_abs_mags = np.append(gal_abs_mags, absolute_mags)
-                        
-        arr = np.array([gal_zs, gal_app_mags, gal_abs_mags]).transpose()
-        cat = arr[np.argsort(arr[:,2])] # sort apparent and absolute mags by absolute mags
-
-        return cat
-
-    def abundance_match_ms_given_mags(self, ngal):
-        ''' here we want to sort these in descending order, since abs mags are ordered and most neg absolute
-        magnitude corresponds to most massive halo'''
-        
-        mass_range, dndm = self.load_halo_mass_function('../data/halo_mass_function_hmfcalc.txt')
-        halo_masses = np.sort(np.random.choice(mass_range, ngal,p=dndm))[::-1]
-        virial_radii = self.halomod.mass_2_virial_radius(halo_masses) # in Mpc
-        
-        return halo_masses, virial_radii.value
-        
-    def load_halo_mass_function(self, filename):
-        hmf = np.loadtxt(filename, skiprows=12)
-        ms = hmf[:,0] # [M_sun/h]
-        dndm = hmf[:,5]/np.sum(hmf[:,5]) # [h^4/(Mpc^3*M_sun)]
-        return ms, dndm
-    
-    
-
-    def generate_galaxy_catalog(self, ngal, limiting_mag=22):
-        self.catalog = []
-        gal_zs, ng_perz = self.draw_gal_redshifts(ngal, limiting_mag=limiting_mag)
-        
-        thetax = np.random.uniform(0, 1024, len(gal_zs)) # should draw clustered positions
-        thetay = np.random.uniform(0, 1024, len(gal_zs))
-
-        dndz, cdf_dndz, mapp, zs = self.pdf_cdf_dndz()
-        pdfs = self.get_schecter_m_given_zs(zs, mapp)
-        zmm = self.draw_mags_given_zs(mapp, gal_zs, ng_perz, pdfs, zs)
-        halo_masses, virial_radii = self.abundance_match_ms_given_mags(len(gal_zs))        
-        
-        self.catalog = np.array([thetax, thetay, zmm[:,0], zmm[:,1],zmm[:,2],halo_masses,virial_radii]).transpose()
-        
-        return self.catalog
-
-
-            
 
