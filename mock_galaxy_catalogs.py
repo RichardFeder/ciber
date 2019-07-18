@@ -1,20 +1,16 @@
 import numpy as np
-from compos import const, matterps
+from compos import matterps
+
 from astropy.cosmology import FlatLambdaCDM
 import astropy.units as u
-from astropy import constants as const
+# from astropy import constants as const
 from scipy import stats
+import time
 from halo_model import *
+from helgason import *
+import camb
+from camb import model, initialpower
 
-# ell_min = 90.
-# ell_max = ell_min*np.sqrt(2*512**2)
-
-# pars = camb.CAMBparams()
-# pars.set_cosmology(H0=67.5, ombh2=0.022, omch2=0.122)
-# pars.InitPower.set_params(ns=0.965)
-# kh_nonlin, _, pk_nonlin = results.get_matter_power_spectrum(minkh=1e-3, maxkh=2.0, npoints = 2000)
-
-const.initializecosmo()
 
 def fftIndgen(n):
     a = range(0, n/2+1)
@@ -28,19 +24,58 @@ def power_spec(k):
     ps[k==0] = 0.
     return ps
 
-def gaussian_random_field(n_samples, alpha=None, size = 100):
-    def Pk2(kx, ky, alph=None):
-        if alph is not None:
-            return np.sqrt(np.sqrt(kx**2+ky**2)**alph)
-        return power_spec(np.array([np.sqrt(kx**2+ky**2)]))
+def ell_to_k(ell, comoving_dist):
+    theta = np.pi/ell
+    k = 1./(comoving_dist*theta)
+    return k
+
+def k_to_ell(k, comoving_dist):
+    theta = 1./(comoving_dist*k)
+    ell = np.pi/theta
+    return ell
+
+def find_nearest_2_idxs(array, vals):
+    idxs = np.array([np.abs(array-val).argmin() for val in vals])
+    dk = vals - array[idxs]
+    idxs_2 = idxs + np.sign(dk)
+    idxs_2[idxs_2<0]=0
+    return idxs, idxs_2, dk
+
+def Pk2(sx, sy, alph=None, ps=None, ksampled=None, comoving_dist=None, pixsize=3.39e-5):
+    if alph is not None:
+        return np.sqrt(np.sqrt(sx**2+sy**2)**alph)
+
+    elif ps is not None:
+
+        thetas = np.sqrt(sx**2+sy**2)*pixsize
+        k = ell_to_k(np.pi/thetas, comoving_dist)
+        idx1, idx2, dk = find_nearest_2_idxs(ksampled, k)
+
+        print('thetas (in rads):', thetas)
+        print('ell2k ks:', k)
+        print('idx1:', idx1)
+        # print('idx2:', idx2)
+        # print('dk:', dk)
+
+        k1 = ksampled[idx1]
+        # k2 = ksampled[idx2]
+        ps1 = ps[idx1]
+        ps1[k1==0]=0
+        # ps2 = ps(np.array([k2]))
+        # ps_firstdiff = ps1 + np.abs(dk)*(ps2-ps1)/(k2-k1)
+        # return ps_firstdiff
+        return ps1
+
+    return power_spec(np.array([np.sqrt(sx**2+sy**2)]))
+
+def gaussian_random_field(n_samples, alpha=None, size = 100, ps=None, ksampled=None, comoving_dist=None):
 
     grfs = np.zeros((n_samples, size, size))
-    
     noise = np.fft.fft2(np.random.normal(size = (n_samples, size, size)))
-
     amplitude = np.zeros((size, size))
-    for i, kx in enumerate(fftIndgen(size)):
-        amplitude[i,:] = Pk2(kx, np.array(fftIndgen(size)))
+
+    for i, sx in enumerate(fftIndgen(size)):
+        amplitude[i,:] = Pk2(sx, np.array(fftIndgen(size)), ps=ps, ksampled=ksampled, comoving_dist=comoving_dist)
 
     grfs = np.fft.ifft2(noise * amplitude, axes=(-2,-1))
 
@@ -53,12 +88,27 @@ def counts_from_density(density_field, Ntot = 20000):
     counts_map = np.random.poisson(density_field*N_mean)
     return counts_map
     
-def generate_galaxy_count_map(n_samples, size=1024, Ntot=2000000)
-    realgrf, _ = gaussian_random_field(n_samples, size=size)
+def generate_count_map(n_samples, size=1024, Ntot=2000000, ps=None, ksampled=None, comoving_dist=None):
+
+    realgrf, _ = gaussian_random_field(n_samples, size=size, ps=ps, ksampled=ksampled, comoving_dist=comoving_dist)
     density_fields = np.exp(realgrf) # assuming a log-normal density distribution
     counts = counts_from_density(density_fields, Ntot=Ntot)
-    return counts
 
+    return counts, density_fields
+
+def positions_from_counts(counts_map, cat_len=None):
+    thetax, thetay = [], []
+    for i in np.arange(np.max(counts_map)):
+        pos = np.where(counts_map > i)
+        thetax.extend(pos[0].astype(np.float))
+        thetay.extend(pos[1].astype(np.float))
+
+    if cat_len is not None:
+        idxs = np.random.choice(np.arange(len(thetax)), cat_len)
+        thetax = np.array(thetax)[idxs]
+        thetay = np.array(thetay)[idxs]
+
+    return thetax, thetay
 
 
 ''' 
@@ -80,12 +130,21 @@ class galaxy_catalog():
     lf = Luminosity_Function()
     halomod = halo_model()
 
-    
+    ell_min = 90.
+    ell_max = 1e5
+
+    pars = camb.CAMBparams()
+    pars.set_cosmology(H0=67.5, ombh2=0.022, omch2=0.122)
+    pars.InitPower.set_params(ns=0.965)
+
+        
     def __init__(self, band='J'):
         self.band = band
 
     def pdf_cdf_dndz(self, zmin=0.01, zmax=5, nbins=100, mabs_min=-30., mabs_max=-15., band='J'):
         zs = np.linspace(zmin, zmax, nbins)
+        self.zmin = zmin
+        self.zmax = zmax
         # Mapp = np.linspace(mapp_min, mapp_max, nbins)
         Mabs = np.linspace(mabs_min, mabs_max, nbins)
         dndz = []
@@ -173,10 +232,27 @@ class galaxy_catalog():
         pdfs = self.get_schechter_m_given_zs(zs, mabs)
         zmm = self.draw_mags_given_zs(mabs, gal_zs, ng_perz, pdfs, zs)
 
-        # here is where we want to generate clustered galaxy positions !! uniform for now
-        thetax = np.random.uniform(0, 1024, len(gal_zs))
-        thetay = np.random.uniform(0, 1024, len(gal_zs))
-        
+        # generate clustered galaxy positions
+        zrange_grf = np.linspace(self.zmin, self.zmax, 5)
+        midzs = 0.5*(zrange_grf[:-1]+zrange_grf[1:])
+        # eventually should take this stuff out and make external since it takes a little while
+        # only thing that really needs to be specified is redshifts to evaluate GRF
+        self.pars.set_matter_power(redshifts=midzs, kmax=5.0)
+        self.pars.NonLinear = model.NonLinear_both
+        results = camb.get_results(self.pars)
+        kh_nonlin, z_nonlin, pk_nonlin = results.get_matter_power_spectrum(minkh=3e-3, maxkh=10, npoints=200)
+        comoving_dists = results.comoving_radial_distance(midzs)/(0.01*self.pars.H0)
+
+        for i, z in enumerate(midzs):
+            counts, grfs = generate_count_map(1, ps=pk_nonlin[i,:], ksampled=kh_nonlin, comoving_dist=comoving_dists[i])
+            thetax, thetay = positions_from_counts(counts[0], cat_len=len(gal_zs))
+
+        counts, grfs = generate_count_map(1, ps=pk_nonlin, ksampled=kh_nonlin, comoving_dist=comoving_dists[i])
+        thetax, thetay = positions_from_counts(counts[0], cat_len=len(gal_zs))
+
+        # for uniform galaxy positions:
+        # thetax = np.random.uniform(0, 1024, len(gal_zs))
+        # thetay = np.random.uniform(0, 1024, len(gal_zs))
 
 
         halo_masses, virial_radii = self.abundance_match_ms_given_mags(gal_zs)        

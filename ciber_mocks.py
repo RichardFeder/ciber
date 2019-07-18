@@ -4,6 +4,7 @@ import astropy.units as u
 from astropy import constants as const
 import time
 import scipy.signal
+from mock_galaxy_catalogs import *
 from helgason import *
 
 ''' Downsample map, taking average of downsampled pixels '''
@@ -184,11 +185,19 @@ class ciber_mock():
             return full_map, srcmap, noise, cat
 
 
-def make_galaxy_binary_map(cat, refmap, m_min=14, m_max=30, magidx=2, zmin=-10, zmax=100, zidx=2):
-    cat = np.array([src for src in cat if src[0]<refmap.shape[0] and src[1]<refmap.shape[1]\
-     and src[magidx]>m_min and src[magidx]<m_max and src[zidx]>zmin and src[zidx]<zmax])
+'''
+-magidx=2 for HSC, 5 for mock data
+'''
+def make_galaxy_binary_map(cat, refmap, m_min=14, m_max=30, magidx=2, zmin=-10, zmax=100, zidx=None):
+
+    if zidx is not None:
+        cat = np.array([src for src in cat if src[0]<refmap.shape[0] and src[1]<refmap.shape[1]\
+         and src[magidx]>m_min and src[magidx]<m_max and src[zidx]>zmin and src[zidx]<zmax])
+    else:
+        cat = np.array([src for src in cat if src[0]<refmap.shape[0] and src[1]<refmap.shape[1]\
+         and src[magidx]>m_min and src[magidx]<m_max])
+        
     gal_map = np.zeros_like(refmap)
     for src in cat:
         gal_map[int(src[0]),int(src[1])] +=1.
     return gal_map
-
