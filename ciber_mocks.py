@@ -167,7 +167,7 @@ class ciber_mock():
                 y_arr = cat[:,1]
                 m_arr = cat[:,3] # apparent magnitude
                 I_arr = self.mag_2_nu_Inu(m_arr, band)
-                cat_arr = np.array([x_arr, y_arr, I_arr, cat[:,2], cat[:,6], m_arr]).transpose()
+                cat_arr = np.array([x_arr, y_arr, I_arr, cat[:,2], cat[:,6], m_arr]).transpose() # cat[:,2]=redshift, cat[:,6]=virial radii
         
         cat = self.catalog_mag_cut(cat_arr, m_arr, m_min, m_max)
 
@@ -201,3 +201,21 @@ def make_galaxy_binary_map(cat, refmap, m_min=14, m_max=30, magidx=2, zmin=-10, 
     for src in cat:
         gal_map[int(src[0]),int(src[1])] +=1.
     return gal_map
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

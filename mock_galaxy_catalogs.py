@@ -12,6 +12,11 @@ import camb
 from camb import model, initialpower
 
 
+def ell_to_k(ell, comoving_dist):
+    theta = np.pi/ell
+    k = 1./(comoving_dist*theta)
+    return k
+
 def fftIndgen(n):
     a = range(0, n/2+1)
     b = range(1, n/2)
@@ -19,27 +24,46 @@ def fftIndgen(n):
     b = [-i for i in b]
     return a + b
 
-def power_spec(k):
-    ps = matterps.normalizedmp(k)
-    ps[k==0] = 0.
-    return ps
-
-def ell_to_k(ell, comoving_dist):
-    theta = np.pi/ell
-    k = 1./(comoving_dist*theta)
-    return k
-
-def k_to_ell(k, comoving_dist):
-    theta = 1./(comoving_dist*k)
-    ell = np.pi/theta
-    return ell
-
 def find_nearest_2_idxs(array, vals):
     idxs = np.array([np.abs(array-val).argmin() for val in vals])
     dk = vals - array[idxs]
     idxs_2 = idxs + np.sign(dk)
     idxs_2[idxs_2<0]=0
     return idxs, idxs_2, dk
+
+def k_to_ell(k, comoving_dist):
+    theta = 1./(comoving_dist*k)
+    ell = np.pi/theta
+    return ell
+
+def counts_from_density(density_field, Ntot = 200000):
+    counts_map = np.zeros_like(density_field)
+    N_mean = Ntot / (counts_map.shape[-2]*counts_map.shape[-1])
+    counts_map = np.random.poisson(density_field*N_mean)
+    print(counts_map)
+    return counts_map
+
+def gaussian_random_field(n_samples, alpha=None, size = 100, ps=None, ksampled=None, comoving_dist=None):
+
+    grfs = np.zeros((n_samples, size, size))
+    noise = np.fft.fft2(np.random.normal(size = (n_samples, size, size)))
+    amplitude = np.zeros((size, size))
+    for i, sx in enumerate(fftIndgen(size)):
+        amplitude[i,:] = Pk2(sx, np.array(fftIndgen(size)), ps=ps, ksampled=ksampled, comoving_dist=comoving_dist)
+    grfs = np.fft.ifft2(noise * amplitude, axes=(-2,-1))
+
+    return grfs.real, np.array(noise*amplitude)
+    
+def generate_count_map(n_samples, size=1024, Ntot=2000000, ps=None, ksampled=None, comoving_dist=None):
+
+    realgrf, _ = gaussian_random_field(n_samples, size=size, ps=ps, ksampled=ksampled, comoving_dist=comoving_dist)
+    realgrf /= np.max(np.abs(realgrf))
+    density_fields = np.exp(realgrf-np.std(realgrf)**2) # assuming a log-normal density distribution
+    counts = counts_from_density(density_fields, Ntot=Ntot)
+
+    return counts, density_fields
+
+
 
 def Pk2(sx, sy, alph=None, ps=None, ksampled=None, comoving_dist=None, pixsize=3.39e-5):
     if alph is not None:
@@ -50,13 +74,6 @@ def Pk2(sx, sy, alph=None, ps=None, ksampled=None, comoving_dist=None, pixsize=3
         thetas = np.sqrt(sx**2+sy**2)*pixsize
         k = ell_to_k(np.pi/thetas, comoving_dist)
         idx1, idx2, dk = find_nearest_2_idxs(ksampled, k)
-
-        print('thetas (in rads):', thetas)
-        print('ell2k ks:', k)
-        print('idx1:', idx1)
-        # print('idx2:', idx2)
-        # print('dk:', dk)
-
         k1 = ksampled[idx1]
         # k2 = ksampled[idx2]
         ps1 = ps[idx1]
@@ -68,33 +85,10 @@ def Pk2(sx, sy, alph=None, ps=None, ksampled=None, comoving_dist=None, pixsize=3
 
     return power_spec(np.array([np.sqrt(sx**2+sy**2)]))
 
-def gaussian_random_field(n_samples, alpha=None, size = 100, ps=None, ksampled=None, comoving_dist=None):
-
-    grfs = np.zeros((n_samples, size, size))
-    noise = np.fft.fft2(np.random.normal(size = (n_samples, size, size)))
-    amplitude = np.zeros((size, size))
-
-    for i, sx in enumerate(fftIndgen(size)):
-        amplitude[i,:] = Pk2(sx, np.array(fftIndgen(size)), ps=ps, ksampled=ksampled, comoving_dist=comoving_dist)
-
-    grfs = np.fft.ifft2(noise * amplitude, axes=(-2,-1))
-
-    return grfs.real, np.array(noise*amplitude)
-
-
-def counts_from_density(density_field, Ntot = 20000):
-    counts_map = np.zeros_like(density_field)
-    N_mean = Ntot / (counts_map.shape[-2]*counts_map.shape[-1])
-    counts_map = np.random.poisson(density_field*N_mean)
-    return counts_map
-    
-def generate_count_map(n_samples, size=1024, Ntot=2000000, ps=None, ksampled=None, comoving_dist=None):
-
-    realgrf, _ = gaussian_random_field(n_samples, size=size, ps=ps, ksampled=ksampled, comoving_dist=comoving_dist)
-    density_fields = np.exp(realgrf) # assuming a log-normal density distribution
-    counts = counts_from_density(density_fields, Ntot=Ntot)
-
-    return counts, density_fields
+def power_spec(k):
+    ps = matterps.normalizedmp(k)
+    ps[k==0] = 0.
+    return ps
 
 def positions_from_counts(counts_map, cat_len=None):
     thetax, thetay = [], []
@@ -141,21 +135,29 @@ class galaxy_catalog():
     def __init__(self, band='J'):
         self.band = band
 
-    def pdf_cdf_dndz(self, zmin=0.01, zmax=5, nbins=100, mabs_min=-30., mabs_max=-15., band='J'):
-        zs = np.linspace(zmin, zmax, nbins)
-        self.zmin = zmin
-        self.zmax = zmax
-        # Mapp = np.linspace(mapp_min, mapp_max, nbins)
-        Mabs = np.linspace(mabs_min, mabs_max, nbins)
-        dndz = []
-        for zed in zs:
-            val = np.sum(self.lf.schechter_lf_dm(Mabs, zed, band)*(10**(-3) * self.lf.schechter_units)*(np.max(Mabs)-np.min(Mabs))/len(Mabs))
-            dndz.append(val.value)
-        dndz = np.array(dndz)/np.sum(dndz)
-        cdf_dndz = np.cumsum(dndz)
+    def ab_match_percentiles(self, mabs, mabs_largesamp):
+        mass_range, dndm = self.load_halo_mass_function('../data/halo_mass_function_hmfcalc.txt')
+        many_halo_masses = np.random.choice(mass_range, len(mabs_largesamp), p=dndm)
+        halo_masses = []
+        # compute percentile of absolute mag relative to large sample, then use that to compute halo mass given percentile        
+        for m in mabs:
+            halo_masses.append(np.percentile(many_halo_masses, stats.percentileofscore(mabs_largesamp, m)))
 
-        return dndz, cdf_dndz, Mabs, zs
+        halo_masses = np.sort(halo_masses)[::-1] # maybe not?
 
+        virial_radii = self.halomod.mass_2_virial_radius(halo_masses) # in Mpc
+
+        return halo_masses, virial_radii  
+
+    def abundance_match_ms_given_mags(self, zs):
+        ''' here we want to sort these in descending order, since abs mags are ordered and most neg absolute
+        magnitude corresponds to most massive halo'''
+        ngal = len(zs)
+        mass_range, dndm = self.load_halo_mass_function('../data/halo_mass_function_hmfcalc.txt')
+        halo_masses = np.sort(np.random.choice(mass_range, ngal,p=dndm))[::-1]
+        virial_radii = self.halomod.mass_2_virial_radius(halo_masses, zs).to(u.Mpc) # in Mpc
+        
+        return halo_masses, virial_radii.value
 
     def draw_gal_redshifts(self, ngal, limiting_mag=20):
         ''' returns redshifts sorted '''
@@ -166,13 +168,6 @@ class galaxy_catalog():
         ngal_per_z = np.array([len([zg for zg in gal_zs if zg==z]) for z in zs])
         return np.sort(gal_zs), ngal_per_z
 
-    def get_schechter_m_given_zs(self, zs, Mabs):
-        pdfs = []
-        for z in zs:
-            pdf = self.lf.schechter_lf_dm(Mabs, z, self.band)
-            pdf /= np.sum(pdf)
-            pdfs.append(pdf)
-        return pdfs
 
     def draw_mags_given_zs(self, Mabs, gal_zs, ngal_per_z, pdfs, zs):
         '''we are going to order these by absolute magnitude, which makes things easier when abundance matching to 
@@ -193,37 +188,15 @@ class galaxy_catalog():
 
         return cat
 
-    def abundance_match_ms_given_mags(self, zs):
-        ''' here we want to sort these in descending order, since abs mags are ordered and most neg absolute
-        magnitude corresponds to most massive halo'''
-        ngal = len(zs)
-        mass_range, dndm = self.load_halo_mass_function('../data/halo_mass_function_hmfcalc.txt')
-        halo_masses = np.sort(np.random.choice(mass_range, ngal,p=dndm))[::-1]
-        virial_radii = self.halomod.mass_2_virial_radius(halo_masses, zs).to(u.Mpc) # in Mpc
-        
-        return halo_masses, virial_radii.value
-        
-    def load_halo_mass_function(self, filename):
-        hmf = np.loadtxt(filename, skiprows=12)
-        ms = hmf[:,0] # [M_sun/h]
-        dndm = hmf[:,5]/np.sum(hmf[:,5]) # [h^4/(Mpc^3*M_sun)]
-        return ms, dndm
+    def get_schechter_m_given_zs(self, zs, Mabs):
+        pdfs = []
+        for z in zs:
+            pdf = self.lf.schechter_lf_dm(Mabs, z, self.band)
+            pdf /= np.sum(pdf)
+            pdfs.append(pdf)
+        return pdfs
 
-    def ab_match_percentiles(self, mabs, mabs_largesamp):
-        mass_range, dndm = self.load_halo_mass_function('../data/halo_mass_function_hmfcalc.txt')
-        many_halo_masses = np.random.choice(mass_range, len(mabs_largesamp), p=dndm)
-        halo_masses = []
-        # compute percentile of absolute mag relative to large sample, then use that to compute halo mass given percentile        
-        for m in mabs:
-            halo_masses.append(np.percentile(many_halo_masses, stats.percentileofscore(mabs_largesamp, m)))
-
-        halo_masses = np.sort(halo_masses)[::-1] # maybe not?
-
-        virial_radii = self.halomod.mass_2_virial_radius(halo_masses) # in Mpc
-
-        return halo_masses, virial_radii    
-
-    def generate_galaxy_catalog(self, ngal, limiting_mag=22):
+    def generate_galaxy_catalog(self, ngal, limiting_mag=22, ng_bins=5):
         self.catalog = []
 
 
@@ -233,7 +206,7 @@ class galaxy_catalog():
         zmm = self.draw_mags_given_zs(mabs, gal_zs, ng_perz, pdfs, zs)
 
         # generate clustered galaxy positions
-        zrange_grf = np.linspace(self.zmin, self.zmax, 5)
+        zrange_grf = np.linspace(self.zmin, self.zmax, ng_bins)
         midzs = 0.5*(zrange_grf[:-1]+zrange_grf[1:])
         # eventually should take this stuff out and make external since it takes a little while
         # only thing that really needs to be specified is redshifts to evaluate GRF
@@ -243,16 +216,16 @@ class galaxy_catalog():
         kh_nonlin, z_nonlin, pk_nonlin = results.get_matter_power_spectrum(minkh=3e-3, maxkh=10, npoints=200)
         comoving_dists = results.comoving_radial_distance(midzs)/(0.01*self.pars.H0)
 
+        thetax = np.zeros_like(gal_zs)
+        thetay = np.zeros_like(gal_zs)
         for i, z in enumerate(midzs):
             counts, grfs = generate_count_map(1, ps=pk_nonlin[i,:], ksampled=kh_nonlin, comoving_dist=comoving_dists[i])
-            thetax, thetay = positions_from_counts(counts[0], cat_len=len(gal_zs))
-
-        counts, grfs = generate_count_map(1, ps=pk_nonlin, ksampled=kh_nonlin, comoving_dist=comoving_dists[i])
-        thetax, thetay = positions_from_counts(counts[0], cat_len=len(gal_zs))
-
-        # for uniform galaxy positions:
-        # thetax = np.random.uniform(0, 1024, len(gal_zs))
-        # thetay = np.random.uniform(0, 1024, len(gal_zs))
+            tx, ty = positions_from_counts(counts[0], cat_len=len(gal_zs))
+            thetax[gal_zs < zrange_grf[1+i]] = tx
+            thetay[gal_zs < zrange_grf[1+i]] = ty
+        
+        # counts, grfs = generate_count_map(1, ps=pk_nonlin, ksampled=kh_nonlin, comoving_dist=comoving_dists[i])
+        # thetax, thetay = positions_from_counts(counts[0], cat_len=len(gal_zs))
 
 
         halo_masses, virial_radii = self.abundance_match_ms_given_mags(gal_zs)        
@@ -260,6 +233,27 @@ class galaxy_catalog():
         self.catalog = np.array([thetax, thetay, zmm[:,0], zmm[:,1],zmm[:,2],halo_masses,virial_radii]).transpose()
         
         return self.catalog
+
+    def load_halo_mass_function(self, filename):
+        hmf = np.loadtxt(filename, skiprows=12)
+        ms = hmf[:,0] # [M_sun/h]
+        dndm = hmf[:,5]/np.sum(hmf[:,5]) # [h^4/(Mpc^3*M_sun)]
+        return ms, dndm
+
+    def pdf_cdf_dndz(self, zmin=0.01, zmax=5, nbins=100, mabs_min=-30., mabs_max=-15., band='J'):
+        zs = np.linspace(zmin, zmax, nbins)
+        self.zmin = zmin
+        self.zmax = zmax
+        # Mapp = np.linspace(mapp_min, mapp_max, nbins)
+        Mabs = np.linspace(mabs_min, mabs_max, nbins)
+        dndz = []
+        for zed in zs:
+            val = np.sum(self.lf.schechter_lf_dm(Mabs, zed, band)*(10**(-3) * self.lf.schechter_units)*(np.max(Mabs)-np.min(Mabs))/len(Mabs))
+            dndz.append(val.value)
+        dndz = np.array(dndz)/np.sum(dndz)
+        cdf_dndz = np.cumsum(dndz)
+
+        return dndz, cdf_dndz, Mabs, zs
 
 
             
