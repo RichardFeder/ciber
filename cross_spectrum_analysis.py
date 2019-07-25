@@ -1,4 +1,6 @@
 import numpy as np
+import matplotlib
+import matplotlib.pyplot as plt
 from ciber_mocks import *
 
 
@@ -68,7 +70,7 @@ def compute_cross_spectrum(map_a, map_b, dim=2.0, map_a_binary=False, map_b_bina
     return np.fft.fftshift(xspectrum)
 
 
-def compute_mode_coupling(mask, ell_min=90., nphases=50, logbins=True, nbins=60):
+def compute_mode_coupling(mask, ell_min=90., nphases=50, logbins=True, nbins=60, ps_amplitude=100.0):
     ell_max = ell_min*np.sqrt(2*(mask.shape[0]/2)**2)
     
     if logbins:
@@ -81,7 +83,6 @@ def compute_mode_coupling(mask, ell_min=90., nphases=50, logbins=True, nbins=60)
     
     Mkk = np.zeros((radbins.shape[0], radbins.shape[0]))
     sigma_Mkk = np.zeros((radbins.shape[0], radbins.shape[0]))
-    ps_amplitude = 100.0
         
     for i, radbin in enumerate(radbins):
         ps = np.zeros_like(radbins)
@@ -94,47 +95,20 @@ def compute_mode_coupling(mask, ell_min=90., nphases=50, logbins=True, nbins=60)
         norm_radavs = []
         for j, spec in enumerate(masked_ps):
             _, norm_radav, _ = azimuthalAverage(spec, nbins=nbins)
-            norm_radavs.append(norm_radav/ps_amplitude)
+            norm_radavs.append(norm_radav)
         norm_radavs = np.array(norm_radavs)   
                 
         Mkk[i,:] = np.mean(norm_radavs, axis=0)
         sigma_Mkk[i,:] = np.std(norm_radavs, axis=0)
         
         plt.figure()
-        plt.title('$\\ell=$'+str(radbin))
+        plt.title('$\\ell=$'+str(np.round(radbin, 2)))
         plt.imshow(grfs[0]*mask)
         plt.colorbar()
         plt.show()
         
     return Mkk, sigma_Mkk
 
-
-def compute_mode_coupling(mask, ell_min=90., nphases=50, logbins=True, nbins=60):
-    ell_max = ell_min*np.sqrt(2*(mask.shape[0]/2)**2)
-    
-    if logbins:
-        radbins = 10**(np.linspace(np.log10(ell_min), np.log10(ell_max), nbins+1))
-    else:
-        radbins = np.linspace(lmin, lmax, nbins+1)
-        
-    print(radbins)
-        
-    for i, radbin in enumerate(radbins):
-        ps = np.zeros_like(radbins)
-        ps[i] = 100.0
-        
-        grfs, _ = gaussian_random_fieldb(nphases, size=mask.shape[0], ps=ps, ksampled=radbins)
-
-        masked_grfs = grfs*mask
-        power_spec = compute_cross_spectrum(masked_grfs, masked_grfs)
-        print(power_spec.shape)
-        norm_radavs = []
-        for spec in power_spec:
-            _, norm_radav, _ = azimuthalAverage(spec)
-            norm_radavs.append(norm_radav)
-        norm_radavs = np.array(norm_radavs)    
-        mean_radavs = np.mean(norm_radavs, axis=0)
-        
 
 
 def cross_correlate_galcat_ciber(cibermap, galaxy_catalog, m_min=14, m_max=30, band='J', \
@@ -225,6 +199,31 @@ def integrate_C_l(ls, C, weights=None):
     C_integrand *= weights
     C_integrand *= dls
     return np.sum(C_integrand)
+
+
+def make_galaxy_binary_map(cat, refmap, inst, m_min=14, m_max=30, magidx=2, zmin=0, zmax=100, zidx=None):
+    gal_map = np.zeros_like(refmap)
+
+    if isinstance(cat, pd.DataFrame): # real catalogs read in as pandas dataframes
+    
+        catalog = cat.loc[(cat['x'+str(inst)]>0)&(cat['x'+str(inst)]<refmap.shape[0])&(cat['y'+str(inst)]>0)&(cat['y'+str(inst)]<refmap.shape[0]) &\
+                         (cat['r']<m_max)&(cat['r']>m_min)&(cat['z']>zmin)&(cat['z']<zmax)]
+
+        for index, src in catalog.iterrows():
+            gal_map[int(src['x'+str(inst)]), int(src['y'+str(inst)])] += 1
+   
+        return gal_map
+    else:
+        if zidx is not None:
+            cat = np.array([src for src in cat if src[0]<refmap.shape[0] and src[1]<refmap.shape[1]\
+             and src[magidx]>m_min and src[magidx]<m_max and src[zidx]>zmin and src[zidx]<zmax])
+        else:
+            cat = np.array([src for src in cat if src[0]<refmap.shape[0] and src[1]<refmap.shape[1]\
+             and src[magidx]>m_min and src[magidx]<m_max])
+
+        for src in cat:
+            gal_map[int(src[0]),int(src[1])] +=1.
+        return gal_map
 
 def Pk2_mkk(sx, sy, ps, ell_sampled=None, pixsize=3.39e-5, size=512.0):
     ells = np.sqrt((sx**2+sy**2))*90.

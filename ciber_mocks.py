@@ -7,12 +7,6 @@ import scipy.signal
 from mock_galaxy_catalogs import *
 from helgason import *
 
-''' Downsample map, taking average of downsampled pixels '''
-def rebin_map_coarse(original_map, Nsub):
-    m, n = np.array(original_map.shape)//(Nsub, Nsub)
-    return original_map.reshape(m, Nsub, n, Nsub).mean((1,3))
-
-
 ''' Given an input map and a specified center, this will
 % create a map with each pixels value its distance from
 % the specified pixel. '''
@@ -33,9 +27,10 @@ def normalized_ihl_template(dimx=50, dimy=50, R_vir=None):
     ihl_map /= np.sum(ihl_map)
     return ihl_map
 
-def virial_radius_2_reff(r_vir, zs, theta_fov_deg=2.0, npix_sidelength=1024.):
-    d = cosmo.angular_diameter_distance(zs)*theta_fov_deg*np.pi/180.
-    return (r_vir*u.Mpc/d)*npix_sidelength
+''' Downsample map, taking average of downsampled pixels '''
+def rebin_map_coarse(original_map, Nsub):
+    m, n = np.array(original_map.shape)//(Nsub, Nsub)
+    return original_map.reshape(m, Nsub, n, Nsub).mean((1,3))
 
 def save_ihl_conv_templates(psf, rvir_min=1, rvir_max=50, dimx=150, dimy=150):
     ihl_conv_temps = []
@@ -45,6 +40,10 @@ def save_ihl_conv_templates(psf, rvir_min=1, rvir_max=50, dimx=150, dimy=150):
         conv = scipy.signal.convolve2d(ihl, psf, 'same')
         ihl_conv_temps.append(conv)
     return ihl_conv_temps
+
+def virial_radius_2_reff(r_vir, zs, theta_fov_deg=2.0, npix_sidelength=1024.):
+    d = cosmo.angular_diameter_distance(zs)*theta_fov_deg*np.pi/180.
+    return (r_vir*u.Mpc/d)*npix_sidelength
 
 
 class ciber_mock():
@@ -64,8 +63,13 @@ class ciber_mock():
     def __init__(self):
         pass
 
-    def get_darktime_name(self, flight, field):
-        return self.darktime_name_dict[flight][field-1]
+    def catalog_mag_cut(self, cat, m_arr, m_min, m_max):
+        magnitude_mask_idxs = np.array([i for i in xrange(len(m_arr)) if m_arr[i]>=m_min and m_arr[i] <= m_max])
+        if len(magnitude_mask_idxs) > 0:
+            catalog = cat[magnitude_mask_idxs,:]
+        else:
+            catalog = cat
+        return catalog   
 
     def find_psf_params(self, path, tm=1, field='elat10'):
         arr = np.genfromtxt(path, dtype='str')
@@ -75,13 +79,6 @@ class ciber_mock():
                 return beta, rc, norm
         return False
 
-    def mag_2_jansky(self, mags):
-        return 3631*u.Jansky*10**(-0.4*mags)
-
-    def mag_2_nu_Inu(self, mags, band):
-        jansky_arr = self.mag_2_jansky(mags)
-        return jansky_arr.to(u.nW*u.s/u.m**2)*const.c/(self.pix_sr*self.lam_effs[band])
-
     def get_catalog(self, catname):
         cat = np.loadtxt(self.ciberdir+'/data/'+catname)
         x_arr = cat[0,:] # + 0.5 (matlab)
@@ -89,6 +86,16 @@ class ciber_mock():
         m_arr = cat[2,:]
         return x_arr, y_arr, m_arr
 
+    def get_darktime_name(self, flight, field):
+        return self.darktime_name_dict[flight][field-1]
+
+
+    def mag_2_jansky(self, mags):
+        return 3631*u.Jansky*10**(-0.4*mags)
+
+    def mag_2_nu_Inu(self, mags, band):
+        jansky_arr = self.mag_2_jansky(mags)
+        return jansky_arr.to(u.nW*u.s/u.m**2)*const.c/(self.pix_sr*self.lam_effs[band])
 
     def make_srcmap(self, ifield, cat, band=0, nbin=0., nx=1024, ny=1024, nwide=20):
         loaddir = self.ciberdir + '/psf_analytic/TM'+str(band+1)+'/'
@@ -141,14 +148,7 @@ class ciber_mock():
 
         return ihl_map[(ihl_temps[0].shape[0] + extra_trim)/2:-(ihl_temps[0].shape[0] + extra_trim)/2, (ihl_temps[0].shape[0] + extra_trim)/2:-(ihl_temps[0].shape[0] + extra_trim)/2]
         # return ihl_map[(norm_ihl.shape[0] + extra_trim)/2:-(norm_ihl.shape[0] + extra_trim)/2, (norm_ihl.shape[0] + extra_trim)/2:-(norm_ihl.shape[0] + extra_trim)/2]
-
-    def catalog_mag_cut(self, cat, m_arr, m_min, m_max):
-        magnitude_mask_idxs = np.array([i for i in xrange(len(m_arr)) if m_arr[i]>=m_min and m_arr[i] <= m_max])
-        if len(magnitude_mask_idxs) > 0:
-            catalog = cat[magnitude_mask_idxs,:]
-        else:
-            catalog = cat
-        return catalog        
+     
 
     def make_ciber_map(self, ifield, m_min, m_max, mock_cat=None, band=0, catname=None, nsrc=0, ihl_frac=0.):
         if catname is not None:
@@ -183,39 +183,6 @@ class ciber_mock():
             return full_map, srcmap, noise, ihl_map, cat
         else:
             return full_map, srcmap, noise, cat
-
-
-'''
--magidx=2 for HSC, 5 for mock data
-'''
-def make_galaxy_binary_map(cat, refmap, m_min=14, m_max=30, magidx=2, zmin=-10, zmax=100, zidx=None):
-
-    if zidx is not None:
-        cat = np.array([src for src in cat if src[0]<refmap.shape[0] and src[1]<refmap.shape[1]\
-         and src[magidx]>m_min and src[magidx]<m_max and src[zidx]>zmin and src[zidx]<zmax])
-    else:
-        cat = np.array([src for src in cat if src[0]<refmap.shape[0] and src[1]<refmap.shape[1]\
-         and src[magidx]>m_min and src[magidx]<m_max])
-        
-    gal_map = np.zeros_like(refmap)
-    for src in cat:
-        gal_map[int(src[0]),int(src[1])] +=1.
-    return gal_map
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 
