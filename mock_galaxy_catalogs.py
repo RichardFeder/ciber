@@ -40,7 +40,6 @@ def counts_from_density(density_field, Ntot = 200000):
     counts_map = np.zeros_like(density_field)
     N_mean = Ntot / (counts_map.shape[-2]*counts_map.shape[-1])
     counts_map = np.random.poisson(density_field*N_mean)
-    print(counts_map)
     return counts_map
 
 def gaussian_random_field(n_samples, alpha=None, size = 100, ps=None, ksampled=None, comoving_dist=None):
@@ -69,21 +68,31 @@ def Pk2(sx, sy, alph=None, ps=None, ksampled=None, comoving_dist=None, pixsize=3
     if alph is not None:
         return np.sqrt(np.sqrt(sx**2+sy**2)**alph)
 
-    elif ps is not None:
-
-        thetas = np.sqrt(sx**2+sy**2)*pixsize
-        k = ell_to_k(np.pi/thetas, comoving_dist)
-        idx1, idx2, dk = find_nearest_2_idxs(ksampled, k)
-        k1 = ksampled[idx1]
-        # k2 = ksampled[idx2]
+    if ps is not None:
+        ell_sampled = k_to_ell(ksampled, comoving_dist)
+        ells = np.pi/(np.sqrt(sx**2+sy**2)*pixsize)
+        idx1 = np.array([np.abs(ell_sampled-ell).argmin() for ell in ells])
+        # print(idx1)
+#         idx1, idx2, dl = find_nearest_2_idxs(ksampled, ells)
         ps1 = ps[idx1]
-        ps1[k1==0]=0
-        # ps2 = ps(np.array([k2]))
-        # ps_firstdiff = ps1 + np.abs(dk)*(ps2-ps1)/(k2-k1)
-        # return ps_firstdiff
         return ps1
+    return True
 
-    return power_spec(np.array([np.sqrt(sx**2+sy**2)]))
+#     # elif ps is not None:
+
+#     #     thetas = np.sqrt(sx**2+sy**2)*pixsize
+#     #     k = ell_to_k(np.pi/thetas, comoving_dist)
+#     #     idx1, idx2, dk = find_nearest_2_idxs(ksampled, k)
+#     #     k1 = ksampled[idx1]
+#     #     # k2 = ksampled[idx2]
+#     #     ps1 = ps[idx1]
+#     #     ps1[k1==0]=0
+#     #     # ps2 = ps(np.array([k2]))
+#     #     # ps_firstdiff = ps1 + np.abs(dk)*(ps2-ps1)/(k2-k1)
+#     #     # return ps_firstdiff
+#     #     return ps1
+
+#     return power_spec(np.array([np.sqrt(sx**2+sy**2)]))
 
 def power_spec(k):
     ps = matterps.normalizedmp(k)
@@ -159,9 +168,9 @@ class galaxy_catalog():
         
         return halo_masses, virial_radii.value
 
-    def draw_gal_redshifts(self, ngal, limiting_mag=20):
+    def draw_gal_redshifts(self, ngal, zmin=0.01, zmax=5.0):
         ''' returns redshifts sorted '''
-        dndz, cdf_dndz, Mabs, zs = self.pdf_cdf_dndz()
+        dndz, cdf_dndz, Mabs, zs = self.pdf_cdf_dndz(zmin=zmin, zmax=zmax)
         ndraw_total = int(ngal)
         
         gal_zs = np.random.choice(zs, ndraw_total, p=dndz)
@@ -182,6 +191,8 @@ class galaxy_catalog():
 
         print(len([m for m in gal_app_mags if m < 20]), 'under 20')
         print(len([m for m in gal_app_mags if m < 22]), 'under 22')
+        print(len([m for m in gal_app_mags if m < 24]), 'under 24')
+
                         
         arr = np.array([gal_zs, gal_app_mags, gal_abs_mags]).transpose()
         cat = arr[np.argsort(arr[:,2])] # sort apparent and absolute mags by absolute mags
@@ -196,17 +207,17 @@ class galaxy_catalog():
             pdfs.append(pdf)
         return pdfs
 
-    def generate_galaxy_catalog(self, ngal, limiting_mag=22, ng_bins=5):
+    def generate_galaxy_catalog(self, ngal, ng_bins=5, zmin=0.01, zmax=5.0):
         self.catalog = []
 
 
-        gal_zs, ng_perz = self.draw_gal_redshifts(ngal, limiting_mag=limiting_mag)
-        dndz, cdf_dndz, mabs, zs = self.pdf_cdf_dndz()
+        gal_zs, ng_perz = self.draw_gal_redshifts(ngal, zmin=zmin, zmax=zmax)
+        dndz, cdf_dndz, mabs, zs = self.pdf_cdf_dndz(zmin=zmin, zmax=zmax)
         pdfs = self.get_schechter_m_given_zs(zs, mabs)
         zmm = self.draw_mags_given_zs(mabs, gal_zs, ng_perz, pdfs, zs)
 
         # generate clustered galaxy positions
-        zrange_grf = np.linspace(self.zmin, self.zmax, ng_bins)
+        zrange_grf = np.linspace(self.zmin, self.zmax, ng_bins+1) # ng_bins+1 since we take midpoints
         midzs = 0.5*(zrange_grf[:-1]+zrange_grf[1:])
         # eventually should take this stuff out and make external since it takes a little while
         # only thing that really needs to be specified is redshifts to evaluate GRF
@@ -215,12 +226,13 @@ class galaxy_catalog():
         results = camb.get_results(self.pars)
         kh_nonlin, z_nonlin, pk_nonlin = results.get_matter_power_spectrum(minkh=3e-3, maxkh=10, npoints=200)
         comoving_dists = results.comoving_radial_distance(midzs)/(0.01*self.pars.H0)
+        print('comoving distance for '+str(midzs)+' is '+str(comoving_dists))
 
         thetax = np.zeros_like(gal_zs)
         thetay = np.zeros_like(gal_zs)
         for i, z in enumerate(midzs):
             counts, grfs = generate_count_map(1, ps=pk_nonlin[i,:], ksampled=kh_nonlin, comoving_dist=comoving_dists[i])
-            tx, ty = positions_from_counts(counts[0], cat_len=len(gal_zs))
+            tx, ty = positions_from_counts(counts[0], cat_len=len(gal_zs[gal_zs < zrange_grf[1+i]]))
             thetax[gal_zs < zrange_grf[1+i]] = tx
             thetay[gal_zs < zrange_grf[1+i]] = ty
         
@@ -240,7 +252,7 @@ class galaxy_catalog():
         dndm = hmf[:,5]/np.sum(hmf[:,5]) # [h^4/(Mpc^3*M_sun)]
         return ms, dndm
 
-    def pdf_cdf_dndz(self, zmin=0.01, zmax=5, nbins=100, mabs_min=-30., mabs_max=-15., band='J'):
+    def pdf_cdf_dndz(self, zmin=0.01, zmax=5.0, nbins=100, mabs_min=-30., mabs_max=-15., band='J'):
         zs = np.linspace(zmin, zmax, nbins)
         self.zmin = zmin
         self.zmax = zmax

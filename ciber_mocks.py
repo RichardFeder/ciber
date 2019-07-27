@@ -122,7 +122,7 @@ class ciber_mock():
         for i in xrange(Nsrc):
             # srcmap[Nlarge/2+2+xs[i]-nwide:Nlarge/2+2+xs[i]+nwide, Nlarge/2-1+ys[i]-nwide:Nlarge/2-1+ys[i]+nwide]+= Imap_center*cat[i,2]
             srcmap[Nlarge/2+2+xs[i]-nwide:Nlarge/2+2+xs[i]+nwide+1, Nlarge/2-1+ys[i]-nwide:Nlarge/2-1+ys[i]+nwide+1] += Imap_center*cat[i,2]
-        return srcmap[nx/2+30:3*nx/2+30, ny/2+30:3*ny/2+30], Imap_center
+        return srcmap[nx/2+30:3*nx/2+30, ny/2+30:3*ny/2+30], Imap_center, Imap_large
 
    
     def make_ihl_map(self, map_shape, cat, ihl_frac, dimx=150, dimy=150, psf=None):
@@ -150,7 +150,7 @@ class ciber_mock():
         # return ihl_map[(norm_ihl.shape[0] + extra_trim)/2:-(norm_ihl.shape[0] + extra_trim)/2, (norm_ihl.shape[0] + extra_trim)/2:-(norm_ihl.shape[0] + extra_trim)/2]
      
 
-    def make_ciber_map(self, ifield, m_min, m_max, mock_cat=None, band=0, catname=None, nsrc=0, ihl_frac=0.):
+    def make_ciber_map(self, ifield, m_min, m_max, mock_cat=None, band=0, catname=None, nsrc=0, ihl_frac=0., ng_bins=5, zmin=0.01, zmax=5.0):
         if catname is not None:
             x_arr, y_arr, m_arr = self.get_catalog(catname)
             I_arr = self.mag_2_nu_Inu(m_arr, band)
@@ -162,7 +162,7 @@ class ciber_mock():
                 cat_arr = mock_cat
             else:
                 mock_galaxy = galaxy_catalog()
-                cat = mock_galaxy.generate_galaxy_catalog(nsrc)
+                cat = mock_galaxy.generate_galaxy_catalog(nsrc, ng_bins=ng_bins, zmin=zmin, zmax=zmax)
                 x_arr = cat[:,0]
                 y_arr = cat[:,1]
                 m_arr = cat[:,3] # apparent magnitude
@@ -171,7 +171,7 @@ class ciber_mock():
         
         cat = self.catalog_mag_cut(cat_arr, m_arr, m_min, m_max)
 
-        srcmap, psf_template = self.make_srcmap(ifield, cat, band=band)
+        srcmap, psf_template, psf_full = self.make_srcmap(ifield, cat, band=band)
         full_map = np.zeros_like(srcmap)
 
         noise = np.random.normal(self.sky_brightness[band].value, self.instrument_noise[band].value, size=srcmap.shape)
@@ -180,9 +180,8 @@ class ciber_mock():
         if ihl_frac > 0:
             ihl_map = self.make_ihl_map(srcmap.shape, cat, ihl_frac, psf=psf_template)
             full_map += ihl_map
-            return full_map, srcmap, noise, ihl_map, cat
+            return full_map, srcmap, noise, ihl_map, cat, psf_template
         else:
-            return full_map, srcmap, noise, cat
-
+            return full_map, srcmap, noise, cat, psf_template
 
 

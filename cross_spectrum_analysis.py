@@ -55,6 +55,10 @@ def azimuthalAverage(image, lmin=90, center=None, logbins=True, nbins=60):
 
     return av_rbins, np.array(rad_avg), np.array(rad_std)
 
+def beam_correction(psf):
+    rb, radprof_Bl, radstd_bl = compute_cl(psf_temp, psf_temp)
+    B_ell = np.sqrt(radprof_Bl)/np.max(np.sqrt(radprof_Bl))
+    return B_ell
 
 def compute_cross_spectrum(map_a, map_b, dim=2.0, map_a_binary=False, map_b_binary=False):
     dim_use = dim*np.pi/180.
@@ -68,6 +72,16 @@ def compute_cross_spectrum(map_a, map_b, dim=2.0, map_a_binary=False, map_b_bina
     xspectrum = np.abs(ffta*np.conj(fftb)+fftb*np.conj(ffta))
     
     return np.fft.fftshift(xspectrum)
+
+def compute_cl(mapa, mapb=None):
+    if mapb is None:
+        xcorr = compute_cross_spectrum(mapa, mapa)
+    else:
+        xcorr = compute_cross_spectrum(mapa, mapb)
+        
+    rbins, radprof, radstd = azimuthalAverage(xcorr)
+    
+    return rbins, radprof, radstd
 
 
 def compute_mode_coupling(mask, ell_min=90., nphases=50, logbins=True, nbins=60, ps_amplitude=100.0):
@@ -109,8 +123,6 @@ def compute_mode_coupling(mask, ell_min=90., nphases=50, logbins=True, nbins=60,
         
     return Mkk, sigma_Mkk
 
-
-
 def cross_correlate_galcat_ciber(cibermap, galaxy_catalog, m_min=14, m_max=30, band='J', \
                          ihl_frac=0.0, magidx=5, zmin=-10, zmax=100, zidx=3):
     # convert galaxy catalog to binary map
@@ -118,8 +130,6 @@ def cross_correlate_galcat_ciber(cibermap, galaxy_catalog, m_min=14, m_max=30, b
     xcorr = compute_cross_spectrum(cibermap, gal_map)
     rbins, radprof, radstd = azimuthalAverage(xcorr)
     return rbins, radprof, radstd, xcorr
-
-
 
 def get_bin_idxs(arr, bins):
     i=0
@@ -135,7 +145,6 @@ def get_bin_idxs(arr, bins):
         elif val == maxval:
             idxs.append(ind)
             return idxs
-
 
 def grf_mkk(n_samples, size = 100, ps=None, ell_sampled=None):
 
