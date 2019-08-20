@@ -12,6 +12,12 @@ import camb
 from camb import model, initialpower
 
 
+def counts_from_density(density_field, Ntot = 200000):
+    counts_map = np.zeros_like(density_field)
+    N_mean = Ntot / (counts_map.shape[-2]*counts_map.shape[-1])
+    counts_map = np.random.poisson(density_field*N_mean)
+    return counts_map
+
 def ell_to_k(ell, comoving_dist):
     theta = np.pi/ell
     k = 1./(comoving_dist*theta)
@@ -31,17 +37,6 @@ def find_nearest_2_idxs(array, vals):
     idxs_2[idxs_2<0]=0
     return idxs, idxs_2, dk
 
-def k_to_ell(k, comoving_dist):
-    theta = 1./(comoving_dist*k)
-    ell = np.pi/theta
-    return ell
-
-def counts_from_density(density_field, Ntot = 200000):
-    counts_map = np.zeros_like(density_field)
-    N_mean = Ntot / (counts_map.shape[-2]*counts_map.shape[-1])
-    counts_map = np.random.poisson(density_field*N_mean)
-    return counts_map
-
 def gaussian_random_field(n_samples, alpha=None, size = 100, ps=None, ksampled=None, comoving_dist=None):
 
     grfs = np.zeros((n_samples, size, size))
@@ -52,7 +47,7 @@ def gaussian_random_field(n_samples, alpha=None, size = 100, ps=None, ksampled=N
     grfs = np.fft.ifft2(noise * amplitude, axes=(-2,-1))
 
     return grfs.real, np.array(noise*amplitude)
-    
+
 def generate_count_map(n_samples, size=1024, Ntot=2000000, ps=None, ksampled=None, comoving_dist=None):
 
     realgrf, _ = gaussian_random_field(n_samples, size=size, ps=ps, ksampled=ksampled, comoving_dist=comoving_dist)
@@ -62,7 +57,10 @@ def generate_count_map(n_samples, size=1024, Ntot=2000000, ps=None, ksampled=Non
 
     return counts, density_fields
 
-
+def k_to_ell(k, comoving_dist):
+    theta = 1./(comoving_dist*k)
+    ell = np.pi/theta
+    return ell
 
 def Pk2(sx, sy, alph=None, ps=None, ksampled=None, comoving_dist=None, pixsize=3.39e-5):
     if alph is not None:
@@ -72,27 +70,9 @@ def Pk2(sx, sy, alph=None, ps=None, ksampled=None, comoving_dist=None, pixsize=3
         ell_sampled = k_to_ell(ksampled, comoving_dist)
         ells = np.pi/(np.sqrt(sx**2+sy**2)*pixsize)
         idx1 = np.array([np.abs(ell_sampled-ell).argmin() for ell in ells])
-        # print(idx1)
-#         idx1, idx2, dl = find_nearest_2_idxs(ksampled, ells)
         ps1 = ps[idx1]
         return ps1
     return True
-
-#     # elif ps is not None:
-
-#     #     thetas = np.sqrt(sx**2+sy**2)*pixsize
-#     #     k = ell_to_k(np.pi/thetas, comoving_dist)
-#     #     idx1, idx2, dk = find_nearest_2_idxs(ksampled, k)
-#     #     k1 = ksampled[idx1]
-#     #     # k2 = ksampled[idx2]
-#     #     ps1 = ps[idx1]
-#     #     ps1[k1==0]=0
-#     #     # ps2 = ps(np.array([k2]))
-#     #     # ps_firstdiff = ps1 + np.abs(dk)*(ps2-ps1)/(k2-k1)
-#     #     # return ps_firstdiff
-#     #     return ps1
-
-#     return power_spec(np.array([np.sqrt(sx**2+sy**2)]))
 
 def power_spec(k):
     ps = matterps.normalizedmp(k)
@@ -129,20 +109,16 @@ This involves:
 
 class galaxy_catalog():
     
-    catalog = []
     lf = Luminosity_Function()
     halomod = halo_model()
-
-    ell_min = 90.
-    ell_max = 1e5
-
     pars = camb.CAMBparams()
     pars.set_cosmology(H0=67.5, ombh2=0.022, omch2=0.122)
     pars.InitPower.set_params(ns=0.965)
 
-        
-    def __init__(self, band='J'):
+    def __init__(self, band='J', ell_min=90., ell_max=1e5):
         self.band = band
+        self.ell_min = ell_min
+        self.ell_max = ell_max 
 
     def ab_match_percentiles(self, mabs, mabs_largesamp):
         mass_range, dndm = self.load_halo_mass_function('../data/halo_mass_function_hmfcalc.txt')
@@ -208,8 +184,8 @@ class galaxy_catalog():
         return pdfs
 
     def generate_galaxy_catalog(self, ngal, ng_bins=5, zmin=0.01, zmax=5.0):
+        
         self.catalog = []
-
 
         gal_zs, ng_perz = self.draw_gal_redshifts(ngal, zmin=zmin, zmax=zmax)
         dndz, cdf_dndz, mabs, zs = self.pdf_cdf_dndz(zmin=zmin, zmax=zmax)
@@ -256,7 +232,6 @@ class galaxy_catalog():
         zs = np.linspace(zmin, zmax, nbins)
         self.zmin = zmin
         self.zmax = zmax
-        # Mapp = np.linspace(mapp_min, mapp_max, nbins)
         Mabs = np.linspace(mabs_min, mabs_max, nbins)
         dndz = []
         for zed in zs:

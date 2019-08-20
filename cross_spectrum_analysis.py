@@ -167,7 +167,8 @@ def integrated_xcorr_multiple_redshifts(ihl_frac=0.1, \
     ifield=4,
     m_min=10, 
     m_max=27,
-    inst=1):
+    inst=1, 
+    lmin=90):
     
     wints = []
     cmock = ciber_mock()
@@ -179,8 +180,7 @@ def integrated_xcorr_multiple_redshifts(ihl_frac=0.1, \
         
     for i in xrange(len(zrange)-1):
         rb, radprof, radstd, xcorr = cross_correlate_galcat_ciber(full, gal_cat, m_max=gal_maxmag, zmin=zrange[i], zmax=zrange[i+1], zidx=3)
-        # wints.append(integrate_w_theta(rb, radprof))
-        wints.append(integrate_C_l(rb*90., radprof))
+        wints.append(integrate_C_l(rb*lmin, radprof))
     
     zs = 0.5*(zrange[:-1]+zrange[1:])
     
@@ -216,7 +216,7 @@ def make_galaxy_binary_map(cat, refmap, inst, m_min=14, m_max=30, magidx=2, zmin
     if isinstance(cat, pd.DataFrame): # real catalogs read in as pandas dataframes
     
         catalog = cat.loc[(cat['x'+str(inst)]>0)&(cat['x'+str(inst)]<refmap.shape[0])&(cat['y'+str(inst)]>0)&(cat['y'+str(inst)]<refmap.shape[0]) &\
-                         (cat['r']<m_max)&(cat['r']>m_min)&(cat['z']>zmin)&(cat['z']<zmax)]
+                         (cat[magidx]<m_max)&(cat[magidx]>m_min)&(cat[zidx]>zmin)&(cat[zidx]<zmax)]
 
         for index, src in catalog.iterrows():
             gal_map[int(src['x'+str(inst)]), int(src['y'+str(inst)])] += 1
@@ -234,8 +234,8 @@ def make_galaxy_binary_map(cat, refmap, inst, m_min=14, m_max=30, magidx=2, zmin
             gal_map[int(src[0]),int(src[1])] +=1.
         return gal_map
 
-def Pk2_mkk(sx, sy, ps, ell_sampled=None, pixsize=3.39e-5, size=512.0):
-    ells = np.sqrt((sx**2+sy**2))*90.
+def Pk2_mkk(sx, sy, ps, ell_sampled=None, pixsize=3.39e-5, size=512.0, lmin=90):
+    ells = np.sqrt((sx**2+sy**2))*lmin
     idx1 = np.array([np.abs(ell_sampled-ell).argmin() for ell in ells])
     return ps[idx1]
 

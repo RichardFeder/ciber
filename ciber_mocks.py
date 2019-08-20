@@ -81,14 +81,13 @@ class ciber_mock():
 
     def get_catalog(self, catname):
         cat = np.loadtxt(self.ciberdir+'/data/'+catname)
-        x_arr = cat[0,:] # + 0.5 (matlab)
+        x_arr = cat[0,:]
         y_arr = cat[1,:] 
         m_arr = cat[2,:]
         return x_arr, y_arr, m_arr
 
     def get_darktime_name(self, flight, field):
         return self.darktime_name_dict[flight][field-1]
-
 
     def mag_2_jansky(self, mags):
         return 3631*u.Jansky*10**(-0.4*mags)
@@ -97,22 +96,21 @@ class ciber_mock():
         jansky_arr = self.mag_2_jansky(mags)
         return jansky_arr.to(u.nW*u.s/u.m**2)*const.c/(self.pix_sr*self.lam_effs[band])
 
-    def make_srcmap(self, ifield, cat, band=0, nbin=0., nx=1024, ny=1024, nwide=20):
-        loaddir = self.ciberdir + '/psf_analytic/TM'+str(band+1)+'/'
-        Nsrc = cat.shape[0]
+    def make_srcmap(self, ifield, cat, band=0, nbin=0., nx=1024, ny=1024, nwide=20, multfac=7.0):
+        
+        srcmap = np.zeros((nx*2, ny*2))
 
         # get psf params
         beta, rc, norm = self.find_psf_params(self.ciberdir+'/data/psfparams.txt', tm=band+1, field=self.ciber_field_dict[ifield])
         
-        multfac = 7.
         Nlarge = nx+30+30 
+        Nsrc = cat.shape[0]
 
-        t0 = time.clock()
         radmap = make_radius_map(2*Nlarge+nbin, 2*Nlarge+nbin, Nlarge+nbin, Nlarge+nbin, rc)*multfac # is the input supposed to be 2d?
         
-        Imap_large = norm * np.power(1 + radmap, -3*beta/2.)
         print('Making source map TM, mrange=(%d,%d), %d sources'%(np.min(cat[:,2]),np.max(cat[:,2]),Nsrc))
-        srcmap = np.zeros((nx*2, ny*2))
+        
+        Imap_large = norm * np.power(1 + radmap, -3*beta/2.)
         Imap_large /= np.sum(Imap_large)     
         Imap_center = Imap_large[Nlarge-nwide:Nlarge+nwide+1, Nlarge-nwide:Nlarge+nwide+1]
 
@@ -120,13 +118,13 @@ class ciber_mock():
         ys = np.round(cat[:,1]).astype(np.int32)
         
         for i in xrange(Nsrc):
-            # srcmap[Nlarge/2+2+xs[i]-nwide:Nlarge/2+2+xs[i]+nwide, Nlarge/2-1+ys[i]-nwide:Nlarge/2-1+ys[i]+nwide]+= Imap_center*cat[i,2]
             srcmap[Nlarge/2+2+xs[i]-nwide:Nlarge/2+2+xs[i]+nwide+1, Nlarge/2-1+ys[i]-nwide:Nlarge/2-1+ys[i]+nwide+1] += Imap_center*cat[i,2]
+        
         return srcmap[nx/2+30:3*nx/2+30, ny/2+30:3*ny/2+30], Imap_center, Imap_large
 
    
-    def make_ihl_map(self, map_shape, cat, ihl_frac, dimx=150, dimy=150, psf=None):
-        extra_trim = 20
+    def make_ihl_map(self, map_shape, cat, ihl_frac, dimx=150, dimy=150, psf=None, extra_trim=20.):
+        
         if len(cat[0])<4:
             norm_ihl = normalized_ihl_template(R_vir=10., dimx=dimx, dimy=dimy)
         else:
@@ -142,9 +140,7 @@ class ciber_mock():
             x0 = np.floor(src[0]+extra_trim/2)
             y0 = np.floor(src[1]+extra_trim/2)
             ihl_map[int(x0):int(x0+ ihl_temps[0].shape[0]), int(y0):int(y0 + ihl_temps[0].shape[1])] += ihl_temps[int(np.ceil(rvirs[i])-1)]*ihl_frac*src[2]
-
             # ihl_map[int(x0):int(x0+ norm_ihl.shape[0]), int(y0):int(y0 + norm_ihl.shape[1])] += norm_ihl*ihl_frac*src[2]
-
 
         return ihl_map[(ihl_temps[0].shape[0] + extra_trim)/2:-(ihl_temps[0].shape[0] + extra_trim)/2, (ihl_temps[0].shape[0] + extra_trim)/2:-(ihl_temps[0].shape[0] + extra_trim)/2]
         # return ihl_map[(norm_ihl.shape[0] + extra_trim)/2:-(norm_ihl.shape[0] + extra_trim)/2, (norm_ihl.shape[0] + extra_trim)/2:-(norm_ihl.shape[0] + extra_trim)/2]
@@ -173,7 +169,6 @@ class ciber_mock():
 
         srcmap, psf_template, psf_full = self.make_srcmap(ifield, cat, band=band)
         full_map = np.zeros_like(srcmap)
-
         noise = np.random.normal(self.sky_brightness[band].value, self.instrument_noise[band].value, size=srcmap.shape)
         
         full_map = srcmap + noise
