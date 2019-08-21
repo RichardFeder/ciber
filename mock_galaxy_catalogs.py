@@ -14,7 +14,7 @@ from camb import model, initialpower
 
 def counts_from_density(density_field, Ntot = 200000):
     counts_map = np.zeros_like(density_field)
-    N_mean = Ntot / (counts_map.shape[-2]*counts_map.shape[-1])
+    N_mean = float(Ntot) / float(counts_map.shape[-2]*counts_map.shape[-1])
     counts_map = np.random.poisson(density_field*N_mean)
     return counts_map
 
@@ -91,7 +91,7 @@ def positions_from_counts(counts_map, cat_len=None):
         thetax = np.array(thetax)[idxs]
         thetay = np.array(thetay)[idxs]
 
-    return thetax, thetay
+    return np.array(thetax), np.array(thetay)
 
 
 ''' 
@@ -144,16 +144,6 @@ class galaxy_catalog():
         
         return halo_masses, virial_radii.value
 
-    def draw_gal_redshifts(self, ngal, zmin=0.01, zmax=5.0):
-        ''' returns redshifts sorted '''
-        dndz, cdf_dndz, Mabs, zs = self.pdf_cdf_dndz(zmin=zmin, zmax=zmax)
-        ndraw_total = int(ngal)
-        
-        gal_zs = np.random.choice(zs, ndraw_total, p=dndz)
-        ngal_per_z = np.array([len([zg for zg in gal_zs if zg==z]) for z in zs])
-        return np.sort(gal_zs), ngal_per_z
-
-
     def draw_mags_given_zs(self, Mabs, gal_zs, ngal_per_z, pdfs, zs):
         '''we are going to order these by absolute magnitude, which makes things easier when abundance matching to 
         halo mass'''
@@ -183,43 +173,91 @@ class galaxy_catalog():
             pdfs.append(pdf)
         return pdfs
 
-    def generate_galaxy_catalog(self, ngal, ng_bins=5, zmin=0.01, zmax=5.0):
-        
-        self.catalog = []
-
-        gal_zs, ng_perz = self.draw_gal_redshifts(ngal, zmin=zmin, zmax=zmax)
-        dndz, cdf_dndz, mabs, zs = self.pdf_cdf_dndz(zmin=zmin, zmax=zmax)
-        pdfs = self.get_schechter_m_given_zs(zs, mabs)
-        zmm = self.draw_mags_given_zs(mabs, gal_zs, ng_perz, pdfs, zs)
-
-        # generate clustered galaxy positions
-        zrange_grf = np.linspace(self.zmin, self.zmax, ng_bins+1) # ng_bins+1 since we take midpoints
+    def generate_galaxy_catalog(self, ng_bins=5, zmin=0.01, zmax=5.0, ndeg=4.0, m_min=13, m_max=28):
+                
+        zrange_grf = np.linspace(zmin, zmax, ng_bins+1) # ng_bins+1 since we take midpoints
         midzs = 0.5*(zrange_grf[:-1]+zrange_grf[1:])
-        # eventually should take this stuff out and make external since it takes a little while
-        # only thing that really needs to be specified is redshifts to evaluate GRF
+
         self.pars.set_matter_power(redshifts=midzs, kmax=5.0)
         self.pars.NonLinear = model.NonLinear_both
         results = camb.get_results(self.pars)
         kh_nonlin, z_nonlin, pk_nonlin = results.get_matter_power_spectrum(minkh=3e-3, maxkh=10, npoints=200)
         comoving_dists = results.comoving_radial_distance(midzs)/(0.01*self.pars.H0)
-        print('comoving distance for '+str(midzs)+' is '+str(comoving_dists))
 
-        thetax = np.zeros_like(gal_zs)
-        thetay = np.zeros_like(gal_zs)
+        Mapps = np.linspace(m_min, m_max, m_max-m_min + 1)
+        Mabs = np.linspace(-30.0, -15., 100)
+        number_counts = self.lf.number_counts(midzs, Mapps, 'H')[1] # band doesn't really affect number counts for CIBER
+        thetax, thetay, gal_app_mags, gal_abs_mags, gal_zs, all_finezs = [[] for x in xrange(6)]
+
         for i, z in enumerate(midzs):
-            counts, grfs = generate_count_map(1, ps=pk_nonlin[i,:], ksampled=kh_nonlin, comoving_dist=comoving_dists[i])
-            tx, ty = positions_from_counts(counts[0], cat_len=len(gal_zs[gal_zs < zrange_grf[1+i]]))
-            thetax[gal_zs < zrange_grf[1+i]] = tx
-            thetay[gal_zs < zrange_grf[1+i]] = ty
-        
-        # counts, grfs = generate_count_map(1, ps=pk_nonlin, ksampled=kh_nonlin, comoving_dist=comoving_dists[i])
-        # thetax, thetay = positions_from_counts(counts[0], cat_len=len(gal_zs))
+    
+            # draw galaxy positions from GRF with given power spectrum
+            counts, grfs = generate_count_map(1, ps=pk_nonlin[i,:], Ntot=int(np.sum(number_counts[i])*4), ksampled=kh_nonlin, comoving_dist=comoving_dists[i])
+            tx, ty = positions_from_counts(counts[0])
+
+            # shuffle is used because x positions are ordered and then apparent magnitudes are assigned starting brightest first a few lines down
+            randomize = np.arange(len(tx))
+            np.random.shuffle(randomize)
+            tx = tx[randomize]
+            ty = ty[randomize]
+            thetax.extend(tx)
+            thetay.extend(ty)
+
+             # draw redshifts within each bin from pdf
+            zfine = np.linspace(zrange_grf[i], zrange_grf[i+1], 10)[:-1]
+            all_finezs.extend(zfine)
+            dndz = []
+            for zed in zfine:
+                dndz.append(np.sum(self.lf.schechter_lf_dm(Mabs, zed, 'H')*(10**(-3) * self.lf.schechter_units)*(np.max(Mabs)-np.min(Mabs))/len(Mabs)).value)
+            dndz = np.array(dndz)/np.sum(dndz)    
+            zeds = np.random.choice(zfine, len(tx), p=dndz)
+            gal_zs.extend(zeds)
+
+            # draw apparent magnitudes based on Helgason number counts N(m)
+            mags = []
+
+            if i == len(midzs)-1:
+                dz = midzs[i]-midzs[i-1]
+            else:
+                dz = midzs[i+1]-midzs[i]
+
+            for j, M in enumerate(Mapps):
+
+                finer_mapp = np.linspace(M, M+1.0, 100)
+                finer_number_counts = self.lf.number_counts([z], finer_mapp, 'H', dz=dz)[1][0]# band doesn't really affect number counts for CIBER
+                fine_mapp_pdf = finer_number_counts/np.sum(finer_number_counts)
+
+                n = int(number_counts[i][j]*4)
+                if n > 0:
+                    mags.extend(np.random.choice(finer_mapp, size=n, p=fine_mapp_pdf))
+            
+            gal_app_mags.extend(mags)
 
 
-        halo_masses, virial_radii = self.abundance_match_ms_given_mags(gal_zs)        
-        
-        self.catalog = np.array([thetax, thetay, zmm[:,0], zmm[:,1],zmm[:,2],halo_masses,virial_radii]).transpose()
-        
+        gal_zs = np.array(gal_zs)
+        thetax = np.array(thetax)
+        thetay = np.array(thetay)
+        gal_app_mags = np.array(gal_app_mags)
+        gal_abs_mags = np.array(gal_abs_mags)
+
+        # poisson realization of galaxy counts not exactly equal to Helgason number counts, so remove extra sources
+        # miiight need a corner case if counts realization gets more sources than number counts, but this probably wont happen
+        idx_choice = np.sort(np.random.choice(np.arange(len(gal_app_mags)), len(thetax), replace=False))
+        gal_app_mags = np.array(gal_app_mags)[idx_choice]
+
+        all_finezs = np.array(all_finezs)
+        cosmo_dist_mods = cosmo.distmod(np.array(all_finezs))
+       
+        gal_tile = np.tile(gal_zs, (len(all_finezs), 1)).transpose()
+        dist_mods = np.array(cosmo_dist_mods[np.argmin(np.abs(np.subtract(gal_tile, all_finezs)), axis=1)].value)
+        gal_abs_mags = gal_app_mags - dist_mods - 2.5*np.log10(1.0+gal_zs)
+
+        array = np.array([thetax, thetay, gal_zs, gal_app_mags, gal_abs_mags]).transpose()
+        partial_cat = array[np.argsort(array[:,4])]
+
+        halo_masses, virial_radii = self.abundance_match_ms_given_mags(partial_cat[:,2]) # use redshifts as input        
+        self.catalog = np.hstack([partial_cat, np.array([halo_masses, virial_radii]).transpose()])
+
         return self.catalog
 
     def load_halo_mass_function(self, filename):
@@ -228,19 +266,6 @@ class galaxy_catalog():
         dndm = hmf[:,5]/np.sum(hmf[:,5]) # [h^4/(Mpc^3*M_sun)]
         return ms, dndm
 
-    def pdf_cdf_dndz(self, zmin=0.01, zmax=5.0, nbins=100, mabs_min=-30., mabs_max=-15., band='J'):
-        zs = np.linspace(zmin, zmax, nbins)
-        self.zmin = zmin
-        self.zmax = zmax
-        Mabs = np.linspace(mabs_min, mabs_max, nbins)
-        dndz = []
-        for zed in zs:
-            val = np.sum(self.lf.schechter_lf_dm(Mabs, zed, band)*(10**(-3) * self.lf.schechter_units)*(np.max(Mabs)-np.min(Mabs))/len(Mabs))
-            dndz.append(val.value)
-        dndz = np.array(dndz)/np.sum(dndz)
-        cdf_dndz = np.cumsum(dndz)
-
-        return dndz, cdf_dndz, Mabs, zs
 
 
             

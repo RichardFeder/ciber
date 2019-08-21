@@ -64,6 +64,7 @@ class ciber_mock():
         pass
 
     def catalog_mag_cut(self, cat, m_arr, m_min, m_max):
+        print('marr:', m_arr)
         magnitude_mask_idxs = np.array([i for i in xrange(len(m_arr)) if m_arr[i]>=m_min and m_arr[i] <= m_max])
         if len(magnitude_mask_idxs) > 0:
             catalog = cat[magnitude_mask_idxs,:]
@@ -96,7 +97,7 @@ class ciber_mock():
         jansky_arr = self.mag_2_jansky(mags)
         return jansky_arr.to(u.nW*u.s/u.m**2)*const.c/(self.pix_sr*self.lam_effs[band])
 
-    def make_srcmap(self, ifield, cat, band=0, nbin=0., nx=1024, ny=1024, nwide=20, multfac=7.0):
+    def make_srcmap(self, ifield, cat, flux_idx=-1, band=0, nbin=0., nx=1024, ny=1024, nwide=20, multfac=7.0):
         
         srcmap = np.zeros((nx*2, ny*2))
 
@@ -108,7 +109,7 @@ class ciber_mock():
 
         radmap = make_radius_map(2*Nlarge+nbin, 2*Nlarge+nbin, Nlarge+nbin, Nlarge+nbin, rc)*multfac # is the input supposed to be 2d?
         
-        print('Making source map TM, mrange=(%d,%d), %d sources'%(np.min(cat[:,2]),np.max(cat[:,2]),Nsrc))
+        print('Making source map TM, mrange=(%d,%d), %d sources'%(np.min(cat[:,3]),np.max(cat[:,3]),Nsrc))
         
         Imap_large = norm * np.power(1 + radmap, -3*beta/2.)
         Imap_large /= np.sum(Imap_large)     
@@ -116,20 +117,18 @@ class ciber_mock():
 
         xs = np.round(cat[:,0]).astype(np.int32)
         ys = np.round(cat[:,1]).astype(np.int32)
-        
+
         for i in xrange(Nsrc):
-            srcmap[Nlarge/2+2+xs[i]-nwide:Nlarge/2+2+xs[i]+nwide+1, Nlarge/2-1+ys[i]-nwide:Nlarge/2-1+ys[i]+nwide+1] += Imap_center*cat[i,2]
+            srcmap[Nlarge/2+2+xs[i]-nwide:Nlarge/2+2+xs[i]+nwide+1, Nlarge/2-1+ys[i]-nwide:Nlarge/2-1+ys[i]+nwide+1] += Imap_center*cat[i, flux_idx]
         
         return srcmap[nx/2+30:3*nx/2+30, ny/2+30:3*ny/2+30], Imap_center, Imap_large
 
    
-    def make_ihl_map(self, map_shape, cat, ihl_frac, dimx=150, dimy=150, psf=None, extra_trim=20.):
+    def make_ihl_map(self, map_shape, cat, ihl_frac, flux_idx=-1, dimx=150, dimy=150, psf=None, extra_trim=20):
         
-        if len(cat[0])<4:
-            norm_ihl = normalized_ihl_template(R_vir=10., dimx=dimx, dimy=dimy)
-        else:
-            rvirs = virial_radius_2_reff(cat[:,4], cat[:,3])
-            rvirs = rvirs.value
+
+        rvirs = virial_radius_2_reff(r_vir=cat[:,6], zs=cat[:,2])
+        rvirs = rvirs.value
 
         if psf is not None:
             ihl_temps = save_ihl_conv_templates(psf=psf)
@@ -139,33 +138,25 @@ class ciber_mock():
         for i, src in enumerate(cat):
             x0 = np.floor(src[0]+extra_trim/2)
             y0 = np.floor(src[1]+extra_trim/2)
-            ihl_map[int(x0):int(x0+ ihl_temps[0].shape[0]), int(y0):int(y0 + ihl_temps[0].shape[1])] += ihl_temps[int(np.ceil(rvirs[i])-1)]*ihl_frac*src[2]
+            ihl_map[int(x0):int(x0+ihl_temps[0].shape[0]), int(y0):int(y0 + ihl_temps[0].shape[1])] += ihl_temps[int(np.ceil(rvirs[i])-1)]*ihl_frac*src[flux_idx]
             # ihl_map[int(x0):int(x0+ norm_ihl.shape[0]), int(y0):int(y0 + norm_ihl.shape[1])] += norm_ihl*ihl_frac*src[2]
 
         return ihl_map[(ihl_temps[0].shape[0] + extra_trim)/2:-(ihl_temps[0].shape[0] + extra_trim)/2, (ihl_temps[0].shape[0] + extra_trim)/2:-(ihl_temps[0].shape[0] + extra_trim)/2]
         # return ihl_map[(norm_ihl.shape[0] + extra_trim)/2:-(norm_ihl.shape[0] + extra_trim)/2, (norm_ihl.shape[0] + extra_trim)/2:-(norm_ihl.shape[0] + extra_trim)/2]
      
 
-    def make_ciber_map(self, ifield, m_min, m_max, mock_cat=None, band=0, catname=None, nsrc=0, ihl_frac=0., ng_bins=5, zmin=0.01, zmax=5.0):
-        if catname is not None:
-            x_arr, y_arr, m_arr = self.get_catalog(catname)
-            I_arr = self.mag_2_nu_Inu(m_arr, band)
-            cat_arr = np.array([x_arr, y_arr, I_arr]).transpose()
-            # mask sources outside of magnitude range determined at function call
+    def make_mock_ciber_map(self, ifield, m_min, m_max, mock_cat=None, band=0, catname=None, ihl_frac=0., ng_bins=5, zmin=0.01, zmax=5.0):
+        if mock_cat is not None:
+            m_arr = []
+            cat_arr = mock_cat
         else:
-            if mock_cat is not None:
-                m_arr = []
-                cat_arr = mock_cat
-            else:
-                mock_galaxy = galaxy_catalog()
-                cat = mock_galaxy.generate_galaxy_catalog(nsrc, ng_bins=ng_bins, zmin=zmin, zmax=zmax)
-                x_arr = cat[:,0]
-                y_arr = cat[:,1]
-                m_arr = cat[:,3] # apparent magnitude
-                I_arr = self.mag_2_nu_Inu(m_arr, band)
-                cat_arr = np.array([x_arr, y_arr, I_arr, cat[:,2], cat[:,6], m_arr]).transpose() # cat[:,2]=redshift, cat[:,6]=virial radii
+            mock_galaxy = galaxy_catalog()
+            cat = mock_galaxy.generate_galaxy_catalog(ng_bins=ng_bins, zmin=zmin, zmax=zmax)
         
-        cat = self.catalog_mag_cut(cat_arr, m_arr, m_min, m_max)
+
+        cat = self.catalog_mag_cut(cat, cat[:,3], m_min, m_max) 
+        I_arr = self.mag_2_nu_Inu(cat[:,3], band)
+        cat = np.hstack([cat, np.expand_dims(I_arr.value, axis=1)])
 
         srcmap, psf_template, psf_full = self.make_srcmap(ifield, cat, band=band)
         full_map = np.zeros_like(srcmap)
@@ -178,5 +169,4 @@ class ciber_mock():
             return full_map, srcmap, noise, ihl_map, cat, psf_template
         else:
             return full_map, srcmap, noise, cat, psf_template
-
 

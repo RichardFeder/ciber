@@ -34,13 +34,35 @@ class Luminosity_Function():
     omega_m = 0.28
     
     def __init__(self, z0m = 0.8):
-        self.ps = dict({'J':self.J_dict, 'H':self.H_dict, 'K':self.K_dict, 'L':self.L_dict}) # sets parameter dictionary of dictionaries
+        self.band_dicts = dict({'J':self.J_dict, 'H':self.H_dict, 'K':self.K_dict, 'L':self.L_dict}) # sets parameter dictionary of dictionaries
         self.z0m = z0m
+
+    def alpha(self, z): # checked
+        return self.alpha0*(z/self.z0alpha)**self.r
         
     def comoving_vol_element(self, z): # checked
         V = cosmo.differential_comoving_volume(z)*u.steradian*(np.pi/180)**2 # to get in deg^-2
         return V
     
+
+    def find_nearest_band(self, lam): # chceked
+        optkey = ''
+        mindist = None
+        for key, value in self.band_dicts.iteritems():
+            if mindist is None:
+                mindist = np.abs(lam-value['lambda'])
+                optkey = key
+            elif np.abs(lam-value['lambda']) < mindist:
+                mindist = np.abs(lam-value['lambda'])
+                optkey = key
+        return optkey, mindist
+
+    def flux_prod_rate(self, zrange, ms, band):
+        flux_prod_rates = []
+        for z in zrange:
+            flux_prod_rates.append(self.total_bkg_light(ms, z, band).value)
+        return flux_prod_rates
+
     def get_abs_from_app(self, Mapp, z): # checked
         Mabs = Mapp - self.cosmo.distmod(z).value + 2.5*np.log(1+z)
         return Mabs
@@ -48,20 +70,36 @@ class Luminosity_Function():
     def get_app_from_abs(self, Mabs, z): # checked
         Mapp = Mabs + self.cosmo.distmod(z).value - 2.5*np.log(1+z)
         return Mapp
-    
-    def alpha(self, z): # checked
-        return self.alpha0*(z/self.z0alpha)**self.r
-    
-    def phi_star(self, z, band): # checked, has units of 10^-3 Mpc^-3
-        phi0 = self.ps[band]['phi0']
-        p = self.ps[band]['p']
-        return phi0*np.exp(-p*(z-self.z0m))
-    
+
     def m_star(self, z, band): # checked
-        m0 = self.ps[band]['m0']
-        q = self.ps[band]['q']
+        m0 = self.band_dicts[band]['m0']
+        q = self.band_dicts[band]['q']
         
         return m0-2.5*np.log((1+(z-self.z0m))**q)
+
+    ''' This returns the number counts per magnitude per square degree. It does this by, for each redshift,
+        1) computing wavelength that would redshift into observing band at z=0
+        2) getting absolute magnitude at that redshift
+        3) computing Schechter luminosity function in (pre-redshifted) band and converting to counts/mag/deg^2
+    '''
+    def number_counts(self, zs, Mapp, band, dz=None):
+        nm = []
+        for z in zs:
+            redshifted_lambda = self.band_dicts[band]['lambda']*(1+z)
+            nearest_band, dist = self.find_nearest_band(redshifted_lambda)
+            Mabs = self.get_abs_from_app(Mapp, z)
+            # print(Mabs)
+            if dz is None:
+                dz = zs[1]-zs[0]
+            schec = self.schechter_lf_dm(Mabs, z, nearest_band)*(10**(-3) * self.schechter_units)*self.comoving_vol_element(z)*dz
+            nm.append(schec.value)
+        return np.sum(nm), nm
+
+    def phi_star(self, z, band): # checked, has units of 10^-3 Mpc^-3
+        phi0 = self.band_dicts[band]['phi0']
+        p = self.band_dicts[band]['p']
+        return phi0*np.exp(-p*(z-self.z0m))
+    
 
     def schechter_lf_dm(self, M, z, band): # in absolute magnitudes
         
@@ -74,40 +112,13 @@ class Luminosity_Function():
         
         return phi 
     
-    def find_nearest_band(self, lam): # chceked
-        optkey = ''
-        mindist = None
-        for key, value in self.ps.iteritems():
-            if mindist is None:
-                mindist = np.abs(lam-value['lambda'])
-                optkey = key
-            elif np.abs(lam-value['lambda']) < mindist:
-                mindist = np.abs(lam-value['lambda'])
-                optkey = key
-        return optkey, mindist
-        
-    
-    def number_counts(self, zs, Mapp, band):
-        nm = []
-        for z in zs:
-            # get redshifted wavelength that will fall in observing band
-            redshifted_lambda = self.ps[band]['lambda']*(1+z)
-            nearest_band, dist = self.find_nearest_band(redshifted_lambda)
-            Mabs = self.get_abs_from_app(Mapp, z)
-            schec = self.schechter_lf_dm(Mabs, z, nearest_band)*(10**(-3) * self.schechter_units)*self.comoving_vol_element(z)*(zs[1]-zs[0])
-            nm.append(schec)
-        return np.sum(nm), nm
-    
     def specific_flux(self, m_ab, nu):
         val = nu*10**(-0.4*(m_ab-23.9))*u.microJansky
         return val
         
-    
     def total_bkg_light(self, ms, z, band):
         dfdz = 0.
-        
-        nu = const.c/(self.ps[band]['lambda']*u.um)
-        
+        nu = const.c/(self.band_dicts[band]['lambda']*u.um)
         for i in xrange(len(ms)-1):
             mabs = self.get_abs_from_app(ms[i], z)
             val = (ms[i+1]-ms[i])*self.specific_flux(ms[i], nu)*self._lf_dm(mabs, z, band)
@@ -116,11 +127,7 @@ class Luminosity_Function():
 
         return dfdz.to(u.nW*u.m**(-2)*u.steradian**(-1))
     
-    def flux_prod_rate(self, zrange, ms, band):
-        flux_prod_rates = []
-        for z in zrange:
-            flux_prod_rates.append(self.total_bkg_light(ms, z, band).value)
-        return flux_prod_rates
+
 
 
 
