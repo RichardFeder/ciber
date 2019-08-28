@@ -49,10 +49,14 @@ class halo_model():
     omega_m = 0.3
     Delta = 200. # fiducial overdensity for spherical collapse, fixes normalization factors below
     
-    def __init__(self):
+    def __init__(self, ):
         self.rho = (3*1.16*10**12/(4*np.pi))*self.omega_m*u.solMass*self.h**2*u.Mpc**(-3)
         self.m_star = (4*np.pi*self.R_star**3/3)*self.rho
         self.tinker = tinker_hmf()
+        self.mrange = 10**(np.linspace(10, 16, 100))*u.solMass
+        self.hmf = MassFunction()
+        self.mrange = self.hmf.m*u.solMass
+
     
     def onehalo_corr(self):
         pass
@@ -124,8 +128,9 @@ class halo_model():
         else:
             return ufunc
     
-    def P_lin(self, k, z):
-        return self.S8*k**self.ns
+    def P_lin(self, k):
+        return self.h*1e4*(k/0.1)**(self.ns-1.-3.)
+#         return self.S8*k**(self.ns-3.)
     
     def P_hh(self, k, m1=1, m2=1):
         # figure out how to get biases
@@ -133,32 +138,34 @@ class halo_model():
         return self.P_lin(k)
 
     def dm_power_spectrum_1h(self, k):
+        ''' The one halo term is accurate to k=1, after which it seems like it diverges.
+            for our purposes this is okay since we arent going into the highly non-linear regime'''
         pks = np.zeros_like(k)
-        dm = self.mrange[1]-self.mrange[0] # maybe should do log bins
-        for m in self.mrange:
-            R = self.mass_2_virial_radius(m)*self.Delta**(-1./3)
-            c = self.concentration(m)
-            pk = dm*self.n(m)*(m/self.rho)**2 * np.abs(self.NFW_k(k, R, c))**2
-            pks += pk
+        dm = self.mrange[1:]-self.mrange[:-1]
+        prof_squared = np.abs(self.NFW_k(k, self.mrange[:-1]))**2
+        m_rho_squared = (self.mrange[:-1]/self.rho)**2
+
+        dm_dndm = (dm/u.h)*self.hmf.dndm[:-1]*(u.solMass**(-1)*u.Mpc**(-3)*u.h**4)
+        pks = prof_squared*m_rho_squared*dm_dndm
         return pks
         
     def dm_power_spectrum_2h(self, k):
+        dm = self.mrange[1:]-self.mrange[:-1]
 
-        pk_2halo = np.zeros_like(k)
-        dm = self.mrange[1]-self.mrange[0]
-    
-        for m1 in self.mrange:
-            int2 = np.zeros_like(k)
-            for m2 in self.mrange:
-                int2 += dm*self.n(m2)*(m2/self.rho)*self.NFW_k(k,m=m2)*self.P_hh(k, m1=m1,m2=m2)
-            
-            pk_2halo += dm*self.n(m1)*(m1/self.rho)*self.NFW_k(k,m=m1)*int2
-            
-        return pk_2halo
+        dm_dndm = (dm/u.h)*self.hmf.dndm[:-1]*(u.solMass**(-1)*u.Mpc**(-3)*u.h**4)
+        
+        prof = self.NFW_k(k, self.mrange[:-1])
+        
+        m_over_rho = self.mrange[:-1]/self.rho
+        
+        prod = dm_dndm*m_over_rho*prof
+        p2h = np.sum(prod*np.sum(prod*self.P_hh(k)))
+        
+        return p2h
+
     
     def dm_total_power_spectrum(self, k):
-        return self.dm_power_spectrum_1h(k)+self.dm_power_spectrum_2h(k)
-    
+        return self.dm_power_spectrum_1h(k)+self.dm_power_spectrum_2h(k)    
 
 
     
