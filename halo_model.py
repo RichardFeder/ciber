@@ -1,7 +1,7 @@
 import scipy
-from scipy.special import *
 import astropy.units as u
 from astropy.cosmology import FlatLambdaCDM
+from scipy.special import sici
 # initialize cosmology class 
 cosmo = FlatLambdaCDM(H0=70, Om0=0.28)
 
@@ -67,7 +67,6 @@ class halo_model():
     def total_cross_power_spectrum(self):
         return self.cross_power_spectrum_1h()+self.cross_power_spectrum_2h()
     
-
     def concentration_pdf(self, c):
         if self.sig_lnc != 0:
             # lognormal
@@ -85,15 +84,10 @@ class halo_model():
     def f(self, c):
         return 1./(np.log(1.+c)-1./(1.+c))
 
-    def mass_2_virial_radius(self, halo_mass, z):
-        term = (3/(4*np.pi))*cosmo.Om(z)*halo_mass*u.solMass/(200*cosmo.critical_density(z))
-        # term = (3/(4*np.pi))*cosmo.Om(z)*halo_mass*u.solMass/(200*cosmo.critical_density0)
+    def mass_2_virial_radius(self, halo_mass, z=0):
+        term = (3/(4*np.pi))*cosmo.Om(z)*halo_mass.to(u.g)/(200*cosmo.critical_density(z))
         return term**(1./3.)
         
-    # def mass_2_virial_radius(self, m):
-    #     rvir = (3*m/(4*np.pi*self.rho*self.Delta)).value**(1./3)
-    #     return rvir*u.Mpc
-    
     def mass_variance(self, m):
         #TODO
         return 1.
@@ -105,30 +99,30 @@ class halo_model():
         R_vir = self.mass_2_virial_radius(m).to(u.Mpc).value
         c = self.concentration(m)   
         ur = (self.f(c)*c**3/(4*np.pi*(R_vir**3)))/(c*rfrac*(1+c*rfrac)**2)
-
         if normalize:
-        	return ur/np.max(ur)
+            return ur/np.max(ur)
         else:
-        	return ur
+            return ur
     
     def NFW_k(self, k, m, normalize=True):
-        R = self.mass_2_virial_radius(m)*self.Delta**(-1./3)
+        
+        ''' This parameterization is from Scoccimarro et al. 2000 
+            "How Many Galaxies Fit in a Halo?" '''
+        
+        R = self.mass_2_virial_radius(m).to(u.Mpc).value*self.Delta**(1./3.)
         c = self.concentration(m)
-    
-        khat = k*self.R_star*self.Delta**(-1./3)
-        y = R/self.R_star
-
+        khat = k*self.R_star*self.Delta**(-1./3.)
+        y = (R/self.R_star)/0.67
         kappa = khat*y/c
         
-        SI_1, CI_1 = sici(kappa.value*(1+c.value)) # sine/cosine integrals from Scoccimaro et al. (2001)
+        SI_1, CI_1 = sici(kappa.value*(1.+c.value)) # sine/cosine integrals from Scoccimaro et al. (2001)
         SI_2, CI_2 = sici(kappa.value)
-        
-        u = self.f(c)*(np.sin(kappa.value)*(SI_1-SI_2)+np.cos(kappa.value)*(CI_1-CI_2)-(np.sin(kappa.value*c.value)/(kappa.value*(1+c.value))))
-        
+        ufunc = self.f(c)*(np.sin(kappa.value)*(SI_1-SI_2)+np.cos(kappa.value)*(CI_1-CI_2)-(np.sin(kappa.value*c.value)/(kappa.value*(1+c.value))))
+                
         if normalize:
-        	return u/np.max(u)
+            return ufunc/np.max(ufunc)
         else:
-        	return u
+            return ufunc
     
     def P_lin(self, k, z):
         return self.S8*k**self.ns
@@ -165,5 +159,6 @@ class halo_model():
     def dm_total_power_spectrum(self, k):
         return self.dm_power_spectrum_1h(k)+self.dm_power_spectrum_2h(k)
     
+
 
     
