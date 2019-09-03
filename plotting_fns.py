@@ -9,7 +9,7 @@ from matplotlib import cm
 
 figure_directory = '/Users/richardfeder/Documents/caltech/ciber2/figures/'
 
-def plot_radavg_xspectrum2(rbins, radprofs=[], raderrs=None, labels=[], lmin=90., save=False, snspalette=None, pdf_or_png='png'):
+def plot_radavg_xspectrum(rbins, radprofs=[], raderrs=None, labels=[], lmin=90., save=False, snspalette=None, pdf_or_png='png'):
     
     image_dim = 1024.
     steradperpixel = ((np.pi/lmin)/image_dim)**2 
