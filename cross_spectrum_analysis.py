@@ -210,7 +210,7 @@ def integrate_C_l(ls, C, weights=None):
     return np.sum(C_integrand)
 
 
-def make_galaxy_binary_map(cat, refmap, inst, m_min=14, m_max=30, magidx=2, zmin=0, zmax=100, zidx=None):
+def make_galaxy_binary_map(cat, refmap, inst, m_min=14, m_max=30, magidx=2, zmin=0, zmax=100, zidx=None, normalize=True):
     gal_map = np.zeros_like(refmap)
 
     if isinstance(cat, pd.DataFrame): # real catalogs read in as pandas dataframes
@@ -221,7 +221,6 @@ def make_galaxy_binary_map(cat, refmap, inst, m_min=14, m_max=30, magidx=2, zmin
         for index, src in catalog.iterrows():
             gal_map[int(src['x'+str(inst)]), int(src['y'+str(inst)])] += 1
    
-        return gal_map
     else:
         if zidx is not None:
             cat = np.array([src for src in cat if src[0]<refmap.shape[0] and src[1]<refmap.shape[1]\
@@ -232,13 +231,28 @@ def make_galaxy_binary_map(cat, refmap, inst, m_min=14, m_max=30, magidx=2, zmin
 
         for src in cat:
             gal_map[int(src[0]),int(src[1])] +=1.
-        return gal_map
+
+    if normalize:
+        gal_map /= np.mean(gal_map)
+        gal_map -= 1.
+    
+    return gal_map
 
 def Pk2_mkk(sx, sy, ps, ell_sampled=None, pixsize=3.39e-5, size=512.0, lmin=90):
     ells = np.sqrt((sx**2+sy**2))*lmin
     idx1 = np.array([np.abs(ell_sampled-ell).argmin() for ell in ells])
     return ps[idx1]
 
+def psf_large(psf_template, mapdim=1024):
+    ''' all this does is place the 40x40 PSF template at the center of a full map 
+    so one can compute the FT and get the beam correction for appropriate ell values
+    this assumes that beyond the original template, the beam correction will be 
+    exactly unity, which is fair enough for our purposes'''
+    psf_temp = np.zeros((mapdim, mapdim))
+    psf_temp[mapdim/2 - 20:mapdim/2+21, mapdim/2-20:mapdim/2+21] = psf_template
+    psf_temp /= np.sum(psf_temp)
+    return psf_temp
+    
 def xcorr_varying_ihl(ihl_min_frac=0.0, ihl_max_frac=0.5, nbins=10, nsrc=100, m_min=14, m_max=20, gal_comp=21, ifield=4, inst=1):
     radprofs = []
     radstds = []

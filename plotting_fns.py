@@ -46,3 +46,86 @@ def plot_2d_xspectrum(xspec, minpercentile=5, maxpercentile=95, save=False, pdf_
 		plt.savefig(figure_directory+'2d_xspectrum.'+pdf_or_png, bbox_inches='tight')
 	plt.show()
 
+def plot_beam_correction(rb, beam_correction, lmin=90.):
+    
+    fig = plt.figure()
+    plt.plot(rb*lmin, beam_correction, marker='.')
+    plt.xlabel('$\\ell$', fontsize=14)
+    plt.ylabel('$B_{\\ell}$', fontsize=14)
+    plt.title('Beam Correction', fontsize=16)
+    plt.xscale('log')
+    plt.yscale('log')
+    plt.show()
+    
+    return fig
+
+def plot_catalog_properties(cat, zidx=2, mapp_idx=3, mabs_idx=4, mhalo_idx=5, rvir_idx=6, Inu_idx=7):
+
+    plt.figure(figsize=(15, 10))
+    plt.suptitle('Mock Galaxy Catalog', fontsize=16, y=1.02)
+    plt.subplot(2,3,1)
+    plt.hist(cat[:,zidx], histtype='step')
+    plt.xlabel('Redshift', fontsize=14)
+    plt.subplot(2,3,2)
+
+    plt.hist(cat[:,mapp_idx], histtype='step')
+    plt.xlabel('Apparent Magnitude', fontsize=14)
+
+    plt.subplot(2,3,3)
+    plt.hist(cat[:,mabs_idx], histtype='step')
+    plt.xlabel('Absolute Magnitude', fontsize=14)
+
+    plt.subplot(2,3,4)
+    plt.hist(np.log10(cat[:,mhalo_idx]), histtype='step')
+    plt.xlabel('$\\log_{10}(M_{halo}/M_{\\odot})$', fontsize=14)
+    plt.yscale('log')
+
+    plt.subplot(2,3,5)
+    plt.hist(cat[:,rvir_idx], histtype='step', bins=np.linspace(0, 0.15, 20))
+    plt.xlabel('$R_{vir}$ (Mpc)', fontsize=14)
+
+    plt.subplot(2,3,6)
+    plt.hist(np.log10(cat[:,Inu_idx]), histtype='step')
+    plt.xlabel('$\\log_{10}(I_{\\nu})$ (nW $m^{-2}sr^{-1}$)', fontsize=14)
+    plt.tight_layout()
+    # plt.savefig('../figures/mock_galaxy_catalog.png', bbox_inches='tight')
+    plt.show()
+
+
+def plot_mock_images(full, srcs, ihl=None, fullminp=1., fullmaxp=99.9, \
+                    srcminp=1., srcmaxp=99.9, ihlminp=1., ihlmaxp=99.9, \
+                    save=False, show=True):
+    if ihl is None:
+        fig = plt.figure(figsize=(10, 5))
+        plt.subplot(1,2,1)
+    else:
+        fig = plt.figure(figsize=(15, 5))
+        plt.subplot(1,3,1)
+    
+    plt.title('Full Map (with noise)', fontsize=14)
+    plt.imshow(full, vmin=np.percentile(full, fullminp), vmax=np.percentile(full, fullmaxp))
+    plt.colorbar()
+    
+    if ihl is None:
+        plt.subplot(1,2,2)
+    else:
+        plt.subplot(1,3,2)
+    
+    plt.title('Galaxies', fontsize=14)
+    plt.imshow(srcs, vmin=np.percentile(srcs, srcminp), vmax=np.percentile(srcs, srcmaxp))
+    plt.colorbar()
+    
+    if ihl is not None:
+        plt.subplot(1,3,3)
+        plt.title('IHL ($f_{IHL}=0.1$)', fontsize=14)
+        plt.imshow(ihl, vmin=np.percentile(ihl, ihlminp), vmax=np.percentile(ihl, ihlmaxp))
+        plt.colorbar()
+        
+    if save:
+        plt.savefig('../figures/mock_obs.png', bbox_inches='tight')
+    if show:
+        plt.show()
+    
+    return fig
+
+
