@@ -88,7 +88,6 @@ class Luminosity_Function():
             redshifted_lambda = self.band_dicts[band]['lambda']*(1+z)
             nearest_band, dist = self.find_nearest_band(redshifted_lambda)
             Mabs = self.get_abs_from_app(Mapp, z)
-            # print(Mabs)
             if dz is None:
                 dz = zs[1]-zs[0]
             schec = self.schechter_lf_dm(Mabs, z, nearest_band)*(10**(-3) * self.schechter_units)*self.comoving_vol_element(z)*dz
@@ -121,12 +120,34 @@ class Luminosity_Function():
         nu = const.c/(self.band_dicts[band]['lambda']*u.um)
         for i in xrange(len(ms)-1):
             mabs = self.get_abs_from_app(ms[i], z)
-            val = (ms[i+1]-ms[i])*self.specific_flux(ms[i], nu)*self._lf_dm(mabs, z, band)
+            val = (ms[i+1]-ms[i])*self.specific_flux(ms[i], nu)*self.schechter_lf_dm(mabs, z, band)
             val *= (10**(-3) * self.schechter_units)*cosmo.differential_comoving_volume(z)
             dfdz += val
 
         return dfdz.to(u.nW*u.m**(-2)*u.steradian**(-1))
-    
+
+    # these shot noise levels agree with Fig. 8 of Helgason+ given certain limiting magnitudes
+    def compute_shot_noise(self, z0, z1, ms, nzbin=10, band='J'):
+
+        nu = const.c/(self.band_dicts[band]['lambda']*u.um)
+        shots = []
+        zrange = np.linspace(z0, z1, nzbin)
+        dz = (z1-z0)/nzbin
+        
+        for z in zrange:
+            cl_shot = 0.
+            for i in xrange(len(ms)-1):
+                dm = ms[i+1]-ms[i]
+                mabs = self.get_abs_from_app(ms[i], z)
+                dndm = self.schechter_lf_dm(mabs, z, band)*(10**(-3) * self.schechter_units)*cosmo.differential_comoving_volume(z)
+                f_m = self.specific_flux(ms[i], nu)
+                psn = dm*dndm*f_m**2
+                cl_shot += psn.to(u.nW**2*u.m**(-4)*u.steradian**(-1))
+                
+            shots.append(cl_shot.value*dz) # nW^2 m^-4 sr^-1
+            
+        return np.sum(shots)
+        
 
 
 

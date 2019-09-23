@@ -55,10 +55,10 @@ def azimuthalAverage(image, lmin=90, center=None, logbins=True, nbins=60):
 
     return av_rbins, np.array(rad_avg), np.array(rad_std)
 
-def beam_correction(psf):
-    rb, radprof_Bl, radstd_bl = compute_cl(psf_temp, psf_temp)
+def compute_beam_correction(psf):
+    rb, radprof_Bl, radstd_bl = compute_cl(psf, psf)
     B_ell = np.sqrt(radprof_Bl)/np.max(np.sqrt(radprof_Bl))
-    return B_ell
+    return rb, B_ell
 
 def compute_cross_spectrum(map_a, map_b, dim=2.0, map_a_binary=False, map_b_binary=False):
     dim_use = dim*np.pi/180.
@@ -223,11 +223,17 @@ def make_galaxy_binary_map(cat, refmap, inst, m_min=14, m_max=30, magidx=2, zmin
    
     else:
         if zidx is not None:
-            cat = np.array([src for src in cat if src[0]<refmap.shape[0] and src[1]<refmap.shape[1]\
-             and src[magidx]>m_min and src[magidx]<m_max and src[zidx]>zmin and src[zidx]<zmax])
+            if magidx is None:
+                cat = np.array([src for src in cat if src[0]<refmap.shape[0] and src[1]<refmap.shape[1] and src[zidx]>zmin and src[zidx]<zmax])
+            else:
+                cat = np.array([src for src in cat if src[0]<refmap.shape[0] and src[1]<refmap.shape[1]\
+                and src[magidx]>m_min and src[magidx]<m_max and src[zidx]>zmin and src[zidx]<zmax])
         else:
-            cat = np.array([src for src in cat if src[0]<refmap.shape[0] and src[1]<refmap.shape[1]\
-             and src[magidx]>m_min and src[magidx]<m_max])
+            if magidx is None:
+                cat = np.array([src for src in cat if src[0]<refmap.shape[0] and src[1]<refmap.shape[1]])
+            else:
+                cat = np.array([src for src in cat if src[0]<refmap.shape[0] and src[1]<refmap.shape[1]\
+                and src[magidx]>m_min and src[magidx]<m_max])
 
         for src in cat:
             gal_map[int(src[0]),int(src[1])] +=1.
@@ -287,6 +293,16 @@ def xcorr_varying_galcat_completeness(ihl_frac=0.1, compmin=18, compmax=22, nbin
         radstds.append(radstd)
         
     return comp_range, rb, radprofs, radstds
+
+def xspec_gal_intensity_map(intensity_map, galaxy_cat, beam_correction=None, m_max=None, inst=0, magidx=3):
+    gmap = make_galaxy_binary_map(galaxy_cat, intensity_map, inst=inst, magidx=magidx, m_max=m_max)
+    if (gmap>100).any():
+        gmap[gmap > 100] = 0
+    rbins, radprof, radstd = compute_cl(intensity_map, gmap)
+    if beam_correction is not None:
+        radprof /= np.sqrt(beam_correction)
+    
+    return rbins, radprof, radstd, gmap
 
 
 
