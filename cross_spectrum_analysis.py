@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 from ciber_mocks import *
 
 
-def azimuthalAverage(image, lmin=90, center=None, logbins=True, nbins=60):
+def azimuthalAverage(image, lmin=90, center=None, logbins=True, nbins=60, sterad_term=None):
     """
     Calculate the azimuthally averaged radial profile.
 
@@ -30,7 +30,10 @@ def azimuthalAverage(image, lmin=90, center=None, logbins=True, nbins=60):
     ind = np.argsort(r.flat)
     r_sorted = r.flat[ind]
     i_sorted = image.flat[ind]
-    
+    if sterad_term is not None:
+        i_sorted /= sterad_term
+
+
     lmax = lmin*np.sqrt(0.5*image.shape[0]**2)
     
     if logbins:
@@ -50,7 +53,6 @@ def azimuthalAverage(image, lmin=90, center=None, logbins=True, nbins=60):
         rad_avg.append(np.mean(i_sorted[rbin_idxs[i]:rbin_idxs[i+1]]))
         rad_std.append(np.std(i_sorted[rbin_idxs[i]:rbin_idxs[i+1]])/np.sqrt(nmodes))
         
-        
     av_rbins = (radbins[:-1]+radbins[1:])/2
 
     return av_rbins, np.array(rad_avg), np.array(rad_std)
@@ -60,15 +62,17 @@ def compute_beam_correction(psf):
     B_ell = np.sqrt(radprof_Bl)/np.max(np.sqrt(radprof_Bl))
     return rb, B_ell
 
-def compute_cross_spectrum(map_a, map_b, dim=2.0, map_a_binary=False, map_b_binary=False):
-    dim_use = dim*np.pi/180.
-    steradperpixel = (dim_use/map_a.shape[0])**2
-    
-    map_a2 = map_a*steradperpixel
-    map_b2 = map_b*steradperpixel
-    
-    ffta = np.fft.fft2(map_a2)
-    fftb = np.fft.fft2(map_b2)
+def compute_cross_spectrum(map_a, map_b, n_deg_across=2.0, sterad_a=True, sterad_b=True):
+    sterad_per_pix = (n_deg_across*(np.pi/180.)/map_a.shape[0])**2
+    if sterad_a:
+        ffta = np.fft.fft2(map_a*sterad_per_pix)
+    else:
+        ffta = np.fft.fft2(map_a)
+    if sterad_b:
+        fftb = np.fft.fft2(map_b*sterad_per_pix)
+    else:
+        fftb = np.fft.fft2(map_b)
+
     xspectrum = np.abs(ffta*np.conj(fftb)+fftb*np.conj(ffta))
     
     return np.fft.fftshift(xspectrum)
@@ -122,6 +126,7 @@ def compute_mode_coupling(mask, ell_min=90., nphases=50, logbins=True, nbins=60,
         plt.show()
         
     return Mkk, sigma_Mkk
+
 
 def cross_correlate_galcat_ciber(cibermap, galaxy_catalog, m_min=14, m_max=30, band='J', \
                          ihl_frac=0.0, magidx=5, zmin=-10, zmax=100, zidx=3):

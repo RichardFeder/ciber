@@ -126,28 +126,59 @@ class Luminosity_Function():
 
         return dfdz.to(u.nW*u.m**(-2)*u.steradian**(-1))
 
+
     # these shot noise levels agree with Fig. 8 of Helgason+ given certain limiting magnitudes
-    def compute_shot_noise(self, z0, z1, ms, nzbin=10, band='J'):
+
+    def auto_shot_noise(self, z0, z1, ms, nzbin=10, band='J'):
 
         nu = const.c/(self.band_dicts[band]['lambda']*u.um)
         shots = []
         zrange = np.linspace(z0, z1, nzbin)
         dz = (z1-z0)/nzbin
         
-        for z in zrange:
+        for j in xrange(len(zrange)-1):
+            
             cl_shot = 0.
+            z = 0.5*(zrange[j+1]+zrange[j])
+            
             for i in xrange(len(ms)-1):
+                m_in_btwn = 0.5*(ms[i+1]+ms[i])
                 dm = ms[i+1]-ms[i]
-                mabs = self.get_abs_from_app(ms[i], z)
+                mabs = self.get_abs_from_app(m_in_btwn, z)
                 dndm = self.schechter_lf_dm(mabs, z, band)*(10**(-3) * self.schechter_units)*cosmo.differential_comoving_volume(z)
-                f_m = self.specific_flux(ms[i], nu)
+                f_m = lf.specific_flux(m_in_btwn, nu)
                 psn = dm*dndm*f_m**2
                 cl_shot += psn.to(u.nW**2*u.m**(-4)*u.steradian**(-1))
-                
+
             shots.append(cl_shot.value*dz) # nW^2 m^-4 sr^-1
-            
+
         return np.sum(shots)
-        
+
+
+    def cross_shot_noise(self, z0, z1, ms, nzbin=10, band='J'):
+        ''' This computes the shot noise when cross correlating an intensity map with a galaxy counts map '''
+        nu = const.c/(self.band_dicts[band]['lambda']*u.um)
+        shots = []
+        zrange = np.linspace(z0, z1, nzbin)
+        dz = (z1-z0)/nzbin
+        for j in xrange(len(zrange)-1):
+            cl_shot = 0.
+            z = 0.5*(zrange[j+1]+zrange[j])
+
+            for i in xrange(len(ms)-1):
+                m_in_btwn = 0.5*(ms[i+1]+ms[i])
+                dm = ms[i+1]-ms[i]
+                mabs = self.get_abs_from_app(m_in_btwn, z)
+                dndm = self.schechter_lf_dm(mabs, z, band)*(10**(-3) * self.schechter_units)*cosmo.differential_comoving_volume(z)
+                f_m = self.specific_flux(m_in_btwn, nu)
+                psn = dm*dndm*f_m
+                cl_shot += psn.to(u.nW*u.m**(-2)*u.steradian**(-1))
+
+            shots.append(cl_shot.value*dz) # nW m^-2 sr^-1
+
+        return np.sum(shots)
+
+
 
 
 
