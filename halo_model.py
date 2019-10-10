@@ -111,31 +111,55 @@ class halo_model_class():
         
         ''' This parameterization is from Scoccimarro et al. 2000 
             "How Many Galaxies Fit in a Halo?" '''
-        
+        print('m =', m)
         R = self.mass_2_virial_radius(m).to(u.Mpc).value*self.Delta**(1./3.)
         c = self.concentration(m)
         khat = k*self.R_star*self.Delta**(-1./3.)
-        y = (R/self.R_star)/0.67
+        y = ((R/self.R_star)/0.67)
         
-        if not isinstance(c, list):
-            c = [c]
-            y = [y]
+        # this shit sucks I hate quantities
+        
+        # print(len(conc))
+        # print(isinstance(conc, (list, np.ndarray)))
+
+        # if isinstance(conc, (list, np.ndarray)):
+        #     c = conc
+        #     y = yval
+
+        # else:
+        #     c = [conc]
+        #     y = [yval]
+
+        # if not isinstance(conc, (list, np.ndarray)) or isinstance(conc, u.Quantity):
+        #     print('is not a list of stuff')
+        #     c = [conc]
+        #     y = [yval]
+        # else:
+        #     print('is an instance')
+        #     c = conc
+        #     y = yval
 
         kappa = np.array([khat.value*y[i].value/c[i].value for i in range(len(c))])
         kappa_c = np.array([kappa[i]*c[i].value for i in range(len(c))])
         kappa_1plus_c = np.array([kappa[i]*(1.+c[i].value) for i in range(len(c))])
-
+        
+        # kappa = np.array([khat*y[i]/c[i] for i in range(len(c))])
+        # kappa_c = np.array([kappa[i]*c[i] for i in range(len(c))])
+        # kappa_1plus_c = np.array([kappa[i]*(1.+c[i]) for i in range(len(c))])
 
         SI_1, CI_1 = sici(kappa_1plus_c)
         SI_2, CI_2 = sici(kappa)
         
         ufunc_no_f = np.sin(kappa)*(SI_1-SI_2)+np.cos(kappa)*(CI_1-CI_2)-(np.sin(kappa_c)/kappa_1plus_c)
-        if len(c)==1:
-            fs = self.f(c[0].value)
-            ufunc = np.array([fs*ufunc_no_f[i] for i in range(len(c))])
-        else:
-            fs = self.f(c)
-            ufunc = np.array([fs[i]*ufunc_no_f[i] for i in range(len(c))])
+        
+        fs = self.f(c)
+        # if len(c)==1:
+        #     # fs = self.f(c[0].value)
+        #     ufunc = np.array([fs*ufunc_no_f[i] for i in range(len(c))])
+        # else:
+        #     # fs = self.f(c)
+        
+        ufunc = np.array([fs[i]*ufunc_no_f[i] for i in range(len(c))])
         
 #         print('R has shape ', R.shape)
 #         print('concentration has shape ', c.shape)
@@ -193,7 +217,7 @@ class halo_model_class():
         dm_dndm = dm*self.hmf.dndm[:-1]*(u.solMass**(-1)*u.Mpc**(-3))
         
         # u(k|m) [unitless, but I think theres an extra h^-1 around here]
-        prof = self.NFW_k(k_h*halomod.h, self.mrange[:-1])
+        prof = self.NFW_k(k_h*self.h, self.mrange[:-1])
         
         # (m/rho) [(M_sol/h) / (M_sol h^2 Mpc^-3)] = [h^-3 Mpc^3]
         m_over_rho = self.hmf.m[:-1]/self.rho
