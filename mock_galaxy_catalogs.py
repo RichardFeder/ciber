@@ -1,6 +1,5 @@
 import numpy as np
 from compos import matterps
-
 from astropy.cosmology import FlatLambdaCDM
 import astropy.units as u
 # from astropy import constants as const
@@ -14,8 +13,10 @@ from camb import model, initialpower
 
 def counts_from_density(density_field, Ntot = 200000):
     counts_map = np.zeros_like(density_field)
-    N_mean = float(Ntot) / float(counts_map.shape[-2]*counts_map.shape[-1])
+    N_mean = float(Ntot) / float(counts_map.shape[-3]*counts_map.shape[-2]*counts_map.shape[-1])
     counts_map = np.random.poisson(density_field*N_mean)
+    counts_map = np.sum(counts_map, axis=3)
+    print(counts_map.shape)
     return counts_map
 
 def ell_to_k(ell, comoving_dist):
@@ -48,10 +49,26 @@ def gaussian_random_field(n_samples, alpha=None, size = 100, ps=None, ksampled=N
 
     return grfs.real, np.array(noise*amplitude)
 
+def gaussian_random_field_3d(n_samples, alpha=None, size=100, ps=None, ksampled=None, comoving_dist=None):
+    
+    k_ind = np.mgrid[:size, :size, :size] - int( (size + 1)/2 )
+    k_ind = scipy.fftpack.fftshift(k_ind)
+    k_idx = ( k_ind )
+    ks = np.sqrt(k_idx[0]**2 + k_idx[1]**2 + k_idx[2]**2 + 1e-10)
+    logfit = np.poly1d(np.polyfit(np.log10(ksampled), np.log10(ps), 30))
+    amplitude = 10**(logfit(np.log10(ks)))
+    print(amplitude)
+    amplitude[0,0,0] = 0.
+    noise = np.random.normal(size = (n_samples, size, size, size)) + 1j * np.random.normal(size = (n_samples, size, size, size))
+    gfield = np.array([np.fft.ifftn(n * amplitude).real for n in noise])
+
+    return gfield
+
+
 def generate_count_map(n_samples, size=1024, Ntot=2000000, ps=None, ksampled=None, comoving_dist=None):
 
-    realgrf, _ = gaussian_random_field(n_samples, size=size, ps=ps, ksampled=ksampled, comoving_dist=comoving_dist)
-    realgrf /= np.max(np.abs(realgrf))
+    realgrf, _ = gaussian_random_field_3d(n_samples, size=size, ps=ps, ksampled=ksampled, comoving_dist=comoving_dist)
+    # realgrf /= np.max(np.abs(realgrf))
     density_fields = np.exp(realgrf-np.std(realgrf)**2) # assuming a log-normal density distribution
     counts = counts_from_density(density_fields, Ntot=Ntot)
 
@@ -110,7 +127,7 @@ This involves:
 class galaxy_catalog():
     
     lf = Luminosity_Function()
-    halomod = halo_model()
+    halomod = halo_model_class()
     pars = camb.CAMBparams()
     pars.set_cosmology(H0=67.5, ombh2=0.022, omch2=0.122)
     pars.InitPower.set_params(ns=0.965)
@@ -140,6 +157,7 @@ class galaxy_catalog():
         ngal = len(zs)
         mass_range, dndm = self.load_halo_mass_function('../data/halo_mass_function_hmfcalc.txt')
         halo_masses = np.sort(np.random.choice(mass_range, ngal,p=dndm))[::-1]
+        halo_masses *= u.solMass
         virial_radii = self.halomod.mass_2_virial_radius(halo_masses, zs).to(u.Mpc) # in Mpc
         
         return halo_masses, virial_radii.value
@@ -173,17 +191,23 @@ class galaxy_catalog():
             pdfs.append(pdf)
         return pdfs
 
+    def matter_power_spectrum(self, zs, minkh=3e-3, maxkh=5.0, npoints=200):
+        self.pars.set_matter_power(redshifts=zs, kmax=maxkh)
+        self.pars.NonLinear = model.NonLinear_both
+        results = camb.get_results(self.pars)
+        kh_nonlin, z_nonlin, pk_nonlin = results.get_matter_power_spectrum(minkh=minkh, maxkh=maxkh, npoints=npoints)
+        comoving_dists = results.comoving_radial_distance(zs)/(0.01*self.pars.H0)
+
+        return kh_nonlin, z_nonlin, pk_nonlin, comoving_dists
+
+
     def generate_galaxy_catalog(self, ng_bins=5, zmin=0.01, zmax=5.0, ndeg=4.0, m_min=13, m_max=28):
                 
         zrange_grf = np.linspace(zmin, zmax, ng_bins+1) # ng_bins+1 since we take midpoints
         midzs = 0.5*(zrange_grf[:-1]+zrange_grf[1:])
+        print('midzs:', midzs)
 
-        self.pars.set_matter_power(redshifts=midzs, kmax=5.0)
-        self.pars.NonLinear = model.NonLinear_both
-        results = camb.get_results(self.pars)
-        kh_nonlin, z_nonlin, pk_nonlin = results.get_matter_power_spectrum(minkh=3e-3, maxkh=10, npoints=200)
-        comoving_dists = results.comoving_radial_distance(midzs)/(0.01*self.pars.H0)
-
+        kh_nonlin, z_nonlin, pk_nonlin, comoving_dists = self.matter_power_spectrum(midzs)
         Mapps = np.linspace(m_min, m_max, m_max-m_min + 1)
         Mabs = np.linspace(-30.0, -15., 100)
         number_counts = self.lf.number_counts(midzs, Mapps, 'H')[1] # band doesn't really affect number counts for CIBER
@@ -204,7 +228,7 @@ class galaxy_catalog():
             thetay.extend(ty)
 
              # draw redshifts within each bin from pdf
-            zfine = np.linspace(zrange_grf[i], zrange_grf[i+1], 10)[:-1]
+            zfine = np.linspace(zrange_grf[i], zrange_grf[i+1], 20)[:-1]
             all_finezs.extend(zfine)
             dndz = []
             for zed in zfine:

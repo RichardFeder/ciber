@@ -4,6 +4,8 @@ from astropy.cosmology import FlatLambdaCDM
 from scipy.special import sici
 import numpy as np
 from hmf import MassFunction
+import camb
+from camb import model, initialpower
 # initialize cosmology class 
 cosmo = FlatLambdaCDM(H0=70, Om0=0.28)
 
@@ -39,7 +41,7 @@ class tinker_hmf():
         return 1. + ((self.gamma(z)*nu**2 -(1+2*self.eta(z)))/self.delta_c) + (2*self.phi(z)/self.delta_c)/(1+(self.beta(z)*nu)**(2*self.phi(z)))
     
 
-class halo_model():
+class halo_model_class():
     
     # NFW or M99 profile? might be good to get analytical version of convolved profiles
     h = 0.67 
@@ -62,9 +64,6 @@ class halo_model():
         self.rho = self.hmf.rho_gtm[0]*u.solMass*u.Mpc**(-3)
         self.m_star = (4*np.pi*self.R_star**3/3)*self.rho
         self.kmax = 1e3/self.h
-        print('self.mstar:', self.m_star)
-        print('self.rho:', self.rho)
-
         
         if redshifts is None:
             self.redshifts = np.array([0.0])
