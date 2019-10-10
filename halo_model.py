@@ -117,6 +117,10 @@ class halo_model_class():
         khat = k*self.R_star*self.Delta**(-1./3.)
         y = (R/self.R_star)/0.67
         
+        if not isinstance(c, list):
+            c = [c]
+            y = [y]
+
         kappa = np.array([khat.value*y[i].value/c[i].value for i in range(len(c))])
         kappa_c = np.array([kappa[i]*c[i].value for i in range(len(c))])
         kappa_1plus_c = np.array([kappa[i]*(1.+c[i].value) for i in range(len(c))])
@@ -126,8 +130,12 @@ class halo_model_class():
         SI_2, CI_2 = sici(kappa)
         
         ufunc_no_f = np.sin(kappa)*(SI_1-SI_2)+np.cos(kappa)*(CI_1-CI_2)-(np.sin(kappa_c)/kappa_1plus_c)
-        fs = self.f(c)
-        ufunc = np.array([fs[i]*ufunc_no_f[i] for i in range(len(c))])
+        if len(c)==1:
+            fs = self.f(c[0].value)
+            ufunc = np.array([fs*ufunc_no_f[i] for i in range(len(c))])
+        else:
+            fs = self.f(c)
+            ufunc = np.array([fs[i]*ufunc_no_f[i] for i in range(len(c))])
         
 #         print('R has shape ', R.shape)
 #         print('concentration has shape ', c.shape)
