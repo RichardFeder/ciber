@@ -9,14 +9,33 @@ from halo_model import *
 from helgason import *
 import camb
 from camb import model, initialpower
+from hankel import SymmetricFourierTransform
+from scipy import interpolate
 
 
-def counts_from_density(density_field, Ntot = 200000):
+def counts_from_density_2d(density_field, Ntot = 200000, plot=False):
     counts_map = np.zeros_like(density_field)
-    N_mean = float(Ntot) / float(counts_map.shape[-3]*counts_map.shape[-2]*counts_map.shape[-1])
-    counts_map = np.random.poisson(density_field*N_mean)
-    counts_map = np.sum(counts_map, axis=3)
-    print(counts_map.shape)
+    
+    # compute the mean number density per cell 
+    N_mean = float(Ntot) / float(counts_map.shape[-2]*counts_map.shape[-1])
+    expectation_ngal = (density_field+1.)*N_mean
+    # generate Poisson realization of 2D field
+    counts_map = np.random.poisson(expectation_ngal)
+        
+    dcounts = np.sum(counts_map)-Ntot
+    # if more counts in the poisson realization than Helgason number counts, subtract counts
+    # from non-zero elements of array. Right now this is done uniformly, which probably isn't perfect, 
+    # but the difference in counts is usually at the sub-percent level, so adding counts will only slightly
+    # increase shot noise, while subtracting will slightly decrease power at all scales
+    if dcounts > 0:
+        nonzero_x, nonzero_y = np.nonzero(counts_map[0])
+        rand_idxs = np.random.choice(np.arange(len(nonzero_x)), dcounts, replace=False)
+        counts_map[0][nonzero_x[rand_idxs], nonzero_y[rand_idxs]] -= 1
+    elif dcounts < 0:
+        randx, randy = np.random.choice(np.arange(counts_map.shape[-1]), size=(2, np.abs(dcounts)))
+        for i in xrange(np.abs(dcounts)):
+            counts_map[0][randx[i], randy[i]] += 1
+
     return counts_map
 
 def ell_to_k(ell, comoving_dist):
@@ -32,22 +51,12 @@ def fftIndgen(n):
     return a + b
 
 def find_nearest_2_idxs(array, vals):
+
     idxs = np.array([np.abs(array-val).argmin() for val in vals])
     dk = vals - array[idxs]
     idxs_2 = idxs + np.sign(dk)
     idxs_2[idxs_2<0]=0
     return idxs, idxs_2, dk
-
-def gaussian_random_field(n_samples, alpha=None, size = 100, ps=None, ksampled=None, comoving_dist=None):
-
-    grfs = np.zeros((n_samples, size, size))
-    noise = np.fft.fft2(np.random.normal(size = (n_samples, size, size)))
-    amplitude = np.zeros((size, size))
-    for i, sx in enumerate(fftIndgen(size)):
-        amplitude[i,:] = Pk2(sx, np.array(fftIndgen(size)), ps=ps, ksampled=ksampled, comoving_dist=comoving_dist)
-    grfs = np.fft.ifft2(noise * amplitude, axes=(-2,-1))
-
-    return grfs.real, np.array(noise*amplitude)
 
 def gaussian_random_field_3d(n_samples, alpha=None, size=100, ps=None, ksampled=None, comoving_dist=None):
     
@@ -64,15 +73,64 @@ def gaussian_random_field_3d(n_samples, alpha=None, size=100, ps=None, ksampled=
 
     return gfield
 
+def gaussian_random_field_2d(n_samples, alpha=None, size=128, ell_min=90., cl=None, ell_sampled=None, fac=1, plot=False):
+    
+    l_ind = np.mgrid[:size*fac, :size*fac] - int( (size*fac + 1)/2 )
+    l_ind = scipy.fftpack.fftshift(l_ind)
+    l_idx = ( l_ind )
+    ls = np.sqrt(l_idx[0]**2 + l_idx[1]**2)
+            
+    cl_g, spline_cl_g = hankel_spline_lognormal_cl(ell_sampled, cl)
+        
+    surface_area = (np.pi/ell_min)**2
 
-def generate_count_map(n_samples, size=1024, Ntot=2000000, ps=None, ksampled=None, comoving_dist=None):
+    amplitude = 10**spline_cl_g(np.log10(ls))
+    amplitude[0,0] = 0.
+    
+    noise = np.random.normal(size = (n_samples, size*fac, size*fac)) + 1j * np.random.normal(size = (n_samples, size*fac, size*fac))
+    gfield = np.array([np.fft.ifftn(n * amplitude * surface_area).real for n in noise])
+    
+    return gfield, amplitude, ls
 
-    realgrf, _ = gaussian_random_field_3d(n_samples, size=size, ps=ps, ksampled=ksampled, comoving_dist=comoving_dist)
-    # realgrf /= np.max(np.abs(realgrf))
-    density_fields = np.exp(realgrf-np.std(realgrf)**2) # assuming a log-normal density distribution
-    counts = counts_from_density(density_fields, Ntot=Ntot)
+
+def generate_count_map_2d(n_samples, size=128, Ntot=2000000, cl=None, ell_sampled=None, plot=False):
+    # we want to generate a GRF twice the size of our final GRF so we include larger scale modes
+    realgrf, amp, k = gaussian_random_field_2d(n_samples, size=size, cl=cl, ell_sampled=ell_sampled, fac=2, plot=plot)
+    realgrf = realgrf[:,int(0.5*size):int(1.5*size),int(0.5*size):int(1.5*size)]
+    realgrf /= np.max(np.abs(realgrf))
+    density_fields = np.exp(realgrf-np.std(realgrf)**2)-1. # assuming a log-normal density distribution
+        
+    counts = counts_from_density_2d(density_fields, Ntot=Ntot, plot=plot)
 
     return counts, density_fields
+
+
+def hankel_spline_lognormal_cl(ells, cl, plot=False, ell_min=90, ell_max=1e5):
+    
+    ft = SymmetricFourierTransform(ndim=2, N = 200, h = 0.03)
+    
+    spline_cl = interpolate.InterpolatedUnivariateSpline(np.log10(ells), np.log10(cl))
+    f = lambda ell: 10**(spline_cl(np.log10(ell)))
+    thetas = np.pi/ells
+    w_theta = ft.transform(f ,thetas, ret_err=False, inverse=True)
+    w_theta_g = np.log(1.+w_theta)
+    
+    spline_w_theta_g = interpolate.InterpolatedUnivariateSpline(np.log10(np.flip(thetas)), np.flip(w_theta_g))
+    g = lambda theta: spline_w_theta_g(np.log10(theta))
+    cl_g = ft.transform(g ,ells, ret_err=False)
+    spline_cl_g = interpolate.InterpolatedUnivariateSpline(np.log10(ells), np.log10(np.abs(cl_g)))
+    
+    if plot:
+        plt.figure()
+        plt.loglog(ells, cl, label='$C_{\\ell}$', marker='.')
+        plt.loglog(ells, cl_g, label='$C_{\\ell}^G$', marker='.')
+        plt.loglog(np.linspace(ell_min, ell_max, 1000), 10**spline_cl_g(np.log10(np.linspace(ell_min, ell_max, 1000))), label='spline of $C_{\\ell}^G$')
+        plt.legend(fontsize=14)
+        plt.xlabel('$\\ell$', fontsize=16)
+        plt.title('Angular power spectra', fontsize=16)
+        plt.show()
+    
+    return cl_g, spline_cl_g
 
 def k_to_ell(k, comoving_dist):
     theta = 1./(comoving_dist*k)
