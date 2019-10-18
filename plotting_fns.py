@@ -9,27 +9,49 @@ from matplotlib import cm
 
 figure_directory = '/Users/richardfeder/Documents/caltech/ciber2/figures/'
 
-def plot_radavg_xspectrum(rbins, radprofs=[], raderrs=None, labels=[], lmin=90., save=False, snspalette=None, pdf_or_png='png'):
+def plot_radavg_xspectrum(rbins, radprofs=[], raderrs=None, labels=[], \
+                          lmin=90., save=False, snspalette=None, pdf_or_png='png', \
+                         image_dim=1024, mode='cross', zbounds=None, shotnoise=True):
     
-    image_dim = 1024.
     steradperpixel = ((np.pi/lmin)/image_dim)**2 
 
-    plt.figure()
-    plt.title('Cross Spectrum', fontsize=16)
-    for i, prof in enumerate(radprofs):
-        if raderrs is not None:
-            plt.errorbar(rbins*lmin, np.sqrt((rbins*lmin)**2*prof/(2*np.pi)), yerr=(rbins*lmin)**2*raderrs[i]/(2*np.pi), marker='.', label=labels[i])
-        else:
-            plt.plot(rbins*lmin, np.sqrt((rbins*lmin)**2*prof/(2*np.pi)), marker='.', label=labels[i])
+    fig = plt.figure()
+    xvals = rbins*lmin
 
+    yerr = None # this gets changed from None to actual errors if they are fed in
+    if mode=='cross':
+        titlestring = 'Cross Spectrum'
+        yvals = np.array([(rbins*lmin)**2*prof/(2*np.pi) for prof in radprofs])
+        ylabel = '$\\ell(\\ell+1) C_{\\ell}/2\\pi$'
+        if raderrs is not None:
+            yerr = np.array([(rbins*lmin)**2*raderr/(2*np.pi) for raderr in raderrs]) 
+    elif mode=='auto':
+        titlestring = 'Auto Spectrum'
+        yvals = np.array([np.sqrt((rbins*lmin)**2*prof/(2*np.pi)) for prof in radprofs])
+        ylabel = '($\\ell(\\ell+1) C_{\\ell}/2\\pi)^{1/2}$'
+        if raderrs is not None:
+            yerr = np.array([np.sqrt((rbins*lmin)**2/(2*np.pi))*raderr/(2*np.sqrt(prof)) for raderr in raderrs]) # I don't think this is right, modify at some point
+    if zbounds is not None:
+        titlestring +=', '+str(zmin)+'$<z<$'+str(zmax)
+        
+    plt.title(titlestring, fontsize=16)
+        
+    for i, prof in enumerate(radprofs):
+        plt.errorbar(xvals, yvals[i], yerr=yerr[i], marker='.', label=labels[i])
+        if shotnoise:
+            shot_noise = np.poly1d(np.polyfit(np.log10(xvals[-10:]), np.log10(np.sqrt(xvals[-10:]**2*prof[-10:]/(2*np.pi))), 1))
+            plt.plot(xvals, 10**(shot_noise(np.log10(xvals))), label='Best fit shot noise',linestyle='dashed')
+        
     plt.legend()
     plt.xscale('log')
     plt.yscale('log')
     plt.xlabel('$\\ell$', fontsize=14)
-    plt.ylabel('($\\ell(\\ell+1) C_{\\ell}/2\\pi)^{1/2}$  $(nW m^{-2} sr^{-1})$', fontsize=14)
+    plt.ylabel(ylabel, fontsize=14)
     if save:
         plt.savefig(figure_directory+'radavg_xspectrum.'+pdf_or_png, bbox_inches='tight')
     plt.show()
+    
+    return fig
 
 
 def plot_2d_xspectrum(xspec, minpercentile=5, maxpercentile=95, save=False, pdf_or_png='png'):

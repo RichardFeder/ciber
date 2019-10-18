@@ -13,30 +13,32 @@ from hankel import SymmetricFourierTransform
 from scipy import interpolate
 
 
-def counts_from_density_2d(density_field, Ntot = 200000, plot=False):
-    counts_map = np.zeros_like(density_field)
+def counts_from_density_2d(density_fields, Ntot = 200000):
+    counts_map = np.zeros_like(density_fields)
     
     # compute the mean number density per cell 
     N_mean = float(Ntot) / float(counts_map.shape[-2]*counts_map.shape[-1])
-    expectation_ngal = (density_field+1.)*N_mean
+    expectation_ngal = (density_fields+1.)*N_mean
     # generate Poisson realization of 2D field
-    counts_map = np.random.poisson(expectation_ngal)
-        
-    dcounts = np.sum(counts_map)-Ntot
+    count_maps = np.random.poisson(expectation_ngal)
+    
+    dcounts = np.array([np.sum(ct_map)-Ntot for ct_map in count_maps])
     # if more counts in the poisson realization than Helgason number counts, subtract counts
     # from non-zero elements of array. Right now this is done uniformly, which probably isn't perfect, 
     # but the difference in counts is usually at the sub-percent level, so adding counts will only slightly
     # increase shot noise, while subtracting will slightly decrease power at all scales
-    if dcounts > 0:
-        nonzero_x, nonzero_y = np.nonzero(counts_map[0])
-        rand_idxs = np.random.choice(np.arange(len(nonzero_x)), dcounts, replace=False)
-        counts_map[0][nonzero_x[rand_idxs], nonzero_y[rand_idxs]] -= 1
-    elif dcounts < 0:
-        randx, randy = np.random.choice(np.arange(counts_map.shape[-1]), size=(2, np.abs(dcounts)))
-        for i in xrange(np.abs(dcounts)):
-            counts_map[0][randx[i], randy[i]] += 1
+    for i in np.arange(count_maps.shape[0]):
+        if dcounts[i] > 0:
+            nonzero_x, nonzero_y = np.nonzero(count_maps[i])
+            rand_idxs = np.random.choice(np.arange(len(nonzero_x)), dcounts[i], replace=True)
+            count_maps[i][nonzero_x[rand_idxs], nonzero_y[rand_idxs]] -= 1
+        elif dcounts[i] < 0:
+            randx, randy = np.random.choice(np.arange(count_maps[i].shape[-1]), size=(2, np.abs(dcounts[i])))
+            for j in xrange(np.abs(dcounts[i])):
+                counts_map[i][randx[j], randy[j]] += 1
 
-    return counts_map
+    return count_maps
+
 
 def ell_to_k(ell, comoving_dist):
     theta = np.pi/ell
@@ -58,49 +60,65 @@ def find_nearest_2_idxs(array, vals):
     idxs_2[idxs_2<0]=0
     return idxs, idxs_2, dk
 
-def gaussian_random_field_3d(n_samples, alpha=None, size=100, ps=None, ksampled=None, comoving_dist=None):
+def gaussian_random_field_3d(n_samples, alpha=None, size=128, ell_min=90., ps=None, ksampled=None, z=None, fac=1, plot=False):
     
-    k_ind = np.mgrid[:size, :size, :size] - int( (size + 1)/2 )
+    k_ind = np.mgrid[:size*fac, :size*fac, :size*fac] - int( (size*fac + 1)/2 )
     k_ind = scipy.fftpack.fftshift(k_ind)
     k_idx = ( k_ind )
-    ks = np.sqrt(k_idx[0]**2 + k_idx[1]**2 + k_idx[2]**2 + 1e-10)
-    logfit = np.poly1d(np.polyfit(np.log10(ksampled), np.log10(ps), 30))
-    amplitude = 10**(logfit(np.log10(ks)))
-    print(amplitude)
-    amplitude[0,0,0] = 0.
-    noise = np.random.normal(size = (n_samples, size, size, size)) + 1j * np.random.normal(size = (n_samples, size, size, size))
-    gfield = np.array([np.fft.ifftn(n * amplitude).real for n in noise])
+    ks = np.sqrt(k_idx[0]**2 + k_idx[1]**2 + k_idx[2]**2)
+        
+    r, xi = P2xi(ksampled)(ps)
 
-    return gfield
+    # transform the two point correlation function to the corresponding 2pt in the gaussian random field
+    xi_g = np.log(1.+xi)
+    # fourier transform back to get P_G(k)
+    ksamp, p_G = xi2P(r)(xi_g)
+    
+    if z is not None:
+        k_min = ell_min / cosmo.angular_diameter_distance(z)
+        k_min /= float(fac)
+        ks *= k_min
+        
+    vol = (1./k_min.value)**3
+    
+    spline_G = interpolate.InterpolatedUnivariateSpline(np.log10(ksamp[:-50]), np.log10(p_G[:-50]))
+    amplitude = 10**(spline_G(np.log10(ks)))
+    amplitude[0,0,0] = 0.
+    
+    noise = np.random.normal(size = (n_samples, size*fac, size*fac, size*fac)) + 1j * np.random.normal(size = (n_samples, size*fac, size*fac, size*fac))
+    gfield = np.array([np.fft.ifftn(n * np.sqrt(amplitude*vol/2)).real for n in noise])
+    
+    
+    return gfield, amplitude, ks
+
 
 def gaussian_random_field_2d(n_samples, alpha=None, size=128, ell_min=90., cl=None, ell_sampled=None, fac=1, plot=False):
     
     l_ind = np.mgrid[:size*fac, :size*fac] - int( (size*fac + 1)/2 )
     l_ind = scipy.fftpack.fftshift(l_ind)
     l_idx = ( l_ind )
-    ls = np.sqrt(l_idx[0]**2 + l_idx[1]**2)
+    ls = np.sqrt(l_idx[0]**2 + l_idx[1]**2)*ell_min
             
-    cl_g, spline_cl_g = hankel_spline_lognormal_cl(ell_sampled, cl)
-        
-    surface_area = (np.pi/ell_min)**2
-
+    cl_g, spline_cl_g = hankel_spline_lognormal_cl(ell_sampled, cl)           
     amplitude = 10**spline_cl_g(np.log10(ls))
     amplitude[0,0] = 0.
     
     noise = np.random.normal(size = (n_samples, size*fac, size*fac)) + 1j * np.random.normal(size = (n_samples, size*fac, size*fac))
-    gfield = np.array([np.fft.ifftn(n * amplitude * surface_area).real for n in noise])
+    gfield = np.array([np.fft.ifftn(n * amplitude / surface_area).real for n in noise])
+    steradperpixel = ((np.pi/ell_min)/size)**2
+    gfield /= steradperpixel
     
+    # up to this point, the gaussian random fields have mean zero
     return gfield, amplitude, ls
 
-
-def generate_count_map_2d(n_samples, size=128, Ntot=2000000, cl=None, ell_sampled=None, plot=False):
+def generate_count_map_2d(n_samples, ell_min=90., size=128, Ntot=2000000, cl=None, ell_sampled=None):
     # we want to generate a GRF twice the size of our final GRF so we include larger scale modes
-    realgrf, amp, k = gaussian_random_field_2d(n_samples, size=size, cl=cl, ell_sampled=ell_sampled, fac=2, plot=plot)
+    # as such, we set ell_min in the GRF equal to ell_min / 2 
+    realgrf, amp, k = gaussian_random_field_2d(n_samples, size=size, cl=cl, ell_sampled=ell_sampled, ell_min=ell_min/2.,fac=2)
     realgrf = realgrf[:,int(0.5*size):int(1.5*size),int(0.5*size):int(1.5*size)]
-    realgrf /= np.max(np.abs(realgrf))
-    density_fields = np.exp(realgrf-np.std(realgrf)**2)-1. # assuming a log-normal density distribution
-        
-    counts = counts_from_density_2d(density_fields, Ntot=Ntot, plot=plot)
+    realgrf = np.array([grf-np.mean(grf) for grf in realgrf]) # this ensures that each field has mean zero
+    density_fields = np.array([np.exp(grf-np.std(grf)**2)-1. for grf in realgrf]) # assuming a log-normal density distribution
+    counts = counts_from_density_2d(density_fields, Ntot=Ntot)
 
     return counts, density_fields
 
@@ -137,23 +155,6 @@ def k_to_ell(k, comoving_dist):
     ell = np.pi/theta
     return ell
 
-def Pk2(sx, sy, alph=None, ps=None, ksampled=None, comoving_dist=None, pixsize=3.39e-5):
-    if alph is not None:
-        return np.sqrt(np.sqrt(sx**2+sy**2)**alph)
-
-    if ps is not None:
-        ell_sampled = k_to_ell(ksampled, comoving_dist)
-        ells = np.pi/(np.sqrt(sx**2+sy**2)*pixsize)
-        idx1 = np.array([np.abs(ell_sampled-ell).argmin() for ell in ells])
-        ps1 = ps[idx1]
-        return ps1
-    return True
-
-def power_spec(k):
-    ps = matterps.normalizedmp(k)
-    ps[k==0] = 0.
-    return ps
-
 def positions_from_counts(counts_map, cat_len=None):
     thetax, thetay = [], []
     for i in np.arange(np.max(counts_map)):
@@ -169,6 +170,14 @@ def positions_from_counts(counts_map, cat_len=None):
     return np.array(thetax), np.array(thetay)
 
 
+def w_theta(theta, A=0.2, gamma=1.8):
+    return A*theta**(1.-gamma)
+
+def two_pt_r(r, r0=6., gamma=1.8):
+    ''' Returns the two point correlation function at a given comoving distance r'''
+    return (r/r0)**(-gamma)
+
+
 ''' 
 
 I want to construct random catalogs drawn from the galaxy distribution specified by Helgason et al.
@@ -178,7 +187,7 @@ This involves:
 - converting to apparent magnitudes, and then to flux units from AB - done
 - computing an estimated mass for the galaxy - done
 - get virial radius for IHL component - done
-- generate positions consistent with two point correlation function of galaxies (TODO)
+- generate positions consistent with two point correlation function of galaxies (TODO, almost done)
 
 '''
 

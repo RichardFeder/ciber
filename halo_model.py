@@ -2,12 +2,16 @@ import scipy
 import astropy.units as u
 from astropy.cosmology import FlatLambdaCDM
 from scipy.special import sici
+from scipy import interpolate
 import numpy as np
 from hmf import MassFunction
 import camb
 from camb import model, initialpower
+from astropy import constants as const
+
 # initialize cosmology class 
 cosmo = FlatLambdaCDM(H0=70, Om0=0.28)
+
 
 
 class tinker_hmf():
@@ -111,14 +115,13 @@ class halo_model_class():
         
         ''' This parameterization is from Scoccimarro et al. 2000 
             "How Many Galaxies Fit in a Halo?" '''
-        print('m =', m)
         R = self.mass_2_virial_radius(m).to(u.Mpc).value*self.Delta**(1./3.)
         c = self.concentration(m)
         khat = k*self.R_star*self.Delta**(-1./3.)
         y = ((R/self.R_star)/0.67)
         
         # this shit sucks I hate quantities
-        
+
         # print(len(conc))
         # print(isinstance(conc, (list, np.ndarray)))
 
@@ -255,16 +258,16 @@ def limber_project(halo_ps, zmin, zmax, ng=None, flux_prod_rate=None, nbin=10, e
     zs = np.linspace(zmin, zmax, nbin+1)
     dz = zs[1]-zs[0]
     central_zs = 0.5*(zs[1:]+zs[:-1])
-    D_A = cosmo.angular_diameter_distance(central_zs)
+    D_A = cosmo.angular_diameter_distance(central_zs)/cosmo.h # has units h^-1 Mpc
     H_z = cosmo.H(central_zs)
-    inv_product = (const.c.to('km/s')/(16*np.pi**2))*(dz/(H_z*D_A**2*(1+central_zs)**2))
-    
+#     inv_product = (const.c.to('km/s')/(16*np.pi**2))*(dz/(H_z*D_A**2*(1+central_zs)**2))
+    inv_product = (cosmo.h/const.c.to('km/s'))*(dz*H_z/D_A**2)
     
     for i in range(nbin):
         halo_ps.update(z=central_zs[i])
-        ks = ell_space / cosmo.comoving_distance(central_zs[i])        
-        logfit = np.poly1d(np.polyfit(np.log10(halo_ps.k), np.log10(halo_ps.nonlinear_power), 15))
-        ps = 10**(logfit(np.log10(ks.value)))
+        ks = ell_space / (cosmo.comoving_distance(central_zs[i]))
+        log_spline = interpolate.InterpolatedUnivariateSpline(np.log10(halo_ps.k), np.log10(halo_ps.nonlinear_power))    
+        ps = 10**(log_spline(np.log10(ks.value)))
         cls[i] = ps
     
     if flux_prod_rate is not None:
@@ -281,5 +284,11 @@ def limber_project(halo_ps, zmin, zmax, ng=None, flux_prod_rate=None, nbin=10, e
     integral_cl = np.sum(cls, axis=0)
 
     return ell_space, integral_cl
+
+
+
+
+
+    
     
 
