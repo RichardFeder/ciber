@@ -58,6 +58,8 @@ def azimuthalAverage(image, lmin=90, center=None, logbins=True, nbins=60, sterad
     return av_rbins, np.array(rad_avg), np.array(rad_std)
 
 def compute_beam_correction(psf):
+    ''' This function computes the power spectrum of a beam as provided through a PSF template. The beam power spectrum
+    can then be used to correct the autospectrum of a mock intensity map which is convolved with an instrument PSF''' 
     rb, radprof_Bl, radstd_bl = compute_cl(psf, psf)
     B_ell = np.sqrt(radprof_Bl)/np.max(np.sqrt(radprof_Bl))
     return rb, B_ell
@@ -77,18 +79,25 @@ def compute_cross_spectrum(map_a, map_b, n_deg_across=2.0, sterad_a=True, sterad
     
     return np.fft.fftshift(xspectrum)
 
-def compute_cl(mapa, mapb=None):
+def compute_cl(mapa, mapb=None, lmin=90.):
+
+    ''' This function computes the angular power spectrum C_ell by 1) computing the cross spectrum of the images and
+    2) radially averaging over multipole bins ''' 
+    n_deg_across = 180./lmin
     if mapb is None:
-        xcorr = compute_cross_spectrum(mapa, mapa)
+        xcorr = compute_cross_spectrum(mapa, mapa, n_deg_across=n_deg_across)
     else:
-        xcorr = compute_cross_spectrum(mapa, mapb)
+        xcorr = compute_cross_spectrum(mapa, mapb, n_deg_across=n_deg_across)
         
-    rbins, radprof, radstd = azimuthalAverage(xcorr)
+    rbins, radprof, radstd = azimuthalAverage(xcorr, lmin=lmin)
     
     return rbins, radprof, radstd
 
 
 def compute_mode_coupling(mask, ell_min=90., nphases=50, logbins=True, nbins=60, ps_amplitude=100.0):
+    ''' If there is masking done on a given observation due to incomplete coverage or bright sources, 
+    this function will compute the mode coupling matrix, which estimates how that masking impacts the 
+    computed power spectrum. ''' 
     ell_max = ell_min*np.sqrt(2*(mask.shape[0]/2)**2)
     
     if logbins:

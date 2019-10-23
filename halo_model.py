@@ -12,8 +12,6 @@ from astropy import constants as const
 # initialize cosmology class 
 cosmo = FlatLambdaCDM(H0=70, Om0=0.28)
 
-
-
 class tinker_hmf():
     
     Delta = 200. # fiducial overdensity for spherical collapse, fixes normalization factors below
@@ -49,12 +47,7 @@ class halo_model_class():
     
     # NFW or M99 profile? might be good to get analytical version of convolved profiles
     h = 0.67 
-    sig_lnc = 0.25 
-    c_mean = 1.
     R_star = (3.135/h)*u.Mpc
-    S8 = 0.8 # sigma_8 from LCDM
-    ns = 0.96
-    omega_m = 0.3
     Delta = 200. # fiducial overdensity for spherical collapse, fixes normalization factors below
     
     linpars = camb.CAMBparams()
@@ -65,8 +58,8 @@ class halo_model_class():
         
         self.hmf = MassFunction(dlog10m=0.02)
         self.mrange = self.hmf.m*u.solMass
-        self.rho = self.hmf.rho_gtm[0]*u.solMass*u.Mpc**(-3)
-        self.m_star = (4*np.pi*self.R_star**3/3)*self.rho
+        self.rho = self.hmf.rho_gtm[0]*u.solMass*u.Mpc**(-3) # mean number of DM halos per Mpc^3
+        self.m_star = (4*np.pi*self.R_star**3/3)*self.rho # used as pivot mass for halo concentration
         self.kmax = 1e3/self.h
         
         if redshifts is None:
@@ -79,37 +72,28 @@ class halo_model_class():
         self.linpars.NonLinear = model.NonLinear_none
         self.lin_results = camb.get_results(self.linpars)
     
-    def onehalo_corr(self):
-        pass
-    
-    def twohalo_corr(self):
-        pass
-    
-    def dm_corr(self):
-        dm_corr_fn = self.onehalo_corr()+self.twohalo_corr()
-        return dm_corr_fn
-
-    def total_cross_power_spectrum(self):
-        return self.cross_power_spectrum_1h()+self.cross_power_spectrum_2h()
-    
+    ''' The concentration is the ratio c_{200} = r_{200}/r_s, where r_s is the scale radius and r_{200} is
+    the radius of a halo where the density is 200 times the critical density of the universe. '''
     def concentration(self, m, z=0):
         return (9./(1.+z))*(m/self.m_star)**(-0.13)
     
+    ''' Used when computing the NFW profile '''
     def f(self, c):
         return 1./(np.log(1.+c)-1./(1.+c))
 
+    ''' This assumes the halo is spherically symmetric at least to determine the virial radius '''
     def mass_2_virial_radius(self, halo_mass, z=0):
-        term = (3/(4*np.pi))*cosmo.Om(z)*halo_mass.to(u.g)/(200*cosmo.critical_density(z))
-        return term**(1./3.)
+        R_vir_cubed = (3/(4*np.pi))*cosmo.Om(z)*halo_mass.to(u.g)/(200*cosmo.critical_density(z))
+        return R_vir_cubed**(1./3.)
             
     def NFW_r(self, rfrac, m, normalize=True):
         R_vir = self.mass_2_virial_radius(m).to(u.Mpc).value
         c = self.concentration(m)   
-        ur = (self.f(c)*c**3/(4*np.pi*(R_vir**3)))/(c*rfrac*(1+c*rfrac)**2)
+        u_r = (self.f(c)*c**3/(4*np.pi*(R_vir**3)))/(c*rfrac*(1+c*rfrac)**2)
         if normalize:
-            return ur/np.max(ur)
+            return u_r/np.max(u_r)
         else:
-            return ur
+            return u_r
     
     def NFW_k(self, k, m, normalize=True):
         
@@ -118,58 +102,21 @@ class halo_model_class():
         R = self.mass_2_virial_radius(m).to(u.Mpc).value*self.Delta**(1./3.)
         c = self.concentration(m)
         khat = k*self.R_star*self.Delta**(-1./3.)
-        y = ((R/self.R_star)/0.67)
-        
-        # this shit sucks I hate quantities
-
-        # print(len(conc))
-        # print(isinstance(conc, (list, np.ndarray)))
-
-        # if isinstance(conc, (list, np.ndarray)):
-        #     c = conc
-        #     y = yval
-
-        # else:
-        #     c = [conc]
-        #     y = [yval]
-
-        # if not isinstance(conc, (list, np.ndarray)) or isinstance(conc, u.Quantity):
-        #     print('is not a list of stuff')
-        #     c = [conc]
-        #     y = [yval]
-        # else:
-        #     print('is an instance')
-        #     c = conc
-        #     y = yval
+        y = ((R/self.R_star)/self.h)
 
         kappa = np.array([khat.value*y[i].value/c[i].value for i in range(len(c))])
         kappa_c = np.array([kappa[i]*c[i].value for i in range(len(c))])
         kappa_1plus_c = np.array([kappa[i]*(1.+c[i].value) for i in range(len(c))])
         
-        # kappa = np.array([khat*y[i]/c[i] for i in range(len(c))])
-        # kappa_c = np.array([kappa[i]*c[i] for i in range(len(c))])
-        # kappa_1plus_c = np.array([kappa[i]*(1.+c[i]) for i in range(len(c))])
-
         SI_1, CI_1 = sici(kappa_1plus_c)
         SI_2, CI_2 = sici(kappa)
         
+        # no fs given, yet...
         ufunc_no_f = np.sin(kappa)*(SI_1-SI_2)+np.cos(kappa)*(CI_1-CI_2)-(np.sin(kappa_c)/kappa_1plus_c)
         
         fs = self.f(c)
-        # if len(c)==1:
-        #     # fs = self.f(c[0].value)
-        #     ufunc = np.array([fs*ufunc_no_f[i] for i in range(len(c))])
-        # else:
-        #     # fs = self.f(c)
-        
+
         ufunc = np.array([fs[i]*ufunc_no_f[i] for i in range(len(c))])
-        
-#         print('R has shape ', R.shape)
-#         print('concentration has shape ', c.shape)
-#         print('khat has shape', khat.shape)
-#         print('y has shape', y.shape)
-#         print('kappa has shape', kappa.shape, kappa_c.shape, kappa_1plus_c.shape)
-#         print('ufunc has shape ', ufunc.shape)
                         
         if normalize:
             return np.array([ufunc[i]/np.max(ufunc[i]) for i in range(ufunc.shape[0])])
@@ -253,15 +200,16 @@ class halo_model_class():
 def limber_project(halo_ps, zmin, zmax, ng=None, flux_prod_rate=None, nbin=10, ell_min=90, ell_max=1e5, n_ell_bin=30):
     ''' This currently takes in the dark matter halo power spectrum from the hmf package. The only place where this is
     used is when updating the redshift of the power spectrum. Should add option to use array of power spectra as well'''
-    ell_space = 10**(np.linspace(np.log10(ell_min), np.log10(ell_max), n_ell_bin))
     cls = np.zeros((nbin, n_ell_bin))    
+
+    ell_space = 10**(np.linspace(np.log10(ell_min), np.log10(ell_max), n_ell_bin))
     zs = np.linspace(zmin, zmax, nbin+1)
     dz = zs[1]-zs[0]
     central_zs = 0.5*(zs[1:]+zs[:-1])
+    
     D_A = cosmo.angular_diameter_distance(central_zs)/cosmo.h # has units h^-1 Mpc
-    H_z = cosmo.H(central_zs)
-#     inv_product = (const.c.to('km/s')/(16*np.pi**2))*(dz/(H_z*D_A**2*(1+central_zs)**2))
-    inv_product = (cosmo.h/const.c.to('km/s'))*(dz*H_z/D_A**2)
+    H_z = cosmo.H(central_zs) # has units km/s/Mpc (or km/s/(h^-1 Mpc)?)
+    inv_product = (cosmo.h*dz*H_z)/(const.c.to('km/s')*(1.+central_zs)*D_A**2)
     
     for i in range(nbin):
         halo_ps.update(z=central_zs[i])
@@ -269,6 +217,9 @@ def limber_project(halo_ps, zmin, zmax, ng=None, flux_prod_rate=None, nbin=10, e
         log_spline = interpolate.InterpolatedUnivariateSpline(np.log10(halo_ps.k), np.log10(halo_ps.nonlinear_power))    
         ps = 10**(log_spline(np.log10(ks.value)))
         cls[i] = ps
+
+    ''' One can compute the auto and cross power spectrum for intensity maps/tracer catalogs 
+    by specifying flux_prod_rate and/or ng (average number of galaxies per steradian)''' 
     
     if flux_prod_rate is not None:
         if ng is not None:
@@ -288,7 +239,4 @@ def limber_project(halo_ps, zmin, zmax, ng=None, flux_prod_rate=None, nbin=10, e
 
 
 
-
-    
-    
 

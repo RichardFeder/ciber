@@ -26,7 +26,6 @@ class Luminosity_Function():
     z0alpha = 0.01 # used for alpha(z)
     alpha0 = -1.00
     r = 0.035
-    DH = 4000*u.Mpc # hubble distance in Mpc
     schechter_units = u.Mpc**(-3)
     cosmo = FlatLambdaCDM(H0=70, Om0=0.28)
 
@@ -41,10 +40,9 @@ class Luminosity_Function():
         return self.alpha0*(z/self.z0alpha)**self.r
         
     def comoving_vol_element(self, z): # checked
-        V = cosmo.differential_comoving_volume(z)*u.steradian*(np.pi/180)**2 # to get in deg^-2
+        V = cosmo.differential_comoving_volume(z)*u.steradian*(np.pi/180.)**2 # to get in deg^-2
         return V
     
-
     def find_nearest_band(self, lam): # chceked
         optkey = ''
         mindist = None
@@ -101,7 +99,7 @@ class Luminosity_Function():
     
 
     def schechter_lf_dm(self, M, z, band): # in absolute magnitudes
-        
+    
         Msz = self.m_star(z, band)
         phiz = self.phi_star(z, band)
         alph = self.alpha(z)
@@ -112,10 +110,14 @@ class Luminosity_Function():
         return phi 
     
     def specific_flux(self, m_ab, nu):
+        ''' output has units of microJansky '''
         val = nu*10**(-0.4*(m_ab-23.9))*u.microJansky
         return val
         
     def total_bkg_light(self, ms, z, band):
+        ''' for a given redshift, this function integrates the luminosity function over apparent
+        magnitudes, weighted by the specific flux within each magnitude bin. Resulting quantity has 
+        units of intensity, i.e. nW/m^2/sr. '''
         dfdz = 0.
         nu = const.c/(self.band_dicts[band]['lambda']*u.um)
         for i in xrange(len(ms)-1):
@@ -130,7 +132,11 @@ class Luminosity_Function():
     # these shot noise levels agree with Fig. 8 of Helgason+ given certain limiting magnitudes
 
     def auto_shot_noise(self, z0, z1, ms, nzbin=10, band='J'):
-
+        ''' This function computes the shot noise from galaxies as driven by the Schechter luminosity function.
+        The shot noise in the auto spectrum is calculated in Helgason with the double integral
+        P_{SN} = (integral over redshift) dz (integral over magnitude)dm f^2(m)dN(m|z)/dm. The resulting 
+        shot noise has units of intensity squared, i.e. (nW/m^2/sr)^2. '''
+        
         nu = const.c/(self.band_dicts[band]['lambda']*u.um)
         shots = []
         zrange = np.linspace(z0, z1, nzbin)
@@ -146,7 +152,7 @@ class Luminosity_Function():
                 dm = ms[i+1]-ms[i]
                 mabs = self.get_abs_from_app(m_in_btwn, z)
                 dndm = self.schechter_lf_dm(mabs, z, band)*(10**(-3) * self.schechter_units)*cosmo.differential_comoving_volume(z)
-                f_m = lf.specific_flux(m_in_btwn, nu)
+                f_m = self.specific_flux(m_in_btwn, nu)
                 psn = dm*dndm*f_m**2
                 cl_shot += psn.to(u.nW**2*u.m**(-4)*u.steradian**(-1))
 
@@ -156,7 +162,13 @@ class Luminosity_Function():
 
 
     def cross_shot_noise(self, z0, z1, ms, nzbin=10, band='J'):
-        ''' This computes the shot noise when cross correlating an intensity map with a galaxy counts map '''
+        ''' This computes the shot noise when cross correlating an intensity map with a galaxy counts map.
+        This differs from the auto shot noise in two ways:
+            1) The integral over number counts is weighted by f(m)n_g^{-1} rather than f^2(m)
+            2) The integral over magnitude is evaluated over the tracer catalog magnitude range.
+        Cross shot noise has units of intensity, i.e. nW/m^2/sr. 
+        '''
+
         nu = const.c/(self.band_dicts[band]['lambda']*u.um)
         shots = []
         zrange = np.linspace(z0, z1, nzbin)
