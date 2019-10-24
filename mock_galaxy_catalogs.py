@@ -13,17 +13,21 @@ from hankel import SymmetricFourierTransform
 from scipy import interpolate
 
 
-def counts_from_density_2d(density_fields, Ntot = 200000):
+
+def counts_from_density_2d(density_fields, Ntot = 200000, ell_min=90.):
     counts_map = np.zeros_like(density_fields)
     
+    surface_area = (np.pi/ell_min)**2
+
     # compute the mean number density per cell 
     N_mean = float(Ntot) / float(counts_map.shape[-2]*counts_map.shape[-1])
+    
     # calculate the expected number of galaxies per cell
-    expectation_ngal = (density_fields+1.)*N_mean
+    expectation_ngal = (density_fields+1.)*N_mean 
     # generate Poisson realization of 2D field
     count_maps = np.random.poisson(expectation_ngal)
     
-    dcounts = np.array([np.sum(ct_map)-Ntot for ct_map in count_maps])
+    dcounts = np.array([int(np.sum(ct_map)-Ntot) for ct_map in count_maps])
     # if more counts in the poisson realization than Helgason number counts, subtract counts
     # from non-zero elements of array.
     # The difference in counts is usually at the sub-percent level, so adding counts will only slightly
@@ -89,29 +93,46 @@ def gaussian_random_field_3d(n_samples, alpha=None, size=128, ell_min=90., ps=No
 
 def gaussian_random_field_2d(n_samples, alpha=None, size=128, ell_min=90., cl=None, ell_sampled=None, fac=1, plot=False):
     
-    # make grid of multipoles scaled by the minimum multipole ell_min
-    ls = make_ell_grid(size*fac, ell_min=ell_min)
+    up_size = size*fac
+    steradperpixel = ((np.pi/ell_min)/up_size)**2
+    surface_area = (np.pi/ell_min)**2
 
-    # compute spline interpolation of lognormal angular power spectrum and evaluate ell grid with log fit
-    cl_g, spline_cl_g = hankel_spline_lognormal_cl(ell_sampled, cl)           
+    cl_g, spline_cl_g = hankel_spline_lognormal_cl(ell_sampled, cl)
+    ls = make_ell_grid(up_size, ell_min=ell_min)
     amplitude = 10**spline_cl_g(np.log10(ls))
+    amplitude /= surface_area
+    
     amplitude[0,0] = 0.
     
-    noise = np.random.normal(size = (n_samples, size*fac, size*fac)) + 1j * np.random.normal(size = (n_samples, size*fac, size*fac))
-    gfield = np.array([np.fft.ifftn(n * amplitude / surface_area).real for n in noise])
-    steradperpixel = ((np.pi/ell_min)/size)**2
+    noise = np.random.normal(size = (n_samples, up_size,up_size)) + 1j * np.random.normal(size = (n_samples, up_size, up_size))
+#     gfield = np.array([np.fft.ifft2(n * amplitude * up_size**2 ).real for n in noise])
+    gfield = np.array([np.fft.ifft2(n * amplitude).real for n in noise])
     gfield /= steradperpixel
     
+    # up to this point, the gaussian random fields have mean zero
     return gfield, amplitude, ls
 
-def generate_count_map_2d(n_samples, ell_min=90., size=128, Ntot=2000000, cl=None, ell_sampled=None):
+def generate_count_map_2d(n_samples, ell_min=90., size=128, Ntot=2000000, cl=None, ell_sampled=None, plot=False, save=False):
     # we want to generate a GRF twice the size of our final GRF so we include larger scale modes
-    # as such, we set ell_min in the GRF equal to ell_min / 2 
     realgrf, amp, k = gaussian_random_field_2d(n_samples, size=size, cl=cl, ell_sampled=ell_sampled, ell_min=ell_min/2.,fac=2)
-    # only take middle square
     realgrf = realgrf[:,int(0.5*size):int(1.5*size),int(0.5*size):int(1.5*size)]
+    
     density_fields = np.array([np.exp(grf-np.std(grf)**2)-1. for grf in realgrf]) # assuming a log-normal density distribution
     density_fields = np.array([df-np.mean(df) for df in density_fields]) # this ensures that each field has mean zero
+    
+    if plot:
+        plt.figure(figsize=(10,4))
+        plt.subplot(1,2,1)
+        plt.title('Gaussian random field $A$')
+        plt.imshow(realgrf[0])
+        plt.colorbar()
+        plt.subplot(1,2,2)
+        plt.title('Dimensionless fluctuations $\\rho = e^A$')
+        plt.imshow(density_fields[0])
+        plt.colorbar()
+        if save:
+            plt.savefig('../figures/grf_rho.png', bbox_inches='tight')
+        plt.show()
 
     counts = counts_from_density_2d(density_fields, Ntot=Ntot)
 
@@ -149,6 +170,28 @@ def hankel_spline_lognormal_cl(ells, cl, plot=False, ell_min=90, ell_max=1e5):
     
     return cl_g, spline_cl_g
 
+
+def hsc_positions(hsc_cat, nchoose, z, dz, ra_min=241.5, ra_max=243.5, dec_min=54.0, dec_max=56.0, rmag_max=29.0):
+    restricted_cat = hsc_cat[(hsc_cat['ra']>ra_min)&(hsc_cat['ra']<ra_max)&(hsc_cat['dec']>dec_min)&(hsc_cat['dec']<dec_max)
+        &(hsc_cat['photoz_best']< z+0.5*dz)&(hsc_cat['photoz_best']>z-0.5*dz)&(hsc_cat['rmag_psf']<rmag_max)]
+    
+    dx1 = np.max(restricted_cat['x1'])-np.min(restricted_cat['x1'])
+    dy1 = np.max(restricted_cat['y1'])-np.min(restricted_cat['y1'])
+    restricted_cat['x1'] -= np.min(restricted_cat['x1'])
+    restricted_cat['x1'] *= (float(size-1.)/dx1)
+    restricted_cat['y1'] -= np.min(restricted_cat['y1'])
+    restricted_cat['y1'] *= (float(size-1.)/dy1)
+            
+    n_hsc = len(hsc_cat[(hsc_cat['ra']>ra_min)&(hsc_cat['ra']<ra_max)&(hsc_cat['dec']>dec_min)&(hsc_cat['dec']<dec_max)
+                  &(hsc_cat['photoz_best']< z+0.5*dz)&(hsc_cat['photoz_best']>z-0.5*dz)&(hsc_cat['rmag_psf']<rmag_max)])
+    print('input number_counts:', np.sum(number_counts[i])*4, 'choosing from ', n_hsc, 'galaxies')
+
+    idxs = np.random.choice(np.arange(n_hsc), nchoose, replace=True)
+    tx = restricted_cat.iloc[idxs]['x1']+np.random.uniform(-0.5, 0.5, size=len(idxs))
+    ty = restricted_cat.iloc[idxs]['y1']+np.random.uniform(-0.5, 0.5, size=len(idxs))
+    
+    return tx, ty
+
 ''' Convert wavenumber to multipole for fixed redshift '''
 def k_to_ell(k, comoving_dist):
     theta = 1./(comoving_dist*k)
@@ -162,6 +205,13 @@ def make_ell_grid(size, ell_min=90.):
     for i, sx in enumerate(size_ind):
         ell_grid[i,:] = np.sqrt(sx**2+size_ind**2)*ell_min
     return ell_grid
+
+''' this is just a convenience function for when I want to convert a bunch of lists to numpy arrays'''
+def make_lists_arrays(list_of_lists):
+    list_of_arrays = []
+    for l in list_of_lists:
+        list_of_arrays.append(np.array(l))
+    return list_of_arrays
 
 ''' Given a counts map, generate source catalog positions consistent with those counts. 
 Not doing any subpixel position assignment or anything like that.''' 
@@ -203,19 +253,19 @@ This involves:
 
 class galaxy_catalog():
     
-    lf = Luminosity_Function() # from Helgason
+    lf = Luminosity_Function()
     halomod = halo_model_class()
     pars = camb.CAMBparams()
     pars.set_cosmology(H0=67.5, ombh2=0.022, omch2=0.122)
     pars.InitPower.set_params(ns=0.965)
+    mass_function = MassFunction(z=0., dlog10m=0.02)
 
     def __init__(self, band='J', ell_min=90., ell_max=1e5):
         self.band = band
         self.ell_min = ell_min
         self.ell_max = ell_max 
-
+    
     def ab_match_percentiles(self, mabs, mabs_largesamp):
-
         mass_range, dndm = self.load_halo_mass_function('../data/halo_mass_function_hmfcalc.txt')
         many_halo_masses = np.random.choice(mass_range, len(mabs_largesamp), p=dndm)
         halo_masses = []
@@ -254,15 +304,22 @@ class galaxy_catalog():
         print(len([m for m in gal_app_mags if m < 20]), 'under 20')
         print(len([m for m in gal_app_mags if m < 22]), 'under 22')
         print(len([m for m in gal_app_mags if m < 24]), 'under 24')
-
-        z_mapp_mabs = np.array([gal_zs, gal_app_mags, gal_abs_mags]).transpose()
-        cat = z_mapp_mabs[np.argsort(z_mapp_mabs[:,2])] # sort apparent and absolute mags by absolute mags
+                        
+        arr = np.array([gal_zs, gal_app_mags, gal_abs_mags]).transpose()
+        cat = arr[np.argsort(arr[:,2])] # sort apparent and absolute mags by absolute mags
 
         return cat
 
+    def draw_redshifts(self, Nsrc, zmin, zmax, Mabs, band='H'):
+        zfine = np.linspace(zmin, zmax, 20)[:-1]
+        dndz = []
+        for zed in zfine:
+            dndz.append(np.sum(self.lf.schechter_lf_dm(Mabs, zed, band)*(10**(-3) * self.lf.schechter_units)*(np.max(Mabs)-np.min(Mabs))/len(Mabs)).value)
+        dndz = np.array(dndz)/np.sum(dndz)    
+        zeds = np.random.choice(zfine, Nsrc, p=dndz)
+        return zeds, zfine
+
     def get_schechter_m_given_zs(self, zs, Mabs):
-        ''' For an array of redshifts and absolute magnitudes, this function returns the Schechter luminosity function
-        PDFs that are used to draw galaxy properties. ''' 
         pdfs = []
         for z in zs:
             pdf = self.lf.schechter_lf_dm(Mabs, z, self.band)
@@ -270,57 +327,74 @@ class galaxy_catalog():
             pdfs.append(pdf)
         return pdfs
 
-    def matter_power_spectrum(self, zs, minkh=3e-3, maxkh=5.0, npoints=200):
-        ''' This evaluates the nonlinear matter power spectrum as predicted by CAMB for given redshifts and wavenumber ranges.
-        The power spectrum obtained through this function is used to compute an approximate angular power spectrum, which is
-        done by projecting the power spectrum along the line of sight.''' 
-        self.pars.set_matter_power(redshifts=zs, kmax=maxkh)
-        self.pars.NonLinear = model.NonLinear_both
-        results = camb.get_results(self.pars)
-        kh_nonlin, z_nonlin, pk_nonlin = results.get_matter_power_spectrum(minkh=minkh, maxkh=maxkh, npoints=npoints)
-        comoving_dists = results.comoving_radial_distance(zs)/(0.01*self.pars.H0)
 
-        return kh_nonlin, z_nonlin, pk_nonlin, comoving_dists
+    def generate_positions(self, Nsrc, size, nmaps, all_counts_array, ell_min=90., random_positions=False, hsc=False, cl=None, ells=None):
+        if random_positions:
+            tx = np.random.uniform(0, size, Nsrc)
+            ty = np.random.uniform(0, size, Nsrc)
 
+        elif hsc:
+            tx, ty = hsc_positions(hsc_cat, np.sum(number_counts[i])*4, z, midz_dz)
 
-    def generate_galaxy_catalog(self, ng_bins=5, zmin=0.01, zmax=5.0, ndeg=4.0, m_min=13, m_max=28):
-                
-        zrange_grf = np.linspace(zmin, zmax, ng_bins+1) # ng_bins+1 since we take midpoints
-        midzs = 0.5*(zrange_grf[:-1]+zrange_grf[1:])
-        print('midzs:', midzs)
+        else:
+            # draw galaxy positions from GRF with given power spectrum, number_counts in deg^-2
+            counts, grfs = generate_count_map_2d(nmaps, cl=cl, size=size, ell_min=ell_min, Ntot=Nsrc, ell_sampled=ells)
 
-        # kh_nonlin, z_nonlin, pk_nonlin, comoving_dists = self.matter_power_spectrum(midzs)
-        Mapps = np.linspace(m_min, m_max, m_max-m_min + 1)
-        Mabs = np.linspace(-30.0, -15., 100)
-        number_counts = self.lf.number_counts(midzs, Mapps, 'H')[1] # band doesn't really affect number counts for CIBER
-        thetax, thetay, gal_app_mags, gal_abs_mags, gal_zs, all_finezs = [[] for x in xrange(6)]
+            self.total_counts += counts
 
-        for i, z in enumerate(midzs):
-    
-            # draw galaxy positions from GRF with given power spectrum
-            counts, grfs = generate_count_map(1, ps=pk_nonlin[i,:], Ntot=int(np.sum(number_counts[i])*4), ksampled=kh_nonlin, comoving_dist=comoving_dists[i])
+            all_counts_array.append(counts[0])
+
             tx, ty = positions_from_counts(counts[0])
 
-            # shuffle is used because x positions are ordered and then apparent magnitudes are assigned starting brightest first a few lines down
+            #shuffle is used because x positions are ordered and then apparent magnitudes are assigned starting brightest first a few lines down
             randomize = np.arange(len(tx))
             np.random.shuffle(randomize)
             tx = tx[randomize]
             ty = ty[randomize]
+        
+        return tx, ty, all_counts_array
+
+    def generate_galaxy_catalogs(self, ng_bins=5, zmin=0.01, zmax=5.0, ndeg=4.0, m_min=13, m_max=28, hsc=False, \
+                               ell_min=90., Mabs_min=-30.0, Mabs_max=-15., size=1024, random_positions=False, \
+                                Mabs_nbin=100, band='H', cl=None, ells=None, n_catalogs=1):
+        
+        self.total_counts = 0
+        n_deg_across = 180./ell_min
+        n_square_deg = n_deg_across**2
+        
+        if hsc:
+            hsc_cat = fits_to_dataframe('../data/catalogs/hsc/hsc_pdr1_deep_forced_swire_photoz_cleaned_w_xy.fits')
+
+        zrange_grf = np.linspace(zmin, zmax, ng_bins+1) # ng_bins+1 since we take midpoints
+        midzs = 0.5*(zrange_grf[:-1]+zrange_grf[1:])
+
+        Mapps = np.linspace(m_min, m_max, m_max-m_min + 1)
+        Mabs = np.linspace(Mabs_min, Mabs_max, Mabs_nbin)
+        
+        number_counts = np.array(self.lf.number_counts(midzs, Mapps, band)[1]).astype(np.int)
+
+        thetax, thetay, gal_app_mags, gal_abs_mags, gal_zs, all_finezs, all_counts_array = [[] for x in xrange(7)]
+        midz_dz = midzs[1]-midzs[0]
+        
+        
+        for i, z in enumerate(midzs):
+            
+            if cl is None:
+                ells, cl = limber_project(self.mass_function, zrange_grf[i], zrange_grf[i+1], ell_min=30, ell_max=3e5)
+
+            tx, ty, all_counts_array = self.generate_positions(np.sum(number_counts[i])*n_square_deg, size, n_catalogs, \
+                                             all_counts_array, ell_min=ell_min, random_positions=random_positions, hsc=hsc, \
+                                            cl=cl, ells=ells)
             thetax.extend(tx)
             thetay.extend(ty)
+            mags = []
 
              # draw redshifts within each bin from pdf
-            zfine = np.linspace(zrange_grf[i], zrange_grf[i+1], 20)[:-1]
+            zeds, zfine = self.draw_redshifts(len(tx), zrange_grf[i], zrange_grf[i+1], Mabs, band=band)
             all_finezs.extend(zfine)
-            dndz = []
-            for zed in zfine:
-                dndz.append(np.sum(self.lf.schechter_lf_dm(Mabs, zed, 'H')*(10**(-3) * self.lf.schechter_units)*(np.max(Mabs)-np.min(Mabs))/len(Mabs)).value)
-            dndz = np.array(dndz)/np.sum(dndz)    
-            zeds = np.random.choice(zfine, len(tx), p=dndz)
             gal_zs.extend(zeds)
 
             # draw apparent magnitudes based on Helgason number counts N(m)
-            mags = []
 
             if i == len(midzs)-1:
                 dz = midzs[i]-midzs[i-1]
@@ -333,38 +407,35 @@ class galaxy_catalog():
                 finer_number_counts = self.lf.number_counts([z], finer_mapp, 'H', dz=dz)[1][0]# band doesn't really affect number counts for CIBER
                 fine_mapp_pdf = finer_number_counts/np.sum(finer_number_counts)
 
-                n = int(number_counts[i][j]*4)
+                n = number_counts[i][j]*4
                 if n > 0:
                     mags.extend(np.random.choice(finer_mapp, size=n, p=fine_mapp_pdf))
             
             gal_app_mags.extend(mags)
-
-
-        gal_zs = np.array(gal_zs)
-        thetax = np.array(thetax)
-        thetay = np.array(thetay)
-        gal_app_mags = np.array(gal_app_mags)
-        gal_abs_mags = np.array(gal_abs_mags)
-
+  
+        gal_zs, thetax, thetay, gal_app_mags, gal_abs_mags, all_finezs = make_lists_arrays([gal_zs, thetax, thetay, gal_app_mags, gal_abs_mags, all_finezs])
+        print('len app mags vs thetax:', len(gal_app_mags), len(thetax))
+        
         # poisson realization of galaxy counts not exactly equal to Helgason number counts, so remove extra sources
-        # miiight need a corner case if counts realization gets more sources than number counts, but this probably wont happen
-        idx_choice = np.sort(np.random.choice(np.arange(len(gal_app_mags)), len(thetax), replace=False))
-        gal_app_mags = np.array(gal_app_mags)[idx_choice]
+        if len(gal_app_mags) > len(thetax):  
+            idx_choice = np.sort(np.random.choice(np.arange(len(gal_app_mags)), len(thetax), replace=False))
+            gal_app_mags = np.array(gal_app_mags)[idx_choice]
 
-        all_finezs = np.array(all_finezs)
-        cosmo_dist_mods = cosmo.distmod(np.array(all_finezs))
+        cosmo_dist_mods = cosmo.distmod(all_finezs)
        
         gal_tile = np.tile(gal_zs, (len(all_finezs), 1)).transpose()
         dist_mods = np.array(cosmo_dist_mods[np.argmin(np.abs(np.subtract(gal_tile, all_finezs)), axis=1)].value)
         gal_abs_mags = gal_app_mags - dist_mods - 2.5*np.log10(1.0+gal_zs)
-
         array = np.array([thetax, thetay, gal_zs, gal_app_mags, gal_abs_mags]).transpose()
         partial_cat = array[np.argsort(array[:,4])]
-
+        
         halo_masses, virial_radii = self.abundance_match_ms_given_mags(partial_cat[:,2]) # use redshifts as input        
         self.catalog = np.hstack([partial_cat, np.array([halo_masses, virial_radii]).transpose()])
-
-        return self.catalog
+        if hsc:
+            return self.catalog
+        else:
+#             return self.catalog, total_counts, all_counts_array
+            return self.catalog
 
     def load_halo_mass_function(self, filename):
         hmf = np.loadtxt(filename, skiprows=12)
