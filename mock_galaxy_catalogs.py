@@ -1,18 +1,21 @@
 import numpy as np
-from compos import matterps
-from astropy.cosmology import FlatLambdaCDM
+# from compos import matterps
+# from astropy.cosmology import FlatLambdaCDM
 import astropy.units as u
 # from astropy import constants as const
 from scipy import stats
-import time
+# import time
 from halo_model import *
 from helgason import *
 import camb
-from camb import model, initialpower
+# from camb import model, initialpower
 from hankel import SymmetricFourierTransform
 from scipy import interpolate
+from hmf import MassFunction
 
-
+pars = camb.CAMBparams()
+pars.set_cosmology(H0=67.5, ombh2=0.022, omch2=0.122)
+pars.InitPower.set_params(ns=0.965)
 
 def counts_from_density_2d(density_fields, Ntot = 200000, ell_min=90.):
     counts_map = np.zeros_like(density_fields)
@@ -255,9 +258,7 @@ class galaxy_catalog():
     
     lf = Luminosity_Function()
     halomod = halo_model_class()
-    pars = camb.CAMBparams()
-    pars.set_cosmology(H0=67.5, ombh2=0.022, omch2=0.122)
-    pars.InitPower.set_params(ns=0.965)
+
     mass_function = MassFunction(z=0., dlog10m=0.02)
 
     def __init__(self, band='J', ell_min=90., ell_max=1e5):
@@ -327,32 +328,35 @@ class galaxy_catalog():
             pdfs.append(pdf)
         return pdfs
 
-
     def generate_positions(self, Nsrc, size, nmaps, all_counts_array, ell_min=90., random_positions=False, hsc=False, cl=None, ells=None):
+        
         if random_positions:
-            tx = np.random.uniform(0, size, Nsrc)
-            ty = np.random.uniform(0, size, Nsrc)
+            txs = np.random.uniform(0, size, (nmaps, Nsrc))
+            tys = np.random.uniform(0, size, (nmaps, Nsrc))
 
         elif hsc:
-            tx, ty = hsc_positions(hsc_cat, np.sum(number_counts[i])*4, z, midz_dz)
+            txs, tys = hsc_positions(hsc_cat, np.sum(number_counts[i])*4, z, midz_dz)
 
         else:
+            txs, tys = [], []
             # draw galaxy positions from GRF with given power spectrum, number_counts in deg^-2
             counts, grfs = generate_count_map_2d(nmaps, cl=cl, size=size, ell_min=ell_min, Ntot=Nsrc, ell_sampled=ells)
 
             self.total_counts += counts
 
-            all_counts_array.append(counts[0])
+            for i in range(counts.shape[0]):
+                tx, ty = positions_from_counts(counts[i])
+                #shuffle is used because x positions are ordered and then apparent magnitudes are assigned starting brightest first a few lines down
 
-            tx, ty = positions_from_counts(counts[0])
-
-            #shuffle is used because x positions are ordered and then apparent magnitudes are assigned starting brightest first a few lines down
-            randomize = np.arange(len(tx))
-            np.random.shuffle(randomize)
-            tx = tx[randomize]
-            ty = ty[randomize]
+                randomize = np.arange(len(tx))
+                np.random.shuffle(randomize)
+                tx = tx[randomize]
+                ty = ty[randomize]
+                
+                txs.append(tx)
+                tys.append(ty)
         
-        return tx, ty, all_counts_array
+        return txs, tys
 
     def generate_galaxy_catalogs(self, ng_bins=5, zmin=0.01, zmax=5.0, ndeg=4.0, m_min=13, m_max=28, hsc=False, \
                                ell_min=90., Mabs_min=-30.0, Mabs_max=-15., size=1024, random_positions=False, \
@@ -367,81 +371,98 @@ class galaxy_catalog():
 
         zrange_grf = np.linspace(zmin, zmax, ng_bins+1) # ng_bins+1 since we take midpoints
         midzs = 0.5*(zrange_grf[:-1]+zrange_grf[1:])
+        dzs = zrange_grf[1:]-zrange_grf[:-1] 
+
+        print('midzs:', midzs)
+        print('dzs:', dzs)
 
         Mapps = np.linspace(m_min, m_max, m_max-m_min + 1)
         Mabs = np.linspace(Mabs_min, Mabs_max, Mabs_nbin)
         
-        number_counts = np.array(self.lf.number_counts(midzs, Mapps, band)[1]).astype(np.int)
+        number_counts = np.array(self.lf.number_counts(midzs, dzs, Mapps, band)[1]).astype(np.int)
 
         thetax, thetay, gal_app_mags, gal_abs_mags, gal_zs, all_finezs, all_counts_array = [[] for x in xrange(7)]
-        midz_dz = midzs[1]-midzs[0]
         
-        
+        thetax_list = [[] for x in range(n_catalogs)]
+        thetay_list = [[] for x in range(n_catalogs)]
+        gal_zs_list = [[] for x in range(n_catalogs)]
+        mags_list = [[] for x in range(n_catalogs)]
+        gal_app_mag_list = [[] for x in range(n_catalogs)]
+
         for i, z in enumerate(midzs):
             
             if cl is None:
                 ells, cl = limber_project(self.mass_function, zrange_grf[i], zrange_grf[i+1], ell_min=30, ell_max=3e5)
 
-            tx, ty, all_counts_array = self.generate_positions(np.sum(number_counts[i])*n_square_deg, size, n_catalogs, \
+            txs, tys = self.generate_positions(np.sum(number_counts[i])*n_square_deg, size, n_catalogs, \
                                              all_counts_array, ell_min=ell_min, random_positions=random_positions, hsc=hsc, \
                                             cl=cl, ells=ells)
-            thetax.extend(tx)
-            thetay.extend(ty)
+            
+            for cat in range(n_catalogs):
+                print(len(txs[cat]), len(thetax_list[cat]), type(txs[cat]))
+                thetax_list[cat].extend(txs[cat])
+                thetay_list[cat].extend(tys[cat])
+                
+                # draw redshifts within each bin from pdf
+                zeds, zfine = self.draw_redshifts(len(txs[cat]), zrange_grf[i], zrange_grf[i+1], Mabs, band=band)
+                gal_zs_list[cat].extend(zeds)
+
+            all_finezs.extend(zfine)
             mags = []
 
-             # draw redshifts within each bin from pdf
-            zeds, zfine = self.draw_redshifts(len(tx), zrange_grf[i], zrange_grf[i+1], Mabs, band=band)
-            all_finezs.extend(zfine)
-            gal_zs.extend(zeds)
-
             # draw apparent magnitudes based on Helgason number counts N(m)
-
-            if i == len(midzs)-1:
-                dz = midzs[i]-midzs[i-1]
-            else:
-                dz = midzs[i+1]-midzs[i]
-
             for j, M in enumerate(Mapps):
 
                 finer_mapp = np.linspace(M, M+1.0, 100)
-                finer_number_counts = self.lf.number_counts([z], finer_mapp, 'H', dz=dz)[1][0]# band doesn't really affect number counts for CIBER
+                finer_number_counts = self.lf.number_counts([z], [dzs[i]], finer_mapp, band)[1][0]# band doesn't really affect number counts for CIBER
                 fine_mapp_pdf = finer_number_counts/np.sum(finer_number_counts)
-
-                n = number_counts[i][j]*4
+                n = int(number_counts[i][j]*n_deg_across**2)
+                
                 if n > 0:
-                    mags.extend(np.random.choice(finer_mapp, size=n, p=fine_mapp_pdf))
+                    for cat in range(n_catalogs):
+                        mags_list[cat].extend(np.random.choice(finer_mapp, size=n, p=fine_mapp_pdf))
             
-            gal_app_mags.extend(mags)
+            for cat in range(n_catalogs):
+                gal_app_mag_list[cat].extend(mags_list[cat])
+                print('len of gal app mag list is ', len(gal_app_mag_list[cat]))
+                print('len of thetax list is ', len(thetax_list[cat]))
   
-        gal_zs, thetax, thetay, gal_app_mags, gal_abs_mags, all_finezs = make_lists_arrays([gal_zs, thetax, thetay, gal_app_mags, gal_abs_mags, all_finezs])
-        print('len app mags vs thetax:', len(gal_app_mags), len(thetax))
+        # gal_zs, thetax, thetay, gal_app_mags, gal_abs_mags, all_finezs = make_lists_arrays([gal_zs, thetax, thetay, gal_app_mags, gal_abs_mags, all_finezs])
+        print('len app mags vs thetax:', len(gal_app_mag_list[0]), len(thetax_list[cat]))
         
-        # poisson realization of galaxy counts not exactly equal to Helgason number counts, so remove extra sources
-        if len(gal_app_mags) > len(thetax):  
-            idx_choice = np.sort(np.random.choice(np.arange(len(gal_app_mags)), len(thetax), replace=False))
-            gal_app_mags = np.array(gal_app_mags)[idx_choice]
-
         cosmo_dist_mods = cosmo.distmod(all_finezs)
-       
-        gal_tile = np.tile(gal_zs, (len(all_finezs), 1)).transpose()
-        dist_mods = np.array(cosmo_dist_mods[np.argmin(np.abs(np.subtract(gal_tile, all_finezs)), axis=1)].value)
-        gal_abs_mags = gal_app_mags - dist_mods - 2.5*np.log10(1.0+gal_zs)
-        array = np.array([thetax, thetay, gal_zs, gal_app_mags, gal_abs_mags]).transpose()
-        partial_cat = array[np.argsort(array[:,4])]
-        
-        halo_masses, virial_radii = self.abundance_match_ms_given_mags(partial_cat[:,2]) # use redshifts as input        
-        self.catalog = np.hstack([partial_cat, np.array([halo_masses, virial_radii]).transpose()])
+        distmod_spline = interpolate.InterpolatedUnivariateSpline(all_finezs, cosmo_dist_mods)
+
+        # poisson realization of galaxy counts not exactly equal to Helgason number counts, so remove extra sources
+        array_list = []
+        self.catalogs = []
+        for cat in range(n_catalogs):
+            if len(gal_app_mag_list[cat]) > len(thetax_list[cat]):
+                idx_choice = np.sort(np.random.choice(np.arange(len(gal_app_mag_list[cat])), len(thetax_list[cat]), replace=False))
+                gal_app_mag_list[cat] = np.array(gal_app_mag_list[cat])[idx_choice]
+            dist_mods = distmod_spline(gal_zs_list[cat])
+            print('distmods has length:', len(dist_mods))
+            print(len(gal_app_mag_list[cat]), len(gal_zs_list[cat]))
+
+            gal_abs_mags = np.array(gal_app_mag_list[cat]) - dist_mods - 2.5*np.log10(1.0+np.array(gal_zs_list[cat]))
+            
+            array = np.array([thetax_list[cat], thetay_list[cat], gal_zs_list[cat], gal_app_mag_list[cat], gal_abs_mags]).transpose()
+            partial_cat = array[np.argsort(array[:,4])]
+            halo_masses, virial_radii = self.abundance_match_ms_given_mags(partial_cat[:,2])
+            self.catalogs.append(np.hstack([partial_cat, np.array([halo_masses, virial_radii]).transpose()]))
+            
         if hsc:
-            return self.catalog
+            return self.catalogs
         else:
 #             return self.catalog, total_counts, all_counts_array
-            return self.catalog
+            return self.catalogs
 
     def load_halo_mass_function(self, filename):
         hmf = np.loadtxt(filename, skiprows=12)
         ms = hmf[:,0] # [M_sun/h]
         dndm = hmf[:,5]/np.sum(hmf[:,5]) # [h^4/(Mpc^3*M_sun)]
         return ms, dndm
+
 
 
 
