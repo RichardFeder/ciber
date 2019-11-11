@@ -3,15 +3,26 @@ import astropy.io.fits as fits
 import astropy.wcs as wcs
 import pandas as pd
 import scipy.io
+import matplotlib
+import matplotlib.pyplot as plt
+from astropy.table import Table
+
+def dataframe_to_fits(df, fits_path):
+    table = Table.from_pandas(df)
+    table.write(fits_path)
 
 def fits_to_dataframe(fits_path):
     table = Table.read(fits_path)
     df = table.to_pandas()
     return df
 
-def dataframe_to_fits(df, fits_path):
-    table = Table.from_pandas(df)
-    table.write(fits_path)
+def read_ciber_powerspectra(filename):
+    array = np.loadtxt(filename, skiprows=8)
+    ells = array[:,0]
+    norm_cl = array[:,1]
+    norm_dcl_lower = array[:,2]
+    norm_dcl_upper = array[:,3]
+    return np.array([ells, norm_cl, norm_dcl_lower, norm_dcl_upper])
 
 
 class ciber_data():

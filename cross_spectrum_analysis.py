@@ -2,6 +2,7 @@ import numpy as np
 import matplotlib
 import matplotlib.pyplot as plt
 from ciber_mocks import *
+import pandas as pd
 
 
 def azimuthalAverage(image, lmin=90, center=None, logbins=True, nbins=60, sterad_term=None):
@@ -57,10 +58,11 @@ def azimuthalAverage(image, lmin=90, center=None, logbins=True, nbins=60, sterad
 
     return av_rbins, np.array(rad_avg), np.array(rad_std)
 
-def compute_beam_correction(psf):
+
+def compute_beam_correction(psf, nbins=60):
     ''' This function computes the power spectrum of a beam as provided through a PSF template. The beam power spectrum
     can then be used to correct the autospectrum of a mock intensity map which is convolved with an instrument PSF''' 
-    rb, radprof_Bl, radstd_bl = compute_cl(psf, psf)
+    rb, radprof_Bl, radstd_bl = compute_cl(psf, psf, nbins=nbins)
     B_ell = np.sqrt(radprof_Bl)/np.max(np.sqrt(radprof_Bl))
     return rb, B_ell
 
@@ -79,20 +81,23 @@ def compute_cross_spectrum(map_a, map_b, n_deg_across=2.0, sterad_a=True, sterad
     
     return np.fft.fftshift(xspectrum)
 
-def compute_cl(mapa, mapb=None, lmin=90.):
+def compute_cl(mapa, mapb=None, lmin=90., nbins=60, sterad_term=None, sterad_a=True, sterad_b=True):
 
     ''' This function computes the angular power spectrum C_ell by 1) computing the cross spectrum of the images and
     2) radially averaging over multipole bins ''' 
+
     n_deg_across = 180./lmin
     if mapb is None:
-        xcorr = compute_cross_spectrum(mapa, mapa, n_deg_across=n_deg_across)
+        xcorrs = compute_cross_spectrum(mapa, mapa, n_deg_across=n_deg_across, sterad_a=sterad_a, sterad_b=sterad_b)
     else:
-        xcorr = compute_cross_spectrum(mapa, mapb, n_deg_across=n_deg_across)
+        xcorrs = compute_cross_spectrum(mapa, mapb, n_deg_across=n_deg_across, sterad_a=sterad_a, sterad_b=sterad_b)
         
-    rbins, radprof, radstd = azimuthalAverage(xcorr, lmin=lmin)
+    rbins, radprof, radstd = azimuthalAverage(xcorrs, lmin=lmin, nbins=nbins, sterad_term=sterad_term)
     
     return rbins, radprof, radstd
 
+
+    return rbins, radprof, radstd
 
 def compute_mode_coupling(mask, ell_min=90., nphases=50, logbins=True, nbins=60, ps_amplitude=100.0):
     ''' If there is masking done on a given observation due to incomplete coverage or bright sources, 
@@ -136,6 +141,10 @@ def compute_mode_coupling(mask, ell_min=90., nphases=50, logbins=True, nbins=60,
         
     return Mkk, sigma_Mkk
 
+def compute_snr(average, errors):
+    snrs_per_bin = average / errors
+    total_sq = np.sum(snrs_per_bin**2)
+    return np.sqrt(total_sq), snrs_per_bin
 
 def cross_correlate_galcat_ciber(cibermap, galaxy_catalog, m_min=14, m_max=30, band='J', \
                          ihl_frac=0.0, magidx=5, zmin=-10, zmax=100, zidx=3):

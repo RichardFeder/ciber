@@ -1,14 +1,9 @@
 import numpy as np
-# from compos import matterps
-# from astropy.cosmology import FlatLambdaCDM
 import astropy.units as u
-# from astropy import constants as const
 from scipy import stats
-# import time
 from halo_model import *
 from helgason import *
 import camb
-# from camb import model, initialpower
 from hankel import SymmetricFourierTransform
 from scipy import interpolate
 from hmf import MassFunction
@@ -201,7 +196,7 @@ def k_to_ell(k, comoving_dist):
     ell = np.pi/theta
     return ell
 
-''' This is used when making gaussian random fields'''
+''' This is used when making gaussian random fields '''
 def make_ell_grid(size, ell_min=90.):
     ell_grid = np.zeros(shape=(size,size))
     size_ind = np.array(fftIndgen(size))
@@ -209,7 +204,7 @@ def make_ell_grid(size, ell_min=90.):
         ell_grid[i,:] = np.sqrt(sx**2+size_ind**2)*ell_min
     return ell_grid
 
-''' this is just a convenience function for when I want to convert a bunch of lists to numpy arrays'''
+''' this is just a convenience function for when I want to convert a bunch of lists to numpy arrays '''
 def make_lists_arrays(list_of_lists):
     list_of_arrays = []
     for l in list_of_lists:
@@ -239,7 +234,6 @@ def w_theta(theta, A=0.2, gamma=1.8):
 def two_pt_r(r, r0=6., gamma=1.8):
     ''' Returns the two point correlation function at a given comoving distance r'''
     return (r/r0)**(-gamma)
-
 
 ''' 
 
@@ -393,15 +387,16 @@ class galaxy_catalog():
             
             if cl is None:
                 ells, cl = limber_project(self.mass_function, zrange_grf[i], zrange_grf[i+1], ell_min=30, ell_max=3e5)
-
+            print('number counts here are:', np.sum(number_counts[i])*n_square_deg)
             txs, tys = self.generate_positions(np.sum(number_counts[i])*n_square_deg, size, n_catalogs, \
                                              all_counts_array, ell_min=ell_min, random_positions=random_positions, hsc=hsc, \
                                             cl=cl, ells=ells)
             
             for cat in range(n_catalogs):
-                print(len(txs[cat]), len(thetax_list[cat]), type(txs[cat]))
                 thetax_list[cat].extend(txs[cat])
                 thetay_list[cat].extend(tys[cat])
+                print(len(txs[cat]), len(thetax_list[cat]), type(txs[cat]))
+
                 
                 # draw redshifts within each bin from pdf
                 zeds, zfine = self.draw_redshifts(len(txs[cat]), zrange_grf[i], zrange_grf[i+1], Mabs, band=band)
@@ -422,14 +417,7 @@ class galaxy_catalog():
                     for cat in range(n_catalogs):
                         mags_list[cat].extend(np.random.choice(finer_mapp, size=n, p=fine_mapp_pdf))
             
-            for cat in range(n_catalogs):
-                gal_app_mag_list[cat].extend(mags_list[cat])
-                print('len of gal app mag list is ', len(gal_app_mag_list[cat]))
-                print('len of thetax list is ', len(thetax_list[cat]))
-  
-        # gal_zs, thetax, thetay, gal_app_mags, gal_abs_mags, all_finezs = make_lists_arrays([gal_zs, thetax, thetay, gal_app_mags, gal_abs_mags, all_finezs])
-        print('len app mags vs thetax:', len(gal_app_mag_list[0]), len(thetax_list[cat]))
-        
+          
         cosmo_dist_mods = cosmo.distmod(all_finezs)
         distmod_spline = interpolate.InterpolatedUnivariateSpline(all_finezs, cosmo_dist_mods)
 
@@ -437,16 +425,14 @@ class galaxy_catalog():
         array_list = []
         self.catalogs = []
         for cat in range(n_catalogs):
-            if len(gal_app_mag_list[cat]) > len(thetax_list[cat]):
-                idx_choice = np.sort(np.random.choice(np.arange(len(gal_app_mag_list[cat])), len(thetax_list[cat]), replace=False))
-                gal_app_mag_list[cat] = np.array(gal_app_mag_list[cat])[idx_choice]
+            if len(mags_list[cat]) > len(thetax_list[cat]):
+                idx_choice = np.sort(np.random.choice(np.arange(len(mags_list[cat])), len(thetax_list[cat]), replace=False))
+                mags_list[cat] = np.array(mags_list[cat])[idx_choice]
+                
             dist_mods = distmod_spline(gal_zs_list[cat])
             print('distmods has length:', len(dist_mods))
-            print(len(gal_app_mag_list[cat]), len(gal_zs_list[cat]))
-
-            gal_abs_mags = np.array(gal_app_mag_list[cat]) - dist_mods - 2.5*np.log10(1.0+np.array(gal_zs_list[cat]))
-            
-            array = np.array([thetax_list[cat], thetay_list[cat], gal_zs_list[cat], gal_app_mag_list[cat], gal_abs_mags]).transpose()
+            gal_abs_mags = np.array(mags_list[cat]) - dist_mods - 2.5*np.log10(1.0+np.array(gal_zs_list[cat]))
+            array = np.array([thetax_list[cat], thetay_list[cat], gal_zs_list[cat], mags_list[cat], gal_abs_mags]).transpose()
             partial_cat = array[np.argsort(array[:,4])]
             halo_masses, virial_radii = self.abundance_match_ms_given_mags(partial_cat[:,2])
             self.catalogs.append(np.hstack([partial_cat, np.array([halo_masses, virial_radii]).transpose()]))
@@ -462,8 +448,5 @@ class galaxy_catalog():
         ms = hmf[:,0] # [M_sun/h]
         dndm = hmf[:,5]/np.sum(hmf[:,5]) # [h^4/(Mpc^3*M_sun)]
         return ms, dndm
-
-
-
 
             

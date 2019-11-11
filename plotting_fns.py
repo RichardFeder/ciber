@@ -6,43 +6,78 @@ from matplotlib import cm
 # sns.set()
 
 
-
 figure_directory = '/Users/richardfeder/Documents/caltech/ciber2/figures/'
 
 def plot_radavg_xspectrum(rbins, radprofs=[], raderrs=None, labels=[], \
                           lmin=90., save=False, snspalette=None, pdf_or_png='png', \
-                         image_dim=1024, mode='cross', zbounds=None, shotnoise=True):
+                         image_dim=1024, mode='cross', zbounds=None, shotnoise=True, \
+                         add_shot_noise=None, Ntot=160000, sn_npoints=10, titlestring=None, \
+                          ylims=None):
     
     steradperpixel = ((np.pi/lmin)/image_dim)**2 
 
-    fig = plt.figure()
+    fig = plt.figure(figsize=(8,6))
     xvals = rbins*lmin
 
     yerr = None # this gets changed from None to actual errors if they are fed in
     if mode=='cross':
-        titlestring = 'Cross Spectrum'
+        if titlestring is None:
+            titlestring = 'Cross Spectrum'
         yvals = np.array([(rbins*lmin)**2*prof/(2*np.pi) for prof in radprofs])
         ylabel = '$\\ell(\\ell+1) C_{\\ell}/2\\pi$'
         if raderrs is not None:
             yerr = np.array([(rbins*lmin)**2*raderr/(2*np.pi) for raderr in raderrs]) 
     elif mode=='auto':
-        titlestring = 'Auto Spectrum'
+        if titlestring is None:
+            titlestring = 'Auto Spectrum'
         yvals = np.array([np.sqrt((rbins*lmin)**2*prof/(2*np.pi)) for prof in radprofs])
         ylabel = '($\\ell(\\ell+1) C_{\\ell}/2\\pi)^{1/2}$'
         if raderrs is not None:
             yerr = np.array([np.sqrt((rbins*lmin)**2/(2*np.pi))*raderr/(2*np.sqrt(prof)) for raderr in raderrs]) # I don't think this is right, modify at some point
+            print('yerr:', yerr)
+            mask = yerr > yvals
+            
+            print(mask)
+            yerr2 = np.array(yerr)
+            yerr2[yerr >= yvals] = yvals[yerr>=yvals]*0.99999
+
+
     if zbounds is not None:
         titlestring +=', '+str(zmin)+'$<z<$'+str(zmax)
         
     plt.title(titlestring, fontsize=16)
-        
+    ax = plt.gca()
     for i, prof in enumerate(radprofs):
-        plt.errorbar(xvals, yvals[i], yerr=yerr[i], marker='.', label=labels[i])
-        if shotnoise:
-            shot_noise = np.poly1d(np.polyfit(np.log10(xvals[-10:]), np.log10(np.sqrt(xvals[-10:]**2*prof[-10:]/(2*np.pi))), 1))
-            plt.plot(xvals, 10**(shot_noise(np.log10(xvals))), label='Best fit shot noise',linestyle='dashed')
+        color = next(ax._get_lines.prop_cycler)['color']
+
+        if shotnoise is not None:
+            if shotnoise[i]:
+                if mode=='auto':
+                    shot_noise_fit = np.poly1d(np.polyfit(np.log10(xvals[-sn_npoints:]), np.log10(np.sqrt(xvals[-sn_npoints:]**2*prof[-sn_npoints:]/(2*np.pi))), 1))
+                else:
+                    shot_noise_fit = np.poly1d(np.polyfit(np.log10(xvals[-sn_npoints:]), np.log10(xvals[-sn_npoints:]**2*prof[-sn_npoints:]/(2*np.pi)), 1))
+                sn_vals = 10**(shot_noise_fit(np.log10(xvals)))
+                if mode=='auto':
+                    sn_level = 2*np.pi*sn_vals[0]**2/lmin**2
+                elif mode=='cross':
+                    sn_level = 2*np.pi*sn_vals[0]/lmin**2 
+                print('sn level:', sn_level)
+                if i==0:
+                    label='Best fit Poisson fluctuations'
+                else:
+                    label=None
+                plt.plot(xvals, sn_vals, label=label,linestyle='dashed', color=color)
+
+            if add_shot_noise is not None:
+                if add_shot_noise[i]:
+                    sn = surface_area*Ntot*steradperpixel/(image_dim**2)
+                    print(surface_area, sn, Ntot)
+                    yvals[i] += np.sqrt((rbin*lmin)**2*(surface_area*Ntot*steradperpixel/(image_dim**2))/(2*np.pi))
         
-    plt.legend()
+        plt.errorbar(xvals, yvals[i], yerr=yerr[i], marker='.', label=labels[i], color=color)
+    if ylims is not None:
+        plt.ylim(ylims[0], ylims[1])
+    plt.legend(loc=2)
     plt.xscale('log')
     plt.yscale('log')
     plt.xlabel('$\\ell$', fontsize=14)
@@ -50,8 +85,9 @@ def plot_radavg_xspectrum(rbins, radprofs=[], raderrs=None, labels=[], \
     if save:
         plt.savefig(figure_directory+'radavg_xspectrum.'+pdf_or_png, bbox_inches='tight')
     plt.show()
+
     
-    return fig
+    return fig, yvals, yerr
 
 
 def plot_2d_xspectrum(xspec, minpercentile=5, maxpercentile=95, save=False, pdf_or_png='png'):
@@ -69,7 +105,6 @@ def plot_2d_xspectrum(xspec, minpercentile=5, maxpercentile=95, save=False, pdf_
 	plt.show()
 
 def plot_beam_correction(rb, beam_correction, lmin=90.):
-    
     fig = plt.figure()
     plt.plot(rb*lmin, beam_correction, marker='.')
     plt.xlabel('$\\ell$', fontsize=14)
