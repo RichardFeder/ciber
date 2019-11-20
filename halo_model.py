@@ -6,42 +6,11 @@ from scipy import interpolate
 import numpy as np
 from hmf import MassFunction
 import camb
-from camb import model, initialpower
+from camb import model
 from astropy import constants as const
 
 # initialize cosmology class 
 cosmo = FlatLambdaCDM(H0=70, Om0=0.28)
-
-class tinker_hmf():
-    
-    Delta = 200. # fiducial overdensity for spherical collapse, fixes normalization factors below
-    alpha = 0.368
-    beta0 = 0.589
-    gamma0 = 0.864
-    phi0 = -0.729
-    eta0 = -0.243
-    delta_c = 1.686 # local peak collapse threshold
-    def __init__(self):
-        pass
-    
-    def beta(self, z):
-        return self.beta0*(1+z)**(0.20)
-    
-    def phi(self, z):
-        return self.phi0*(1+z)**(-0.08)
-    
-    def eta(self, z):
-        return self.eta0*(1+z)**(0.27)
-    
-    def gamma(self, z):
-        return self.gamma0*(1+z)**(-0.01)
-    
-    def nu_fnu(self, nu, z=0):
-        return nu*self.alpha*(1 + (self.beta(z)*nu)**(-2*self.phi(z)))*nu**(2*self.eta(z))*np.exp(-self.gamma(z)*nu**2/2)
-    
-    def eulerian_bias(self, nu, z=0):
-        return 1. + ((self.gamma(z)*nu**2 -(1+2*self.eta(z)))/self.delta_c) + (2*self.phi(z)/self.delta_c)/(1+(self.beta(z)*nu)**(2*self.phi(z)))
-    
 
 class halo_model_class():
     
@@ -197,7 +166,7 @@ class halo_model_class():
 
 # this is for projecting a 3D power spectrum to a 2D angular power spectrum.
 
-def limber_project(halo_ps, zmin, zmax, ng=None, flux_prod_rate=None, nbin=10, ell_min=90, ell_max=1e5, n_ell_bin=30):
+def limber_project(halo_ps, zmin, zmax, ng=None, flux_prod_rate=None, nbin=20, ell_min=90, ell_max=1e5, n_ell_bin=30):
     ''' This currently takes in the dark matter halo power spectrum from the hmf package. The only place where this is
     used is when updating the redshift of the power spectrum. Should add option to use array of power spectra as well'''
     cls = np.zeros((nbin, n_ell_bin))    

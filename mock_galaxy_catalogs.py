@@ -3,171 +3,15 @@ import astropy.units as u
 from scipy import stats
 from halo_model import *
 from helgason import *
+from lognormal_counts import *
 import camb
-from hankel import SymmetricFourierTransform
-from scipy import interpolate
+# from hankel import SymmetricFourierTransform
+# from scipy import interpolate
 from hmf import MassFunction
 
 pars = camb.CAMBparams()
 pars.set_cosmology(H0=67.5, ombh2=0.022, omch2=0.122)
 pars.InitPower.set_params(ns=0.965)
-
-def counts_from_density_2d(density_fields, Ntot = 200000, ell_min=90.):
-    counts_map = np.zeros_like(density_fields)
-    
-    surface_area = (np.pi/ell_min)**2
-
-    # compute the mean number density per cell 
-    N_mean = float(Ntot) / float(counts_map.shape[-2]*counts_map.shape[-1])
-    
-    # calculate the expected number of galaxies per cell
-    expectation_ngal = (density_fields+1.)*N_mean 
-    # generate Poisson realization of 2D field
-    count_maps = np.random.poisson(expectation_ngal)
-    
-    dcounts = np.array([int(np.sum(ct_map)-Ntot) for ct_map in count_maps])
-    # if more counts in the poisson realization than Helgason number counts, subtract counts
-    # from non-zero elements of array.
-    # The difference in counts is usually at the sub-percent level, so adding counts will only slightly
-    # increase shot noise, while subtracting will slightly decrease power at all scales
-    for i in np.arange(count_maps.shape[0]):
-        if dcounts[i] > 0:
-            nonzero_x, nonzero_y = np.nonzero(count_maps[i])
-            rand_idxs = np.random.choice(np.arange(len(nonzero_x)), dcounts[i], replace=True)
-            count_maps[i][nonzero_x[rand_idxs], nonzero_y[rand_idxs]] -= 1
-        elif dcounts[i] < 0:
-            randx, randy = np.random.choice(np.arange(count_maps[i].shape[-1]), size=(2, np.abs(dcounts[i])))
-            for j in xrange(np.abs(dcounts[i])):
-                counts_map[i][randx[j], randy[j]] += 1
-
-    return count_maps
-
-''' This converts multipoles to wavenumbers given some comoving distance (fixed redshift). '''
-def ell_to_k(ell, comoving_dist):
-    theta = np.pi/ell
-    k = 1./(comoving_dist*theta)
-    return k
-
-''' This function generates the indices needed when generating G(k), which gets Fourier transformed to a gaussian
-random field with some power spectrum.'''
-def fftIndgen(n):
-    a = range(0, n/2+1)
-    b = range(1, n/2)
-    b.reverse()
-    b = [-i for i in b]
-    return a + b
-
-''' This is not fully working as of now, maybe some day in the future I'll need this! '''
-def gaussian_random_field_3d(n_samples, alpha=None, size=128, ell_min=90., ps=None, ksampled=None, z=None, fac=1, plot=False):
-    
-    k_ind = np.mgrid[:size*fac, :size*fac, :size*fac] - int( (size*fac + 1)/2 )
-    k_ind = scipy.fftpack.fftshift(k_ind)
-    k_idx = ( k_ind )
-    ks = np.sqrt(k_idx[0]**2 + k_idx[1]**2 + k_idx[2]**2)
-        
-    r, xi = P2xi(ksampled)(ps)
-
-    # transform the two point correlation function to the corresponding 2pt in the gaussian random field
-    xi_g = np.log(1.+xi)
-    # fourier transform back to get P_G(k)
-    ksamp, p_G = xi2P(r)(xi_g)
-    
-    if z is not None:
-        k_min = ell_min / cosmo.angular_diameter_distance(z)
-        k_min /= float(fac)
-        ks *= k_min
-        
-    vol = (1./k_min.value)**3
-    
-    spline_G = interpolate.InterpolatedUnivariateSpline(np.log10(ksamp[:-50]), np.log10(p_G[:-50]))
-    amplitude = 10**(spline_G(np.log10(ks)))
-    amplitude[0,0,0] = 0.
-    
-    noise = np.random.normal(size = (n_samples, size*fac, size*fac, size*fac)) + 1j * np.random.normal(size = (n_samples, size*fac, size*fac, size*fac))
-    gfield = np.array([np.fft.ifftn(n * np.sqrt(amplitude*vol/2)).real for n in noise])
-    
-    return gfield, amplitude, ks
-
-
-def gaussian_random_field_2d(n_samples, alpha=None, size=128, ell_min=90., cl=None, ell_sampled=None, fac=1, plot=False):
-    
-    up_size = size*fac
-    steradperpixel = ((np.pi/ell_min)/up_size)**2
-    surface_area = (np.pi/ell_min)**2
-
-    cl_g, spline_cl_g = hankel_spline_lognormal_cl(ell_sampled, cl)
-    ls = make_ell_grid(up_size, ell_min=ell_min)
-    amplitude = 10**spline_cl_g(np.log10(ls))
-    amplitude /= surface_area
-    
-    amplitude[0,0] = 0.
-    
-    noise = np.random.normal(size = (n_samples, up_size,up_size)) + 1j * np.random.normal(size = (n_samples, up_size, up_size))
-#     gfield = np.array([np.fft.ifft2(n * amplitude * up_size**2 ).real for n in noise])
-    gfield = np.array([np.fft.ifft2(n * amplitude).real for n in noise])
-    gfield /= steradperpixel
-    
-    # up to this point, the gaussian random fields have mean zero
-    return gfield, amplitude, ls
-
-def generate_count_map_2d(n_samples, ell_min=90., size=128, Ntot=2000000, cl=None, ell_sampled=None, plot=False, save=False):
-    # we want to generate a GRF twice the size of our final GRF so we include larger scale modes
-    realgrf, amp, k = gaussian_random_field_2d(n_samples, size=size, cl=cl, ell_sampled=ell_sampled, ell_min=ell_min/2.,fac=2)
-    realgrf = realgrf[:,int(0.5*size):int(1.5*size),int(0.5*size):int(1.5*size)]
-    
-    density_fields = np.array([np.exp(grf-np.std(grf)**2)-1. for grf in realgrf]) # assuming a log-normal density distribution
-    density_fields = np.array([df-np.mean(df) for df in density_fields]) # this ensures that each field has mean zero
-    
-    if plot:
-        plt.figure(figsize=(10,4))
-        plt.subplot(1,2,1)
-        plt.title('Gaussian random field $A$')
-        plt.imshow(realgrf[0])
-        plt.colorbar()
-        plt.subplot(1,2,2)
-        plt.title('Dimensionless fluctuations $\\rho = e^A$')
-        plt.imshow(density_fields[0])
-        plt.colorbar()
-        if save:
-            plt.savefig('../figures/grf_rho.png', bbox_inches='tight')
-        plt.show()
-
-    counts = counts_from_density_2d(density_fields, Ntot=Ntot)
-
-    return counts, density_fields
-
-''' This function takes an angular power spectrum and computes the corresponding power spectrum for the log 
-of the density field with that power spectrum. This involves converting the power spectrum to a correlation function, 
-computing the lognormal correlation function, and then transforming back to ell space to get C^G_ell.'''
-def hankel_spline_lognormal_cl(ells, cl, plot=False, ell_min=90, ell_max=1e5):
-    
-    ft = SymmetricFourierTransform(ndim=2, N = 200, h = 0.03)
-    # transform to angular correlation function with inverse hankel transform and spline interpolated C_ell
-    spline_cl = interpolate.InterpolatedUnivariateSpline(np.log10(ells), np.log10(cl))
-    f = lambda ell: 10**(spline_cl(np.log10(ell)))
-    thetas = np.pi/ells
-    w_theta = ft.transform(f ,thetas, ret_err=False, inverse=True)
-    # compute lognormal angular correlation function
-    w_theta_g = np.log(1.+w_theta)
-    # convert back to multipole space
-    spline_w_theta_g = interpolate.InterpolatedUnivariateSpline(np.log10(np.flip(thetas)), np.flip(w_theta_g))
-    g = lambda theta: spline_w_theta_g(np.log10(theta))
-    cl_g = ft.transform(g ,ells, ret_err=False)
-    spline_cl_g = interpolate.InterpolatedUnivariateSpline(np.log10(ells), np.log10(np.abs(cl_g)))
-    
-    # plotting is just for validation if ever unsure
-    if plot:
-        plt.figure()
-        plt.loglog(ells, cl, label='$C_{\\ell}$', marker='.')
-        plt.loglog(ells, cl_g, label='$C_{\\ell}^G$', marker='.')
-        plt.loglog(np.linspace(ell_min, ell_max, 1000), 10**spline_cl_g(np.log10(np.linspace(ell_min, ell_max, 1000))), label='spline of $C_{\\ell}^G$')
-        plt.legend(fontsize=14)
-        plt.xlabel('$\\ell$', fontsize=16)
-        plt.title('Angular power spectra', fontsize=16)
-        plt.show()
-    
-    return cl_g, spline_cl_g
-
 
 def hsc_positions(hsc_cat, nchoose, z, dz, ra_min=241.5, ra_max=243.5, dec_min=54.0, dec_max=56.0, rmag_max=29.0):
     restricted_cat = hsc_cat[(hsc_cat['ra']>ra_min)&(hsc_cat['ra']<ra_max)&(hsc_cat['dec']>dec_min)&(hsc_cat['dec']<dec_max)
@@ -195,14 +39,6 @@ def k_to_ell(k, comoving_dist):
     theta = 1./(comoving_dist*k)
     ell = np.pi/theta
     return ell
-
-''' This is used when making gaussian random fields '''
-def make_ell_grid(size, ell_min=90.):
-    ell_grid = np.zeros(shape=(size,size))
-    size_ind = np.array(fftIndgen(size))
-    for i, sx in enumerate(size_ind):
-        ell_grid[i,:] = np.sqrt(sx**2+size_ind**2)*ell_min
-    return ell_grid
 
 ''' this is just a convenience function for when I want to convert a bunch of lists to numpy arrays '''
 def make_lists_arrays(list_of_lists):
@@ -250,10 +86,10 @@ This involves:
 
 class galaxy_catalog():
     
-    lf = Luminosity_Function()
-    halomod = halo_model_class()
-
+    lf = Luminosity_Function2()
     mass_function = MassFunction(z=0., dlog10m=0.02)
+    cosmo = FlatLambdaCDM(H0=70, Om0=0.28)
+
 
     def __init__(self, band='J', ell_min=90., ell_max=1e5):
         self.band = band
@@ -270,7 +106,7 @@ class galaxy_catalog():
 
         halo_masses = np.sort(halo_masses)[::-1] # maybe not?
 
-        virial_radii = self.halomod.mass_2_virial_radius(halo_masses) # in Mpc
+        virial_radii = self.mass_2_virial_radius(halo_masses) # in Mpc
 
         return halo_masses, virial_radii  
 
@@ -281,7 +117,7 @@ class galaxy_catalog():
         mass_range, dndm = self.load_halo_mass_function('../data/halo_mass_function_hmfcalc.txt')
         halo_masses = np.sort(np.random.choice(mass_range, ngal,p=dndm))[::-1]
         halo_masses *= u.solMass
-        virial_radii = self.halomod.mass_2_virial_radius(halo_masses, zs).to(u.Mpc) # in Mpc
+        virial_radii = self.mass_2_virial_radius(halo_masses, zs).to(u.Mpc) # in Mpc
         
         return halo_masses, virial_radii.value
 
@@ -371,9 +207,16 @@ class galaxy_catalog():
         print('dzs:', dzs)
 
         Mapps = np.linspace(m_min, m_max, m_max-m_min + 1)
+
         Mabs = np.linspace(Mabs_min, Mabs_max, Mabs_nbin)
-        
-        number_counts = np.array(self.lf.number_counts(midzs, dzs, Mapps, band)[1]).astype(np.int)
+
+        # First, I need to figure out how many sources are within a given redshift bin
+        Mapps = np.linspace(m_min, m_max, 200)
+        dMapp = Mapps[1]-Mapps[0]
+        number_counts = np.array(self.lf.number_counts(zrange_grf, Mapps, band, dzs=dzs)[1]).astype(np.int)
+        print('number counts has shape ', number_counts.shape, 'while Mapps has nbins=', len(Mapps))
+        # number_counts = np.array(self.lf.number_counts(midzs, dzs, Mapps, band)[1]).astype(np.int)
+        # this should be a 2d array with len(Mapps) rows and len(midzs) columns
 
         thetax, thetay, gal_app_mags, gal_abs_mags, gal_zs, all_finezs, all_counts_array = [[] for x in xrange(7)]
         
@@ -387,7 +230,7 @@ class galaxy_catalog():
             
             if cl is None:
                 ells, cl = limber_project(self.mass_function, zrange_grf[i], zrange_grf[i+1], ell_min=30, ell_max=3e5)
-            print('number counts here are:', np.sum(number_counts[i])*n_square_deg)
+            print('number counts here are:', np.sum(number_counts[i])*n_square_deg, n_square_deg)
             txs, tys = self.generate_positions(np.sum(number_counts[i])*n_square_deg, size, n_catalogs, \
                                              all_counts_array, ell_min=ell_min, random_positions=random_positions, hsc=hsc, \
                                             cl=cl, ells=ells)
@@ -395,9 +238,7 @@ class galaxy_catalog():
             for cat in range(n_catalogs):
                 thetax_list[cat].extend(txs[cat])
                 thetay_list[cat].extend(tys[cat])
-                print(len(txs[cat]), len(thetax_list[cat]), type(txs[cat]))
 
-                
                 # draw redshifts within each bin from pdf
                 zeds, zfine = self.draw_redshifts(len(txs[cat]), zrange_grf[i], zrange_grf[i+1], Mabs, band=band)
                 gal_zs_list[cat].extend(zeds)
@@ -406,18 +247,17 @@ class galaxy_catalog():
             mags = []
 
             # draw apparent magnitudes based on Helgason number counts N(m)
-            for j, M in enumerate(Mapps):
+            mapp_pdf = number_counts[i].astype(np.float32)/float(np.sum(number_counts[i]))
+            n = int(np.sum(number_counts[i])*n_deg_across**2)
+            if n > 0:
+                for cat in range(n_catalogs):
+                    mag_draw = np.random.choice(Mapps, size=n, p=mapp_pdf)
 
-                finer_mapp = np.linspace(M, M+1.0, 100)
-                finer_number_counts = self.lf.number_counts([z], [dzs[i]], finer_mapp, band)[1][0]# band doesn't really affect number counts for CIBER
-                fine_mapp_pdf = finer_number_counts/np.sum(finer_number_counts)
-                n = int(number_counts[i][j]*n_deg_across**2)
-                
-                if n > 0:
-                    for cat in range(n_catalogs):
-                        mags_list[cat].extend(np.random.choice(finer_mapp, size=n, p=fine_mapp_pdf))
+                    plt.figure()
+                    plt.hist(mag_draw, bins=20)
+                    plt.show()
+                    mags_list[cat].extend(mag_draw)
             
-          
         cosmo_dist_mods = cosmo.distmod(all_finezs)
         distmod_spline = interpolate.InterpolatedUnivariateSpline(all_finezs, cosmo_dist_mods)
 
@@ -449,4 +289,9 @@ class galaxy_catalog():
         dndm = hmf[:,5]/np.sum(hmf[:,5]) # [h^4/(Mpc^3*M_sun)]
         return ms, dndm
 
+        ''' This assumes the halo is spherically symmetric at least to determine the virial radius '''
+    def mass_2_virial_radius(self, halo_mass, z=0):
+        R_vir_cubed = (3/(4*np.pi))*self.cosmo.Om(z)*halo_mass.to(u.g)/(200*self.cosmo.critical_density(z))
+        return R_vir_cubed**(1./3.)
+            
             
