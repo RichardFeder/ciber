@@ -199,4 +199,65 @@ def plot_mock_images(full, srcs, ihl=None, fullminp=1., fullmaxp=99.9, \
     
     return fig
 
+def plot_cross_terms_knox(list_of_crossterms, ells, mlim=24, save=False, show=True, title=None, titlesize=18):
+#     colors = ['b', 'C1', 'green']
+    colors = ['b', 'green', 'black']
+    linestyles = [(0, (5, 10)), 'solid', 'dotted', 'dashed', 'dashdot']
+    labels = np.array(['$(C_{\\ell}^{cg})^2$', '$C_{\\ell}^c C_{\ell}^g$', '$C_{\\ell}^c n_g^{-1}$', '$C_{\\ell}^{noise}C_{\\ell}^g$', '$C_{\\ell}^{noise}n_g^{-1}$'])
+
+    f = plt.figure(figsize=(10, 8))
+    if title is not None:
+        plt.title(title, fontsize=titlesize)
+    else:
+        plt.title('Blue --> $0<z<0.33$, Orange --> $0.33<z<0.67$, Green --> $0.67<z<1.0$', fontsize=14)
+    for i, crossterms in enumerate(list_of_crossterms):
+        for j, crossterm in enumerate(crossterms):
+            if i==2:
+                plt.plot(ells, crossterm,  linestyle=linestyles[j], color=colors[i], label=labels[j])
+
+            else:
+#                 plt.plot(ells, crossterm,  linestyle=linestyles[j], color=colors[i])
+                continue
+    plt.legend(fontsize=15, loc=1)
+    plt.yscale('log')
+    plt.xscale('log')
+    plt.xlabel('$\ell$', fontsize=16)
+    plt.ylabel('Noise Level ($nW^2$ $m^{-4}$)', fontsize=18)
+    plt.ylim(1e-14, 2e-9)
+    if save:
+#         plt.savefig('../figures/power_spectra/cross_noise_term_contributions_ciber_mlim='+str(mlim)+'_0.0<z<0.33.png', bbox_inches='tight')
+#         plt.savefig('../figures/power_spectra/cross_noise_term_contributions_ciber_mlim='+str(mlim)+'_0.33<z<0.66.png', bbox_inches='tight')
+        plt.savefig('../figures/power_spectra/cross_noise_term_contributions_ciber_mlim='+str(mlim)+'_0.67<z<1.0.png', bbox_inches='tight')
+    if show:
+        plt.show()
+        
+    return f
+
+def plot_snr_vs_multipole(snr_sq, ells, save=False, show=True, title=None, titlesize=18, mlim=24):
+
+#     zlabels = ['Knox formula ($0<z<0.33$)', 'Knox formula ($0.33<z<0.67$)', 'Knox formula ($0.67<z<1.0$)']
+    zlabels = ['0<z<0.2', '0.2<z<0.4', '0.4<z<0.6', '0.6<z<0.8', '0.8<z<1.0']
+    d_ells = ells[1:]-ells[:-1]
+    colors = ['b', 'green', 'black']
+    plt.figure(figsize=(8, 6))
+    if title is not None:
+        plt.title(title, fontsize=titlesize)
+    else:
+        plt.title('CIBER 1.1$\mu$m-Galaxy Cross Spectrum, 50s frame', fontsize=16)
+    
+    for i, prof in enumerate(snr_sq):
+        print('here')
+#         plt.plot(ells[:-1], np.sqrt(d_ells*snr_sq[i][:-1]), color=colors[i], marker='.', label=zlabels[i]+' $(m_{AB}<$'+str(mlim)+')')
+        plt.plot(ells[:-1], np.sqrt(d_ells*snr_sq[i][:-1]),  marker='.', label=zlabels[i]+' $(m_{AB}<$'+str(mlim)+')')
+
+        
+    plt.ylabel('SNR per bin', fontsize=18)
+    plt.legend()
+    plt.yscale('log')
+    plt.xscale('log')
+    plt.xlabel('$\ell$', fontsize=18)
+    if save:
+        plt.savefig('../figures/power_spectra/cross_spectrum_snr_comparison_mlim='+str(mlim)+'.png', bbox_inches='tight')
+    if show:
+        plt.show()
 

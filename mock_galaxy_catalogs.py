@@ -8,6 +8,7 @@ import camb
 # from hankel import SymmetricFourierTransform
 # from scipy import interpolate
 from hmf import MassFunction
+import hmf
 
 pars = camb.CAMBparams()
 pars.set_cosmology(H0=67.5, ombh2=0.022, omch2=0.122)
@@ -86,7 +87,7 @@ This involves:
 
 class galaxy_catalog():
     
-    lf = Luminosity_Function2()
+    lf = Luminosity_Function()
     mass_function = MassFunction(z=0., dlog10m=0.02)
     cosmo = FlatLambdaCDM(H0=70, Om0=0.28)
 
@@ -110,12 +111,17 @@ class galaxy_catalog():
 
         return halo_masses, virial_radii  
 
-    def abundance_match_ms_given_mags(self, zs):
+    def abundance_match_ms_given_mags(self, zs, Mmin=10.0, library=True):
         ''' here we want to sort these in descending order, since abs mags are ordered and most neg absolute
         magnitude corresponds to most massive halo'''
         ngal = len(zs)
-        mass_range, dndm = self.load_halo_mass_function('../data/halo_mass_function_hmfcalc.txt')
-        halo_masses = np.sort(np.random.choice(mass_range, ngal,p=dndm))[::-1]
+
+        if library:
+            hmasses, mf = hmf.sample.sample_mf(ngal, 10.0)
+            halo_masses = np.sort(hmasses)[::-1]
+        else:
+            mass_range, dndm = self.load_halo_mass_function('../data/halo_mass_function_hmfcalc.txt')
+            halo_masses = np.sort(np.random.choice(mass_range, ngal,p=dndm))[::-1]
         halo_masses *= u.solMass
         virial_radii = self.mass_2_virial_radius(halo_masses, zs).to(u.Mpc) # in Mpc
         
@@ -253,9 +259,9 @@ class galaxy_catalog():
                 for cat in range(n_catalogs):
                     mag_draw = np.random.choice(Mapps, size=n, p=mapp_pdf)
 
-                    plt.figure()
-                    plt.hist(mag_draw, bins=20)
-                    plt.show()
+                    # plt.figure()
+                    # plt.hist(mag_draw, bins=20)
+                    # plt.show()
                     mags_list[cat].extend(mag_draw)
             
         cosmo_dist_mods = cosmo.distmod(all_finezs)

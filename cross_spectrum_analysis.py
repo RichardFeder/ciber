@@ -35,7 +35,7 @@ def azimuthalAverage(image, lmin=90, center=None, logbins=True, nbins=60, sterad
         i_sorted /= sterad_term
 
 
-    lmax = lmin*np.sqrt(0.5*image.shape[0]**2)
+    lmax = lmin*image.shape[0]/np.sqrt(0.5)
     
     if logbins:
         radbins = 10**(np.linspace(np.log10(lmin), np.log10(lmax), nbins+1))
@@ -46,17 +46,31 @@ def azimuthalAverage(image, lmin=90, center=None, logbins=True, nbins=60, sterad
     radbins /= np.min(radbins)
     rbin_idxs = get_bin_idxs(r_sorted, radbins)
 
-    rad_avg = []
-    rad_std = []
+    # rad_avg = []
+    # rad_std = []
+    rad_avg = np.zeros(nbins)
+    rad_std = np.zeros(nbins)
     
-    for i in xrange(len(rbin_idxs)-1):
-        nmodes= len(i_sorted[rbin_idxs[i]:rbin_idxs[i+1]])
-        rad_avg.append(np.mean(i_sorted[rbin_idxs[i]:rbin_idxs[i+1]]))
-        rad_std.append(np.std(i_sorted[rbin_idxs[i]:rbin_idxs[i+1]])/np.sqrt(nmodes))
+    # for i in xrange(len(rbin_idxs)-1):
+    #     nmodes= len(i_sorted[rbin_idxs[i]:rbin_idxs[i+1]])
+    #     rad_avg.append(np.mean(i_sorted[rbin_idxs[i]:rbin_idxs[i+1]]))
+    #     rad_std.append(np.std(i_sorted[rbin_idxs[i]:rbin_idxs[i+1]])/np.sqrt(nmodes))
+
+
+    for i in range(len(rbin_idxs)):
+        if i==len(rbin_idxs)-1:
+            nmodes= len(i_sorted[rbin_idxs[i]:])
+            rad_avg[i] = np.mean(i_sorted[rbin_idxs[i]:])
+            rad_std[i] = np.std(i_sorted[rbin_idxs[i]:])/np.sqrt(nmodes)
+        else: 
+            nmodes= len(i_sorted[rbin_idxs[i]:rbin_idxs[i+1]])
+            rad_avg[i] = np.mean(i_sorted[rbin_idxs[i]:rbin_idxs[i+1]])
+            rad_std[i] = np.std(i_sorted[rbin_idxs[i]:rbin_idxs[i+1]])/np.sqrt(nmodes)
         
     av_rbins = (radbins[:-1]+radbins[1:])/2
 
     return av_rbins, np.array(rad_avg), np.array(rad_std)
+
 
 
 def compute_beam_correction(psf, nbins=60):
@@ -94,9 +108,6 @@ def compute_cl(mapa, mapb=None, lmin=90., nbins=60, sterad_term=None, sterad_a=T
         
     rbins, radprof, radstd = azimuthalAverage(xcorrs, lmin=lmin, nbins=nbins, sterad_term=sterad_term)
     
-    return rbins, radprof, radstd
-
-
     return rbins, radprof, radstd
 
 def compute_mode_coupling(mask, ell_min=90., nphases=50, logbins=True, nbins=60, ps_amplitude=100.0):
@@ -153,6 +164,134 @@ def cross_correlate_galcat_ciber(cibermap, galaxy_catalog, m_min=14, m_max=30, b
     xcorr = compute_cross_spectrum(cibermap, gal_map)
     rbins, radprof, radstd = azimuthalAverage(xcorr)
     return rbins, radprof, radstd, xcorr
+
+
+def ensemble_power_spectra(beam_correction, full_maps=None, catalogs=None, mode='auto', \
+                           zmin=0.0, zmax=1.0, nz_bins=3, nbins=30, savefig=False, m_lim_tracer=24, \
+                          ncatalogs = 50, Nside = 1024.):
+    
+    radprofs, radstds, labels = [], [], []
+
+
+    if mode == 'auto':
+        print('Computing auto spectra..')
+        profs = []
+        for c in xrange(ncatalogs):
+            print('c=', c)
+            full_map = full_maps[c]
+
+            # nW m^-2 sr^-1 --> nW m^-2 pix^-1 -- compute FT of maps, multiply by side length --> nW m^-2 Nside pix^-1
+            # --- compute conjugate product --> nW^2 m^-4 Npix pix^-2
+        
+            # --- divide by sr/pix --> nW^2 m^-4 sr^-1 (Npix/pix) 
+            # --- divide by Npix --> nW^2 m^-4 sr^-1. -- multiply by ell*(ell+1) --> nW^2 m^-4 sr^-2
+            
+            rbin, radprof, radstd = compute_cl(full_map-np.mean(full_map), sterad_term=sterad_per_pix, nbins=nbins)
+
+            profs.append(radprof[:-1])
+
+        radprofs.append(np.mean(profs, axis=0)/beam_correction[:-1]**2 / Nside**2)
+        radstds.append(np.std(profs, axis=0)/beam_correction[:-1]**2 / Nside**2)
+
+        labels.append('CIBER x CIBER')
+    
+        f, yv, ystd = plot_radavg_xspectrum(rbin[:-1], radprofs=radprofs, raderrs=radstds, labels=labels, \
+                           shotnoise=[True], \
+                           add_shot_noise=[False], mode='auto',\
+                           sn_npoints=10, titlestring='Auto Spectrum (with instrument noise + background)')
+        if savefig:
+            f.savefig('../figures/power_spectra/auto_spectrum_50_realizations_ciber_full.png', dpi=300, bbox_inches='tight')
+
+    
+    elif mode == 'cross':
+        
+        ngs = []
+        print('Computing cross spectra..')
+        zrange = np.linspace(zmin, zmax, nz_bins+1)
+
+        for i in range(len(zrange)-1):
+            print(zrange[i], zrange[i+1])
+            profs = []
+            cts_per_steradian = np.zeros(ncatalogs)
+            for c in range(ncatalogs):
+                print('c=', c)
+                full_map = full_maps[c]
+                catalog = catalogs[c]
+                galcts = make_galaxy_binary_map(catalog, full_map, 1, magidx=3, m_max=m_lim_tracer, zmin=zrange[i], zmax=zrange[i+1], zidx=2, normalize=False)
+                cts_per_steradian[c] = np.sum(galcts)/(4*3.046e-4)
+                # inputs have units of (nW m^-2 sr^-1, count sr^-1) --> (nW m^-2 pix^-1, count pix^-1) -- compute FT of maps
+                # multiply by side length --> (nW m^-2 Nside pix^-1, count Nside pix^-1) --> compute conjugate product
+                # --> nW m^-2 Npix pix^-2 
+
+                # -- divide by sr/pix --> nW m^-2 sr^-1 (Npix / pix) -- divide by Npix ->
+                # nW m^-2 sr^-1.
+                rbin, radprof, radstd = compute_cl(full_map-np.mean(full_map), (galcts-np.mean(galcts))/np.mean(galcts), nbins=nbins, sterad_term=sterad_per_pix)
+                profs.append(radprof[:-1])
+            print(np.mean(cts_per_steradian))
+            ngs.append(np.mean(cts_per_steradian))
+            profs = np.array(profs)
+            radprofs.append(np.mean(profs, axis=0)/beam_correction[:-1] / Nside**2)
+            radstds.append(np.std(profs, axis=0)/beam_correction[:-1] / Nside**2)
+            labels.append('CIBER x Gal ('+str(np.round(zrange[i], 3))+'<z<'+str(np.round(zrange[i+1], 3))+')')
+
+        f, yv, ystd = plot_radavg_xspectrum(rbin[:-1], radprofs=radprofs, raderrs=radstds, labels=labels, \
+                           shotnoise=[True for x in range(len(zrange)-1)], \
+                           add_shot_noise=[False for x in range(len(zrange)-1)], mode='cross',\
+                           sn_npoints=10, titlestring='Cross Spectra, $m_{tracer}^{lim}=$'+str(m_lim_tracer)+' (with noise/background)')
+    
+        if savefig:
+            f.savefig('../figures/power_spectra/cross_spectrum_50_realizations_ciber_sourcemap_mlim='+str(m_lim_tracer)+'_full.png', dpi=300, bbox_inches='tight')
+        
+        
+    elif mode=='auto_gal':
+        print('Computing auto spectra for counts map..')
+        zrange = np.linspace(zmin, zmax, nz_bins+1)
+        ngs = []
+        for i in range(len(zrange)-1):
+            print(zrange[i], zrange[i+1])
+            profs = []
+            cts_per_steradian = np.zeros(ncatalogs)
+
+            for c in xrange(ncatalogs):
+                print('c=', c)
+
+                full_map = full_maps[c]
+                catalog = catalogs[c]
+                
+                # (counts / pix) / (mean counts / pix) --> unitless 
+                # (pix) sr^-1 -->  unitless -- compute FT of maps, multiply by side length --> Nside
+                # --- compute conjugate product --> Npix --- divide by sr/pix --> sr^-1 (Npix/pix) 
+                # --- divide by Npix --> sr^-1. 
+                galcts = make_galaxy_binary_map(catalog, full_map, 1, magidx=3, m_max=m_lim_tracer, zmin=zrange[i], zmax=zrange[i+1], zidx=2, normalize=False)
+                cts_per_steradian[c] = np.sum(galcts)/(4*3.04617e-4)
+#                 print('galcts (counts per steradian):', np.sum(galcts)/(4*3.04617e-4))
+                # (counts / pix, counts/pix) --> (counts Nside / pix, counts Nside / pix) --> (counts^2 Npix / pix^2)
+                # --> counts^2 sr^-1 (Npix/pix) --- divide by Npix --> counts^2 sr^-1
+                # --> should have units of Npix after xcorr 
+
+                rbin, radprof, radstd = compute_cl((galcts-np.mean(galcts))/np.mean(galcts), nbins=nbins, sterad_term=sterad_per_pix)
+            
+                profs.append(radprof[:-1])
+            print(np.mean(cts_per_steradian))
+            ngs.append(np.mean(cts_per_steradian))
+            radprofs.append(np.mean(profs, axis=0)/Nside**2)
+            radstds.append(np.std(profs, axis=0)/Nside**2)
+
+            labels.append('Gal x Gal ('+str(np.round(zrange[i], 3))+'<z<'+str(np.round(zrange[i+1], 3))+')')
+    
+        f, yv, ystd = plot_radavg_xspectrum(rbin[:-1], radprofs=radprofs, raderrs=radstds, labels=labels, \
+                           shotnoise=[True for x in xrange(len(zrange)-1)], \
+                           add_shot_noise=[False for x in xrange(len(zrange)-1)], mode='auto',\
+                           sn_npoints=10, titlestring='Galaxy Counts Auto Spectrum, $m_{lim}$='+str(m_lim_tracer))
+        if savefig:
+            f.savefig('../figures/power_spectra/gal_counts_auto_spectrum_50_realizations_ciber.png', dpi=300, bbox_inches='tight')
+
+        
+
+    if mode=='cross' or mode=='auto_gal':
+        return f, yv, ystd, radprofs, radstds, rbin, ngs
+    else:
+        return f, yv, ystd, radprofs, radstds, rbin
 
 def get_bin_idxs(arr, bins):
     i=0
@@ -231,6 +370,47 @@ def integrate_C_l(ls, C, weights=None):
     C_integrand *= weights
     C_integrand *= dls
     return np.sum(C_integrand)
+
+
+def knox_spectra(radprofs_auto, radprofs_cross=None, radprofs_gal=None, \
+                 ngs=None, fsky=0.0000969, lmin=90., Nside=1024, mode='auto'):
+    
+    sb_intensity_unit = u.nW/u.m**2/u.steradian
+    npix = Nside**2
+    pixel_solidangle = 49*u.arcsecond**2
+    print(len(rbin))
+    ells = rbin[:-1]*lmin
+    d_ells = ells[1:]-ells[:-1]
+    
+    mode_counting_term = 2./(fsky*(2*ells+1))
+    sb_sens_perpix = [33.1, 17.5]*sb_intensity_unit
+    
+    beam_term = np.exp((pixel_solidangle.to(u.steradian).value)*ells**2)
+    noise = (4*np.pi*fsky*u.steradian)*sb_sens_perpix[band]**2/npix
+    
+    cl_noise = noise*beam_term
+    
+    if mode=='auto':
+        dCl_sq = mode_counting_term*((radprofs_auto[0]) + cl_noise.value)**2
+        snr_sq = (radprofs_auto[0])**2 / dCl_sq
+        
+        return snr_sq, dCl_sq, ells
+    
+    elif mode=='cross':
+        
+        snr_sq_cross_list, list_of_crossterms = [], []
+
+         
+        for i in xrange(len(radprofs_cross)):
+            print(len(radprofs_auto[0]), len(cl_noise.value), len(radprofs_gal[i]), len(mode_counting_term))
+            dCl_sq = mode_counting_term*((radprofs_cross[i])**2 +(radprofs_auto[0] + cl_noise.value)*(radprofs_gal[i] +ngs[i]**(-1)))
+            snr_sq_cross = (radprofs_cross[i])**2 / dCl_sq
+            snr_sq_cross_list.append(snr_sq_cross)
+
+            cross_terms = [radprofs_cross[i]**2, radprofs_auto[0]*radprofs_gal[i], radprofs_auto[0]*ngs[i]**(-1), cl_noise.value*radprofs_gal[i], cl_noise.value*ngs[i]**(-1)]
+            list_of_crossterms.append(cross_terms)
+
+        return snr_sq_cross_list, dCl_sq, ells, list_of_crossterms
 
 
 def make_galaxy_binary_map(cat, refmap, inst, m_min=14, m_max=30, magidx=2, zmin=0, zmax=100, zidx=None, normalize=True):
