@@ -108,7 +108,6 @@ def generate_count_map_2d(n_samples, ell_min=90., size=128, Ntot=2000000, cl=Non
     realgrf = realgrf[:,int(0.5*size):int(1.5*size),int(0.5*size):int(1.5*size)]
     
     density_fields = np.array([np.exp(grf-np.std(grf)**2)-1. for grf in realgrf]) # assuming a log-normal density distribution
-    density_fields = np.array([df-np.mean(df) for df in density_fields]) # this ensures that each field has mean zero
     
     counts = counts_from_density_2d(density_fields, Ntot=Ntot)
 
@@ -148,7 +147,6 @@ def hankel_spline_lognormal_cl(ells, cl, plot=False, ell_min=90, ell_max=1e5):
     
     return cl_g, spline_cl_g
 
-
 ''' This is used when making gaussian random fields '''
 def make_ell_grid(size, ell_min=90.):
     ell_grid = np.zeros(shape=(size,size))
@@ -156,6 +154,8 @@ def make_ell_grid(size, ell_min=90.):
     for i, sx in enumerate(size_ind):
         ell_grid[i,:] = np.sqrt(sx**2+size_ind**2)*ell_min
     return ell_grid
+
+
 
 
 
