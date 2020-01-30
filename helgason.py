@@ -14,7 +14,6 @@ def apparent_mag_from_absolute(Mabs, z):
     Mapp = Mabs + cosmo.distmod(z).value-2.5*np.log10(1+z)
     return Mapp
 
-
 class Luminosity_Function():
     UV_dict = dict({'lambda':0.15,'N_LF':24, 'zmax':8.0, 'm0':-19.62, 'q':1.1, 'phi0':2.43, 'p':0.2, 'r':0.086})
     U_dict = dict({'lambda':0.36,'N_LF':27, 'zmax':4.5, 'm0':-20.20, 'q':1.0, 'phi0':5.46, 'p':0.5, 'r':0.076})
@@ -147,68 +146,61 @@ class Luminosity_Function():
         return dfdz.to(u.nW*u.m**(-2)*u.steradian**(-1))
 
 
-    # these shot noise levels agree with Fig. 8 of Helgason+ given certain limiting magnitudes
+def auto_shot_noise(lf, z0, z1, ms, nzbin=10, band='J'):
+    ''' This function computes the shot noise from galaxies as driven by the Schechter luminosity function.
+    The shot noise in the auto spectrum is calculated in Helgason with the double integral
+    P_{SN} = (integral over redshift) dz (integral over magnitude)dm f^2(m)dN(m|z)/dm. The resulting 
+    shot noise has units of intensity squared, i.e. (nW/m^2/sr)^2. '''
 
-    def auto_shot_noise(self, z0, z1, ms, nzbin=10, band='J'):
-        ''' This function computes the shot noise from galaxies as driven by the Schechter luminosity function.
-        The shot noise in the auto spectrum is calculated in Helgason with the double integral
-        P_{SN} = (integral over redshift) dz (integral over magnitude)dm f^2(m)dN(m|z)/dm. The resulting 
-        shot noise has units of intensity squared, i.e. (nW/m^2/sr)^2. '''
+    nu = const.c/(lf.band_dicts[band]['lambda']*u.um)
+    shots = []
+    zrange = np.linspace(z0, z1, nzbin)
+    dz = (z1-z0)/nzbin
+    
+    for j in xrange(len(zrange)-1):
         
-        nu = const.c/(self.band_dicts[band]['lambda']*u.um)
-        shots = []
-        zrange = np.linspace(z0, z1, nzbin)
-        dz = (z1-z0)/nzbin
+        cl_shot = 0.
+        z = 0.5*(zrange[j+1]+zrange[j])
         
-        for j in xrange(len(zrange)-1):
-            
-            cl_shot = 0.
-            z = 0.5*(zrange[j+1]+zrange[j])
-            
-            for i in xrange(len(ms)-1):
-                m_in_btwn = 0.5*(ms[i+1]+ms[i])
-                dm = ms[i+1]-ms[i]
-                mabs = self.get_abs_from_app(m_in_btwn, z)
-                dndm = self.schechter_lf_dm(mabs, z, band)*(10**(-3) * self.schechter_units)*cosmo.differential_comoving_volume(z)
-                f_m = self.specific_flux(m_in_btwn, nu)
-                psn = dm*dndm*f_m**2
-                cl_shot += psn.to(u.nW**2*u.m**(-4)*u.steradian**(-1))
+        for i in xrange(len(ms)-1):
+            m_in_btwn = 0.5*(ms[i+1]+ms[i])
+            dm = ms[i+1]-ms[i]
+            mabs = lf.get_abs_from_app(m_in_btwn, z)
+            dndm = lf.schechter_lf_dm(mabs, z, band)*(10**(-3) * lf.schechter_units)*cosmo.differential_comoving_volume(z)
+            f_m = lf.specific_flux(m_in_btwn, nu)
+            psn = dm*dndm*f_m**2
+            cl_shot += psn.to(u.nW**2*u.m**(-4)*u.steradian**(-1))
 
-            shots.append(cl_shot.value*dz) # nW^2 m^-4 sr^-1
+        shots.append(cl_shot.value*dz) # nW^2 m^-4 sr^-1
 
-        return np.sum(shots)
+    return np.sum(shots)
 
 
-    def cross_shot_noise(self, z0, z1, ms, nzbin=10, band='J'):
-        ''' This computes the shot noise when cross correlating an intensity map with a galaxy counts map.
+def cross_shot_noise(lf, z0, z1, ms, nzbin=10, band='J'):
+    ''' This computes the shot noise when cross correlating an intensity map with a galaxy counts map.
         This differs from the auto shot noise in two ways:
             1) The integral over number counts is weighted by f(m)n_g^{-1} rather than f^2(m)
             2) The integral over magnitude is evaluated over the tracer catalog magnitude range.
-        Cross shot noise has units of intensity, i.e. nW/m^2/sr. 
-        '''
+        Cross shot noise has units of intensity, i.e. nW/m^2/sr.  '''
+    nu = const.c/(lf.band_dicts[band]['lambda']*u.um)
+    shots = []
+    zrange = np.linspace(z0, z1, nzbin)
+    dz = (z1-z0)/nzbin
+    for j in xrange(len(zrange)-1):
+        cl_shot = 0.
+        z = 0.5*(zrange[j+1]+zrange[j])
 
-        nu = const.c/(self.band_dicts[band]['lambda']*u.um)
-        shots = []
-        zrange = np.linspace(z0, z1, nzbin)
-        dz = (z1-z0)/nzbin
-        for j in xrange(len(zrange)-1):
-            cl_shot = 0.
-            z = 0.5*(zrange[j+1]+zrange[j])
+        for i in xrange(len(ms)-1):
+            m_in_btwn = 0.5*(ms[i+1]+ms[i])
+            dm = ms[i+1]-ms[i]
+            mabs = lf.get_abs_from_app(m_in_btwn, z)
+            dndm = lf.schechter_lf_dm(mabs, z, band)*(10**(-3) * lf.schechter_units)*cosmo.differential_comoving_volume(z)
+            f_m = lf.specific_flux(m_in_btwn, nu)
+            psn = dm*dndm*f_m
+            cl_shot += psn.to(u.nW*u.m**(-2)*u.steradian**(-1))
 
-            for i in xrange(len(ms)-1):
-                m_in_btwn = 0.5*(ms[i+1]+ms[i])
-                dm = ms[i+1]-ms[i]
-                mabs = self.get_abs_from_app(m_in_btwn, z)
-                dndm = self.schechter_lf_dm(mabs, z, band)*(10**(-3) * self.schechter_units)*cosmo.differential_comoving_volume(z)
-                f_m = self.specific_flux(m_in_btwn, nu)
-                psn = dm*dndm*f_m
-                cl_shot += psn.to(u.nW*u.m**(-2)*u.steradian**(-1))
+        shots.append(cl_shot.value*dz) # nW m^-2 sr^-1
 
-            shots.append(cl_shot.value*dz) # nW m^-2 sr^-1
-
-        return np.sum(shots)
-
-
-
+    return np.sum(shots)
 
 

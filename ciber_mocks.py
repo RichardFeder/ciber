@@ -1,21 +1,17 @@
 import numpy as np
-import pandas as pd
+# import pandas as pd
 import astropy.units as u
 from astropy import constants as const
-import time
+# import time
 import scipy.signal
 from mock_galaxy_catalogs import *
 from helgason import *
+from ciber_data_helpers import *
 
 ''' Given an input map and a specified center, this will
 % create a map with each pixels value its distance from
 % the specified pixel. '''
 
-def make_radius_map(dimx, dimy, cenx, ceny, rc):
-    x = np.arange(dimx)
-    y = np.arange(dimy)
-    xx, yy = np.meshgrid(x, y, sparse=True)
-    return (((cenx - xx)/rc)**2 + ((ceny - yy)/rc)**2)
 
 
 def normalized_ihl_template(dimx=50, dimy=50, R_vir=None):
@@ -55,7 +51,7 @@ class ciber_mock():
     ciber_field_dict = dict({4:'elat10', 5:'elat30',6:'BootesB', 7:'BootesA', 8:'SWIRE'})
 
     pix_width = 7.*u.arcsec
-    pix_sr = ((pix_width.to(u.degree))*(np.pi/180.0))**2*u.steradian # pixel solid angle in steradians
+    pix_sr = ((pix_width.to(u.degree))*(np.pi/180.0))**2*u.steradian / u.degree # pixel solid angle in steradians
     lam_effs = np.array([1.05, 1.79])*1e-6*u.m # effective wavelength for bands
     sky_brightness = np.array([300., 370.])*sb_intensity_unit
     instrument_noise = np.array([33.1, 17.5])*sb_intensity_unit
@@ -64,21 +60,12 @@ class ciber_mock():
         pass
 
     def catalog_mag_cut(self, cat, m_arr, m_min, m_max):
-        print('marr:', m_arr)
         magnitude_mask_idxs = np.array([i for i in xrange(len(m_arr)) if m_arr[i]>=m_min and m_arr[i] <= m_max])
         if len(magnitude_mask_idxs) > 0:
             catalog = cat[magnitude_mask_idxs,:]
         else:
             catalog = cat
         return catalog   
-
-    def find_psf_params(self, path, tm=1, field='elat10'):
-        arr = np.genfromtxt(path, dtype='str')
-        for entry in arr:
-            if entry[0]=='TM'+str(tm) and entry[1]==field:
-                beta, rc, norm = float(entry[2]), float(entry[3]), float(entry[4])
-                return beta, rc, norm
-        return False
 
     def get_catalog(self, catname):
         cat = np.loadtxt(self.ciberdir+'/data/'+catname)
@@ -102,7 +89,7 @@ class ciber_mock():
         srcmap = np.zeros((nx*2, ny*2))
 
         # get psf params
-        beta, rc, norm = self.find_psf_params(self.ciberdir+'/data/psfparams.txt', tm=band+1, field=self.ciber_field_dict[ifield])
+        beta, rc, norm = find_psf_params(self.ciberdir+'/data/psfparams.txt', tm=band+1, field=self.ciber_field_dict[ifield])
         
         Nlarge = nx+30+30 
         Nsrc = cat.shape[0]
@@ -145,6 +132,47 @@ class ciber_mock():
         # return ihl_map[(norm_ihl.shape[0] + extra_trim)/2:-(norm_ihl.shape[0] + extra_trim)/2, (norm_ihl.shape[0] + extra_trim)/2:-(norm_ihl.shape[0] + extra_trim)/2]
      
 
+    def mocks_from_catalogs(self, catalog_list, ncatalog, mock_data_directory, m_min=9., m_max=30., m_tracer_max=25., \
+                        ihl_frac=0.2, ifield=4, band=0, save=False):
+    
+        srcmaps_full, catalogs, noise_realizations, ihl_maps = [[] for x in range(4)]
+        
+        print('m_min = ', m_min)
+        print('m_max = ', m_max)
+        print('m_tracer_max = ', m_tracer_max)
+        for c in range(ncatalog):
+
+            cat_full = self.catalog_mag_cut(catalog_list[c], catalog_list[c][:,3], m_min, m_max)
+            tracer_cat = self.catalog_mag_cut(catalog_list[c], catalog_list[c][:,3], m_min, m_tracer_max)
+            I_arr_full = self.mag_2_nu_Inu(cat_full[:,3], band)
+            cat_full = np.hstack([cat_full, np.expand_dims(I_arr_full.value, axis=1)])
+            srcmap_full, psf_template, psf_full = self.make_srcmap(ifield, cat_full, band=band)
+            noise = np.random.normal(self.sky_brightness[band].value, self.instrument_noise[band].value, size=srcmap_full.shape)
+            conv_noise = scipy.signal.convolve2d(noise, psf_template, 'same')
+            
+            noise_realizations.append(conv_noise)
+            srcmaps_full.append(srcmap_full)
+            
+            if ihl_frac > 0:
+                print('Making IHL map..')
+                ihl_map = self.make_ihl_map(srcmap_full.shape, cat_full, ihl_frac, psf=psf_template)
+                ihl_maps.append(ihl_map)
+                if save:
+                    print('Saving results..')
+                    np.savez_compressed(mock_data_directory+'ciber_mock_'+str(c)+'_mmin='+str(m_min)+'.npz', \
+                                        catalog=tracer_cat, srcmap_full=srcmap_full, conv_noise=conv_noise,\
+                                        ihl_map=ihl_map)
+            else:
+                if save:
+                    print('Saving results..')
+                    np.savez_compressed(mock_data_directory+'ciber_mock_'+str(c)+'_mmin='+str(m_min)+'.npz', \
+                                        catalog=tracer_cat, srcmap_full=srcmap_full, conv_noise=conv_noise)
+                   
+        if ihl_frac > 0: 
+            return srcmaps_full, catalogs, noise_realizations, ihl_maps
+        else:
+            return srcmaps_full, catalogs, noise_realizations
+
     def make_mock_ciber_map(self, ifield, m_min, m_max, mock_cat=None, band=0, catname=None, ihl_frac=0., ng_bins=5, zmin=0.01, zmax=5.0):
         if mock_cat is not None:
             m_arr = []
@@ -153,7 +181,6 @@ class ciber_mock():
             mock_galaxy = galaxy_catalog()
             cat = mock_galaxy.generate_galaxy_catalog(ng_bins=ng_bins, zmin=zmin, zmax=zmax)
         
-
         cat = self.catalog_mag_cut(cat, cat[:,3], m_min, m_max) 
         I_arr = self.mag_2_nu_Inu(cat[:,3], band)
         cat = np.hstack([cat, np.expand_dims(I_arr.value, axis=1)])
