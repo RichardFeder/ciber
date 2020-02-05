@@ -4,27 +4,60 @@ import matplotlib.pyplot as plt
 import scipy.stats
 from astropy.table import Table
 import pandas as pd
+from ciber_mocks import *
 
 
-def compute_kde_grid(cat_df, range1, range2, key1='r', key2='redshift', target='spec_redshift', minpts=2):
-    all_kdes = []
+def compute_discrete_pdf_grid(cat_df, range1, range2, minz=0.0, maxz=6.0, nbin=201, key1='r', key2='redshift', target='spec_redshift',\
+                              minpts=2, savepath=None):
+    
+    counts = np.zeros((len(range1)-1, len(range2)-1))
+    
+    z_bins = np.linspace(minz, maxz, nbin)
+    bin_centers = 0.5*(z_bins[1:]+z_bins[:-1])
+    all_pdfs = np.zeros((len(range1)-1, len(range2)-1, nbin-1))
+    print('PDF grid has shape', all_pdfs.shape)
+        
     for i in range(len(range1)-1):
-        kde_list = []
+        pdf_list = []
         for j in range(len(range2)-1):
             
             cut = cat_df.loc[(cat_df[key1]>range1[i]) & (cat_df[key1]<range1[i+1])\
                             &(big_df[key2]>range2[j])&(cat_df[key2]<range2[j+1])]
-        
-            if len(cut[target]) >= minpts :
-                kde = scipy.stats.gaussian_kde(cut[target])
-            else:
-                kde = None
-            kde_list.append(kde)
             
-
-        all_kdes.append(kde_list)
+            counts[i, j] = len(cut[target])
+            
+            all_pdfs[i, j, :] = np.histogram(cut[target], bins=z_bins)[0]
+    
+    if savepath is not None:
+        np.savez(savepath+'/pdf_grid_counts_'+key1+'_'+key2+'_'+target+'.npz', pdfs=np.array(all_pdfs), counts=counts, bin_centers=bin_centers, z_bins=z_bins, range1=range1, range2=range2)
         
-    return all_kdes
+    return all_pdfs, counts, bin_centers
+
+
+def compute_kde_grid(cat_df, range1, range2, minz=0.0, maxz=6.0, nbin=201, key1='r', key2='redshift', target='spec_redshift', minpts=2, savepath=None):
+    all_kdes = []
+    
+    counts = np.zeros((len(range1)-1, len(range2)-1))
+        
+    for i in range(len(range1)-1):
+        ke_list = []
+        for j in range(len(range2)-1):
+            
+            cut = cat_df.loc[(cat_df[key1]>range1[i]) & (cat_df[key1]<range1[i+1])\
+                            &(big_df[key2]>range2[j])&(cat_df[key2]<range2[j+1])]
+            
+            counts[i, j] = len(cut['spec_redshift'])
+            
+            if len(cut[target]) >= minpts:
+                kde_pdf = scipy.stats.gaussian_kde(cut[target])
+            else:
+                kde_pdf = None
+            kde_list.append(kde_pdf)
+
+         
+        all_kdes.append(kde_list)
+    
+    return all_pdfs, counts
 
 def compute_colors(spec_cat, bands, keyword='spec_redshift'):
 
@@ -71,3 +104,123 @@ def nearest_neighbors_ppf(all_train_colors, Dm, z_train=None, df=4, q=0.68, zmax
         
     return nn_colors, nn_Dm
 
+
+class redobj():
+    
+    degree_per_steradian = 3.046e-4
+    
+    def __init__(self, zidx=2, magidx=3, ifield=4, nbins=22, zmin=0.0, zmax=1.0, ng_bins=3, m_lim_tracer=None, ndeg=4.):
+        self.zidx = zidx
+        self.magidx = magidx
+        self.ifield=ifield
+        self.cmock = ciber_mock()
+        self.psf = None
+        self.nbins = nbins
+        self.ng_bins = ng_bins
+        self.m_lim_tracer = m_lim_tracer
+        self.xcorr_zbins = np.linspace(zmin, zmax, ng_bins+1)
+        self.ndeg = ndeg
+        
+    
+    def read_in_tracer_cat_and_map(self, mappath, with_noise=True):
+        
+        map_and_cat = np.load(mappath)
+        self.map = map_and_cat['srcmap_full']
+        if with_noise:
+            self.map += map_and_cat['conv_noise']
+        
+        self.sterad_per_pix =  (2*np.pi/180./self.map.shape[0])**2
+
+        if self.m_lim_tracer is not None:
+            tracer = map_and_cat['catalog']
+            mask = (tracer[:, self.magidx] < self.m_lim_tracer)
+            self.cat = tracer[mask, :]
+        else:
+            self.cat = map_and_cat['catalog']
+            
+        print('cat has shape ', self.cat.shape)
+            
+    
+    def load_psf(self):
+        self.psf = make_psf_template(self.cmock.ciberdir+'/data/psfparams.txt', self.cmock.ciber_field_dict[self.ifield], 1, large=True)[0]
+        
+        
+    def load_beam_correction(self):
+        if self.psf is None:
+            self.load_psf()
+        
+        rb, bc = compute_beam_correction(self.psf, nbins=self.nbins)
+        self.rb = rb
+        self.bc = bc
+        print('bc length', bc.shape)
+    
+        
+    def read_in_redshift_pdf_obj(self, path, pdf_key='pdfs', zbinkey='bin_centers'):
+        redshift_pdf_obj = np.load(path)
+        self.redshift_pdfs = redshift_pdf_obj[pdf_key]
+        self.redshift_pdf_bins = redshift_pdf_obj[zbinkey]
+        self.zrange = redshift_pdf_obj['range1']
+        self.magrange = redshift_pdf_obj['range2']
+        
+        print('self.zrange:', self.zrange)
+        print('self.magrange:', self.magrange)
+        
+
+    def get_redshift_grid_idxs(self):
+        self.z_pdf_idxs = np.digitize(self.cat[:, self.zidx], self.zrange)-1
+        self.mag_pdf_idxs = np.digitize(self.cat[:, self.magidx], self.magrange)-1
+        
+    def plot_z_differences(self, newcat, plot=False):
+        dz = newcat[:, self.zidx] - self.cat[:,self.zidx]
+        print('dz:', dz[np.nonzero(dz)])
+        if plot:
+            plt.figure()
+            plt.hist(dz, bins=50)
+            plt.yscale('symlog')
+            plt.xlabel('$\\Delta z$', fontsize=16)
+            plt.ylabel('$N$', fontsize=16)
+            plt.show()
+        
+        
+    def sample_new_cat(self):
+        catalog = self.cat.copy()
+        for a in range(len(self.zrange)-1):
+            for b in range(len(self.magrange)-1):
+                mask = (self.z_pdf_idxs==a)&(self.mag_pdf_idxs==b)
+                pdf = self.redshift_pdfs[a,b]
+                pdf /= np.sum(pdf)
+                newz = np.random.choice(self.redshift_pdf_bins, p=pdf, size=np.sum(mask))
+                catalog[mask, self.zidx] = newz
+        
+        return catalog
+    
+    def sample_redshift_pdf_cross_spectrum(self, nsamp=50):
+        
+        print('xcorr redshift bins:', self.xcorr_zbins)
+        
+        Nside = self.map.shape[0]
+        ps_samps = np.zeros((nsamp, len(self.xcorr_zbins)-1, self.nbins))
+        ng_samps = np.zeros((nsamp, len(self.xcorr_zbins)-1))
+        
+        for n in range(nsamp):
+            print('n=', n)
+            cts_per_steradian = np.zeros(self.ng_bins)
+            nsrc = self.cat.shape[0]
+            print('nsrc=', nsrc)
+            
+            catalog = self.sample_new_cat()
+            
+            self.plot_z_differences(catalog)
+            
+            for i in range(self.ng_bins):
+                galcts = make_galaxy_cts_map(catalog, self.map.shape, 1, \
+                                             magidx=self.magidx,m_max=self.m_lim_tracer, zmin=self.xcorr_zbins[i],\
+                                             zmax=self.xcorr_zbins[i+1], zidx=self.zidx, normalize=False)
+                
+                cts_per_steradian[i] = np.sum(galcts)/(self.ndeg*self.degree_per_steradian)
+                rbin, radprof, radstd = compute_cl(self.map-np.mean(self.map), (galcts-np.mean(galcts))/np.mean(galcts), nbins=self.nbins, sterad_term=self.sterad_per_pix)
+                
+                ps_samps[n, i, :] = radprof /self.bc / Nside**2
+                ng_samps[n, i] = np.sum(galcts)
+        
+        return rbin, ps_samps, ng_samps
