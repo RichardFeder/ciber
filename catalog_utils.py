@@ -36,12 +36,28 @@ def hsc_positions(hsc_cat, nchoose, z, dz, ra_min=241.5, ra_max=243.5, dec_min=5
     
     return tx, ty
 
-def sdss_preprocess(sdss_path, redshift_keyword='redshift'):
+def sdss_preprocess(sdss_path, redshift_keyword='redshift', class_cut=False, object_class_cut=False, warning_cut=False):
     sdss_df = fits_to_dataframe(sdss_path)
+    print('before cuts:', len(sdss_df.index))
     sdss_df = sdss_df.drop(['objid', 'run', 'rerun', 'camcol', 'field'], axis=1)
-    sdss_df = sdss_df.loc[(sdss_df[redshift_keyword]>-1.0)&(sdss_df[redshift_keyword]<4.0)]
+    
+    sdss_df.loc[(sdss_df[redshift_keyword]>-1.0)&(sdss_df[redshift_keyword]<4.0)]
+    print('after z cuts:', len(sdss_df.index))
 
-    print(len(sdss_df.index))
+    if class_cut:
+        sdss_df = sdss_df.loc[(sdss_df['photoz_class']==1)]
+        print('after photoz class cut:', len(sdss_df.index))
+    
+    if object_class_cut:
+        sdss_df = sdss_df.loc[(sdss_df['object_class']=='GALAXY')]
+        print('after object class cut:', len(sdss_df.index))
+
+
+    if warning_cut:
+        sdss_df = sdss_df.loc[(sdss_df['warning']==0)]
+        print('after warning cut:', len(sdss_df.index))
+
+
+    print('after cuts:', len(sdss_df.index))
     return sdss_df
-
 

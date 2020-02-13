@@ -5,10 +5,11 @@ import scipy.stats
 from astropy.table import Table
 import pandas as pd
 from ciber_mocks import *
+from cross_spectrum_analysis import *
 
 
 def compute_discrete_pdf_grid(cat_df, range1, range2, minz=0.0, maxz=6.0, nbin=201, key1='r', key2='redshift', target='spec_redshift',\
-                              minpts=2, savepath=None):
+                              minpts=2, savepath=None, extra_name=''):
     
     counts = np.zeros((len(range1)-1, len(range2)-1))
     
@@ -29,7 +30,7 @@ def compute_discrete_pdf_grid(cat_df, range1, range2, minz=0.0, maxz=6.0, nbin=2
             all_pdfs[i, j, :] = np.histogram(cut[target], bins=z_bins)[0]
     
     if savepath is not None:
-        np.savez(savepath+'/pdf_grid_counts_'+key1+'_'+key2+'_'+target+'.npz', pdfs=np.array(all_pdfs), counts=counts, bin_centers=bin_centers, z_bins=z_bins, range1=range1, range2=range2)
+        np.savez(savepath+'/pdf_grid_counts_'+key1+'_'+key2+'_'+target+extra_name+'.npz', pdfs=np.array(all_pdfs), counts=counts, bin_centers=bin_centers, z_bins=z_bins, range1=range1, range2=range2)
         
     return all_pdfs, counts, bin_centers
 
@@ -105,6 +106,8 @@ def nearest_neighbors_ppf(all_train_colors, Dm, z_train=None, df=4, q=0.68, zmax
     return nn_colors, nn_Dm
 
 
+
+
 class redobj():
     
     degree_per_steradian = 3.046e-4
@@ -166,35 +169,73 @@ class redobj():
         print('self.magrange:', self.magrange)
         
 
-    def get_redshift_grid_idxs(self):
+    def get_redshift_grid_idxs(self, color_sigma=0):
         self.z_pdf_idxs = np.digitize(self.cat[:, self.zidx], self.zrange)-1
-        self.mag_pdf_idxs = np.digitize(self.cat[:, self.magidx], self.magrange)-1
-        
-    def plot_z_differences(self, newcat, plot=False):
-        dz = newcat[:, self.zidx] - self.cat[:,self.zidx]
-        print('dz:', dz[np.nonzero(dz)])
-        if plot:
-            plt.figure()
-            plt.hist(dz, bins=50)
-            plt.yscale('symlog')
-            plt.xlabel('$\\Delta z$', fontsize=16)
-            plt.ylabel('$N$', fontsize=16)
+        self.mag_pdf_idxs = np.digitize(self.cat[:, self.magidx]+np.random.normal(0, scale=color_sigma, size=self.cat.shape[0]), self.magrange)-1
+    
+
+    def get_cat_number_count_grid(self, cat=None, plot=False, band='J'):
+        counts_map = np.zeros((len(self.magrange)-1, len(self.zrange)-1))
+
+        for j in range(len(self.zrange)-1):
+            for i in range(len(self.magrange)-1):
+                if cat is None:
+                    mask = (self.cat[:, self.magidx]>self.magrange[i]) & (self.cat[:, self.magidx]<self.magrange[i+1])\
+                                       &(self.cat[:, self.zidx]>self.zrange[j])&(self.cat[:, self.zidx]<self.zrange[j+1])
+                else:
+                    mask = (cat[:, self.magidx]>self.magrange[i]) & (cat[:, self.magidx]<self.magrange[i+1])\
+                                       &(cat[:, self.zidx]>self.zrange[j])&(cat[:, self.zidx]<self.zrange[j+1])
+
+                counts_map[i,j] = np.sum(mask)
+                
+        if plot:       
+            f = plt.figure(figsize=(8, 8))
+            plt.imshow(counts_map, aspect=0.15, norm=matplotlib.colors.LogNorm(), extent=[self.zrange[0], self.zrange[-1],self.magrange[-1], self.magrange[0]])
+            plt.colorbar()
+            plt.xlabel('Redshift $z$', fontsize=16)
+            plt.ylabel('Simulated '+band+' band magnitude', fontsize=16)
             plt.show()
+            
+            return counts_map, f
+                
+        return counts_map
         
+
+    def plot_z_differences(self, newcat):
+        dz = newcat[:, self.zidx] - self.cat[:,self.zidx]
+        print('dz:', dz[np.nonzero(dz)], np.sum(np.nonzero(dz)))
+
+        plt.figure()
+        plt.hist(dz, bins=50)
+        plt.yscale('symlog')
+        plt.xlabel('$\\Delta z$', fontsize=16)
+        plt.ylabel('$N$', fontsize=16)
+        plt.show()
+        
+        
+    def sample_sdss_selection_function(self):
+        # TODO
+        pass
         
     def sample_new_cat(self):
+        total_changed = 0
         catalog = self.cat.copy()
         for a in range(len(self.zrange)-1):
             for b in range(len(self.magrange)-1):
                 mask = (self.z_pdf_idxs==a)&(self.mag_pdf_idxs==b)
+                total_changed += np.sum(mask)
                 pdf = self.redshift_pdfs[a,b]
                 pdf /= np.sum(pdf)
+                pdf[np.isnan(pdf)] = 0.
+                if np.sum(pdf)==0:
+                    pdf[:] = 1./pdf.shape[0]
                 newz = np.random.choice(self.redshift_pdf_bins, p=pdf, size=np.sum(mask))
                 catalog[mask, self.zidx] = newz
-        
+                
         return catalog
     
-    def sample_redshift_pdf_cross_spectrum(self, nsamp=50):
+    
+    def sample_redshift_pdf_cross_spectrum(self, nsamp=50, plot=False):
         
         print('xcorr redshift bins:', self.xcorr_zbins)
         
@@ -210,7 +251,8 @@ class redobj():
             
             catalog = self.sample_new_cat()
             
-            self.plot_z_differences(catalog)
+            if plot:
+                self.plot_z_differences(catalog)
             
             for i in range(self.ng_bins):
                 galcts = make_galaxy_cts_map(catalog, self.map.shape, 1, \
