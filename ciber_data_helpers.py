@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 from astropy.table import Table
 
 def find_psf_params(path, tm=1, field='elat10'):
+    ''' This function loads/parses PSF parameters given a path, field, and choice of tm (forget what this means)'''
     arr = np.genfromtxt(path, dtype='str')
     for entry in arr:
         if entry[0]=='TM'+str(tm) and entry[1]==field:
@@ -16,6 +17,10 @@ def find_psf_params(path, tm=1, field='elat10'):
     return False
 
 def make_psf_template(path, field, band, nx=1024, pad=30, nwide=20, nbin=0, multfac=7., large=True):
+    
+    ''' This function loads PSF parameters and generates a normalized template over some array. 
+    The PSF is parameterized as a power law'''
+
     beta, rc, norm = find_psf_params(path, tm=band+1, field=field)
     Nlarge = nx+pad+pad
     radmap = make_radius_map(2*Nlarge+nbin, 2*Nlarge+nbin, Nlarge+nbin, Nlarge+nbin, rc)*multfac
@@ -30,6 +35,8 @@ def make_psf_template(path, field, band, nx=1024, pad=30, nwide=20, nbin=0, mult
         psf_template
 
 def make_radius_map(dimx, dimy, cenx, ceny, rc):
+    ''' This function calculates a map, where the value of each pixel is its distance from the central pixel.
+    Useful for making PSF templates and other map making functions'''
     x = np.arange(dimx)
     y = np.arange(dimy)
     xx, yy = np.meshgrid(x, y, sparse=True)
@@ -46,8 +53,8 @@ def psf_large(psf_template, mapdim=1024):
     return psf_temp
 
 
-
 def read_ciber_powerspectra(filename):
+    ''' Given some file path name, this function loads/parses previously measured CIBER power spectra'''
     array = np.loadtxt(filename, skiprows=8)
     ells = array[:,0]
     norm_cl = array[:,1]
@@ -56,6 +63,7 @@ def read_ciber_powerspectra(filename):
     return np.array([ells, norm_cl, norm_dcl_lower, norm_dcl_upper])
 
 
+''' The classes/functions below have not been fully developed or used yet, so I will defer documentation until they are.'''
 
 class ciber_data():
     

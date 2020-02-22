@@ -15,6 +15,7 @@ def apparent_mag_from_absolute(Mabs, z):
     return Mapp
 
 class Luminosity_Function():
+    ''' These are all input values from Helgason et al. 2012 (arxiv:1201.4398v3)'''
     UV_dict = dict({'lambda':0.15,'N_LF':24, 'zmax':8.0, 'm0':-19.62, 'q':1.1, 'phi0':2.43, 'p':0.2, 'r':0.086})
     U_dict = dict({'lambda':0.36,'N_LF':27, 'zmax':4.5, 'm0':-20.20, 'q':1.0, 'phi0':5.46, 'p':0.5, 'r':0.076})
     B_dict = dict({'lambda':0.45,'N_LF':44, 'zmax':4.5, 'm0':-21.35, 'q':0.6, 'phi0':3.41, 'p':0.4, 'r':0.055})
@@ -52,7 +53,8 @@ class Luminosity_Function():
         V = cosmo.differential_comoving_volume(z)*u.steradian*(np.pi/180.)**2 # to get in deg^-2
         return V
     
-    def find_nearest_band(self, lam): # chceked
+    def find_nearest_band(self, lam): # checked
+        ''' Given a wavelength, finds nearest passband from Helgason ''' 
         optkey = ''
         mindist = None
         for key, value in self.band_dicts.iteritems():
@@ -65,16 +67,19 @@ class Luminosity_Function():
         return optkey, mindist
 
     def flux_prod_rate(self, zrange, ms, band):
+        ''' Given an observing band, a range of redshifts and magnitudes, this function computes the flux production rate as a function of redshift''' 
         flux_prod_rates = []
         for z in zrange:
             flux_prod_rates.append(self.total_bkg_light(ms, z, band).value)
         return flux_prod_rates
 
     def get_abs_from_app(self, Mapp, z): # checked
+        ''' Apparent magnitudes to absolute magnitudes given redshifts. Note: there is no explicit K-correction here ''' 
         Mabs = Mapp - self.cosmo.distmod(z).value + 2.5*np.log10(1.+z)
         return Mabs
         
     def get_app_from_abs(self, Mabs, z): # checked
+        ''' Absolute magnitudes to apparent magnitudes given redshifts. Same caveat as get_abs_from_app() '''
         Mapp = Mabs + self.cosmo.distmod(z).value - 2.5*np.log10(1.+z)
         return Mapp
 
@@ -84,12 +89,15 @@ class Luminosity_Function():
         
         return m0-2.5*np.log10((1.+(z-self.z0m))**q)
 
-    ''' This returns the number counts per magnitude per square degree. It does this by, for each redshift,
+
+    def number_counts(self, zs, Mapp, band, dzs, dMapp=None):
+        
+        ''' This returns the number counts per magnitude per square degree. It does this by, for each redshift,
         1) computing wavelength that would redshift into observing band at z=0
         2) getting absolute magnitude at that redshift
         3) computing Schechter luminosity function in (pre-redshifted) band and converting to counts/mag/deg^2
-    '''
-    def number_counts(self, zs, Mapp, band, dzs, dMapp=None):
+        '''
+
         if dMapp is None:
             dMapp = Mapp[1]-Mapp[0]
             
@@ -116,7 +124,8 @@ class Luminosity_Function():
     
 
     def schechter_lf_dm(self, M, z, band): # in absolute magnitudes
-    
+        ''' Given an observing band and an absolute magnitude, this function evaluates the Schechter luminosity function from Helgason
+        over some input range of redshifts.''' 
         Msz = self.m_star(z, band)
         phiz = self.phi_star(z, band)
         alph = self.alpha(z)

@@ -5,17 +5,18 @@ from ciber_mocks import *
 import pandas as pd
 
 
-def azimuthalAverage(image, lmin=90, center=None, logbins=True, nbins=60, sterad_term=None):
+def azimuthalAverage(image, ell_min=90, center=None, logbins=True, nbins=60, sterad_term=None):
     """
     Calculate the azimuthally averaged radial profile.
 
     image - The 2D image
-    lmin - the minimum multipole used to set range of multipoles
+    ell_min - the minimum multipole used to set range of multipoles
     center - The [x,y] pixel coordinates used as the center. The default is 
              None, which then uses the center of the image (including 
              fracitonal pixels).
     logbins - boolean True if log bins else uniform bins
     nbins - number of bins to use
+
              
     code adapted from https://www.astrobetter.com/blog/2010/03/03/fourier-transforms-of-images-in-python/
     
@@ -35,37 +36,34 @@ def azimuthalAverage(image, lmin=90, center=None, logbins=True, nbins=60, sterad
         i_sorted /= sterad_term
 
 
-    lmax = lmin*image.shape[0]/np.sqrt(0.5)
+    ell_max = ell_min*image.shape[0]/np.sqrt(0.5)
     
     if logbins:
-        radbins = 10**(np.linspace(np.log10(lmin), np.log10(lmax), nbins+1))
+        radbins = 10**(np.linspace(np.log10(ell_min), np.log10(ell_max), nbins+1))
     else:
-        radbins = np.linspace(lmin, lmax, nbins+1)
+        radbins = np.linspace(ell_min, ell_max, nbins+1)
     
     # convert multipole bins into pixel values
     radbins /= np.min(radbins)
     rbin_idxs = get_bin_idxs(r_sorted, radbins)
 
-    # rad_avg = []
-    # rad_std = []
     rad_avg = np.zeros(nbins)
     rad_std = np.zeros(nbins)
     
-    # for i in xrange(len(rbin_idxs)-1):
-    #     nmodes= len(i_sorted[rbin_idxs[i]:rbin_idxs[i+1]])
-    #     rad_avg.append(np.mean(i_sorted[rbin_idxs[i]:rbin_idxs[i+1]]))
-    #     rad_std.append(np.std(i_sorted[rbin_idxs[i]:rbin_idxs[i+1]])/np.sqrt(nmodes))
+    for i in xrange(len(rbin_idxs)-1):
+        nmodes= len(i_sorted[rbin_idxs[i]:rbin_idxs[i+1]])
+        rad_avg[i] = np.mean(i_sorted[rbin_idxs[i]:rbin_idxs[i+1]])
+        rad_std[i] = np.std(i_sorted[rbin_idxs[i]:rbin_idxs[i+1]])/np.sqrt(nmodes)
 
-
-    for i in range(len(rbin_idxs)):
-        if i==len(rbin_idxs)-1:
-            nmodes= len(i_sorted[rbin_idxs[i]:])
-            rad_avg[i] = np.mean(i_sorted[rbin_idxs[i]:])
-            rad_std[i] = np.std(i_sorted[rbin_idxs[i]:])/np.sqrt(nmodes)
-        else: 
-            nmodes= len(i_sorted[rbin_idxs[i]:rbin_idxs[i+1]])
-            rad_avg[i] = np.mean(i_sorted[rbin_idxs[i]:rbin_idxs[i+1]])
-            rad_std[i] = np.std(i_sorted[rbin_idxs[i]:rbin_idxs[i+1]])/np.sqrt(nmodes)
+    # for i in range(len(rbin_idxs)):
+    #     if i==len(rbin_idxs)-1:
+    #         nmodes= len(i_sorted[rbin_idxs[i]:])
+    #         rad_avg[i] = np.mean(i_sorted[rbin_idxs[i]:])
+    #         rad_std[i] = np.std(i_sorted[rbin_idxs[i]:])/np.sqrt(nmodes)
+    #     else: 
+    #         nmodes= len(i_sorted[rbin_idxs[i]:rbin_idxs[i+1]])
+    #         rad_avg[i] = np.mean(i_sorted[rbin_idxs[i]:rbin_idxs[i+1]])
+    #         rad_std[i] = np.std(i_sorted[rbin_idxs[i]:rbin_idxs[i+1]])/np.sqrt(nmodes)
         
     av_rbins = (radbins[:-1]+radbins[1:])/2
 
@@ -81,6 +79,9 @@ def compute_beam_correction(psf, nbins=60):
     return rb, B_ell
 
 def compute_cross_spectrum(map_a, map_b, n_deg_across=2.0, sterad_a=True, sterad_b=True):
+    ''' This function takes in two maps and computes their cross spectrum, with some optional unit conversions. If map_a=map_b, this is 
+    just the autospectrum of the map.'''
+
     sterad_per_pix = (n_deg_across*(np.pi/180.)/map_a.shape[0])**2
     if sterad_a:
         ffta = np.fft.fft2(map_a*sterad_per_pix)
@@ -95,25 +96,43 @@ def compute_cross_spectrum(map_a, map_b, n_deg_across=2.0, sterad_a=True, sterad
     
     return np.fft.fftshift(xspectrum)
 
-def compute_cl(mapa, mapb=None, lmin=90., nbins=60, sterad_term=None, sterad_a=True, sterad_b=True):
+def compute_cl(map_a, map_b=None, ell_min=90., nbins=60, sterad_term=None, sterad_a=True, sterad_b=True):
 
     ''' This function computes the angular power spectrum C_ell by 1) computing the cross spectrum of the images and
-    2) radially averaging over multipole bins ''' 
+    2) radially averaging over multipole bins. If only one map is specified, then this calculates the auto power spectrum.
 
-    n_deg_across = 180./lmin
-    if mapb is None:
-        xcorrs = compute_cross_spectrum(mapa, mapa, n_deg_across=n_deg_across, sterad_a=sterad_a, sterad_b=sterad_b)
+    Inputs:
+        map_a (np.array): One of potentially two input map for which cross spectrum is computed.
+        map_b (np.array, optional, default=None): second input map for which to compute cross spectrum with map_a. If left unspecified,
+            the function computes auto spectrum of map_a.
+        ell_min (float, default=90.): minimum mulitpole for which to compute angular cross spectrum, corresponds to largest mode of FOV
+        nbins (int, default=60): number of bins to compute cross spectrum for. 
+        sterad_term (float, optional, default=None): unit conversion term that is used to divide power spectrum in azimuthalAverage()
+        sterad_a/sterad_b (bool, default=True): if True, multiplies map to convert from map proportional to 1/steradian to 1/pixel
+
+    Outputs:
+        rbins (np.array): radial bins for computed cross spectrum. note that these are multipole bins, not physical/comoving radius bins
+        radprof (np.array): profile of cross power spectrum
+        radstd (np.array): uncertainties on each binned power spectrum value determined by the number of available spatial modes. 
+            In other words, this is the uncertainty from cosmic variance
+    ''' 
+
+    n_deg_across = 180./ell_min
+    if map_b is None:
+        xcorrs = compute_cross_spectrum(map_a, map_a, n_deg_across=n_deg_across, sterad_a=sterad_a, sterad_b=sterad_b)
     else:
-        xcorrs = compute_cross_spectrum(mapa, mapb, n_deg_across=n_deg_across, sterad_a=sterad_a, sterad_b=sterad_b)
+        xcorrs = compute_cross_spectrum(map_a, map_b, n_deg_across=n_deg_across, sterad_a=sterad_a, sterad_b=sterad_b)
         
-    rbins, radprof, radstd = azimuthalAverage(xcorrs, lmin=lmin, nbins=nbins, sterad_term=sterad_term)
+    rbins, radprof, radstd = azimuthalAverage(xcorrs, ell_min=ell_min, nbins=nbins, sterad_term=sterad_term)
     
     return rbins, radprof, radstd
 
 def compute_mode_coupling(mask, ell_min=90., nphases=50, logbins=True, nbins=60, ps_amplitude=100.0):
     ''' If there is masking done on a given observation due to incomplete coverage or bright sources, 
     this function will compute the mode coupling matrix, which estimates how that masking impacts the 
-    computed power spectrum. ''' 
+    computed power spectrum. 
+
+    Note: This function is not fully developed and likely does not work''' 
     ell_max = ell_min*np.sqrt(2*(mask.shape[0]/2)**2)
     
     if logbins:
@@ -153,6 +172,9 @@ def compute_mode_coupling(mask, ell_min=90., nphases=50, logbins=True, nbins=60,
     return Mkk, sigma_Mkk
 
 def compute_snr(average, errors):
+    ''' Given some array of values and errors on those values, this function computes the signal to noise ratio (SNR) in each bin as well as
+        the summed SNR over elements''' 
+
     snrs_per_bin = average / errors
     total_sq = np.sum(snrs_per_bin**2)
     return np.sqrt(total_sq), snrs_per_bin
@@ -160,16 +182,25 @@ def compute_snr(average, errors):
 def cross_correlate_galcat_ciber(cibermap, galaxy_catalog, m_min=14, m_max=30, band='J', \
                          ihl_frac=0.0, magidx=5, zmin=-10, zmax=100, zidx=3):
     # convert galaxy catalog to binary map
-    gal_map = make_galaxy_binary_map(galaxy_catalog, cibermap, m_min=m_min, m_max=m_max, magidx=magidx, zmin=zmin, zmax=zmax, zidx=zidx)
+    gal_map = make_galaxy_cts_map(galaxy_catalog, cibermap.shape, m_min=m_min, m_max=m_max, magidx=magidx, zmin=zmin, zmax=zmax, zidx=zidx)
     xcorr = compute_cross_spectrum(cibermap, gal_map)
     rbins, radprof, radstd = azimuthalAverage(xcorr)
     return rbins, radprof, radstd, xcorr
+
+def dist(NAXIS):
+
+    axis = np.linspace(-NAXIS/2+1, NAXIS/2, NAXIS)
+    result = np.sqrt(axis**2 + axis[:,np.newaxis]**2)
+    return np.roll(result, NAXIS/2+1, axis=(0,1))
 
 
 def ensemble_power_spectra(beam_correction, full_maps=None, catalogs=None, mode='auto', \
                            zmin=0.0, zmax=1.0, nz_bins=3, nbins=30, savefig=False, m_lim_tracer=24, \
                           ncatalogs = 50, Nside = 1024.):
     
+
+    ''' This function takes in maps and catalogs, as well as a beam correction, and calculates either map-map auto spectra, map-galaxy cross spectra,
+    or galaxy-galaxy auto spectra (determined by mode).'''
     radprofs, radstds, labels = [], [], []
 
 
@@ -217,7 +248,7 @@ def ensemble_power_spectra(beam_correction, full_maps=None, catalogs=None, mode=
                 print('c=', c)
                 full_map = full_maps[c]
                 catalog = catalogs[c]
-                galcts = make_galaxy_binary_map(catalog, full_map, 1, magidx=3, m_max=m_lim_tracer, zmin=zrange[i], zmax=zrange[i+1], zidx=2, normalize=False)
+                galcts = make_galaxy_cts_map(catalog, full_map.shape, 1, magidx=3, m_max=m_lim_tracer, zmin=zrange[i], zmax=zrange[i+1], zidx=2, normalize=False)
                 cts_per_steradian[c] = np.sum(galcts)/(4*3.046e-4)
                 # inputs have units of (nW m^-2 sr^-1, count sr^-1) --> (nW m^-2 pix^-1, count pix^-1) -- compute FT of maps
                 # multiply by side length --> (nW m^-2 Nside pix^-1, count Nside pix^-1) --> compute conjugate product
@@ -226,6 +257,8 @@ def ensemble_power_spectra(beam_correction, full_maps=None, catalogs=None, mode=
                 # -- divide by sr/pix --> nW m^-2 sr^-1 (Npix / pix) -- divide by Npix ->
                 # nW m^-2 sr^-1.
                 rbin, radprof, radstd = compute_cl(full_map-np.mean(full_map), (galcts-np.mean(galcts))/np.mean(galcts), nbins=nbins, sterad_term=sterad_per_pix)
+                rbin, radprof, radstd = compute_cl(full_map-np.mean(full_map), (galcts-np.mean(galcts))/np.mean(galcts), nbins=nbins, sterad_term=sterad_per_pix)
+
                 profs.append(radprof[:-1])
             print(np.mean(cts_per_steradian))
             ngs.append(np.mean(cts_per_steradian))
@@ -262,7 +295,7 @@ def ensemble_power_spectra(beam_correction, full_maps=None, catalogs=None, mode=
                 # (pix) sr^-1 -->  unitless -- compute FT of maps, multiply by side length --> Nside
                 # --- compute conjugate product --> Npix --- divide by sr/pix --> sr^-1 (Npix/pix) 
                 # --- divide by Npix --> sr^-1. 
-                galcts = make_galaxy_binary_map(catalog, full_map, 1, magidx=3, m_max=m_lim_tracer, zmin=zrange[i], zmax=zrange[i+1], zidx=2, normalize=False)
+                galcts = make_galaxy_cts_map(catalog, full_map.shape, 1, magidx=3, m_max=m_lim_tracer, zmin=zrange[i], zmax=zrange[i+1], zidx=2, normalize=False)
                 cts_per_steradian[c] = np.sum(galcts)/(4*3.04617e-4)
 #                 print('galcts (counts per steradian):', np.sum(galcts)/(4*3.04617e-4))
                 # (counts / pix, counts/pix) --> (counts Nside / pix, counts Nside / pix) --> (counts^2 Npix / pix^2)
@@ -309,7 +342,8 @@ def get_bin_idxs(arr, bins):
             return idxs
 
 def grf_mkk(n_samples, size = 100, ps=None, ell_sampled=None):
-
+    ''' This function is not fully completed, but would in principle be used to compute M_kk matrix given some number of
+    generated gaussian random fields.'''
     grfs = np.zeros((n_samples, size, size))
     noise = np.fft.fft2(np.random.normal(size = (n_samples, size, size)))
     amplitude = np.zeros((size, size))
@@ -349,6 +383,8 @@ def integrated_xcorr_multiple_redshifts(ihl_frac=0.1, \
     return wints, zs
 
 def integrate_w_theta(ls, w, weights=None):
+    ''' Integrate potentially weighted angular correlation function. If no weights are provided, then inverse theta weighting is used.'''
+
     thetas = np.pi/ls
     dthetas = thetas[:-1]-thetas[1:]
     w_integrand = 0.5*(w[:-1]+w[1:])
@@ -362,9 +398,11 @@ def integrate_w_theta(ls, w, weights=None):
 
 
 def integrate_C_l(ls, C, weights=None):
+    ''' Integrate potentially weighted angular correlation function. If no weights are provided, then inverse multipole weighting is used.'''
+
     dls = ls[:-1]-ls[1:]
     C_integrand = 0.5*(C[:-1]+C[1:])
-    if weights is None: # then use inverse theta weighting
+    if weights is None:
         weights = 0.5*(ls[1:]+ls[:-1])
         
     C_integrand *= weights
@@ -375,6 +413,12 @@ def integrate_C_l(ls, C, weights=None):
 def knox_spectra(radprofs_auto, radprofs_cross=None, radprofs_gal=None, \
                  ngs=None, fsky=0.0000969, lmin=90., Nside=1024, mode='auto'):
     
+    ''' 
+    Compute dC_ell and corresponding cross terms/total signal to noise for a given auto or cross power spectrum. This uses
+    the Knox formula from Knox (1995). I think in general this will underestimate the total error, because it assumes a gaussian 
+    beam and that errors from different terms are uncorrelated and have uniform variance.
+    '''
+
     sb_intensity_unit = u.nW/u.m**2/u.steradian
     npix = Nside**2
     pixel_solidangle = 49*u.arcsecond**2
@@ -413,12 +457,15 @@ def knox_spectra(radprofs_auto, radprofs_cross=None, radprofs_gal=None, \
         return snr_sq_cross_list, dCl_sq, ells, list_of_crossterms
 
 
-def make_galaxy_binary_map(cat, refmap, inst, m_min=14, m_max=30, magidx=2, zmin=0, zmax=100, zidx=None, normalize=True):
-    gal_map = np.zeros_like(refmap)
+def make_galaxy_cts_map(cat, refmap_shape, inst, m_min=14, m_max=30, magidx=2, zmin=0, zmax=100, zidx=None, normalize=True):
+    ''' Given a catalog of sources and some cuts on apparent magnitude/redshift, this function calculates the corresponding counts map, which
+    can then be used to compute auto or cross power spectra.''' 
+
+    gal_map = np.zeros(shape=refmap_shape)
 
     if isinstance(cat, pd.DataFrame): # real catalogs read in as pandas dataframes
     
-        catalog = cat.loc[(cat['x'+str(inst)]>0)&(cat['x'+str(inst)]<refmap.shape[0])&(cat['y'+str(inst)]>0)&(cat['y'+str(inst)]<refmap.shape[0]) &\
+        catalog = cat.loc[(cat['x'+str(inst)]>0)&(cat['x'+str(inst)]<refmap_shape[0])&(cat['y'+str(inst)]>0)&(cat['y'+str(inst)]<refmap_shape[0]) &\
                          (cat[magidx]<m_max)&(cat[magidx]>m_min)&(cat[zidx]>zmin)&(cat[zidx]<zmax)]
 
         for index, src in catalog.iterrows():
@@ -427,15 +474,15 @@ def make_galaxy_binary_map(cat, refmap, inst, m_min=14, m_max=30, magidx=2, zmin
     else:
         if zidx is not None:
             if magidx is None:
-                cat = np.array([src for src in cat if src[0]<refmap.shape[0] and src[1]<refmap.shape[1] and src[zidx]>zmin and src[zidx]<zmax])
+                cat = np.array([src for src in cat if src[0]<refmap_shape[0] and src[1]<refmap_shape[1] and src[zidx]>zmin and src[zidx]<zmax])
             else:
-                cat = np.array([src for src in cat if src[0]<refmap.shape[0] and src[1]<refmap.shape[1]\
+                cat = np.array([src for src in cat if src[0]<refmap_shape[0] and src[1]<refmap_shape[1]\
                 and src[magidx]>m_min and src[magidx]<m_max and src[zidx]>zmin and src[zidx]<zmax])
         else:
             if magidx is None:
-                cat = np.array([src for src in cat if src[0]<refmap.shape[0] and src[1]<refmap.shape[1]])
+                cat = np.array([src for src in cat if src[0]<refmap_shape[0] and src[1]<refmap_shape[1]])
             else:
-                cat = np.array([src for src in cat if src[0]<refmap.shape[0] and src[1]<refmap.shape[1]\
+                cat = np.array([src for src in cat if src[0]<refmap_shape[0] and src[1]<refmap_shape[1]\
                 and src[magidx]>m_min and src[magidx]<m_max])
 
         for src in cat:
@@ -448,20 +495,14 @@ def make_galaxy_binary_map(cat, refmap, inst, m_min=14, m_max=30, magidx=2, zmin
     return gal_map
 
 def Pk2_mkk(sx, sy, ps, ell_sampled=None, pixsize=3.39e-5, size=512.0, lmin=90):
+    ''' Note: not fully developed yet '''
     ells = np.sqrt((sx**2+sy**2))*lmin
     idx1 = np.array([np.abs(ell_sampled-ell).argmin() for ell in ells])
     return ps[idx1]
 
-def psf_large(psf_template, mapdim=1024):
-    ''' all this does is place the 40x40 PSF template at the center of a full map 
-    so one can compute the FT and get the beam correction for appropriate ell values
-    this assumes that beyond the original template, the beam correction will be 
-    exactly unity, which is fair enough for our purposes'''
-    psf_temp = np.zeros((mapdim, mapdim))
-    psf_temp[mapdim/2 - 20:mapdim/2+21, mapdim/2-20:mapdim/2+21] = psf_template
-    psf_temp /= np.sum(psf_temp)
-    return psf_temp
-    
+  
+''' The bottom two functions in principle can be used to calculate effect of IHL/completeness on observable cross power spectrum, but
+they haven't really been used to date and likely aren't fully consistent with the current code. To be updated in the future '''  
 def xcorr_varying_ihl(ihl_min_frac=0.0, ihl_max_frac=0.5, nbins=10, nsrc=100, m_min=14, m_max=20, gal_comp=21, ifield=4, inst=1):
     radprofs = []
     radstds = []
@@ -470,7 +511,7 @@ def xcorr_varying_ihl(ihl_min_frac=0.0, ihl_max_frac=0.5, nbins=10, nsrc=100, m_
     for i, ihlfrac in enumerate(ihl_range):
         if i==0:
             full, srcs, noise, cat = cmock.make_ciber_map(ifield, m_min, m_max, band=inst, nsrc=nsrc, ihl_frac=ihlfrac)
-            gal_map = make_galaxy_binary_map(cat, full, m_min, m_max=gal_comp, magidx=5) # cut off galaxy catalog at 20th mag
+            gal_map = make_galaxy_cts_map(cat, full.shape, m_min, m_max=gal_comp, magidx=5) # cut off galaxy catalog at 20th mag
         else:
             full, srcs, noise, ihl, cat = cmock.make_ciber_map(ifield, m_min, m_max, mock_cat=cat, band=inst, nsrc=nsrc, ihl_frac=ihlfrac)
          
@@ -489,23 +530,11 @@ def xcorr_varying_galcat_completeness(ihl_frac=0.1, compmin=18, compmax=22, nbin
     full, srcs, noise, ihl, gal_cat = cmock.make_ciber_map(ifield, m_min, 25, band=inst, nsrc=nsrc, ihl_frac=ihl_frac)
 
     for i, comp in enumerate(comp_range):
-        gal_map = make_galaxy_binary_map(gal_cat, full, m_min, m_max=comp)        
+        gal_map = make_galaxy_cts_map(gal_cat, full.shape, m_min, m_max=comp)        
         xcorr = compute_cross_spectrum(full, gal_map)
         rb, radprof, radstd = azimuthalAverage(xcorr)
         radprofs.append(radprof)
         radstds.append(radstd)
         
     return comp_range, rb, radprofs, radstds
-
-def xspec_gal_intensity_map(intensity_map, galaxy_cat, beam_correction=None, m_max=None, inst=0, magidx=3):
-    gmap = make_galaxy_binary_map(galaxy_cat, intensity_map, inst=inst, magidx=magidx, m_max=m_max)
-    if (gmap>100).any():
-        gmap[gmap > 100] = 0
-    rbins, radprof, radstd = compute_cl(intensity_map, gmap)
-    if beam_correction is not None:
-        radprof /= np.sqrt(beam_correction)
-    
-    return rbins, radprof, radstd, gmap
-
-
 

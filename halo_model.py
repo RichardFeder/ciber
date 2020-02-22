@@ -41,21 +41,25 @@ class halo_model_class():
         self.linpars.NonLinear = model.NonLinear_none
         self.lin_results = camb.get_results(self.linpars)
     
-    ''' The concentration is the ratio c_{200} = r_{200}/r_s, where r_s is the scale radius and r_{200} is
-    the radius of a halo where the density is 200 times the critical density of the universe. '''
+
     def concentration(self, m, z=0):
+        ''' The concentration is the ratio c_{200} = r_{200}/r_s, where r_s is the scale radius and r_{200} is
+        the radius of a halo where the density is 200 times the critical density of the universe. '''
         return (9./(1.+z))*(m/self.m_star)**(-0.13)
     
-    ''' Used when computing the NFW profile '''
     def f(self, c):
+        ''' Used when computing the NFW profile '''
+
         return 1./(np.log(1.+c)-1./(1.+c))
 
-    ''' This assumes the halo is spherically symmetric at least to determine the virial radius '''
     def mass_2_virial_radius(self, halo_mass, z=0):
+        ''' This assumes the halo is spherically symmetric at least to determine the virial radius '''
+
         R_vir_cubed = (3/(4*np.pi))*cosmo.Om(z)*halo_mass.to(u.g)/(200*cosmo.critical_density(z))
         return R_vir_cubed**(1./3.)
             
     def NFW_r(self, rfrac, m, normalize=True):
+        ''' Navarro-Frenk-White radial halo profile'''
         R_vir = self.mass_2_virial_radius(m).to(u.Mpc).value
         c = self.concentration(m)   
         u_r = (self.f(c)*c**3/(4*np.pi*(R_vir**3)))/(c*rfrac*(1+c*rfrac)**2)
@@ -167,8 +171,12 @@ class halo_model_class():
 # this is for projecting a 3D power spectrum to a 2D angular power spectrum.
 
 def limber_project(halo_ps, zmin, zmax, ng=None, flux_prod_rate=None, nbin=20, ell_min=90, ell_max=1e5, n_ell_bin=30):
-    ''' This currently takes in the dark matter halo power spectrum from the hmf package. The only place where this is
-    used is when updating the redshift of the power spectrum. Should add option to use array of power spectra as well'''
+    ''' 
+    This function projects a 3D power spectrum to a 2D angular power spectrum. Currently takes in the dark matter 
+    halo power spectrum from the hmf package. The only place where this is used is when updating the redshift of the power spectrum.
+    
+    Note: Should add option to use array of power spectra as well
+    '''
     cls = np.zeros((nbin, n_ell_bin))    
 
     ell_space = 10**(np.linspace(np.log10(ell_min), np.log10(ell_max), n_ell_bin))

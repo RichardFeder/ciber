@@ -4,9 +4,8 @@ from scipy import stats
 from halo_model import *
 from helgason import *
 from lognormal_counts import *
+from catalog_utils import *
 import camb
-# from hankel import SymmetricFourierTransform
-# from scipy import interpolate
 from hmf import MassFunction
 import hmf
 
@@ -14,43 +13,26 @@ pars = camb.CAMBparams()
 pars.set_cosmology(H0=67.5, ombh2=0.022, omch2=0.122)
 pars.InitPower.set_params(ns=0.965)
 
-def hsc_positions(hsc_cat, nchoose, z, dz, ra_min=241.5, ra_max=243.5, dec_min=54.0, dec_max=56.0, rmag_max=29.0):
-    restricted_cat = hsc_cat[(hsc_cat['ra']>ra_min)&(hsc_cat['ra']<ra_max)&(hsc_cat['dec']>dec_min)&(hsc_cat['dec']<dec_max)
-        &(hsc_cat['photoz_best']< z+0.5*dz)&(hsc_cat['photoz_best']>z-0.5*dz)&(hsc_cat['rmag_psf']<rmag_max)]
-    
-    dx1 = np.max(restricted_cat['x1'])-np.min(restricted_cat['x1'])
-    dy1 = np.max(restricted_cat['y1'])-np.min(restricted_cat['y1'])
-    restricted_cat['x1'] -= np.min(restricted_cat['x1'])
-    restricted_cat['x1'] *= (float(size-1.)/dx1)
-    restricted_cat['y1'] -= np.min(restricted_cat['y1'])
-    restricted_cat['y1'] *= (float(size-1.)/dy1)
-            
-    n_hsc = len(hsc_cat[(hsc_cat['ra']>ra_min)&(hsc_cat['ra']<ra_max)&(hsc_cat['dec']>dec_min)&(hsc_cat['dec']<dec_max)
-                  &(hsc_cat['photoz_best']< z+0.5*dz)&(hsc_cat['photoz_best']>z-0.5*dz)&(hsc_cat['rmag_psf']<rmag_max)])
-    print('input number_counts:', np.sum(number_counts[i])*4, 'choosing from ', n_hsc, 'galaxies')
-
-    idxs = np.random.choice(np.arange(n_hsc), nchoose, replace=True)
-    tx = restricted_cat.iloc[idxs]['x1']+np.random.uniform(-0.5, 0.5, size=len(idxs))
-    ty = restricted_cat.iloc[idxs]['y1']+np.random.uniform(-0.5, 0.5, size=len(idxs))
-    
-    return tx, ty
-
-''' Convert wavenumber to multipole for fixed redshift '''
 def k_to_ell(k, comoving_dist):
+    ''' Convert wavenumber to multipole for fixed redshift '''
     theta = 1./(comoving_dist*k)
     ell = np.pi/theta
     return ell
 
-''' this is just a convenience function for when I want to convert a bunch of lists to numpy arrays '''
 def make_lists_arrays(list_of_lists):
+    ''' this is just a convenience function for when I want to convert a bunch of lists to numpy arrays '''
+
     list_of_arrays = []
     for l in list_of_lists:
         list_of_arrays.append(np.array(l))
     return list_of_arrays
 
-''' Given a counts map, generate source catalog positions consistent with those counts. 
-Not doing any subpixel position assignment or anything like that.''' 
+
 def positions_from_counts(counts_map, cat_len=None):
+
+    ''' Given a counts map, generate source catalog positions consistent with those counts. 
+    Not doing any subpixel position assignment or anything like that.''' 
+
     thetax, thetay = [], []
     for i in np.arange(np.max(counts_map)):
         pos = np.where(counts_map > i)
@@ -66,6 +48,7 @@ def positions_from_counts(counts_map, cat_len=None):
 
 
 def w_theta(theta, A=0.2, gamma=1.8):
+    ''' Simple power law function for angular correlation function'''
     return A*theta**(1.-gamma)
 
 def two_pt_r(r, r0=6., gamma=1.8):
@@ -148,6 +131,7 @@ class galaxy_catalog():
         return cat
 
     def draw_redshifts(self, Nsrc, zmin, zmax, Mabs, band='H'):
+        ''' Given some redshift range and observing band, this function uses the luminosity function from Helgason to sample Nsrc redshifts.'''
         zfine = np.linspace(zmin, zmax, 20)[:-1]
         dndz = []
         for zed in zfine:
@@ -157,6 +141,8 @@ class galaxy_catalog():
         return zeds, zfine
 
     def get_schechter_m_given_zs(self, zs, Mabs):
+        ''' this function computes collection of apparent magnitude PDFs evaluated at different redshifts as determined by the Schechter luminosity function 
+        from Helgason'''
         pdfs = []
         for z in zs:
             pdf = self.lf.schechter_lf_dm(Mabs, z, self.band)
@@ -164,8 +150,11 @@ class galaxy_catalog():
             pdfs.append(pdf)
         return pdfs
 
-    def generate_positions(self, Nsrc, size, nmaps, all_counts_array, ell_min=90., random_positions=False, hsc=False, cl=None, ells=None):
+    def generate_positions(self, Nsrc, size, nmaps, ell_min=90., random_positions=False, hsc=False, cl=None, ells=None):
         
+        ''' If random_positions is True, this function just draws random source positions, but otherwise a clustering realization is generated and
+        positions are sampled from this field. Can also take in a preselected HSC catalog'''
+
         if random_positions:
             txs = np.random.uniform(0, size, (nmaps, Nsrc))
             tys = np.random.uniform(0, size, (nmaps, Nsrc))
@@ -198,6 +187,9 @@ class galaxy_catalog():
                                ell_min=90., Mabs_min=-30.0, Mabs_max=-15., size=1024, random_positions=False, \
                                 Mabs_nbin=100, band='H', cl=None, ells=None, n_catalogs=1):
         
+        ''' This function puts together other functions in the galaxy_catalog() class as full pipeline to generate galaxy catalog realizations,
+        given some angular power spectrum and Helgason model'''
+
         self.total_counts = 0
         n_deg_across = 180./ell_min
         n_square_deg = n_deg_across**2
@@ -238,7 +230,7 @@ class galaxy_catalog():
                 ells, cl = limber_project(self.mass_function, zrange_grf[i], zrange_grf[i+1], ell_min=30, ell_max=3e5)
             print('number counts here are:', np.sum(number_counts[i])*n_square_deg, n_square_deg)
             txs, tys = self.generate_positions(np.sum(number_counts[i])*n_square_deg, size, n_catalogs, \
-                                             all_counts_array, ell_min=ell_min, random_positions=random_positions, hsc=hsc, \
+                                              ell_min=ell_min, random_positions=random_positions, hsc=hsc, \
                                             cl=cl, ells=ells)
             
             for cat in range(n_catalogs):
@@ -295,8 +287,9 @@ class galaxy_catalog():
         dndm = hmf[:,5]/np.sum(hmf[:,5]) # [h^4/(Mpc^3*M_sun)]
         return ms, dndm
 
-        ''' This assumes the halo is spherically symmetric at least to determine the virial radius '''
     def mass_2_virial_radius(self, halo_mass, z=0):
+        ''' This assumes the halo is spherically symmetric at least to determine the virial radius '''
+
         R_vir_cubed = (3/(4*np.pi))*self.cosmo.Om(z)*halo_mass.to(u.g)/(200*self.cosmo.critical_density(z))
         return R_vir_cubed**(1./3.)
             
