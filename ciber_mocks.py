@@ -2,16 +2,10 @@ import numpy as np
 # import pandas as pd
 import astropy.units as u
 from astropy import constants as const
-# import time
 import scipy.signal
 from mock_galaxy_catalogs import *
 from helgason import *
 from ciber_data_helpers import *
-
-''' Given an input map and a specified center, this will
-% create a map with each pixels value its distance from
-% the specified pixel. '''
-
 
 
 def normalized_ihl_template(dimx=50, dimy=50, R_vir=None):
@@ -66,6 +60,14 @@ def ihl_conv_templates(psf=None, rvir_min=1, rvir_max=50, dimx=150, dimy=150):
         else:
             ihl_conv_temps.append(ihl)
     return ihl_conv_temps
+
+def save_mock_items_to_npz(filepath, catalog=None, srcmap_full=None, srcmap_nb=None, \
+                           conv_noise=None, m_min=None, m_min_nb=None, ihl_map=None, m_lim=None):
+    ''' Convenience file for saving mock observation files. '''
+    np.savez_compressed(filepath, catalog=catalog, srcmap_full=srcmap_full, \
+                        srcmap_nb=srcmap_nb, conv_noise=conv_noise, \
+                        ihl_map=ihl_map, m_lim=m_lim, m_min=m_min, m_min_nb=m_min_nb)
+
 
 
 def virial_radius_2_reff(r_vir, zs, theta_fov_deg=2.0, npix_sidelength=1024.):
@@ -187,13 +189,16 @@ class ciber_mock():
      
 
     def mocks_from_catalogs(self, catalog_list, ncatalog, mock_data_directory, m_min=9., m_max=30., m_tracer_max=25., \
-                        ihl_frac=0.2, ifield=4, band=0, save=False):
+                        ihl_frac=0.2, ifield=4, band=0, save=False, extra_name=''):
     
         srcmaps_full, catalogs, noise_realizations, ihl_maps = [[] for x in range(4)]
         
         print('m_min = ', m_min)
         print('m_max = ', m_max)
         print('m_tracer_max = ', m_tracer_max)
+        if extra_name != '':
+            extra_name = '_'+extra_name
+
         for c in range(ncatalog):
 
             cat_full = self.catalog_mag_cut(catalog_list[c], catalog_list[c][:,3], m_min, m_max)
@@ -204,6 +209,7 @@ class ciber_mock():
             noise = np.random.normal(self.sky_brightness[band].value, self.instrument_noise[band].value, size=srcmap_full.shape)
             conv_noise = scipy.signal.convolve2d(noise, psf_template, 'same')
             
+            catalogs.append(cat_full)
             noise_realizations.append(conv_noise)
             srcmaps_full.append(srcmap_full)
             
@@ -213,13 +219,13 @@ class ciber_mock():
                 ihl_maps.append(ihl_map)
                 if save:
                     print('Saving results..')
-                    np.savez_compressed(mock_data_directory+'ciber_mock_'+str(c)+'_mmin='+str(m_min)+'.npz', \
+                    np.savez_compressed(mock_data_directory+'ciber_mock_'+str(c)+'_mmin='+str(m_min)+extra_name+'.npz', \
                                         catalog=tracer_cat, srcmap_full=srcmap_full, conv_noise=conv_noise,\
                                         ihl_map=ihl_map)
             else:
                 if save:
                     print('Saving results..')
-                    np.savez_compressed(mock_data_directory+'ciber_mock_'+str(c)+'_mmin='+str(m_min)+'.npz', \
+                    np.savez_compressed(mock_data_directory+'ciber_mock_'+str(c)+'_mmin='+str(m_min)+extra_name+'.npz', \
                                         catalog=tracer_cat, srcmap_full=srcmap_full, conv_noise=conv_noise)
                    
         if ihl_frac > 0: 
@@ -258,8 +264,10 @@ class ciber_mock():
             cat = mock_cat
         else:
             mock_galaxy = galaxy_catalog()
-            cat = mock_galaxy.generate_galaxy_catalog(ng_bins=ng_bins, zmin=zmin, zmax=zmax)
+            cat = mock_galaxy.generate_galaxy_catalogs(ng_bins=ng_bins, zmin=zmin, zmax=zmax)
         
+        # print(cat[:,3])
+        print(cat.shape)
         cat = self.catalog_mag_cut(cat, cat[:,3], m_min, m_max) 
         I_arr = self.mag_2_nu_Inu(cat[:,3], band)
         cat = np.hstack([cat, np.expand_dims(I_arr.value, axis=1)])

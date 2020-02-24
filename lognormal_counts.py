@@ -126,7 +126,7 @@ def gaussian_random_field_2d(n_samples, cl, ell_sampled,  size=128, ell_min=90.,
         
         ells (np.array): 2D grid of multipoles used as input when evaluating C_ell over grid that yields amplitude
     '''
-    up_size = size*fac
+    up_size = int(size*fac)
     steradperpixel = ((np.pi/ell_min)/up_size)**2
     surface_area = (np.pi/ell_min)**2
 
