@@ -245,7 +245,7 @@ class redobj():
         self.ndeg = ndeg
         
     
-    def read_in_tracer_cat_and_map(self, mappath, with_noise=True):
+    def read_in_tracer_cat_and_map(self, mappath, with_noise=True, srcmap_key='srcmap_full', noise_key='conv_noise'):
         
         try:
             map_and_cat = np.load(mappath)
@@ -253,10 +253,10 @@ class redobj():
             print('Failed to load map/catalog from given path')
             pass
 
-        self.map = map_and_cat['srcmap_full']
+        self.map = map_and_cat[srcmap_key]
         if with_noise:
             try:
-                self.map += map_and_cat['conv_noise']
+                self.map += map_and_cat[noise_key]
             except:
                 print('No noise file found..')
         self.sterad_per_pix =  (2*np.pi/180./self.map.shape[0])**2
@@ -338,15 +338,11 @@ class redobj():
         plt.xlabel('$\\Delta z$', fontsize=16)
         plt.ylabel('$N$', fontsize=16)
         plt.show()
-        
-        
-    def sample_sdss_selection_function(self):
-        # TODO
-        pass
-        
+                
     def sample_new_cat(self):
         total_changed = 0
         catalog = self.cat.copy()
+        
         for a in range(len(self.zrange)-1):
             for b in range(len(self.magrange)-1):
                 mask = (self.z_pdf_idxs==a)&(self.mag_pdf_idxs==b)
@@ -360,9 +356,65 @@ class redobj():
                 catalog[mask, self.zidx] = newz
                 
         return catalog
-    
-    
-    def sample_redshift_pdf_cross_spectrum(self, nsamp=50, plot=False):
+
+
+    def load_completeness_vs_magnitude(self, path):
+        f = np.load(path)
+        self.comp_magbins = f['mag_bins']
+        self.completeness = f['completeness']
+
+
+    def sample_selection_function_cross_spectrum(self, nsamp=50, plot=False, comp_magbins=None, completeness=None, m_min=9.):
+
+        if comp_magbins is None:
+            spline_completeness = interpolate.InterpolatedUnivariateSpline(self.comp_magbins, self.completeness)
+        else:
+            spline_completeness = interpolate.InterpolatedUnivariateSpline(comp_magbins, completeness)
+
+        plt.figure()
+        plt.plot(np.linspace(16, 24, 100), spline_completeness(np.linspace(16, 24, 100)))
+        plt.show()
+
+        Nside = self.map.shape[0]
+        ps_samps = np.zeros((nsamp, len(self.xcorr_zbins)-1, self.nbins))
+        ng_samps = np.zeros((nsamp, len(self.xcorr_zbins)-1))
+
+        for n in range(nsamp):
+            print('n=', n)
+            cts_per_steradian = np.zeros(self.ng_bins)
+
+            nsrc = self.cat.shape[0]
+            print('nsrc=', nsrc)
+
+            completeness_probs = spline_completeness(self.cat[:, self.magidx])
+            print('completeness vals are ', completeness_probs)
+
+
+
+            selection_mask = (np.random.uniform(size=nsrc) < completeness_probs)
+
+            print('sum of mask is ', np.sum(selection_mask))
+
+            smaller_cat = self.cat.copy()
+            smaller_cat = smaller_cat[selection_mask,:]
+            print('smaller cat now has shape', smaller_cat.shape)
+
+            for i in range(self.ng_bins):
+                galcts = make_galaxy_cts_map(smaller_cat, self.map.shape, 1, \
+                                             magidx=self.magidx,m_min=m_min, m_max=self.m_lim_tracer, zmin=self.xcorr_zbins[i],\
+                                             zmax=self.xcorr_zbins[i+1], zidx=self.zidx, normalize=False)
+                
+                cts_per_steradian[i] = np.sum(galcts)/(self.ndeg*self.degree_per_steradian)
+                rbin, radprof, radstd = compute_cl(self.map-np.mean(self.map), (galcts-np.mean(galcts))/np.mean(galcts), nbins=self.nbins, sterad_term=self.sterad_per_pix)
+                
+                ps_samps[n, i, :] = radprof /self.bc / Nside**2
+                ng_samps[n, i] = np.sum(galcts)
+        
+        return rbin, ps_samps, ng_samps
+
+
+
+    def sample_redshift_pdf_cross_spectrum(self, nsamp=50, plot=False, m_min=9.):
         
         print('xcorr redshift bins:', self.xcorr_zbins)
         
@@ -383,7 +435,7 @@ class redobj():
             
             for i in range(self.ng_bins):
                 galcts = make_galaxy_cts_map(catalog, self.map.shape, 1, \
-                                             magidx=self.magidx,m_max=self.m_lim_tracer, zmin=self.xcorr_zbins[i],\
+                                             magidx=self.magidx,m_min=m_min, m_max=self.m_lim_tracer, zmin=self.xcorr_zbins[i],\
                                              zmax=self.xcorr_zbins[i+1], zidx=self.zidx, normalize=False)
                 
                 cts_per_steradian[i] = np.sum(galcts)/(self.ndeg*self.degree_per_steradian)
@@ -393,3 +445,5 @@ class redobj():
                 ng_samps[n, i] = np.sum(galcts)
         
         return rbin, ps_samps, ng_samps
+
+
