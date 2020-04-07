@@ -16,7 +16,9 @@ class Mkk():
             setattr(self, attr, valu)
             
         self.pixlength_in_deg = self.pixsize/3600. # pixel angle measured in degrees
-        self.ell_max = 180./self.pixlength_in_deg # maximum multipole determined by pixel size
+        self.ell_max = np.sqrt(2*(180./self.pixlength_in_deg)**2) # maximum multipole determined by pixel size
+        
+        
         self.arcsec_pp_to_radian = self.pixlength_in_deg*(np.pi/180.) # conversion from arcsecond per pixel to radian per pixel
         
         self.sqdeg_in_map = self.dimx*self.dimy*self.pixlength_in_deg**2 # area of map in square degrees
@@ -25,40 +27,9 @@ class Mkk():
         self.ell_map = None # used to compute ring masks in fourier space
         self.binl = None # radially averaged multipole bins
         self.weights = None # fourier weights for angular power spectrum calculation
-        
-    def load_fourier_weights(self, weights):
-        ''' Loads the fourier weights!'''
-        self.weights = weights
-        
+        self.ringmasks = None
 
-    def compute_multipole_bins(self):
-        ''' This computes the multipole bins of the desired power spectrum, which depends on the pre-defined 
-        number of bins, minimum and maximum multipole (which come from the image pixel size and FOV). Setting 
-        self.logbin to True makes bins that are spaced equally in log space, rather than just linearly.'''
 
-        if self.logbin:
-            self.binl = 10**(np.linspace(np.log10(self.ell_min), np.log10(self.ell_max), self.nbins))
-        else:
-            self.binl = np.linspace(0, self.ell_max, self.nbins)
-            
-            
-    def get_ell_bins(self, shift=True):
-
-        ''' this will take input map dimensions along with a pixel scale (in arcseconds) and compute the 
-        corresponding multipole bins for the 2d map.'''
-        
-        freq_x = fftshift(np.fft.fftfreq(self.dimx))
-        freq_y = fftshift(np.fft.fftfreq(self.dimy))
-
-        ell_x,ell_y = np.meshgrid(freq_x,freq_y)
-
-        ell_x = ifftshift(ell_x)*self.ell_max
-        ell_y = ifftshift(ell_y)*self.ell_max
-
-        self.ell_map = np.sqrt(ell_x**2 + ell_y**2)
-
-        if shift:
-            self.ell_map = fftshift(self.ell_map)
             
     def map_from_powerspec(self, idx, shift=True,nsims=1):
 
@@ -75,7 +46,8 @@ class Mkk():
         t0 = time.clock()
         self.fft_object_b(self.unshifted_ringmasks[idx]*self.noise)
 
-        print('fft object b takes ', time.clock()-t0)
+        if self.print_timestats:
+            print('fft object b takes ', time.clock()-t0)
 
 
     def plot_tone_map_realization(self, tonemap, idx=None, return_fig=False):
@@ -94,15 +66,8 @@ class Mkk():
         if return_fig:
             return f
 
-    def compute_masked_weights(self):
-        ''' This takes the Fourier weights and produces a list of masked weights according to each multipole bandpass. The prefactor just converts the units
-        appropriately. This is precomputed to make things faster during FFT time''' 
-        fac = self.arcsec_pp_to_radian**2
-
-        self.masked_weights = [fac*self.weights[ringmask] for ringmask in self.ringmasks]
-
     
-    def get_mkk_sim(self, mask, nsims, show_tone_map=False, mode='auto', n_split=1):
+    def get_mkk_sim(self, mask, nsims, show_tone_map=False, mode='auto', n_split=1, print_timestats=False):
         
         ''' This is the main function that computes an estimate of the mode coupling matrix Mkk from nsims generated tone maps. 
         Knox errors are also computed based on the mask/number of modes/etc. (note: should this also include a beam factor?) This implementation is more memory intensive,
@@ -139,6 +104,9 @@ class Mkk():
         '''
         print('number of CPU threads available:', multiprocessing.cpu_count())
 
+
+        self.print_timestats = print_timestats
+
         if n_split > 1:
             print 'Splitting up computation of', nsims, 'simulations into', n_split, 'chunks..'
             assert (nsims % n_split) == 0
@@ -154,6 +122,10 @@ class Mkk():
         
         Mkks = []
         dC_ell_list = []
+        
+        # lets precompute a few things that are used later..
+        self.check_precomputed_values(precompute_all=True, shift=True)
+        
         for i in range(n_split):
             print('split ', i+1, 'of', n_split)
 
@@ -161,26 +133,7 @@ class Mkk():
             # that we multiply by the noise realizations are spatially disjoint, i.e. the union of all of the masks is the null set. 
             self.noise = np.random.normal(size=(nsims//n_split, self.dimx, self.dimy))+ 1j*np.random.normal(size=(nsims//n_split, self.dimx, self.dimy))
 
-            if self.ell_map is None:
-                self.get_ell_bins(shift=True)
-                
-            if self.binl is None:
-                self.compute_multipole_bins()
-            
-            self.compute_midbin_delta_ells()
-
-      
-            # if no weights provided by user, weights are unity across image
-            if self.weights is None:
-                self.weights = np.ones((self.dimx, self.dimy))
-                
             Mkk = np.zeros((self.nbins-1, self.nbins-1))
-            
-            # lets precompute a few quantities for later
-            self.compute_ringmasks()
-            self.compute_masked_weight_sums()
-            self.compute_masked_weights()
-
                     
             for j in range(self.nbins-1):
                 print('band ', j)
@@ -208,9 +161,6 @@ class Mkk():
 
         else:
             av_Mkk = np.mean(np.array(Mkks), axis=0)
-            print('av_Mkk has shape ', av_Mkk.shape)
-
-            print('dc_ell list has shape ', np.array(dC_ell_list).shape)
 
             return av_Mkk, np.array(dC_ell_list)
     
@@ -225,11 +175,15 @@ class Mkk():
             self.c *= self.mask
 
             self.fft_object_c(self.c.real)
-            print('fft_object_c took ', time.clock()-t0)
+            
+            if self.print_timestats:
+                print('fft_object_c took ', time.clock()-t0)
 
             t0 = time.clock()
             fftsq = [(dentry*np.conj(dentry)).real for dentry in self.d]
-            print('fftsq took ', time.clock()-t0)
+            
+            if self.print_timestats:
+                print('fftsq took ', time.clock()-t0)
         else:
             # this works, but why ifft2 here and not fft2? 
             fftsq = self.weights*((ifft2(map1)*np.conj(ifft2(map2))).real)*fac
@@ -247,14 +201,12 @@ class Mkk():
         # lets return cosmic variance error as well
 
         dC_ell = C_ell*np.sqrt(2./((2*self.midbin_ell + 1)*(self.delta_ell*self.fsky)))
-        print('dC_ell has shape ', dC_ell.shape)
-
 
         return C_ell, dC_ell
     
     
-    def compute_ringmasks(self):
-        
+    def compute_ringmasks(self):        
+        print('minimum ell_map value is ', np.min(self.ell_map))
         self.ringmasks = [(fftshift(self.ell_map) >= self.binl[i])*(fftshift(self.ell_map) <= self.binl[i+1]) for i in range(len(self.binl)-1)]
         self.ringmask_sums = np.array([np.sum(ringmask) for ringmask in self.ringmasks])
         self.unshifted_ringmasks = [fftshift(np.array((self.ell_map >= self.binl[i])*(self.ell_map <= self.binl[i+1])).astype(np.float)/self.arcsec_pp_to_radian) for i in range(len(self.binl)-1)]
@@ -271,28 +223,153 @@ class Mkk():
         self.delta_ell = self.binl[1:]-self.binl[:-1]
         
 
-def compute_inverse_mkk(mkk):
+    def compute_masked_weights(self):
+        ''' This takes the Fourier weights and produces a list of masked weights according to each multipole bandpass. The prefactor just converts the units
+        appropriately. This is precomputed to make things faster during FFT time''' 
+        fac = self.arcsec_pp_to_radian**2
+
+        self.masked_weights = [fac*self.weights[ringmask] for ringmask in self.ringmasks]
     
-    inverse_mkk = np.linalg.inv(mkk)
+   
+    def load_fourier_weights(self, weights):
+        ''' Loads the fourier weights!'''
+        self.weights = weights
+        
+
+    def compute_multipole_bins(self):
+        ''' This computes the multipole bins of the desired power spectrum, which depends on the pre-defined 
+        number of bins, minimum and maximum multipole (which come from the image pixel size and FOV). Setting 
+        self.logbin to True makes bins that are spaced equally in log space, rather than just linearly.'''
+
+        if self.logbin:
+            self.binl = 10**(np.linspace(np.log10(self.ell_min), np.log10(self.ell_max), self.nbins))
+        else:
+            self.binl = np.linspace(0, self.ell_max, self.nbins)
+            
+            
+    def get_ell_bins(self, shift=True):
+
+        ''' this will take input map dimensions along with a pixel scale (in arcseconds) and compute the 
+        corresponding multipole bins for the 2d map.'''
+        
+        
+        freq_x = fftshift(np.fft.fftfreq(self.dimx, d=1.0))
+        freq_y = fftshift(np.fft.fftfreq(self.dimy, d=1.0))
+        
+        print(freq_x)
+
+        ell_x,ell_y = np.meshgrid(freq_x,freq_y)
+        print('self ell max:', self.ell_max)
+        ell_x = ifftshift(ell_x)*self.ell_max
+        ell_y = ifftshift(ell_y)*self.ell_max
+        
+        self.ell_map = np.sqrt(ell_x**2 + ell_y**2)
+        
+        print('minimum/maximum ell is ', np.min(self.ell_map[np.nonzero(self.ell_map)]), np.max(self.ell_map))
+
+        if shift:
+            self.ell_map = fftshift(self.ell_map)
+
+    def check_precomputed_values(self, precompute_all=False, ell_map=False, binl=False, weights=False, ringmasks=False,\
+                                masked_weight_sums=False, masked_weights=False, midbin_delta_ells=False, shift=False):
+        
+        if ell_map or precompute_all:
+            if self.ell_map is None:
+                print('Generating ell bins..')
+                self.get_ell_bins(shift=shift)
+                
+                plt.figure()
+                plt.imshow(self.ell_map, norm=matplotlib.colors.LogNorm())
+                plt.xlim(400,600)
+                plt.ylim(400,600)
+                plt.colorbar()
+                plt.show()
+                
+        if binl or precompute_all:
+            if self.binl is None:
+                print('Generating multipole bins..')
+                self.compute_multipole_bins()
+            
+        if weights or precompute_all:
+            # if no weights provided by user, weights are unity across image
+            if self.weights is None:
+                print('Setting Fourier weights to unity')
+                self.weights = np.ones((self.dimx, self.dimy))   
+            
+        if ringmasks or precompute_all:
+            if self.ringmasks is None:
+                print('Computing Fourier ring masks..')
+                self.compute_ringmasks()
+                
+        if masked_weights or precompute_all:
+            self.compute_masked_weights()
+
+        if masked_weight_sums or precompute_all:
+            self.compute_masked_weight_sums()
+            
+        if midbin_delta_ells or precompute_all:
+            self.compute_midbin_delta_ells()
+
+        
+        
+    def compute_cl_indiv(self, map1, map2=None, weights=None, mask=None, precompute=False):
+        ''' this is for individual map realizations and should be more of a standalone, compared to Mkk.get_angular_spec(),
+        which is optimized for computing many realizations in parallel.'''
+        
+        if precompute:
+            self.check_precomputed_values(precompute_all=True, shift=True)
+
+        fac = self.arcsec_pp_to_radian**2
+
+        if map2 is None:
+            map2 = map1
+
+        fftsq = self.weights*((fft2(map1.real)*np.conj(fft2(map2.real))).real)
+
+        C_ell = np.zeros(len(self.binl)-1)
+        for i in range(len(self.binl)-1):
+            if self.ringmask_sums[i] > 0:
+                C_ell[i] = np.sum(self.masked_weights[i]*fftsq[self.ringmasks[i]])/self.masked_weight_sums[i]
+
+        if mask is not None:
+            mask_frac = float(np.count_nonzero(mask))/float((self.dimx*self.dimy))
+            print('mask frac is ', mask_frac)
+        else:
+            mask_frac = 1.0
+        dC_ell = C_ell*np.sqrt(2./((2*self.midbin_ell + 1)*(self.delta_ell*mask_frac*self.fsky)))
+
+        return C_ell, dC_ell
     
-    return inverse_mkk
-
-
-def plot_mkk_matrix(mkk, inverse=False, logscale=False):
-    if inverse:
-        title = '$M_{\\ell \\ell^\\prime}^{-1}$'
-    else:
-        title = '$M_{\\ell \\ell^\\prime}$'
     
-    plt.figure(figsize=(6,6))
-    plt.title(title, fontsize=16)
-    plt.imshow(mkk)
-    plt.colorbar()
-    plt.xticks(np.arange(mkk.shape[0]))
-    plt.yticks(np.arange(mkk.shape[1]))
+    def plot_twopanel_Mkk(self, signal_map, mask, inverse_mkk, xlims=None, ylims=None, colorbar=True, return_fig=False, logbin=False):
+    
+        c_ell, dc_ell = self.compute_cl_indiv(signal_map)
+        c_ell_masked, dc_ell_masked = self.compute_cl_indiv(signal_map*mask, mask=mask)
 
-    plt.show()
+        f = plt.figure(figsize=(10,5))
+        plt.suptitle(str(np.round(self.binl[i],0))+'<$\\ell$<'+str(np.round(self.binl[i+1],0)), fontsize=20)
+        plt.subplot(1,2,1)
+        plt.imshow(signal_map*mask)
 
+        if xlims is not None:
+            plt.xlim(xlims[0], xlims[1])
+        if ylims is not None:
+            plt.ylim(ylims[0], ylims[1])
+        if colorbar:
+            plt.colorbar()
+
+        plt.subplot(1,2,2)
+
+        plt.errorbar(self.midbin_ell, c_ell, yerr=dc_ell, label='Unmasked', fmt='x', capsize=5, markersize=10)
+        plt.scatter(self.midbin_ell, c_ell_masked, label='Masked, uncorrected')
+        plt.errorbar(self.midbin_ell, np.dot(np.array(inverse_mkk), np.array(c_ell_masked)), yerr=dc_ell_masked, label='Masked, corrected',markersize=10, alpha=0.8, fmt='*', capsize=5)
+        if logbin:
+            plt.xscale('log')
+        plt.legend(loc='best')
+        plt.show()
+
+        if return_fig:
+            return f
 
 
 # this code below is just to do a test run, should ultimately comment out and call routines from another script
