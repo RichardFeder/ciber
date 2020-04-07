@@ -4,6 +4,9 @@ import numpy as np
 from matplotlib import cm
 # import seaborn as sns
 # sns.set()
+from PIL import Image
+import glob
+
 
 
 figure_directory = '/Users/richardfeder/Documents/caltech/ciber2/figures/'
@@ -177,7 +180,7 @@ def plot_cumulative_numbercounts(cat, mag_idx, field=None, df=True, m_min=18, m_
 		
 	return f
 
-def plot_dm_powerspec(show=True)
+def plot_dm_powerspec(show=True):
     
     mass_function = MassFunction(z=0., dlog10m=0.02)
     
@@ -409,6 +412,20 @@ def gaussian_vs_student_ts(show=True):
     if show:
         plt.show()
     return f
+
+def convert_pngs_to_gif(filenames, gifdir='../../M_ll_correction/', name='mkk', duration=1000, loop=0):
+
+    # Create the frames
+    frames = []
+    for i in range(len(Mkk.binl)-1):
+        new_frame = Image.open(gifdir+filenames[i])
+        frames.append(new_frame)
+
+    # Save into a GIF file that loops forever
+    frames[0].save(gifdir+name+'.gif', format='GIF',
+                   append_images=frames[1:],
+                   save_all=True,
+                   duration=duration, loop=loop)
 
 
 
