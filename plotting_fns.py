@@ -417,7 +417,7 @@ def convert_pngs_to_gif(filenames, gifdir='../../M_ll_correction/', name='mkk', 
 
     # Create the frames
     frames = []
-    for i in range(len(Mkk.binl)-1):
+    for i in range(len(filenames)):
         new_frame = Image.open(gifdir+filenames[i])
         frames.append(new_frame)
 
