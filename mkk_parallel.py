@@ -8,6 +8,32 @@ import multiprocessing
 import pyfftw
 import time
 
+
+def compute_inverse_mkk(mkk):
+    
+    inverse_mkk = np.linalg.inv(mkk)
+    
+    return inverse_mkk
+
+def plot_mkk_matrix(mkk, inverse=False, logscale=False, title=None, vmin=None, vmax=None):
+    if title is None:
+        if inverse:
+            title = '$M_{\\ell \\ell^\\prime}^{-1}$'
+        else:
+            title = '$M_{\\ell \\ell^\\prime}$'
+
+    plt.figure(figsize=(6,6))
+    plt.title(title, fontsize=16)
+    if logscale:
+        plt.imshow(mkk, norm=matplotlib.colors.LogNorm(), vmin=vmin, vmax=vmax)
+    else:
+        plt.imshow(mkk)
+    plt.colorbar()
+    plt.xticks(np.arange(mkk.shape[0]))
+    plt.yticks(np.arange(mkk.shape[1]))
+
+    plt.show()
+
 class Mkk():
     
     def __init__(self, pixsize=7., dimx=1024, dimy=1024, ell_min=80., logbin=True, nbins=30):
@@ -44,10 +70,16 @@ class Mkk():
             self.compute_multipole_bins()
          
         t0 = time.clock()
+
+        # tonemaps = pyfftw.interfaces.numpy_fft.ifft2(self.unshifted_ringmasks[idx]*self.noise)
+
+
         self.fft_object_b(self.unshifted_ringmasks[idx]*self.noise)
 
         if self.print_timestats:
             print('fft object b takes ', time.clock()-t0)
+
+        # return tonemaps
 
 
     def plot_tone_map_realization(self, tonemap, idx=None, return_fig=False):
@@ -117,8 +149,11 @@ class Mkk():
         self.c = pyfftw.empty_aligned((nsims//n_split, self.dimx, self.dimy), dtype='complex64')
         self.d = pyfftw.empty_aligned((nsims//n_split, self.dimx, self.dimy), dtype='complex64')
 
-        self.fft_object_b = pyfftw.FFTW(self.b, self.c, axes=(1,2), threads=multiprocessing.cpu_count(), direction='FFTW_BACKWARD', flags=('FFTW_MEASURE',))
-        self.fft_object_c = pyfftw.FFTW(self.c, self.d, axes=(1,2), threads=multiprocessing.cpu_count(), direction='FFTW_FORWARD', flags=('FFTW_MEASURE',))
+        self.fft_object_b = pyfftw.FFTW(self.b, self.c, axes=(1,2),threads=1, direction='FFTW_BACKWARD', flags=('FFTW_MEASURE',))
+        self.fft_object_c = pyfftw.FFTW(self.c, self.d, axes=(1,2),threads=1, direction='FFTW_FORWARD', flags=('FFTW_MEASURE',))
+
+        # self.fft_object_b = pyfftw.FFTW(self.b, self.c, axes=(1,2), threads=multiprocessing.cpu_count(), direction='FFTW_BACKWARD', flags=('FFTW_MEASURE',))
+        # self.fft_object_c = pyfftw.FFTW(self.c, self.d, axes=(1,2), threads=multiprocessing.cpu_count(), direction='FFTW_FORWARD', flags=('FFTW_MEASURE',))
         
         Mkks = []
         dC_ell_list = []
@@ -139,12 +174,14 @@ class Mkk():
                 print('band ', j)
                 
                 self.map_from_powerspec(j, nsims=nsims//n_split)
+                # tonemaps = self.map_from_powerspec(j, nsims=nsims//n_split)
                 
                 # self.plot_tone_map_realization(self.c[0].real*mask)
                 # self.plot_tone_map_realization(tonemaps[1]*mask)
                 
                 if mode=='auto':
                     
+                    # masked_Cl, dC_ells = self.get_angular_spec(tonemaps*mask, nsims=nsims//n_split)
                     masked_Cl, dC_ells = self.get_angular_spec(nsims=nsims//n_split)
 
                     # row entry for Mkk is average over realizations
@@ -174,12 +211,17 @@ class Mkk():
 
             self.c *= self.mask
 
+            # d = pyfftw.interfaces.numpy_fft.fft2(map1)
+
             self.fft_object_c(self.c.real)
             
             if self.print_timestats:
                 print('fft_object_c took ', time.clock()-t0)
 
             t0 = time.clock()
+
+            # fftsq = [(dentry*np.conj(dentry)).real for dentry in d]
+
             fftsq = [(dentry*np.conj(dentry)).real for dentry in self.d]
             
             if self.print_timestats:
@@ -278,12 +320,6 @@ class Mkk():
                 print('Generating ell bins..')
                 self.get_ell_bins(shift=shift)
                 
-                plt.figure()
-                plt.imshow(self.ell_map, norm=matplotlib.colors.LogNorm())
-                plt.xlim(400,600)
-                plt.ylim(400,600)
-                plt.colorbar()
-                plt.show()
                 
         if binl or precompute_all:
             if self.binl is None:
@@ -378,14 +414,14 @@ class Mkk():
 
 # mask = np.ones((x.dimx, x.dimy))
 
-# # mask[100:700,200:500] = 0.
-# # mask[800:810,600:620] = 0.
-# # mask[800:810,300:320] = 0.
-# # mask[600:660,910:920] = 0.
+# # # mask[100:700,200:500] = 0.
+# # # mask[800:810,600:620] = 0.
+# # # mask[800:810,300:320] = 0.
+# # # mask[600:660,910:920] = 0.
 
 
-# tzero = time.clock()
-# mkk, dc_ell = x.get_mkk_sim(mask, 200, show_tone_map=False, n_split=4)
+# # tzero = time.clock()
+# mkk, dc_ell = x.get_mkk_sim(mask, 100, show_tone_map=False, n_split=2)
 
 
 # print('elapsed time is ', time.clock()-tzero)
