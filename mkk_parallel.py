@@ -5,6 +5,7 @@ import numpy as np
 from numpy.fft import fftshift as fftshift
 from numpy.fft import ifftshift as ifftshift
 import multiprocessing
+from multiprocessing import Pool
 import pyfftw
 import time
 
@@ -36,14 +37,14 @@ def plot_mkk_matrix(mkk, inverse=False, logscale=False, title=None, vmin=None, v
 
 class Mkk():
     
-    def __init__(self, pixsize=7., dimx=1024, dimy=1024, ell_min=80., logbin=True, nbins=30):
+    def __init__(self, pixsize=7., dimx=1024, dimy=1024, ell_min=150., logbin=True, nbins=30):
         
         for attr, valu in locals().items():
             setattr(self, attr, valu)
             
         self.pixlength_in_deg = self.pixsize/3600. # pixel angle measured in degrees
-        self.ell_max = np.sqrt(2*(180./self.pixlength_in_deg)**2) # maximum multipole determined by pixel size
-        
+        self.ell_max = 2*180./self.pixlength_in_deg # maximum multipole determined by pixel size
+        print('ell max is ', self.ell_max)
         
         self.arcsec_pp_to_radian = self.pixlength_in_deg*(np.pi/180.) # conversion from arcsecond per pixel to radian per pixel
         
@@ -70,16 +71,10 @@ class Mkk():
             self.compute_multipole_bins()
          
         t0 = time.clock()
-
-        # tonemaps = pyfftw.interfaces.numpy_fft.ifft2(self.unshifted_ringmasks[idx]*self.noise)
-
-
         self.fft_object_b(self.unshifted_ringmasks[idx]*self.noise)
 
         if self.print_timestats:
             print('fft object b takes ', time.clock()-t0)
-
-        # return tonemaps
 
 
     def plot_tone_map_realization(self, tonemap, idx=None, return_fig=False):
@@ -211,17 +206,12 @@ class Mkk():
 
             self.c *= self.mask
 
-            # d = pyfftw.interfaces.numpy_fft.fft2(map1)
-
             self.fft_object_c(self.c.real)
             
             if self.print_timestats:
                 print('fft_object_c took ', time.clock()-t0)
 
             t0 = time.clock()
-
-            # fftsq = [(dentry*np.conj(dentry)).real for dentry in d]
-
             fftsq = [(dentry*np.conj(dentry)).real for dentry in self.d]
             
             if self.print_timestats:
@@ -229,10 +219,6 @@ class Mkk():
         else:
             # this works, but why ifft2 here and not fft2? 
             fftsq = self.weights*((ifft2(map1)*np.conj(ifft2(map2))).real)*fac
-
-        # t0 = time.clock()
-        # C_ell = np.array([[np.sum(self.masked_weights[i]*fftsq[j][self.ringmasks[i]])/self.masked_weight_sums[i] for j in range(nsims)] for i in range(len(self.binl)-1)]).transpose()
-        # # C_ell = np.array([[np.sum(self.masked_weights[i]*fftsq[j][self.ringmasks[i]])/self.masked_weight_sums[i] for i in range(len(self.binl)-1)] for j in range(nsims)])
 
         t0 = time.clock()
         C_ell = np.zeros((nsims, len(self.binl)-1))
@@ -249,11 +235,11 @@ class Mkk():
     
     def compute_ringmasks(self):        
         print('minimum ell_map value is ', np.min(self.ell_map))
+                
         self.ringmasks = [(fftshift(self.ell_map) >= self.binl[i])*(fftshift(self.ell_map) <= self.binl[i+1]) for i in range(len(self.binl)-1)]
         self.ringmask_sums = np.array([np.sum(ringmask) for ringmask in self.ringmasks])
         self.unshifted_ringmasks = [fftshift(np.array((self.ell_map >= self.binl[i])*(self.ell_map <= self.binl[i+1])).astype(np.float)/self.arcsec_pp_to_radian) for i in range(len(self.binl)-1)]
         
-        # print([np.sum(self.unshifted_ringmasks[i]*self.unshifted_ringmasks[i+1]) for i in range(10)]) 
         print('ringmask sums:')
         print(self.ringmask_sums)
         
@@ -289,21 +275,47 @@ class Mkk():
             self.binl = np.linspace(0, self.ell_max, self.nbins)
             
             
+    # def get_ell_bins(self, shift=True):
+
+    #     ''' this will take input map dimensions along with a pixel scale (in arcseconds) and compute the 
+    #     corresponding multipole bins for the 2d map.'''
+        
+        
+    #     freq_x = fftshift(np.fft.fftfreq(self.dimx, d=1.0))
+    #     freq_y = fftshift(np.fft.fftfreq(self.dimy, d=1.0))
+        
+    #     print(freq_x)
+
+    #     ell_x,ell_y = np.meshgrid(freq_x,freq_y)
+    #     print('self ell max:', self.ell_max)
+    #     ell_x = ifftshift(ell_x)*self.ell_max
+    #     ell_y = ifftshift(ell_y)*self.ell_max
+        
+    #     self.ell_map = np.sqrt(ell_x**2 + ell_y**2)
+        
+    #     print('minimum/maximum ell is ', np.min(self.ell_map[np.nonzero(self.ell_map)]), np.max(self.ell_map))
+
+    #     if shift:
+    #         self.ell_map = fftshift(self.ell_map)
+
+
     def get_ell_bins(self, shift=True):
 
         ''' this will take input map dimensions along with a pixel scale (in arcseconds) and compute the 
         corresponding multipole bins for the 2d map.'''
         
+        self.ell_max = np.sqrt(2)*180./self.pixlength_in_deg # maximum multipole determined by pixel size
+
+        freq_x = fftshift(np.fft.fftfreq(self.dimx, d=1.0))*2*(180*3600./7.)
+        freq_y = fftshift(np.fft.fftfreq(self.dimy, d=1.0))*2*(180*3600./7.)
         
-        freq_x = fftshift(np.fft.fftfreq(self.dimx, d=1.0))
-        freq_y = fftshift(np.fft.fftfreq(self.dimy, d=1.0))
-        
-        print(freq_x)
+        print('freq_x is ', freq_x)
+        print('min freq x is ', np.min(freq_x))
 
         ell_x,ell_y = np.meshgrid(freq_x,freq_y)
-        print('self ell max:', self.ell_max)
-        ell_x = ifftshift(ell_x)*self.ell_max
-        ell_y = ifftshift(ell_y)*self.ell_max
+        ell_x = ifftshift(ell_x)
+        ell_y = ifftshift(ell_y)
+
         
         self.ell_map = np.sqrt(ell_x**2 + ell_y**2)
         
@@ -311,6 +323,7 @@ class Mkk():
 
         if shift:
             self.ell_map = fftshift(self.ell_map)
+
 
     def check_precomputed_values(self, precompute_all=False, ell_map=False, binl=False, weights=False, ringmasks=False,\
                                 masked_weight_sums=False, masked_weights=False, midbin_delta_ells=False, shift=False):
@@ -347,7 +360,6 @@ class Mkk():
             self.compute_midbin_delta_ells()
 
         
-        
     def compute_cl_indiv(self, map1, map2=None, weights=None, mask=None, precompute=False):
         ''' this is for individual map realizations and should be more of a standalone, compared to Mkk.get_angular_spec(),
         which is optimized for computing many realizations in parallel.'''
@@ -359,13 +371,13 @@ class Mkk():
 
         if map2 is None:
             map2 = map1
-
-        fftsq = self.weights*((fft2(map1.real)*np.conj(fft2(map2.real))).real)
+            print('here')
+            fftsq = self.weights*((fft2(map1.real)*np.conj(fft2(map2.real))).real)
 
         C_ell = np.zeros(len(self.binl)-1)
         for i in range(len(self.binl)-1):
             if self.ringmask_sums[i] > 0:
-                C_ell[i] = np.sum(self.masked_weights[i]*fftsq[self.ringmasks[i]])/self.masked_weight_sums[i]
+                C_ell[i] = np.sum(self.masked_weights[i]*fftsq[np.array(self.ringmasks[i])])/self.masked_weight_sums[i]
 
         if mask is not None:
             mask_frac = float(np.count_nonzero(mask))/float((self.dimx*self.dimy))
@@ -375,6 +387,7 @@ class Mkk():
         dC_ell = C_ell*np.sqrt(2./((2*self.midbin_ell + 1)*(self.delta_ell*mask_frac*self.fsky)))
 
         return C_ell, dC_ell
+
     
     
     def plot_twopanel_Mkk(self, signal_map, mask, inverse_mkk, xlims=None, ylims=None, colorbar=True, return_fig=False, logbin=False):
@@ -407,6 +420,26 @@ class Mkk():
         if return_fig:
             return f
 
+
+
+def wrapped_mkk(nsims):
+    x = Mkk(nbins=20)
+    mask = np.ones((x.dimx, x.dimy))
+    mkk, dc_ell = x.get_mkk_sim(mask, nsims, show_tone_map=False, n_split=1)
+    return mkk
+
+def multithreaded_mkk(n_process=4, nsims=100):
+    n_process = n_process
+    p = Pool(processes=n_process)
+    chunks = np.array_split(np.arange(nsims), n_process)
+    print([len(chunk) for chunk in chunks])
+    mkks = p.map(wrapped_mkk, [len(chunk) for chunk in chunks])
+    print('Mkks is ', np.array(mkks).shape)
+    mkk = np.average(mkks, axis=0, weights=[len(chunk) for chunk in chunks])
+    return mkk
+
+
+# mkk = multithreaded_mkk(nsims=20, n_process=2)
 
 # this code below is just to do a test run, should ultimately comment out and call routines from another script
 
