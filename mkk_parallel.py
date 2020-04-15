@@ -4,6 +4,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 from numpy.fft import fftshift as fftshift
 from numpy.fft import ifftshift as ifftshift
+from numpy.fft import fft2 as fft2
+from numpy.fft import ifft2 as ifft2
 import multiprocessing
 from multiprocessing import Pool
 import pyfftw
@@ -16,14 +18,15 @@ def compute_inverse_mkk(mkk):
     
     return inverse_mkk
 
-def plot_mkk_matrix(mkk, inverse=False, logscale=False, title=None, vmin=None, vmax=None):
+
+def plot_mkk_matrix(mkk, inverse=False, logscale=False, title=None, vmin=None, vmax=None, return_fig=False):
     if title is None:
         if inverse:
             title = '$M_{\\ell \\ell^\\prime}^{-1}$'
         else:
             title = '$M_{\\ell \\ell^\\prime}$'
 
-    plt.figure(figsize=(6,6))
+    f = plt.figure(figsize=(6,6))
     plt.title(title, fontsize=16)
     if logscale:
         plt.imshow(mkk, norm=matplotlib.colors.LogNorm(), vmin=vmin, vmax=vmax)
@@ -32,8 +35,33 @@ def plot_mkk_matrix(mkk, inverse=False, logscale=False, title=None, vmin=None, v
     plt.colorbar()
     plt.xticks(np.arange(mkk.shape[0]))
     plt.yticks(np.arange(mkk.shape[1]))
-
     plt.show()
+    
+    if return_fig:
+        return f
+
+def plot_abs_errors(abs_errors, tone_idxs, nsims, ell_bins=None, ell_strings=None, return_fig=False, ylims=[5e-4, 1e-1]):
+    
+    
+    if ell_strings is None:
+        ell_strings = [str(int(ell_bins[idx]))+'$<\\ell<$'+str(int(ell_bins[idx+1])) for idx in tone_idxs]
+    
+    f = plt.figure(figsize=(8,6))
+    for i, idx in enumerate(tone_idxs):
+        plt.errorbar(nsims, np.mean(abs_errors[i], axis=0), np.std(abs_errors[i], axis=0),\
+                 label=ell_strings[i], marker='.', capsize=5, capthick=2, linewidth=2, markersize=10)
+    
+    plt.legend()
+    plt.xlabel('$N_{sims}$', fontsize=20)
+    plt.ylabel('$\\langle \\left| \\frac{\\delta C_{\ell}^{recon}}{C_{\ell}} \\right| \\rangle$', fontsize=20)
+    plt.yscale('log')
+    plt.xscale('log')
+    plt.ylim(ylims[0], ylims[1])
+    plt.show()
+    if return_fig:
+        return f
+    
+
 
 class Mkk():
     
@@ -94,7 +122,7 @@ class Mkk():
             return f
 
     
-    def get_mkk_sim(self, mask, nsims, show_tone_map=False, mode='auto', n_split=1, print_timestats=False):
+    def get_mkk_sim(self, mask, nsims, show_tone_map=False, mode='auto', n_split=1, print_timestats=False, return_all_Mkks=False):
         
         ''' This is the main function that computes an estimate of the mode coupling matrix Mkk from nsims generated tone maps. 
         Knox errors are also computed based on the mask/number of modes/etc. (note: should this also include a beam factor?) This implementation is more memory intensive,
@@ -155,6 +183,9 @@ class Mkk():
         
         # lets precompute a few things that are used later..
         self.check_precomputed_values(precompute_all=True, shift=True)
+
+        all_Mkks = np.zeros((nsims, self.nbins-1, self.nbins-1))
+
         
         for i in range(n_split):
             print('split ', i+1, 'of', n_split)
@@ -179,6 +210,10 @@ class Mkk():
                     # masked_Cl, dC_ells = self.get_angular_spec(tonemaps*mask, nsims=nsims//n_split)
                     masked_Cl, dC_ells = self.get_angular_spec(nsims=nsims//n_split)
 
+
+                    if return_all_Mkks:
+                        all_Mkks[i*nsims//n_split :(i+1)*nsims//n_split ,j,:] = np.array(masked_Cl)
+
                     # row entry for Mkk is average over realizations
                     Mkk[j,:] = np.mean(np.array(masked_Cl), axis=0)
 
@@ -189,9 +224,15 @@ class Mkk():
 
     
         if n_split == 1:
+            if return_all_Mkks:
+                return all_Mkks, dC_ells
+
             return Mkks[0], dC_ells
 
         else:
+            if return_all_Mkks:
+                return all_Mkks
+
             av_Mkk = np.mean(np.array(Mkks), axis=0)
 
             return av_Mkk, np.array(dC_ell_list)
@@ -275,30 +316,6 @@ class Mkk():
             self.binl = np.linspace(0, self.ell_max, self.nbins)
             
             
-    # def get_ell_bins(self, shift=True):
-
-    #     ''' this will take input map dimensions along with a pixel scale (in arcseconds) and compute the 
-    #     corresponding multipole bins for the 2d map.'''
-        
-        
-    #     freq_x = fftshift(np.fft.fftfreq(self.dimx, d=1.0))
-    #     freq_y = fftshift(np.fft.fftfreq(self.dimy, d=1.0))
-        
-    #     print(freq_x)
-
-    #     ell_x,ell_y = np.meshgrid(freq_x,freq_y)
-    #     print('self ell max:', self.ell_max)
-    #     ell_x = ifftshift(ell_x)*self.ell_max
-    #     ell_y = ifftshift(ell_y)*self.ell_max
-        
-    #     self.ell_map = np.sqrt(ell_x**2 + ell_y**2)
-        
-    #     print('minimum/maximum ell is ', np.min(self.ell_map[np.nonzero(self.ell_map)]), np.max(self.ell_map))
-
-    #     if shift:
-    #         self.ell_map = fftshift(self.ell_map)
-
-
     def get_ell_bins(self, shift=True):
 
         ''' this will take input map dimensions along with a pixel scale (in arcseconds) and compute the 
@@ -371,7 +388,7 @@ class Mkk():
 
         if map2 is None:
             map2 = map1
-            print('here')
+            # print('here')
             fftsq = self.weights*((fft2(map1.real)*np.conj(fft2(map2.real))).real)
 
         C_ell = np.zeros(len(self.binl)-1)
@@ -381,7 +398,6 @@ class Mkk():
 
         if mask is not None:
             mask_frac = float(np.count_nonzero(mask))/float((self.dimx*self.dimy))
-            print('mask frac is ', mask_frac)
         else:
             mask_frac = 1.0
         dC_ell = C_ell*np.sqrt(2./((2*self.midbin_ell + 1)*(self.delta_ell*mask_frac*self.fsky)))
@@ -419,6 +435,43 @@ class Mkk():
 
         if return_fig:
             return f
+
+
+    def compute_error_vs_nsims(self, all_mkks, mask, mode='pure', n_realizations=200, tone_idxs=[0, 1, 2], nsims=[1,5,10,50,100, 200]):
+    
+        inverse_mkks = []
+
+        for nsim in nsims:
+            avmkk = np.average(all_mkks[:nsim, :,:], axis=0)
+            print('avmkk has shape', avmkk.shape)
+            inverse_mkks.append(compute_inverse_mkk(avmkk))
+        
+
+        abs_errors = np.zeros((len(tone_idxs), n_realizations, len(nsims)))
+
+        for j, idx in enumerate(tone_idxs):
+            print('tone index ', idx)
+            abs_error = []
+
+            for k in range(n_realizations):
+                
+                if mode=='pure':
+                    testmap = ifft2(self.unshifted_ringmasks[idx]*np.array(np.random.normal(size=(self.dimx, self.dimy))+1j*np.random.normal(size=(self.dimx, self.dimy)))).real
+                elif mode=='white':
+                    testmap = ifft2(np.array(np.random.normal(size=(self.dimx, self.dimy))+1j*np.random.normal(size=(self.dimx, self.dimy)))).real
+
+                c_ell, dc_ell = self.compute_cl_indiv(testmap)
+                c_ell_masked, dc_ell_masked = self.compute_cl_indiv(testmap*mask, mask=mask)
+
+                for n, nsim in enumerate(nsims):
+
+                    c_ell_rectified = np.dot(np.array(inverse_mkks[n]).transpose(), np.array(c_ell_masked))
+
+                    abs_errors[j,k,n] = np.abs((c_ell[idx] - c_ell_rectified[idx])/c_ell[idx])
+          
+        
+        
+        return abs_errors
 
 
 
