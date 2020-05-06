@@ -19,28 +19,7 @@ def compute_inverse_mkk(mkk):
     return inverse_mkk
 
 
-def plot_mkk_matrix(mkk, inverse=False, logscale=False, title=None, vmin=None, vmax=None, return_fig=False):
-    if title is None:
-        if inverse:
-            title = '$M_{\\ell \\ell^\\prime}^{-1}$'
-        else:
-            title = '$M_{\\ell \\ell^\\prime}$'
-
-    f = plt.figure(figsize=(6,6))
-    plt.title(title, fontsize=16)
-    if logscale:
-        plt.imshow(mkk, norm=matplotlib.colors.LogNorm(), vmin=vmin, vmax=vmax)
-    else:
-        plt.imshow(mkk)
-    plt.colorbar()
-    plt.xticks(np.arange(mkk.shape[0]))
-    plt.yticks(np.arange(mkk.shape[1]))
-    plt.show()
-    
-    if return_fig:
-        return f
-
-def plot_abs_errors(abs_errors, tone_idxs, nsims, ell_bins=None, ell_strings=None, return_fig=False, ylims=[5e-4, 1e-1]):
+def plot_abs_errors(abs_errors, tone_idxs, nsims, analytic_dcl_cl=None, ell_bins=None, ell_strings=None, return_fig=False, ylims=[5e-4, 1e-1]):
     
     
     if ell_strings is None:
@@ -48,12 +27,20 @@ def plot_abs_errors(abs_errors, tone_idxs, nsims, ell_bins=None, ell_strings=Non
     
     f = plt.figure(figsize=(8,6))
     for i, idx in enumerate(tone_idxs):
+
         plt.errorbar(nsims, np.mean(abs_errors[i], axis=0), np.std(abs_errors[i], axis=0),\
                  label=ell_strings[i], marker='.', capsize=5, capthick=2, linewidth=2, markersize=10)
-    
+        
+        if analytic_dcl_cl is not None:
+            if i==0:
+                label='Analytic estimates'
+            else:
+                label=None
+            plt.plot(nsims, analytic_dcl_cl[i],label=label, color='k')
+        
     plt.legend()
-    plt.xlabel('$N_{sims}$', fontsize=20)
-    plt.ylabel('$\\langle \\left| \\frac{\\delta C_{\ell}^{recon}}{C_{\ell}} \\right| \\rangle$', fontsize=20)
+    plt.xlabel('$N_{sims}$', fontsize=24)
+    plt.ylabel('$\\langle \\left| \\frac{C_{\ell} - C_{\ell}^{recon}}{C_{\ell}} \\right| \\rangle$', fontsize=20)
     plt.yscale('log')
     plt.xscale('log')
     plt.ylim(ylims[0], ylims[1])
@@ -62,10 +49,24 @@ def plot_abs_errors(abs_errors, tone_idxs, nsims, ell_bins=None, ell_strings=Non
         return f
     
 
-
-class Mkk():
+def group_idxs(idx_list, imdim=1024):
     
-    def __init__(self, pixsize=7., dimx=1024, dimy=1024, ell_min=150., logbin=True, nbins=30):
+    grouped_idx_list = []    
+    used_list = []
+    
+    for idx in idx_list:
+        for idx2 in idx_list:
+            if idx2[0]%imdim ==(imdim-idx[0])%imdim and idx2[1]%imdim==(imdim-idx[1])%imdim and idx2 not in used_list:
+                grouped_idx_list.append([idx, idx2])
+                used_list.append(idx)
+                used_list.append(idx2)
+
+    return grouped_idx_list
+
+
+class Mkk2():
+    
+    def __init__(self, pixsize=7., dimx=1024, dimy=1024, ell_min=150., logbin=True, nbins=30, n_fine_bins=0):
         
         for attr, valu in locals().items():
             setattr(self, attr, valu)
@@ -86,7 +87,7 @@ class Mkk():
 
 
             
-    def map_from_powerspec(self, idx, shift=True,nsims=1):
+    def map_from_powerspec(self, idx=0, shift=True,nsims=1, mode=None, sub_bins=False):
 
         ''' This makes maps very quickly given some precomputed quantities. The unshifted ringmasks are used to generate
         the pure tones within each band, so then this gets multiplied by the precalculated noise and fourier transformed to real space. These
@@ -99,30 +100,20 @@ class Mkk():
             self.compute_multipole_bins()
          
         t0 = time.clock()
-        self.fft_object_b(self.unshifted_ringmasks[idx]*self.noise)
+        
+        if mode == 'white':
+            self.fft_object_b(self.noise)
+        else:
+            if sub_bins:
+                self.fft_object_b(self.unshifted_sub_ringmasks[idx]*self.noise)
+            else:
+                self.fft_object_b(self.unshifted_ringmasks[idx]*self.noise)
 
         if self.print_timestats:
             print('fft object b takes ', time.clock()-t0)
 
-
-    def plot_tone_map_realization(self, tonemap, idx=None, return_fig=False):
-
-        ''' produces an image of one tone map generated with map_from_powerspec()'''
-
-        f = plt.figure()
-        if idx is not None:
-            plt.title('Tone map ('+str(np.round(self.binl[idx], 2))+'<$\\ell$<'+str(np.round(self.binl[idx+1], 2))+')', fontsize=16)
-        else:
-            plt.title('Tone map')
-        plt.imshow(tonemap)
-        plt.colorbar()
-        plt.show()    
-        
-        if return_fig:
-            return f
-
-    
-    def get_mkk_sim(self, mask, nsims, show_tone_map=False, mode='auto', n_split=1, print_timestats=False, return_all_Mkks=False):
+    def get_mkk_sim(self, mask, nsims, show_tone_map=False, mode='auto', n_split=1, \
+                    print_timestats=False, return_all_Mkks=False, n_fine_bins=None, sub_bins=False):
         
         ''' This is the main function that computes an estimate of the mode coupling matrix Mkk from nsims generated tone maps. 
         Knox errors are also computed based on the mask/number of modes/etc. (note: should this also include a beam factor?) This implementation is more memory intensive,
@@ -161,7 +152,10 @@ class Mkk():
 
 
         self.print_timestats = print_timestats
-
+        
+        if n_fine_bins is not None:
+            self.n_fine_bins = n_fine_bins
+            
         if n_split > 1:
             print 'Splitting up computation of', nsims, 'simulations into', n_split, 'chunks..'
             assert (nsims % n_split) == 0
@@ -174,18 +168,21 @@ class Mkk():
 
         self.fft_object_b = pyfftw.FFTW(self.b, self.c, axes=(1,2),threads=1, direction='FFTW_BACKWARD', flags=('FFTW_MEASURE',))
         self.fft_object_c = pyfftw.FFTW(self.c, self.d, axes=(1,2),threads=1, direction='FFTW_FORWARD', flags=('FFTW_MEASURE',))
-
-        # self.fft_object_b = pyfftw.FFTW(self.b, self.c, axes=(1,2), threads=multiprocessing.cpu_count(), direction='FFTW_BACKWARD', flags=('FFTW_MEASURE',))
-        # self.fft_object_c = pyfftw.FFTW(self.c, self.d, axes=(1,2), threads=multiprocessing.cpu_count(), direction='FFTW_FORWARD', flags=('FFTW_MEASURE',))
-        
+       
         Mkks = []
         dC_ell_list = []
         
         # lets precompute a few things that are used later..
-        self.check_precomputed_values(precompute_all=True, shift=True)
+        self.check_precomputed_values(precompute_all=True, shift=True, sub_bins=sub_bins)
+        
+        if sub_bins:
+            n_total_bins = len(self.unshifted_sub_ringmasks)
+        else:
+            n_total_bins = len(self.unshifted_ringmasks)
+        
+        self.n_total_bins = n_total_bins
 
-        all_Mkks = np.zeros((nsims, self.nbins-1, self.nbins-1))
-
+        all_Mkks = np.zeros((nsims, n_total_bins, n_total_bins))
         
         for i in range(n_split):
             print('split ', i+1, 'of', n_split)
@@ -193,23 +190,16 @@ class Mkk():
             # compute noise realizations beforehand so time isn't wasted generating a whole new set each time. We can do this because the ring masks
             # that we multiply by the noise realizations are spatially disjoint, i.e. the union of all of the masks is the null set. 
             self.noise = np.random.normal(size=(nsims//n_split, self.dimx, self.dimy))+ 1j*np.random.normal(size=(nsims//n_split, self.dimx, self.dimy))
-
-            Mkk = np.zeros((self.nbins-1, self.nbins-1))
-                    
-            for j in range(self.nbins-1):
+            
+            Mkk = np.zeros((n_total_bins, n_total_bins))
+            
+            for j in range(n_total_bins):
                 print('band ', j)
                 
-                self.map_from_powerspec(j, nsims=nsims//n_split)
-                # tonemaps = self.map_from_powerspec(j, nsims=nsims//n_split)
-                
-                # self.plot_tone_map_realization(self.c[0].real*mask)
-                # self.plot_tone_map_realization(tonemaps[1]*mask)
+                self.map_from_powerspec(j, nsims=nsims//n_split, sub_bins=sub_bins)
                 
                 if mode=='auto':
-                    
-                    # masked_Cl, dC_ells = self.get_angular_spec(tonemaps*mask, nsims=nsims//n_split)
-                    masked_Cl, dC_ells = self.get_angular_spec(nsims=nsims//n_split)
-
+                    masked_Cl = self.get_angular_spec(nsims=nsims//n_split, sub_bins=sub_bins, apply_mask=True)
 
                     if return_all_Mkks:
                         all_Mkks[i*nsims//n_split :(i+1)*nsims//n_split ,j,:] = np.array(masked_Cl)
@@ -217,35 +207,30 @@ class Mkk():
                     # row entry for Mkk is average over realizations
                     Mkk[j,:] = np.mean(np.array(masked_Cl), axis=0)
 
-            for dC_ell in dC_ells:
-                dC_ell_list.append(dC_ell)
-
             Mkks.append(Mkk)
-
     
         if n_split == 1:
             if return_all_Mkks:
-                return all_Mkks, dC_ells
-
-            return Mkks[0], dC_ells
+                return all_Mkks
+            return Mkks[0]
 
         else:
             if return_all_Mkks:
                 return all_Mkks
-
             av_Mkk = np.mean(np.array(Mkks), axis=0)
 
-            return av_Mkk, np.array(dC_ell_list)
+            return av_Mkk
     
     
-    def get_angular_spec(self, map1=None, map2=None, nsims=2):
+    def get_angular_spec(self, map1=None, map2=None, nsims=2, sub_bins=False, apply_mask=False):
         
         fac = self.arcsec_pp_to_radian**2
         
         if map2 is None:
             t0 = time.clock()
-
-            self.c *= self.mask
+            
+            if apply_mask:
+                self.c *= self.mask
 
             self.fft_object_c(self.c.real)
             
@@ -258,46 +243,117 @@ class Mkk():
             if self.print_timestats:
                 print('fftsq took ', time.clock()-t0)
         else:
-            # this works, but why ifft2 here and not fft2? 
             fftsq = self.weights*((ifft2(map1)*np.conj(ifft2(map2))).real)*fac
 
         t0 = time.clock()
-        C_ell = np.zeros((nsims, len(self.binl)-1))
-        for i in range(len(self.binl)-1):
-            if self.ringmask_sums[i] > 0:
-                C_ell[:,i] = np.array([np.sum(self.masked_weights[i]*fftsq[j][self.ringmasks[i]])/self.masked_weight_sums[i] for j in range(nsims)])
 
-        # lets return cosmic variance error as well
+        if sub_bins:
+            C_ell = np.zeros((nsims, self.n_total_bins))
+            for i in range(self.n_total_bins):
+                if self.sub_ringmask_sums[i] > 0:
+                    C_ell[:,i] = np.array([np.sum(self.sub_masked_weights[i]*fftsq[j][self.sub_ringmasks[i]])/self.sub_masked_weight_sums[i] for j in range(nsims)])
 
-        dC_ell = C_ell*np.sqrt(2./((2*self.midbin_ell + 1)*(self.delta_ell*self.fsky)))
+        else:
+            C_ell = np.zeros((nsims, len(self.binl)-1))
+            for i in range(len(self.binl)-1):
+                if self.ringmask_sums[i] > 0:
+                    C_ell[:,i] = np.array([np.sum(self.masked_weights[i]*fftsq[j][self.ringmasks[i]])/self.masked_weight_sums[i] for j in range(nsims)])
 
-        return C_ell, dC_ell
+        return C_ell
     
     
-    def compute_ringmasks(self):        
+    def compute_ringmasks(self, sub_bins=False):        
         print('minimum ell_map value is ', np.min(self.ell_map))
+        
+        self.correspond_bins = []
+        
+        unshifted_ringmasks, ringmasks = [], []
+                 
+        for i in range(len(self.binl)-1):
+            
+            sub_bins_list = []
+            if i < self.n_fine_bins and sub_bins:
                 
-        self.ringmasks = [(fftshift(self.ell_map) >= self.binl[i])*(fftshift(self.ell_map) <= self.binl[i+1]) for i in range(len(self.binl)-1)]
-        self.ringmask_sums = np.array([np.sum(ringmask) for ringmask in self.ringmasks])
-        self.unshifted_ringmasks = [fftshift(np.array((self.ell_map >= self.binl[i])*(self.ell_map <= self.binl[i+1])).astype(np.float)/self.arcsec_pp_to_radian) for i in range(len(self.binl)-1)]
+                # here we'll make rows that are M_{(kx,ky), (kx',ky')}
+                full_ringmask = (fftshift(self.ell_map) >= self.binl[i])*(fftshift(self.ell_map) <= self.binl[i+1])
+                full_unshifted_ringmask = fftshift(np.array((self.ell_map >= self.binl[i])*(self.ell_map <= self.binl[i+1])).astype(np.float)/self.arcsec_pp_to_radian)
+                
+                nonzero_us_idxs = np.nonzero(full_unshifted_ringmask)
+                
+                pair_us_idxs = [[nonzero_us_idxs[0][i], nonzero_us_idxs[1][i]] for i in range(len(nonzero_us_idxs[0]))]
+                grouped_us_idxs = group_idxs(pair_us_idxs, imdim=self.dimx)
+
+                for j in range(len(grouped_us_idxs)):
+                    
+                    sub_bins_list.append(len(unshifted_ringmasks))
+                    indiv_us_ptmask = np.zeros_like(self.ell_map)
+                
+                    for idx in grouped_us_idxs[j]:
+
+                        indiv_us_ptmask[idx[0], idx[1]] = full_unshifted_ringmask[idx[0],idx[1]]
+
+                    unshifted_ringmasks.append(indiv_us_ptmask)
+                
         
-        print('ringmask sums:')
-        print(self.ringmask_sums)
+                nonzero_idxs = np.nonzero(full_ringmask)
+            
+                pair_idxs = [[nonzero_idxs[0][i], nonzero_idxs[1][i]] for i in range(len(nonzero_idxs[0]))]
+
+                grouped_idxs = group_idxs(pair_idxs, imdim=self.dimx)
+                
+                for k in range(len(grouped_idxs)):
+                    
+                    indiv_ptmask = np.zeros_like(self.ell_map)
+
+                    for idx in grouped_idxs[k]:
+                    
+                        indiv_ptmask[idx[0], idx[1]] = 1
+
+                    ringmasks.append(indiv_ptmask.astype(np.bool))
         
-    def compute_masked_weight_sums(self):
-        self.masked_weight_sums = np.array([np.sum(self.weights[ringmask]) for ringmask in self.ringmasks])
+            else:
+                sub_bins_list.append(len(unshifted_ringmasks))
+                unshifted_ringmasks.append(fftshift(np.array((self.ell_map >= self.binl[i])*(self.ell_map <= self.binl[i+1])).astype(np.float)/self.arcsec_pp_to_radian))
+                ringmasks.append((fftshift(self.ell_map) >= self.binl[i])*(fftshift(self.ell_map) <= self.binl[i+1]))
+ 
+
+            if sub_bins:
+                self.correspond_bins.append(sub_bins_list)
+        
+        
+        if sub_bins:
+            self.unshifted_sub_ringmasks = unshifted_ringmasks
+            self.sub_ringmasks = ringmasks
+            self.sub_ringmask_sums = np.array([np.sum(ringmask) for ringmask in self.sub_ringmasks])
+            print('self.correspond_bins is ', self.correspond_bins)
+
+        else:
+            self.unshifted_ringmasks = unshifted_ringmasks
+            self.ringmasks = ringmasks
+            self.ringmask_sums = np.array([np.sum(ringmask) for ringmask in self.ringmasks])
+
+        
+    def compute_masked_weight_sums(self, sub_bins=False):
+        if sub_bins:
+            self.sub_masked_weight_sums = np.array([np.sum(self.weights[ringmask]) for ringmask in self.sub_ringmasks])
+        else:   
+            self.masked_weight_sums = np.array([np.sum(self.weights[ringmask]) for ringmask in self.ringmasks])
+            print('self.masked weight sums:', self.masked_weight_sums)
 
     def compute_midbin_delta_ells(self):
         self.midbin_ell = 0.5*(self.binl[1:]+self.binl[:-1])
         self.delta_ell = self.binl[1:]-self.binl[:-1]
         
 
-    def compute_masked_weights(self):
-        ''' This takes the Fourier weights and produces a list of masked weights according to each multipole bandpass. The prefactor just converts the units
+    def compute_masked_weights(self, sub_bins=False):
+        ''' This takes the Fourier weights and produces a  list of masked weights according to each multipole bandpass. The prefactor just converts the units
         appropriately. This is precomputed to make things faster during FFT time''' 
         fac = self.arcsec_pp_to_radian**2
 
-        self.masked_weights = [fac*self.weights[ringmask] for ringmask in self.ringmasks]
+        if sub_bins:
+            self.sub_masked_weights = [fac*self.weights[ringmask] for ringmask in self.sub_ringmasks]
+        else:
+            self.masked_weights = [fac*self.weights[ringmask] for ringmask in self.ringmasks]
     
    
     def load_fourier_weights(self, weights):
@@ -326,9 +382,6 @@ class Mkk():
         freq_x = fftshift(np.fft.fftfreq(self.dimx, d=1.0))*2*(180*3600./7.)
         freq_y = fftshift(np.fft.fftfreq(self.dimy, d=1.0))*2*(180*3600./7.)
         
-        print('freq_x is ', freq_x)
-        print('min freq x is ', np.min(freq_x))
-
         ell_x,ell_y = np.meshgrid(freq_x,freq_y)
         ell_x = ifftshift(ell_x)
         ell_y = ifftshift(ell_y)
@@ -340,22 +393,23 @@ class Mkk():
 
         if shift:
             self.ell_map = fftshift(self.ell_map)
+            
 
 
     def check_precomputed_values(self, precompute_all=False, ell_map=False, binl=False, weights=False, ringmasks=False,\
-                                masked_weight_sums=False, masked_weights=False, midbin_delta_ells=False, shift=False):
+                                masked_weight_sums=False, masked_weights=False, midbin_delta_ells=False, shift=False, sub_bins=False):
+        
         
         if ell_map or precompute_all:
             if self.ell_map is None:
                 print('Generating ell bins..')
                 self.get_ell_bins(shift=shift)
-                
-                
+                 
         if binl or precompute_all:
             if self.binl is None:
                 print('Generating multipole bins..')
                 self.compute_multipole_bins()
-            
+                
         if weights or precompute_all:
             # if no weights provided by user, weights are unity across image
             if self.weights is None:
@@ -363,21 +417,21 @@ class Mkk():
                 self.weights = np.ones((self.dimx, self.dimy))   
             
         if ringmasks or precompute_all:
-            if self.ringmasks is None:
+            if self.ringmasks is None or sub_bins:
                 print('Computing Fourier ring masks..')
-                self.compute_ringmasks()
-                
+                self.compute_ringmasks(sub_bins=sub_bins)
+              
         if masked_weights or precompute_all:
-            self.compute_masked_weights()
+            self.compute_masked_weights(sub_bins=sub_bins)
 
         if masked_weight_sums or precompute_all:
-            self.compute_masked_weight_sums()
+            self.compute_masked_weight_sums(sub_bins=sub_bins)
             
         if midbin_delta_ells or precompute_all:
             self.compute_midbin_delta_ells()
-
         
-    def compute_cl_indiv(self, map1, map2=None, weights=None, mask=None, precompute=False):
+        
+    def compute_cl_indiv(self, map1, map2=None, weights=None, mask=None, precompute=False, sub_bins=False):
         ''' this is for individual map realizations and should be more of a standalone, compared to Mkk.get_angular_spec(),
         which is optimized for computing many realizations in parallel.'''
         
@@ -388,22 +442,29 @@ class Mkk():
 
         if map2 is None:
             map2 = map1
-            # print('here')
             fftsq = self.weights*((fft2(map1.real)*np.conj(fft2(map2.real))).real)
 
+            
         C_ell = np.zeros(len(self.binl)-1)
-        for i in range(len(self.binl)-1):
-            if self.ringmask_sums[i] > 0:
-                C_ell[i] = np.sum(self.masked_weights[i]*fftsq[np.array(self.ringmasks[i])])/self.masked_weight_sums[i]
+        
+        
+        if sub_bins:
+            C_ell_star = np.zeros(self.n_total_bins)
 
-        if mask is not None:
-            mask_frac = float(np.count_nonzero(mask))/float((self.dimx*self.dimy))
+            for i in range(self.n_total_bins):
+                if self.sub_ringmask_sums[i] > 0:
+                    C_ell_star[i] = np.sum(self.masked_weights[i]*fftsq[np.array(self.ringmasks[i])])/self.masked_weight_sums[i]
+
+            return C_ell_star
+            
         else:
-            mask_frac = 1.0
-        dC_ell = C_ell*np.sqrt(2./((2*self.midbin_ell + 1)*(self.delta_ell*mask_frac*self.fsky)))
+            C_ell = np.zeros(len(self.binl)-1)
+            for i in range(len(self.binl)-1):
+                if self.ringmask_sums[i] > 0:
+                    C_ell[i] = np.sum(self.masked_weights[i]*fftsq[np.array(self.ringmasks[i])])/self.masked_weight_sums[i]
 
-        return C_ell, dC_ell
-
+            return C_ell
+    
     
     
     def plot_twopanel_Mkk(self, signal_map, mask, inverse_mkk, xlims=None, ylims=None, colorbar=True, return_fig=False, logbin=False):
@@ -435,9 +496,26 @@ class Mkk():
 
         if return_fig:
             return f
+        
+    def plot_tone_map_realization(self, tonemap, idx=None, return_fig=False):
+
+        ''' produces an image of one tone map generated with map_from_powerspec()'''
+
+        f = plt.figure()
+        if idx is not None:
+            plt.title('Tone map ('+str(np.round(self.binl[idx], 2))+'<$\\ell$<'+str(np.round(self.binl[idx+1], 2))+')', fontsize=16)
+        else:
+            plt.title('Tone map')
+        plt.imshow(tonemap)
+        plt.colorbar()
+        plt.show()    
+        
+        if return_fig:
+            return f
 
 
-    def compute_error_vs_nsims(self, all_mkks, mask, mode='pure', n_realizations=200, tone_idxs=[0, 1, 2], nsims=[1,5,10,50,100, 200]):
+    def compute_error_vs_nsims(self, all_mkks, mask, mode='pure', n_realizations=200, tone_idxs=[0, 1, 2], nsims=[1,5,10,50,100, 200], \
+                              analytic_estimate=False):
     
         inverse_mkks = []
 
@@ -449,12 +527,22 @@ class Mkk():
 
         abs_errors = np.zeros((len(tone_idxs), n_realizations, len(nsims)))
 
+        dcl_cl_list = []
+        
         for j, idx in enumerate(tone_idxs):
+            
+            if analytic_estimate:
+                ell = 0.5*(self.binl[idx]+self.binl[idx+1])
+                d_ell = self.binl[idx+1]-self.binl[idx]
+
+                dcl_cl = np.array([np.sqrt(2/(ell*d_ell*nsim)) for nsim in nsims])
+                dcl_cl_list.append(dcl_cl)
+                print('dcl/cl=', dcl_cl)
+            
             print('tone index ', idx)
             abs_error = []
 
             for k in range(n_realizations):
-                
                 if mode=='pure':
                     testmap = ifft2(self.unshifted_ringmasks[idx]*np.array(np.random.normal(size=(self.dimx, self.dimy))+1j*np.random.normal(size=(self.dimx, self.dimy)))).real
                 elif mode=='white':
@@ -470,10 +558,47 @@ class Mkk():
                     abs_errors[j,k,n] = np.abs((c_ell[idx] - c_ell_rectified[idx])/c_ell[idx])
           
         
-        
+        if analytic_estimate:
+            return abs_errors, np.array(dcl_cl_list)
         return abs_errors
+    
+    
+    def compute_true_minus_rectified(self, mask, inverse_mkk, n_realizations=100, n_split=2, mode='white', sub_bins=False):
+
+        delta_cl = []
+        
+            
+        self.b = pyfftw.empty_aligned((n_realizations//n_split, self.dimx, self.dimy), dtype='complex64')        
+        self.c = pyfftw.empty_aligned((n_realizations//n_split, self.dimx, self.dimy), dtype='complex64')
+        self.d = pyfftw.empty_aligned((n_realizations//n_split, self.dimx, self.dimy), dtype='complex64')
+
+        self.fft_object_b = pyfftw.FFTW(self.b, self.c, axes=(1,2),threads=1, direction='FFTW_BACKWARD', flags=('FFTW_MEASURE',))
+        self.fft_object_c = pyfftw.FFTW(self.c, self.d, axes=(1,2),threads=1, direction='FFTW_FORWARD', flags=('FFTW_MEASURE',))
+
+        for n in range(n_split):
+
+            self.noise = np.random.normal(size=(n_realizations//n_split, self.dimx, self.dimy))+ 1j*np.random.normal(size=(n_realizations//n_split, self.dimx, self.dimy))
+
+            self.map_from_powerspec(nsims=n_realizations//n_split, sub_bins=sub_bins, mode=mode)
+
+            # c_ells is the "true", azimuthally averaged angular power spectrum
+            c_ells = self.get_angular_spec(nsims=n_realizations//n_split, sub_bins=False, apply_mask=False)
+
+            masked_Cls = self.get_angular_spec(nsims=n_realizations//n_split, sub_bins=sub_bins, apply_mask=True)
 
 
+            for i, masked_Cl in enumerate(masked_Cls):
+
+                c_ell_rect = np.dot(inverse_mkk.transpose(), np.array(masked_Cl))
+
+                if sub_bins:
+                    c_ell_rectified = np.array([np.mean(c_ell_rect[self.correspond_bins[k]]) for k in range(len(self.correspond_bins))])
+                    delta_cl.append((c_ells[i]-c_ell_rectified)/c_ells[i])
+                else:
+                    delta_cl.append((c_ells[i]-c_ell_rect)/c_ells[i])
+
+        return delta_cl
+                    
 
 def wrapped_mkk(nsims):
     x = Mkk(nbins=20)
