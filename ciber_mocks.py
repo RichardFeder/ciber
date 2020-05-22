@@ -1,11 +1,28 @@
 import numpy as np
-# import pandas as pd
+import numpy.ctypeslib as npct
+import ctypes
+from ctypes import c_int, c_double
+
 import astropy.units as u
 from astropy import constants as const
 import scipy.signal
 from mock_galaxy_catalogs import *
 from helgason import *
 from ciber_data_helpers import *
+from image_eval import psf_poly_fit, image_model_eval
+
+
+def initialize_cblas_ciber(libmmult):
+
+    print('initializing c routines and data structs')
+
+    array_2d_float = npct.ndpointer(dtype=np.float32, ndim=2, flags="C_CONTIGUOUS")
+    array_1d_int = npct.ndpointer(dtype=np.int32, ndim=1, flags="C_CONTIGUOUS")
+    array_2d_double = npct.ndpointer(dtype=np.float64, ndim=2, flags="C_CONTIGUOUS")
+    array_2d_int = npct.ndpointer(dtype=np.int32, ndim=2, flags="C_CONTIGUOUS")
+
+    libmmult.pcat_model_eval.restype = None
+    libmmult.pcat_model_eval.argtypes = [c_int, c_int, c_int, c_int, c_int, array_2d_float, array_2d_float, array_2d_float, array_1d_int, array_1d_int, array_2d_float, array_2d_float, array_2d_float, array_2d_double, c_int, c_int, c_int, c_int]
 
 
 def normalized_ihl_template(dimx=50, dimy=50, R_vir=None):
@@ -37,6 +54,7 @@ def rebin_map_coarse(original_map, Nsub):
     return original_map.reshape(m, Nsub, n, Nsub).mean((1,3))
 
 def ihl_conv_templates(psf=None, rvir_min=1, rvir_max=50, dimx=150, dimy=150):
+    
     ''' 
     This function precomputes a range of IHL templates that can then be queried quickly when making mocks, rather than generating a
     separate IHL template for each source. This template is convolved with the mock PSF.
@@ -50,6 +68,7 @@ def ihl_conv_templates(psf=None, rvir_min=1, rvir_max=50, dimx=150, dimy=150):
         ihl_conv_temps (list of np.arrays): list of PSF-convolved IHL templates. 
 
     '''
+
     ihl_conv_temps = []
     rvir_range = np.arange(rvir_min, rvir_max).astype(np.float)
     for rvir in rvir_range:
@@ -102,8 +121,13 @@ class ciber_mock():
     sky_brightness = np.array([300., 370.])*sb_intensity_unit
     instrument_noise = np.array([33.1, 17.5])*sb_intensity_unit
 
-    def __init__(self):
-        pass
+    def __init__(self, pcat_model_eval=True):
+        self.psf_template=None
+        
+        if pcat_model_eval:
+            self.libmmult = npct.load_library('pcat-lion', '.')
+            initialize_cblas_ciber(self.libmmult)
+
 
     def catalog_mag_cut(self, cat, m_arr, m_min, m_max):
         ''' Given a catalog (cat), magnitudes, and a magnitude cut range, return the filtered catalog ''' 
@@ -121,6 +145,31 @@ class ciber_mock():
         y_arr = cat[1,:] 
         m_arr = cat[2,:]
         return x_arr, y_arr, m_arr
+        
+    def get_psf(self, ifield=4, band=0, nx=1024, ny=1024, multfac=7.0, nbin=0., poly_fit=True, nwide=12):
+        
+        beta, rc, norm = find_psf_params(self.ciberdir+'/data/psfparams.txt', tm=band+1, field=self.ciber_field_dict[ifield])
+
+        Nlarge = nx+30+30 
+
+        radmap = make_radius_map(2*Nlarge+nbin, 2*Nlarge+nbin, Nlarge+nbin, Nlarge+nbin, rc)*multfac # is the input supposed to be 2d?
+        
+        
+        self.psf_full = norm * np.power(1 + radmap, -3*beta/2.)
+        self.psf_full /= np.sum(self.psf_full)     
+        self.psf_template = self.psf_full[Nlarge-nwide:Nlarge+nwide+1, Nlarge-nwide:Nlarge+nwide+1]
+        
+        print('imap center has shape', self.psf_template.shape)
+
+        
+        if poly_fit:
+            psf = np.zeros((50,50))
+            psf[0:25,0:25] = self.psf_template
+            psf = scipy.misc.imresize(psf, (250, 250), interp='lanczos', mode='F')
+            psfnew = np.array(psf[0:125, 0:125])
+            psfnew[0:123,0:123] = psf[2:125,2:125]  # shift due to lanczos kernel
+            self.cf = psf_poly_fit(psfnew, nbin=5)
+        
 
     def get_darktime_name(self, flight, field):
         return self.darktime_name_dict[flight][field-1]
@@ -134,35 +183,51 @@ class ciber_mock():
         jansky_arr = self.mag_2_jansky(mags)
         return jansky_arr.to(u.nW*u.s/u.m**2)*const.c/(self.pix_sr*self.lam_effs[band])
 
-    def make_srcmap(self, ifield, cat, flux_idx=-1, band=0, nbin=0., nx=1024, ny=1024, nwide=20, multfac=7.0):
+    def make_srcmap(self, ifield, cat, flux_idx=-1, band=0, nbin=0., nx=1024, ny=1024, nwide=12, multfac=7.0, \
+                    pcat_model_eval=False, libmmult=None, dx=2.5, dy=-1.0):
         
         ''' This function takes in a catalog, finds the PSF for the specific ifield, makes a PSF template and then populates an image with 
         model sources. When we use galaxies for mocks we can do this because CIBER's angular resolution is large enough that galaxies are
-        well modeled as point sources. '''
+        well modeled as point sources. 
 
-        srcmap = np.zeros((nx*2, ny*2))
-
-        # get psf params
-        beta, rc, norm = find_psf_params(self.ciberdir+'/data/psfparams.txt', tm=band+1, field=self.ciber_field_dict[ifield])
+        Note (5/21/20): This function currently only places sources at integer locations, which should probably change
+        for any real implementation used in analysis.
         
-        Nlarge = nx+30+30 
+        Note (5/22/20): with the integration of PCAT's model evaluation routines, we can now do sub-pixel source placement
+        and it is a factor of 6 faster than the original implementation when at scale (e.g. catalog sources down to 25th magnitude)
+        
+        dx and dy are offsets meant to be used when comparing PCAT's model evaluation with the original, but is not strictly 
+        necessary for actual model evaluation. In other words, these can be set to zero when not doing comparisons.
+        '''
+
         Nsrc = cat.shape[0]
 
-        radmap = make_radius_map(2*Nlarge+nbin, 2*Nlarge+nbin, Nlarge+nbin, Nlarge+nbin, rc)*multfac # is the input supposed to be 2d?
+        srcmap = np.zeros((nx*2, ny*2))
         
+        Nlarge = nx+30+30 
+
+
+        if self.psf_template is None:
+            
+            self.get_psf(ifield=ifield, band=band, nx=nx, ny=ny, multfac=multfac, poly_fit=pcat_model_eval, nwide=nwide)
+            
+    
         print('Making source map TM, mrange=(%d,%d), %d sources'%(np.min(cat[:,3]),np.max(cat[:,3]),Nsrc))
         
-        Imap_large = norm * np.power(1 + radmap, -3*beta/2.)
-        Imap_large /= np.sum(Imap_large)     
-        Imap_center = Imap_large[Nlarge-nwide:Nlarge+nwide+1, Nlarge-nwide:Nlarge+nwide+1]
 
-        xs = np.round(cat[:,0]).astype(np.int32)
-        ys = np.round(cat[:,1]).astype(np.int32)
+        if pcat_model_eval:
+            
+            srcmap = image_model_eval(np.array(cat[:,0]).astype(np.float32)+2.5, np.array(cat[:,1]).astype(np.float32)-1.0 ,np.array(cat[:, flux_idx]).astype(np.float32),0., (nx, ny), 25, self.cf, lib=self.libmmult.pcat_model_eval)
+            
+            return srcmap
+        else:
+            xs = np.round(cat[:,0]).astype(np.int32)
+            ys = np.round(cat[:,1]).astype(np.int32)
 
-        for i in xrange(Nsrc):
-            srcmap[Nlarge/2+2+xs[i]-nwide:Nlarge/2+2+xs[i]+nwide+1, Nlarge/2-1+ys[i]-nwide:Nlarge/2-1+ys[i]+nwide+1] += Imap_center*cat[i, flux_idx]
+            for i in xrange(Nsrc):
+                srcmap[Nlarge/2+2+xs[i]-nwide:Nlarge/2+2+xs[i]+nwide+1, Nlarge/2-1+ys[i]-nwide:Nlarge/2-1+ys[i]+nwide+1] += self.psf_template*cat[i, flux_idx]
         
-        return srcmap[nx/2+30:3*nx/2+30, ny/2+30:3*ny/2+30], Imap_center, Imap_large
+            return srcmap[nx/2+30:3*nx/2+30, ny/2+30:3*ny/2+30]
 
    
     def make_ihl_map(self, map_shape, cat, ihl_frac, flux_idx=-1, dimx=150, dimy=150, psf=None, extra_trim=20):
@@ -182,14 +247,13 @@ class ciber_mock():
             x0 = np.floor(src[0]+extra_trim/2)
             y0 = np.floor(src[1]+extra_trim/2)
             ihl_map[int(x0):int(x0+ihl_temps[0].shape[0]), int(y0):int(y0 + ihl_temps[0].shape[1])] += ihl_temps[int(np.ceil(rvirs[i])-1)]*ihl_frac*src[flux_idx]
-            # ihl_map[int(x0):int(x0+ norm_ihl.shape[0]), int(y0):int(y0 + norm_ihl.shape[1])] += norm_ihl*ihl_frac*src[2]
 
         return ihl_map[(ihl_temps[0].shape[0] + extra_trim)/2:-(ihl_temps[0].shape[0] + extra_trim)/2, (ihl_temps[0].shape[0] + extra_trim)/2:-(ihl_temps[0].shape[0] + extra_trim)/2]
         # return ihl_map[(norm_ihl.shape[0] + extra_trim)/2:-(norm_ihl.shape[0] + extra_trim)/2, (norm_ihl.shape[0] + extra_trim)/2:-(norm_ihl.shape[0] + extra_trim)/2]
      
 
-    def mocks_from_catalogs(self, catalog_list, ncatalog, mock_data_directory, m_min=9., m_max=30., m_tracer_max=25., \
-                        ihl_frac=0.2, ifield=4, band=0, save=False, extra_name=''):
+    def mocks_from_catalogs(self, catalog_list, ncatalog, mock_data_directory=None, m_min=9., m_max=30., m_tracer_max=25., \
+                        ihl_frac=0.0, ifield=4, band=0, save=False, extra_name='', pcat_model_eval=False):
     
         srcmaps_full, catalogs, noise_realizations, ihl_maps = [[] for x in range(4)]
         
@@ -199,15 +263,19 @@ class ciber_mock():
         if extra_name != '':
             extra_name = '_'+extra_name
 
+        if save and mock_data_directory is None:
+            print('Please provide a mock data directory to save to..')
+            return
+
         for c in range(ncatalog):
 
             cat_full = self.catalog_mag_cut(catalog_list[c], catalog_list[c][:,3], m_min, m_max)
             tracer_cat = self.catalog_mag_cut(catalog_list[c], catalog_list[c][:,3], m_min, m_tracer_max)
             I_arr_full = self.mag_2_nu_Inu(cat_full[:,3], band)
             cat_full = np.hstack([cat_full, np.expand_dims(I_arr_full.value, axis=1)])
-            srcmap_full, psf_template, psf_full = self.make_srcmap(ifield, cat_full, band=band)
+            srcmap_full = self.make_srcmap(ifield, cat_full, band=band, pcat_model_eval=pcat_model_eval)
             noise = np.random.normal(self.sky_brightness[band].value, self.instrument_noise[band].value, size=srcmap_full.shape)
-            conv_noise = scipy.signal.convolve2d(noise, psf_template, 'same')
+            conv_noise = scipy.signal.convolve2d(noise, self.psf_template, 'same')
             
             catalogs.append(cat_full)
             noise_realizations.append(conv_noise)
@@ -215,7 +283,7 @@ class ciber_mock():
             
             if ihl_frac > 0:
                 print('Making IHL map..')
-                ihl_map = self.make_ihl_map(srcmap_full.shape, cat_full, ihl_frac, psf=psf_template)
+                ihl_map = self.make_ihl_map(srcmap_full.shape, cat_full, ihl_frac, psf=self.psf_template)
                 ihl_maps.append(ihl_map)
                 if save:
                     print('Saving results..')
@@ -233,7 +301,8 @@ class ciber_mock():
         else:
             return srcmaps_full, catalogs, noise_realizations
 
-    def make_mock_ciber_map(self, ifield, m_min, m_max, mock_cat=None, band=0, ihl_frac=0., ng_bins=5, zmin=0.01, zmax=5.0):
+    def make_mock_ciber_map(self, ifield, m_min, m_max, mock_cat=None, band=0, ihl_frac=0., ng_bins=8,\
+                            zmin=0.0, zmax=2.0, pcat_model_eval=True, ncatalog=1):
         ''' This is the parent function that uses other functions in the class to generate a full mock catalog/CIBER image. If there is 
         no mock catalog input, the function draws a galaxy catalog from the Helgason model with the galaxy_catalog() class. With a catalog 
         in hand, the function then imposes any cuts on magnitude, computes mock source intensities and then generates the corresponding 
@@ -264,23 +333,25 @@ class ciber_mock():
             cat = mock_cat
         else:
             mock_galaxy = galaxy_catalog()
-            cat = mock_galaxy.generate_galaxy_catalogs(ng_bins=ng_bins, zmin=zmin, zmax=zmax)
+            cat = mock_galaxy.generate_galaxy_catalogs(ng_bins=ng_bins, zmin=zmin, zmax=zmax, n_catalogs=ncatalog, m_min=m_min, m_max=m_max)
         
-        # print(cat[:,3])
-        print(cat.shape)
-        cat = self.catalog_mag_cut(cat, cat[:,3], m_min, m_max) 
-        I_arr = self.mag_2_nu_Inu(cat[:,3], band)
-        cat = np.hstack([cat, np.expand_dims(I_arr.value, axis=1)])
-
-        srcmap, psf_template, psf_full = self.make_srcmap(ifield, cat, band=band)
-        full_map = np.zeros_like(srcmap)
-        noise = np.random.normal(self.sky_brightness[band].value, self.instrument_noise[band].value, size=srcmap.shape)
-        
-        full_map = srcmap + noise
         if ihl_frac > 0:
-            ihl_map = self.make_ihl_map(srcmap.shape, cat, ihl_frac, psf=psf_template)
-            full_map += ihl_map
-            return full_map, srcmap, noise, ihl_map, cat, psf_template
+            srcmaps, cats, noise_realizations, ihl_maps = self.mocks_from_catalogs(cat, ncatalog, m_min=m_min,\
+                                                                                   m_max=m_max,ifield=ifield,band=band,pcat_model_eval=pcat_model_eval, ihl_frac=ihl_frac)
         else:
-            return full_map, srcmap, noise, cat, psf_template
+            srcmaps, cats, noise_realizations = self.mocks_from_catalogs(cat, ncatalog, m_min=m_min,\
+                                                                                   m_max=m_max,ifield=ifield,band=band,pcat_model_eval=pcat_model_eval)
 
+        full_maps = []
+    
+        for c in range(ncatalog):
+            if ihl_frac > 0:
+                full_maps.append(srcmaps[c]+noise_realizations[c]+ihl_maps[c])
+            else:
+                full_maps.append(srcmaps[c]+noise_realizations[c])
+            
+        if ihl_frac > 0:
+        
+            return full_maps, srcmaps, noise_realizations, ihl_maps, cats
+        else:
+            return full_maps, srcmaps, noise_realizations, cats

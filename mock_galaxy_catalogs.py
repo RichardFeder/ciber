@@ -185,7 +185,7 @@ class galaxy_catalog():
 
     def generate_galaxy_catalogs(self, ng_bins=5, zmin=0.01, zmax=5.0, ndeg=4.0, m_min=13, m_max=28, hsc=False, \
                                ell_min=90., Mabs_min=-30.0, Mabs_max=-15., size=1024, random_positions=False, \
-                                Mabs_nbin=100, band='H', cl=None, ells=None, n_catalogs=1):
+                                Mabs_nbin=100, band='H', cl=None, ells=None, n_catalogs=1, n_bin_Mapp=200):
         
         ''' This function puts together other functions in the galaxy_catalog() class as full pipeline to generate galaxy catalog realizations,
         given some angular power spectrum and Helgason model'''
@@ -209,7 +209,7 @@ class galaxy_catalog():
         Mabs = np.linspace(Mabs_min, Mabs_max, Mabs_nbin)
 
         # First, I need to figure out how many sources are within a given redshift bin
-        Mapps = np.linspace(m_min, m_max, 200)
+        Mapps = np.linspace(m_min, m_max, n_bin_Mapp)
         dMapp = Mapps[1]-Mapps[0]
         number_counts = np.array(self.lf.number_counts(zrange_grf, Mapps, band, dzs=dzs)[1]).astype(np.int)
         print('number counts has shape ', number_counts.shape, 'while Mapps has nbins=', len(Mapps))
@@ -228,6 +228,7 @@ class galaxy_catalog():
             
             if cl is None:
                 ells, cl = limber_project(self.mass_function, zrange_grf[i], zrange_grf[i+1], ell_min=30, ell_max=3e5)
+            
             print('number counts here are:', np.sum(number_counts[i])*n_square_deg, n_square_deg)
             txs, tys = self.generate_positions(np.sum(number_counts[i])*n_square_deg, size, n_catalogs, \
                                               ell_min=ell_min, random_positions=random_positions, hsc=hsc, \
@@ -251,9 +252,6 @@ class galaxy_catalog():
                 for cat in range(n_catalogs):
                     mag_draw = np.random.choice(Mapps, size=n, p=mapp_pdf)
 
-                    # plt.figure()
-                    # plt.hist(mag_draw, bins=20)
-                    # plt.show()
                     mags_list[cat].extend(mag_draw)
             
         cosmo_dist_mods = cosmo.distmod(all_finezs)
@@ -275,11 +273,7 @@ class galaxy_catalog():
             halo_masses, virial_radii = self.abundance_match_ms_given_mags(partial_cat[:,2])
             self.catalogs.append(np.hstack([partial_cat, np.array([halo_masses, virial_radii]).transpose()]))
             
-        if hsc:
-            return self.catalogs
-        else:
-#             return self.catalog, total_counts, all_counts_array
-            return self.catalogs
+        return self.catalogs
 
     def load_halo_mass_function(self, filename):
         hmf = np.loadtxt(filename, skiprows=12)

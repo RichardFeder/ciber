@@ -5,6 +5,7 @@ from matplotlib import cm
 # import seaborn as sns
 # sns.set()
 from PIL import Image
+# from Pillow import Image
 import glob
 
 
@@ -13,7 +14,7 @@ figure_directory = '/Users/richardfeder/Documents/caltech/ciber2/figures/'
 
 def plot_radavg_xspectrum(rbins, radprofs=[], raderrs=None, labels=[], \
 						  lmin=90., save=False, snspalette=None, pdf_or_png='png', \
-						 image_dim=1024, mode='cross', zbounds=None, shotnoise=True, \
+						 image_dim=1024, mode='cross', zbounds=None, shotnoise=None, \
 						 add_shot_noise=None, Ntot=160000, sn_npoints=10, titlestring=None, \
 						  ylims=None):
 	
@@ -426,6 +427,156 @@ def convert_pngs_to_gif(filenames, gifdir='../../M_ll_correction/', name='mkk', 
                    append_images=frames[1:],
                    save_all=True,
                    duration=duration, loop=loop)
+
+
+def plot_ensemble_offset_stats(thetas, masked_xis, unmasked_xis, masked_varxi, unmasked_varxi, return_fig=True, logscale=True, \
+                              suptitle='Mock CIBER source map (no noise), SWIRE flight mask (50 realizations)'):
+
+    delta_xis = np.array([masked_xis[i]-unmasked_xis[i] for i in range(len(masked_xis))])
+
+
+    print(delta_xis.shape)
+    f = plt.figure(figsize=(15, 5))
+    plt.suptitle(suptitle, fontsize=20, y=1.04)
+    plt.subplot(1,4,2)
+
+    for i in range(len(masked_varxi)):
+        if i==0:
+            masked_label = 'Masked'
+        else:
+            masked_label = None
+
+        plt.errorbar(thetas, np.abs(masked_xis[i]), yerr=np.sqrt(masked_varxi[i]), capsize=5, marker='.', alpha=0.05, c='b', label=masked_label)
+    plt.xscale('log')
+    if logscale:
+        plt.yscale('log', nonposy='clip')
+    plt.xlabel('$\\theta$ [deg]', fontsize=18)
+    plt.ylabel('$w(\\theta)$', fontsize=18)
+    plt.legend(fontsize=16)
+    plt.subplot(1,4,1)
+    for i in range(len(masked_varxi)):
+        if i==0:
+            unmasked_label = 'True'
+        else:
+            unmasked_label = None
+
+        plt.errorbar(thetas, np.abs(unmasked_xis[i]), yerr=np.sqrt(unmasked_varxi[i]), capsize=5, marker='.', alpha=0.05, c='r', label=unmasked_label)
+    plt.xscale('log')
+    if logscale:
+        plt.yscale('log', nonposy='clip')
+    plt.xlabel('$\\theta$ [deg]', fontsize=18)
+    plt.ylabel('$w(\\theta)$', fontsize=18)
+
+    plt.legend(fontsize=16)
+
+    plt.subplot(1,4,3)
+    plt.errorbar(thetas, np.mean(delta_xis, axis=0), yerr=np.std(delta_xis, axis=0),capsize=5,capthick=2, marker='.', alpha=0.8, label='masked')
+    plt.xlabel('$\\theta$ [deg]', fontsize=18)
+    plt.ylabel('$w(\\theta)_{masked} - w(\\theta)_{true}$', fontsize=18)
+    plt.xscale('log')
+    plt.subplot(1,4,4)
+#     plt.plot(thetas, np.mean(delta_xis, axis=0)/np.std(unmasked_xis, axis=0), marker='.', alpha=0.8, label='Standard dev. of $w(\\theta)_{true}$ across realizations')
+#     plt.plot(thetas, np.std(delta_xis, axis=0)/np.sqrt(np.mean(unmasked_varxi, axis=0)), marker='.', alpha=0.8, label='Mean of sample variance on $w(\\theta)$')
+#     plt.plot(thetas, np.mean(delta_xis/np.sqrt(unmasked_varxi), axis=0), marker='.', alpha=0.8, label='Mean of sample variance on $w(\\theta)$')
+    plt.plot(thetas, np.mean(delta_xis, axis=0)/np.sqrt(np.mean(unmasked_varxi, axis=0)), marker='.', alpha=0.8, label='Mean of sample variance on $w(\\theta)$')
+
+    # plt.errorbar(thetas, np.mean(frac_deltaxi, axis=0), yerr=np.std(frac_deltaxi),capsize=5,capthick=2, marker='.', alpha=0.8, label='masked')
+    plt.xlabel('$\\theta$ [deg]', fontsize=18)
+    plt.ylabel('$\\frac{\\langle w(\\theta)_{masked} - w(\\theta)_{true} \\rangle}{\\langle \\sigma(w(\\theta)_{true})_{SV}\\rangle}$', fontsize=20)
+    # plt.ylabel('$\\langle \\frac{w(\\theta)_{masked} - w(\\theta)_{true}}{\\sigma}{sample variance}}} \\rangle$', fontsize=18)
+
+    plt.xscale('log')
+    plt.ylim(-0.5, 0.5)
+    plt.tight_layout()
+    plt.show()
+    
+    if return_fig:
+        return f
+
+def plot_correlation_matrices_masked_unmasked(masked_corr, unmasked_corr, return_fig=True, show=True,\
+                                              corr_lims=[-0.8, 1.0], dcorr_lims=[-0.2, 0.2]):
+
+
+    f = plt.figure(figsize=(15, 5))
+    plt.suptitle('Correlation Matrices', fontsize=20)
+    plt.subplot(1,3,1)
+    plt.title('Masked', fontsize=16)
+    plt.imshow(masked_corr, origin='lower', vmin=corr_lims[0], vmax=corr_lims[1])
+    plt.colorbar()
+
+    plt.xticks(np.arange(0, masked_corr.shape[0], 2), [str(i) for i in np.arange(0, masked_corr.shape[0], 2)])
+    plt.yticks(np.arange(0, masked_corr.shape[0], 2), [str(i) for i in np.arange(0, masked_corr.shape[0], 2)])
+    plt.xlabel('Bin index')
+    plt.ylabel('Bin index')
+    plt.subplot(1,3,2)
+    plt.title('Unmasked', fontsize=16)
+    plt.imshow(unmasked_corr, origin='lower', vmin=corr_lims[0], vmax=corr_lims[1])
+
+    plt.colorbar()
+    plt.xticks(np.arange(0, masked_corr.shape[0], 2), [str(i) for i in np.arange(0, masked_corr.shape[0], 2)])
+    plt.yticks(np.arange(0, masked_corr.shape[0], 2), [str(i) for i in np.arange(0, masked_corr.shape[0], 2)])
+    plt.xlabel('Bin index')
+    plt.ylabel('Bin index')
+    plt.subplot(1,3,3)
+    plt.title('Unmasked - Masked', fontsize=16)
+    plt.imshow(unmasked_corr-masked_corr, origin='lower', vmin=dcorr_lims[0], vmax=dcorr_lims[1])
+
+    plt.colorbar()
+    plt.xticks(np.arange(0, masked_corr.shape[0], 2), [str(i) for i in np.arange(0, masked_corr.shape[0], 2)])
+    plt.yticks(np.arange(0, masked_corr.shape[0], 2), [str(i) for i in np.arange(0, masked_corr.shape[0], 2)])
+
+    plt.xlabel('Bin index')
+    plt.ylabel('Bin index')
+    plt.tight_layout()
+    if show:
+        plt.show()
+    
+    if return_fig:
+        return f
+
+
+def plot_diff_estimators_var_wtheta(vars_sv, vars_jn, vars_bs, return_fig=True, show=True,\
+                                    title='Fractional std dev. of sample variance estimators ($n_{trial}=20$)'):
+
+    f = plt.figure(figsize=(8,6))
+    plt.title(title, fontsize=14)
+    plt.plot(bins, np.std(np.array(vars_sv), axis=0)/np.mean(np.array(vars_sv), axis=0), label='Sample variance')
+    plt.plot(bins, np.std(np.array(vars_jn), axis=0)/np.mean(np.array(vars_jn), axis=0), label='Jackknife')
+    plt.plot(bins, np.std(np.array(vars_bs), axis=0)/np.mean(np.array(vars_bs), axis=0), label='Bootstrap')
+    plt.legend(fontsize=14)
+    plt.ylabel('$\\sigma(\\sigma_{w(\\theta)})/\\sigma_{w(\\theta)}$', fontsize=20)
+    plt.xlabel('$\\theta$ [deg]', fontsize=20)
+    plt.xscale('log')
+    plt.tight_layout()
+    if show:
+        plt.show()
+    if return_fig:
+        return f
+    
+
+def ratio_corr_variances_masked_unmasked(bins, masked_varxi, unmasked_varxi, mask=None, ratio_fsky_unmasked_masked=None, \
+                                        return_fig=True, show=True, title='Ratio of sample variances, mock source maps'):
+    f = plt.figure(figsize=(8, 6))
+    plt.title(title, fontsize=18)
+    plt.errorbar(bins, np.mean(np.array(masked_varxi)/np.array(unmasked_varxi), axis=0), yerr=np.std(np.array(masked_varxi)/np.array(unmasked_varxi), axis=0), marker='.')
+    
+    if ratio_fsky_unmasked_masked is None and mask is not None:
+        ratio_fsky_unmasked_masked = mask.shape[0]*mask.shape[1]/np.sum(mask)
+    
+    if ratio_fsky_unmasked_masked is not None:
+    
+        plt.axhline(ratio_fsky_unmasked_masked, linestyle='dashed', label='$f_{sky}/f_{sky}^{masked}$', color='k')
+        plt.axhline(np.sqrt(ratio_fsky_unmasked_masked), linestyle='dashed', label='$\\sqrt{f_{sky}/f_{sky}^{masked}}$', color='k')
+
+    plt.legend(fontsize=16)
+    plt.ylabel('$\\sigma^2_{w(\\theta),masked}/\\sigma^2_{w(\\theta)}$', fontsize=18)
+    plt.xscale('log')
+    plt.xlabel('$\\theta$ [deg]', fontsize=18)
+    plt.ylim(0, 5)
+    if show:
+        plt.show()
+    if return_fig:
+        return f
 
 
 
