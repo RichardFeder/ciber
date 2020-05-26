@@ -2,6 +2,7 @@ import numpy as np
 from hankel import SymmetricFourierTransform
 from scipy import interpolate
 from scipy import stats
+import sys
 
 
 def counts_from_density_2d(overdensity_fields, Ntot = 200000):
@@ -43,7 +44,7 @@ def counts_from_density_2d(overdensity_fields, Ntot = 200000):
             count_maps[i][nonzero_x[rand_idxs], nonzero_y[rand_idxs]] -= 1
         elif dcounts[i] < 0:
             randx, randy = np.random.choice(np.arange(count_maps[i].shape[-1]), size=(2, np.abs(dcounts[i])))
-            for j in xrange(np.abs(dcounts[i])):
+            for j in range(np.abs(dcounts[i])):
                 counts_map[i][randx[j], randy[j]] += 1
 
     return count_maps
@@ -56,12 +57,22 @@ def ell_to_k(ell, comoving_dist):
     return k
 
 
-def fftIndgen(n):
+def fftIndgen2(n):
     ''' This function generates the indices needed when generating G(k), which gets Fourier transformed to a gaussian
     random field with some power spectrum.'''
-    a = range(0, n/2+1)
-    b = range(1, n/2)
+    
+    a = range(0, n//2+1)
+    b = range(1, n//2)
     b.reverse()
+    b = [-i for i in b]
+    return a + b
+
+def fftIndgen3(n):
+    ''' This function generates the indices needed when generating G(k), which gets Fourier transformed to a gaussian
+    random field with some power spectrum.'''
+    
+    a = list(range(0, n//2+1))
+    b = reversed(range(1, n//2))
     b = [-i for i in b]
     return a + b
 
@@ -216,7 +227,12 @@ def hankel_spline_lognormal_cl(ells, cl, plot=False, ell_min=90, ell_max=1e5):
 ''' This is used when making gaussian random fields '''
 def make_ell_grid(size, ell_min=90.):
     ell_grid = np.zeros(shape=(size,size))
-    size_ind = np.array(fftIndgen(size))
+
+    if sys.version_info[0] < 3:
+        size_ind = np.array(fftIndgen2(int(size)))
+    else:
+        size_ind = np.array(fftIndgen3(int(size)))
+
     for i, sx in enumerate(size_ind):
         ell_grid[i,:] = np.sqrt(sx**2+size_ind**2)*ell_min
     return ell_grid

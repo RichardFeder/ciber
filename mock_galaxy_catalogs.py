@@ -115,7 +115,7 @@ class galaxy_catalog():
         halo mass'''
         gal_app_mags = np.array([])
         gal_abs_mags = np.array([])
-        for i in xrange(len(ngal_per_z)):
+        for i in range(len(ngal_per_z)):
             absolute_mags = np.random.choice(Mabs, ngal_per_z[i], p=pdfs[i])
             apparent_mags = apparent_mag_from_absolute(absolute_mags, zs[i])
             gal_app_mags = np.append(gal_app_mags, apparent_mags)
@@ -204,7 +204,7 @@ class galaxy_catalog():
         print('midzs:', midzs)
         print('dzs:', dzs)
 
-        Mapps = np.linspace(m_min, m_max, m_max-m_min + 1)
+        Mapps = np.linspace(m_min, m_max, int(m_max-m_min) + 1)
 
         Mabs = np.linspace(Mabs_min, Mabs_max, Mabs_nbin)
 
@@ -216,7 +216,7 @@ class galaxy_catalog():
         # number_counts = np.array(self.lf.number_counts(midzs, dzs, Mapps, band)[1]).astype(np.int)
         # this should be a 2d array with len(Mapps) rows and len(midzs) columns
 
-        thetax, thetay, gal_app_mags, gal_abs_mags, gal_zs, all_finezs, all_counts_array = [[] for x in xrange(7)]
+        thetax, thetay, gal_app_mags, gal_abs_mags, gal_zs, all_finezs, all_counts_array = [[] for x in range(7)]
         
         thetax_list = [[] for x in range(n_catalogs)]
         thetay_list = [[] for x in range(n_catalogs)]

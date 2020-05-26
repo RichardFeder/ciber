@@ -10,6 +10,7 @@ from mock_galaxy_catalogs import *
 from helgason import *
 from ciber_data_helpers import *
 from image_eval import psf_poly_fit, image_model_eval
+import sys
 
 
 def initialize_cblas_ciber(libmmult):
@@ -125,13 +126,18 @@ class ciber_mock():
         self.psf_template=None
         
         if pcat_model_eval:
-            self.libmmult = npct.load_library('pcat-lion', '.')
+
+            if sys.version_info[0] < 3:
+                self.libmmult = npct.load_library('pcat-lion', '.')
+            else:
+                self.libmmult = npct.load_library('pcat-lion.so', '/Users/richardfeder/Documents/caltech/ciber2/ciber/')
+
             initialize_cblas_ciber(self.libmmult)
 
 
     def catalog_mag_cut(self, cat, m_arr, m_min, m_max):
         ''' Given a catalog (cat), magnitudes, and a magnitude cut range, return the filtered catalog ''' 
-        magnitude_mask_idxs = np.array([i for i in xrange(len(m_arr)) if m_arr[i]>=m_min and m_arr[i] <= m_max])
+        magnitude_mask_idxs = np.array([i for i in range(len(m_arr)) if m_arr[i]>=m_min and m_arr[i] <= m_max])
         if len(magnitude_mask_idxs) > 0:
             catalog = cat[magnitude_mask_idxs,:]
         else:
@@ -224,7 +230,7 @@ class ciber_mock():
             xs = np.round(cat[:,0]).astype(np.int32)
             ys = np.round(cat[:,1]).astype(np.int32)
 
-            for i in xrange(Nsrc):
+            for i in range(Nsrc):
                 srcmap[Nlarge/2+2+xs[i]-nwide:Nlarge/2+2+xs[i]+nwide+1, Nlarge/2-1+ys[i]-nwide:Nlarge/2-1+ys[i]+nwide+1] += self.psf_template*cat[i, flux_idx]
         
             return srcmap[nx/2+30:3*nx/2+30, ny/2+30:3*ny/2+30]

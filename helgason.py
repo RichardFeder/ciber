@@ -57,7 +57,9 @@ class Luminosity_Function():
         ''' Given a wavelength, finds nearest passband from Helgason ''' 
         optkey = ''
         mindist = None
-        for key, value in self.band_dicts.iteritems():
+        for key in self.band_dicts:
+        # for key, value in self.band_dicts.iteritems():
+            value = self.band_dicts[key]
             if mindist is None:
                 mindist = np.abs(lam-value['lambda'])
                 optkey = key
@@ -146,7 +148,7 @@ class Luminosity_Function():
         units of intensity, i.e. nW/m^2/sr. '''
         dfdz = 0.
         nu = const.c/(self.band_dicts[band]['lambda']*u.um)
-        for i in xrange(len(ms)-1):
+        for i in range(len(ms)-1):
             mabs = self.get_abs_from_app(ms[i], z)
             val = (ms[i+1]-ms[i])*self.specific_flux(ms[i], nu)*self.schechter_lf_dm(mabs, z, band)
             val *= (10**(-3) * self.schechter_units)*cosmo.differential_comoving_volume(z)
@@ -166,12 +168,12 @@ def auto_shot_noise(lf, z0, z1, ms, nzbin=10, band='J'):
     zrange = np.linspace(z0, z1, nzbin)
     dz = (z1-z0)/nzbin
     
-    for j in xrange(len(zrange)-1):
+    for j in range(len(zrange)-1):
         
         cl_shot = 0.
         z = 0.5*(zrange[j+1]+zrange[j])
         
-        for i in xrange(len(ms)-1):
+        for i in range(len(ms)-1):
             m_in_btwn = 0.5*(ms[i+1]+ms[i])
             dm = ms[i+1]-ms[i]
             mabs = lf.get_abs_from_app(m_in_btwn, z)
@@ -195,11 +197,11 @@ def cross_shot_noise(lf, z0, z1, ms, nzbin=10, band='J'):
     shots = []
     zrange = np.linspace(z0, z1, nzbin)
     dz = (z1-z0)/nzbin
-    for j in xrange(len(zrange)-1):
+    for j in range(len(zrange)-1):
         cl_shot = 0.
         z = 0.5*(zrange[j+1]+zrange[j])
 
-        for i in xrange(len(ms)-1):
+        for i in range(len(ms)-1):
             m_in_btwn = 0.5*(ms[i+1]+ms[i])
             dm = ms[i+1]-ms[i]
             mabs = lf.get_abs_from_app(m_in_btwn, z)
