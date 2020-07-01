@@ -140,7 +140,7 @@ class Mkk_bare():
         # lets precompute a few things that are used later..
         self.check_precomputed_values(precompute_all=True, shift=True, sub_bins=sub_bins)
         
-        if sub_bins:
+        if sub_bins and self.n_fine_bins > 0:
             n_total_bins = len(self.unshifted_sub_ringmasks)
         else:
             n_total_bins = len(self.unshifted_ringmasks)
@@ -174,8 +174,9 @@ class Mkk_bare():
                 if mode=='auto':
                     masked_Cl = self.get_ensemble_angular_autospec(nsims=nsims//n_split, sub_bins=sub_bins, apply_mask=True)
 
-                    if return_all_Mkks:
+                    if return_all_Mkks or store_Mkks:
                         all_Mkks[i*nsims//n_split :(i+1)*nsims//n_split ,j,:] = np.array(masked_Cl)
+
 
                     # row entry for Mkk is average over realizations
                     Mkk[j,:] = np.mean(np.array(masked_Cl), axis=0)
@@ -183,6 +184,7 @@ class Mkk_bare():
             Mkks.append(Mkk)
 
         if store_Mkks:
+
             self.all_Mkks = all_Mkks
 
         if return_all_Mkks:
@@ -211,11 +213,10 @@ class Mkk_bare():
         if self.binl is None:
             self.compute_multipole_bins()
          
-        
         if mode == 'white':
             self.fft_objs[0](self.noise)
         else:
-            if sub_bins:
+            if sub_bins and self.n_fine_bins > 0:
                 self.fft_objs[0](self.unshifted_sub_ringmasks[idx]*self.noise)
             else:
                 self.fft_objs[0](self.unshifted_ringmasks[idx]*self.noise)
@@ -232,7 +233,7 @@ class Mkk_bare():
         
         fftsq = [(dentry*np.conj(dentry)).real for dentry in self.empty_aligned_objs[2]]
             
-        if sub_bins:
+        if sub_bins and self.n_fine_bins > 0:
             C_ell = np.zeros((nsims, self.n_total_bins))
             for i in range(self.n_total_bins):
                 if self.sub_ringmask_sums[i] > 0:
@@ -302,7 +303,7 @@ class Mkk_bare():
             self.correspond_bins.append(sub_bins_list)
         
         
-        if sub_bins:
+        if sub_bins and self.n_fine_bins > 0:
             self.unshifted_sub_ringmasks = unshifted_ringmasks
             self.sub_ringmasks = ringmasks
             self.sub_ringmask_sums = np.array([np.sum(ringmask) for ringmask in self.sub_ringmasks])
@@ -325,13 +326,13 @@ class Mkk_bare():
         appropriately. This is precomputed to make things faster during FFT time''' 
         fac = self.arcsec_pp_to_radian**2
 
-        if sub_bins:
+        if sub_bins and self.n_fine_bins > 0:
             self.sub_masked_weights = [fac*self.weights[ringmask] for ringmask in self.sub_ringmasks]
         else:
             self.masked_weights = [fac*self.weights[ringmask] for ringmask in self.ringmasks]
     
     def compute_masked_weight_sums(self, sub_bins=False):
-        if sub_bins:
+        if sub_bins and self.n_fine_bins > 0:
             self.sub_masked_weight_sums = np.array([np.sum(self.weights[ringmask]) for ringmask in self.sub_ringmasks])
         else:   
             self.masked_weight_sums = np.array([np.sum(self.weights[ringmask]) for ringmask in self.ringmasks])
@@ -424,7 +425,7 @@ class Mkk_bare():
     
         C_ell = np.zeros(len(self.binl)-1)
         
-        if sub_bins:
+        if sub_bins and self.n_fine_bins > 0:
             C_ell_star = np.zeros(self.n_total_bins)
 
             for i in range(self.n_total_bins):
