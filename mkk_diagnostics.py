@@ -30,17 +30,30 @@ class Mkk_diag():
 
         self.mkk_inv = mkk_inv
 
-
-             
-    def compute_true_minus_rectified_c_ell(self, allmaps, mask=None, ensemble_fft=False, n_split=2, sub_bins=False, return_cls=False, fractional_dcl=True, \
+        
+    def compute_true_minus_rectified_c_ell(self, allmaps=None, generate_white_noise=True, n_test_realizations=None, mask=None, ensemble_fft=False, n_split=2, sub_bins=False, return_cls=False, fractional_dcl=True, \
                                         n_phase_realizations=None, mean_or_median='median'):
         
         delta_cl = []
         all_cl_true, all_cl_rect, all_cl_masked = [], [], []
         
-        n_realizations = len(allmaps)
-        print("n_realizations is ", n_realizations)
+        # if generating white noise as a test, which seems like a test we might do, specify n_test_realizations
+        
+        if generate_white_noise:
+            if n_test_realizations > 10:
+                print('Using ensemble fft to handle '+str(n_test_realizations)+' white noise realizations')
+                ensemble_fft=True
+            else:
+                print('Generating '+str(n_test_realizations)+' white noise realizations..')
+                allmaps = np.random.normal(size=(n_test_realizations, self.Mkk.dimx, self.Mkk.dimy))
+        
+        else:
+            n_test_realizations = len(allmaps)
+            print("n_realizations is "+ n_test_realizations)
 
+        # if n_phase_realizations is specified, only use that many individual Mkk realizations in evaluation.
+        # furthermore, one can choose the mean or the median per element for phase realizations
+        
         if n_phase_realizations is not None:
             print('using ', n_phase_realizations, 'phase realizations for the Mkk matrix')
             mkk_mat = self.all_Mkks[:n_phase_realizations]
@@ -53,8 +66,13 @@ class Mkk_diag():
         else:
             mkk_inv_mat = self.mkk_inv
         
+        
+        # carry out the tests. If not using the pyfftw memory structs for a large number of test realizations,
+        # go through them individually, but otherwise get the fftw objects set up and evaluate them over n_split
+        # iterations
+        
         if not ensemble_fft:
-            for i in range(n_realizations):
+            for i in range(n_test_realizations):
                 single_map = allmaps[i]-np.mean(allmaps[i])
                 cl_true = self.Mkk.compute_cl_indiv(single_map)
                 cl_masked = self.Mkk.compute_cl_indiv(single_map*self.Mkk.mask)
@@ -73,17 +91,26 @@ class Mkk_diag():
                 
         else:
             
+            # if there is no fftw object in place already, instantiate one
             if self.Mkk.fft_objs is None:
                 
-                maplist_split_shape = (n_realizations//n_split, self.Mkk.dimx, self.Mkk.dimy)
+                maplist_split_shape = (n_test_realizations//n_split, self.Mkk.dimx, self.Mkk.dimy)
         
                 self.Mkk.empty_aligned_objs, self.Mkk.fft_objs = construct_pyfftw_objs(3, maplist_split_shape)
             
+            
             for n in range(n_split):
-                self.Mkk.empty_aligned_objs[1][:n_realizations//n_split, :, :] = allmaps[n*n_realizations//n_split :(n+1)*n_realizations//n_split ]
                 
-                cl_true = self.Mkk.get_ensemble_angular_autospec(nsims=n_realizations//n_split, sub_bins=sub_bins, apply_mask=False)
-                cl_masked = self.Mkk.get_ensemble_angular_autospec(nsims=n_realizations//n_split, sub_bins=sub_bins, apply_mask=True)
+                if generate_white_noise:
+                    
+                    print('generating '+str(n_test_realizations//n_split)+' test realizations..')
+                    self.Mkk.empty_aligned_objs[1][:n_test_realizations//n_split, :, :] = np.random.normal(size=(n_test_realizations//n_split, self.Mkk.dimx, self.Mkk.dimy))
+
+                else:
+                    self.Mkk.empty_aligned_objs[1][:n_test_realizations//n_split, :, :] = allmaps[n*n_test_realizations//n_split :(n+1)*n_test_realizations//n_split ]
+                
+                cl_true = self.Mkk.get_ensemble_angular_autospec(nsims=n_test_realizations//n_split, sub_bins=sub_bins, apply_mask=False)
+                cl_masked = self.Mkk.get_ensemble_angular_autospec(nsims=n_test_realizations//n_split, sub_bins=sub_bins, apply_mask=True)
                 
                 for i in range(len(cl_masked)):
                     cl_rect = np.dot(mkk_inv_mat.transpose(), cl_masked[i])
@@ -222,9 +249,8 @@ class Mkk_diag():
         else:
             xvals = ell_bins
             
-        if isinstance(delta_cls, list):
+        if len(delta_cls)<10:
             for i, delta_clz in enumerate(delta_cls):
-                
                 if absolute_deviation:
                     delta_clz = np.abs(delta_clz)
                     
@@ -239,7 +265,7 @@ class Mkk_diag():
             plt.errorbar(xvals, median_dcl, yerr=[median_dcl-np.percentile(delta_cls, 16, axis=0), np.percentile(delta_cls, 84, axis=0)-median_dcl], marker='.', capsize=5, capthick=2, linewidth=2, markersize=10)
         
         
-        if fractional_dcl and absolute_deviation and nphase_realizations is not None:
+        if fractional_dcl and absolute_deviation:
             print('Computing Knox errors..')
             analytic_dcl = self.compute_knox_error_dcl()
             plt.plot(xvals, analytic_dcl, label='Knox', color='k', linewidth=3)
@@ -269,4 +295,6 @@ class Mkk_diag():
             
         if return_fig:
             return f
+    
+    
     
