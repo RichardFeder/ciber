@@ -4,52 +4,7 @@ import numpy as np
 from ciber_data_helpers import make_radius_map
 from ciber_mocks import *
 
-
-def make_synthetic_trilegal_cat(trilegal_path, I_band_idx=16, H_band_idx=17, imdim=1024.):
-    trilegal = np.loadtxt(trilegal_path)
-    nsrc = trilegal.shape[0]
-    synthetic_cat = np.random.uniform(0, imdim, size=(nsrc, 2))
-    synthetic_cat = np.array([synthetic_cat[:,0], synthetic_cat[:,1], trilegal[:,I_band_idx], trilegal[:,H_band_idx]]).transpose()
-    
-    print('synthetic cat has shape ', synthetic_cat.shape)
-    
-    return synthetic_cat
-
-
-def filter_trilegal_cat(trilegal_cat, m_max=17, I_band_idx=16):
-    
-    filtered_trilegal_cat = np.array([x for x in trilegal_cat if x[I_band_idx]<m_max])
-    
-    return filtered_trilegal_cat
-
-
-def magnitude_to_radius_linear(magnitudes, alpha_m=-6.25, beta_m=110.):
-    ''' Masking radius function as given by Zemcov+2014. alpha_m has units of arcsec mag^{-1}, while beta_m
-    has units of arcseconds.'''
-    
-    r = alpha_m*magnitudes + beta_m
-
-    return r
-
-def mask_from_cat(catalog, xidx=0, yidx=1, mag_idx=3, dimx=1024, dimy=1024, pixsize=7., mode='Zemcov+14'):
-    
-    '''This function should take a catalog of bright sources and output a mask around those sources, 
-    according to some masking criteria. The steps should be
-        - convert magnitudes to radii with predefined function
-        - use radii to construct mask
-    '''
-    
-    print('Minimum source magnitude is ', np.min(catalog[:, mag_idx]))
-    mask = np.ones([dimx,dimy], dtype=int)
-
-    if mode=='Zemcov+14':
-        radii = magnitude_to_radius_linear(catalog[:, mag_idx]-0.91)
-        
-    for i, r in enumerate(radii):
-        radmap = make_radius_map(dimx=dimx, dimy=dimy, cenx=catalog[i,0], ceny=catalog[i,1], rc=1.)
-        mask[radmap<r/pixsize] = 0.
-        
-    return mask 
+# Yun-Ting's code for this stuff is here https://github.com/yuntingcheng/python_ciber/blob/master/stack_modelfit/mask.py
 
 
 def compute_star_gal_mask(stellar_cat, galaxy_cat, star_mag_idx=2, gal_mag_idx=3, m_max=18.4, return_indiv_masks=False):
@@ -71,5 +26,116 @@ def compute_star_gal_mask(stellar_cat, galaxy_cat, star_mag_idx=2, gal_mag_idx=3
         return mask_filt_star, mask_gal
     
     return joined_mask
+
+
+def filter_trilegal_cat(trilegal_cat, m_max=17, I_band_idx=16):
+    
+    filtered_trilegal_cat = np.array([x for x in trilegal_cat if x[I_band_idx]<m_max])
+    
+    return filtered_trilegal_cat
+
+
+def magnitude_to_radius_linear(magnitudes, alpha_m=-6.25, beta_m=110.):
+    ''' Masking radius function as given by Zemcov+2014. alpha_m has units of arcsec mag^{-1}, while beta_m
+    has units of arcseconds.'''
+    
+    r = alpha_m*magnitudes + beta_m
+
+    return r
+
+def make_synthetic_trilegal_cat(trilegal_path, I_band_idx=16, H_band_idx=17, imdim=1024.):
+    trilegal = np.loadtxt(trilegal_path)
+    nsrc = trilegal.shape[0]
+    synthetic_cat = np.random.uniform(0, imdim, size=(nsrc, 2))
+    synthetic_cat = np.array([synthetic_cat[:,0], synthetic_cat[:,1], trilegal[:,I_band_idx], trilegal[:,H_band_idx]]).transpose()
+    
+    print('synthetic cat has shape ', synthetic_cat.shape)
+    
+    return synthetic_cat
+
+
+def mask_from_cat(catalog, xidx=0, yidx=1, mag_idx=3, dimx=1024, dimy=1024, pixsize=7., mode='Zemcov+14', ciber_mock=None, ifield=None, I_thresh=1., thresh_method='radmap'):
+    
+    '''This function should take a catalog of bright sources and output a mask around those sources, 
+    according to some masking criteria. The steps should be
+        - convert magnitudes to radii with predefined function
+        - use radii to construct mask
+    '''
+    
+    print('Minimum source magnitude is ', np.min(catalog[:, mag_idx]))
+    mask = np.ones([dimx,dimy], dtype=int)
+
+    if mode=='Zemcov+14':
+        radii = magnitude_to_radius_linear(catalog[:, mag_idx]-0.91) # vega to AB factor generalized for different bands?
+        
+        for i, r in enumerate(radii):
+            radmap = make_radius_map(dimx=dimx, dimy=dimy, cenx=catalog[i,0], ceny=catalog[i,1], rc=1.)
+            mask[radmap<r/pixsize] = 0.
+
+    elif mode=='I_thresh':
+        mask, num, rs, _, _, _ = I_threshold_mask(catalog[:,0], catalog[:,1], catalog[:, mag_idx], \
+                                                    ciber_mock=ciber_mock, ifield=ifield, dimx=dimx, dimy=dimy, I_thresh=I_thresh, method=thresh_method)
+        
+    return mask 
+
+
+
+def I_threshold_mask(xs, ys, ms,psf=None, beta=None, rc=None, norm=None, ciber_mock=None, ifield=None, band=0, dimx=1024, dimy=1024, m_min=-np.inf, m_max=20, \
+                    I_thresh=1., method='radmap'):
+    
+    # get the CIBER PSF for a given ifield if desired
+    if ifield is not None:
+        if ciber_mock is None:
+            print('Need ciber_mock class to obtain PSF for ifield '+str(ifield))
+            return None
+        else:
+            beta, rc, norm = ciber_mock.get_psf(ifield=ifield, band=band, nx=dimx, ny=dimy, poly_fit=True)
+            psf = ciber_mock.psf_template
+
+    mask = np.ones([dimx, dimy], dtype=int)
+
+    num = np.zeros([dimx, dimy], dtype=int)
+
+    mag_mask = np.where((ms > m_min) & (ms < m_max))[0]
+    
+    xs, ys, ms = xs[mag_mask], ys[mag_mask], ms[mag_mask]
+    
+    if ciber_mock is not None:
+        Is = ciber_mock.mag_2_nu_Inu(ms, band)
+        
+        print(Is)
+    else:
+        lam_effs = np.array([1.05, 1.79])*1e-6 # effective wavelength for bands
+        sr = ((7./3600.0)*(np.pi/180.0))**2
+        Is=3631*10**(-ms/2.5)*(3/lam_effs[band])*1e6/(sr*1e9)
+     
+    
+    rs = rc*((I_thresh/(Is.value*norm))**(-2/(3.*beta)) - 1.)
+
+    if method=='radmap':
+        print('Using radmap method..')
+        for i,(x,y,r) in enumerate(zip(xs, ys, rs)):
+
+            radmap = make_radius_map(dimx, dimy, x, y, 1.)
+
+            mask[radmap < r] = 0
+            num[radmap < r] += 1
+
+            if i%1000==0:
+                print('i='+str(i)+' of '+str(len(xs)))
+                    
+    else:
+        print("Using bright source map threshold..")
+        nc = 25
+        srcmap = image_model_eval(np.array(xs).astype(np.float32), np.array(ys).astype(np.float32) ,np.array(Is.value).astype(np.float32),0., (dimx, dimy), nc, ciber_mock.cf, lib=ciber_mock.libmmult.pcat_model_eval)
+        mask[srcmap > I_thresh] = 0
+        
+        
+    return mask, num, rs, beta, rc, norm
+
+
+
+
+
 
 
