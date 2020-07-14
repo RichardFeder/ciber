@@ -54,7 +54,6 @@ def group_idxs(idx_list, imdim=1024):
     return grouped_idx_list
 
 
-
 class Mkk_bare():
     
     def __init__(self, pixsize=7., dimx=1024, dimy=1024, ell_min=150., logbin=True, nbins=30, n_fine_bins=0):
@@ -79,6 +78,10 @@ class Mkk_bare():
         self.av_Mkk = None
         self.empty_aligned_objs = None 
         self.fft_objs = None
+
+
+    def set_bin_edges(self, binl):
+        self.binl = binl
 
 
     def get_mkk_sim(self, mask, nsims, show_tone_map=False, mode='auto', n_split=1, \
@@ -126,7 +129,7 @@ class Mkk_bare():
             self.n_fine_bins = n_fine_bins
             
         if n_split > 1:
-            print 'Splitting up computation of', nsims, 'simulations into', n_split, 'chunks..'
+            print('Splitting up computation of', nsims, 'simulations into', n_split, 'chunks..')
             assert (nsims % n_split) == 0
 
         self.mask = mask
@@ -350,7 +353,7 @@ class Mkk_bare():
         if self.logbin:
             self.binl = 10**(np.linspace(np.log10(self.ell_min), np.log10(self.ell_max), self.nbins))
         else:
-            self.binl = np.linspace(0, self.ell_max, self.nbins)
+            self.binl = np.linspace(self.ell_min, self.ell_max, self.nbins)
                 
     def get_ell_bins(self, shift=True, pix_size=7.):
 
@@ -499,6 +502,15 @@ def plot_mkk_matrix(mkk, inverse=False, logscale=False, title=None, vmin=None, v
     
     if return_fig:
         return f
+
+
+def save_mkks(filepath, all_Mkks=None, av_Mkk=None, inverse_Mkk=None, bins=None, midbin_ell=None):
+    
+    if av_Mkk is not None and inverse_Mkk is None:
+        inverse_Mkk = compute_inverse_mkk(av_Mkk)
+        
+    np.savez(filepath, all_Mkks=all_Mkks, av_Mkk=av_Mkk, inverse_Mkk=inverse_Mkk, bins=bins, midbin_ell=midbin_ell)
+    print("saved mkk matrices to ", filepath)
 
 
 
