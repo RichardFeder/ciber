@@ -16,6 +16,14 @@ def find_psf_params(path, tm=1, field='elat10'):
             return beta, rc, norm
     return False
 
+def load_ciber_srcmap(idx, with_noise=True, datapath='/Users/richardfeder/Documents/ciber2/ciber/mock_data/',tail_name='mmin=18.4_mmax=25'):
+    load_srcmap = np.load(datapath+'/ciber_mock_'+str(i)+tail_name+'.npz')['srcmap']
+    if with_noise:
+        noise = np.load(datapath+'/ciber_mock_'+str(i)+tail_name+'.npz')['conv_noise']
+        load_srcmap += noise
+        
+    return load_srcmap
+
 def make_psf_template(path, field, band, nx=1024, pad=30, nwide=20, nbin=0, multfac=7., large=True):
     
     ''' This function loads PSF parameters and generates a normalized template over some array. 
@@ -34,13 +42,23 @@ def make_psf_template(path, field, band, nx=1024, pad=30, nwide=20, nbin=0, mult
     else:
         psf_template
 
-def make_radius_map(dimx, dimy, cenx, ceny, rc):
+def make_radius_map(dimx, dimy, cenx, ceny, rc=1.):
     ''' This function calculates a map, where the value of each pixel is its distance from the central pixel.
     Useful for making PSF templates and other map making functions'''
     x = np.arange(dimx)
     y = np.arange(dimy)
     xx, yy = np.meshgrid(x, y, sparse=True)
     return (((cenx - xx)/rc)**2 + ((ceny - yy)/rc)**2)
+
+def make_radius_map_yt(mapin, cenx, ceny):
+    '''
+    return radmap of size mapin.shape. 
+    radmap[i,j] = distance between (i,j) and (cenx, ceny)
+    '''
+    Nx, Ny = mapin.shape
+    xx, yy = np.meshgrid(np.arange(Nx), np.arange(Ny), indexing='ij')
+    radmap = np.sqrt((xx - cenx)**2 + (yy - ceny)**2)
+    return radmap
 
 def psf_large(psf_template, mapdim=1024):
     ''' all this does is place the 40x40 PSF template at the center of a full map 
@@ -61,6 +79,7 @@ def read_ciber_powerspectra(filename):
     norm_dcl_lower = array[:,2]
     norm_dcl_upper = array[:,3]
     return np.array([ells, norm_cl, norm_dcl_lower, norm_dcl_upper])
+
 
 
 ''' The classes/functions below have not been fully developed or used yet, so I will defer documentation until they are.'''
@@ -90,7 +109,24 @@ class ciber_data():
         self.inst = inst
         self.nbins=nbins
         self.psf=psf
+
+
+    def get_cal_apf2nWpm2ps(self, inst):
         
+        if inst==1:
+            cal_apf2nWpm2ps = dict({4:-347.92, 5:-305.81, 6:-369.32, 7:-333.67, 8:-314.33})
+        else:
+            cal_apf2nWpm2ps = dict({4:-117.69, 5:-116.20, 6:-118.79, 7:-127.43, 8:-117.96})
+        
+        return cal_apf2nWpm2ps
+        
+
+    def load_darkstat_mat(self, tail_path='darkstat.mat'):
+        try:
+            self.darkstat = scipy.io.loadmat(self.datapath+tail_path)
+        except:
+            print('No file found, file path is currently ', self.datapath+tail_path)
+
     def list_available_catalogs(self, field):
         if field=='ELAIS-N1':
             print(self.catalog_names[0])

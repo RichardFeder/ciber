@@ -286,5 +286,47 @@ class galaxy_catalog():
 
         R_vir_cubed = (3/(4*np.pi))*self.cosmo.Om(z)*halo_mass.to(u.g)/(200*self.cosmo.critical_density(z))
         return R_vir_cubed**(1./3.)
+
+
+
+def make_galaxy_cts_map(cat, refmap_shape, inst, m_min=14, m_max=30, magidx=2, zmin=0, zmax=100, zidx=None, normalize=True):
+    ''' Given a catalog of sources and some cuts on apparent magnitude/redshift, this function calculates the corresponding counts map, which
+    can then be used to compute auto or cross power spectra.''' 
+
+    gal_map = np.zeros(shape=refmap_shape)
+
+    if isinstance(cat, pd.DataFrame): # real catalogs read in as pandas dataframes
+    
+        catalog = cat.loc[(cat['x'+str(inst)]>0)&(cat['x'+str(inst)]<refmap_shape[0])&(cat['y'+str(inst)]>0)&(cat['y'+str(inst)]<refmap_shape[0]) &\
+                         (cat[magidx]<m_max)&(cat[magidx]>m_min)&(cat[zidx]>zmin)&(cat[zidx]<zmax)]
+
+        for index, src in catalog.iterrows():
+            gal_map[int(src['x'+str(inst)]), int(src['y'+str(inst)])] += 1
+   
+    else:
+        if zidx is not None:
+            if magidx is None:
+                cat = np.array([src for src in cat if src[0]<refmap_shape[0] and src[1]<refmap_shape[1] and src[zidx]>zmin and src[zidx]<zmax])
+            else:
+                cat = np.array([src for src in cat if src[0]<refmap_shape[0] and src[1]<refmap_shape[1]\
+                and src[magidx]>m_min and src[magidx]<m_max and src[zidx]>zmin and src[zidx]<zmax])
+        else:
+            if magidx is None:
+                cat = np.array([src for src in cat if src[0]<refmap_shape[0] and src[1]<refmap_shape[1]])
+            else:
+                cat = np.array([src for src in cat if src[0]<refmap_shape[0] and src[1]<refmap_shape[1]\
+                and src[magidx]>m_min and src[magidx]<m_max])
+
+        for src in cat:
+            gal_map[int(src[0]),int(src[1])] +=1.
+
+    if normalize:
+        gal_map /= np.mean(gal_map)
+        gal_map -= 1.
+    
+    return gal_map
+
+
+    
             
             

@@ -12,6 +12,75 @@ import glob
 
 figure_directory = '/Users/richardfeder/Documents/caltech/ciber2/figures/'
 
+
+def compare_c_ells_diff_estimators(midbin_ells, midbin_ell_fourier=None, cls_2pcf=None, cls_fourier=None, B_ell=None,\
+                                   plot_d_ell=False, return_fig=True, show=True, title=None, sqrt=False, plot_ytc=False, fudge_fac=1.):
+    
+
+    if plot_d_ell:
+        prefactor = midbin_ells*(midbin_ells+1.)/(2*np.pi)
+    else:
+        prefactor = 1.
+    
+    f = plt.figure(figsize=(8, 6))
+    
+    if title is not None:
+        plt.title(title, fontsize=16)
+    
+    
+    if cls_2pcf is not None:
+        if len(midbin_ells) > 50:
+            plt.plot(midbin_ells, fudge_fac*prefactor*np.median(cls_2pcf, axis=0), marker='.', color='r', label='$w(\\theta)\\rightarrow C_{\\ell}$')
+            plt.fill_between(midbin_ells, prefactor*np.percentile(cls_2pcf, 16, axis=0), prefactor*np.percentile(cls_2pcf, 84, axis=0), alpha=0.3, color='r')
+        else:
+            plt.errorbar(midbin_ells, fudge_fac*prefactor*np.median(cls_2pcf, axis=0), yerr=fudge_fac*prefactor*np.std(cls_2pcf, axis=0), marker='.', capsize=5, color='r', label='$w(\\theta)\\rightarrow C_{\\ell}$')
+            if B_ell is not None:
+                plt.errorbar(midbin_ells, fudge_fac*prefactor*np.median(cls_2pcf, axis=0)/np.sqrt(B_ell), yerr=fudge_fac*prefactor*np.std(cls_2pcf, axis=0)/np.sqrt(B_ell), marker='.', capsize=5, color='r', linestyle='dashed', label='$w(\\theta)\\rightarrow C_{\\ell}$ (Beam corrected)')
+
+    if cls_fourier is not None:
+        if midbin_ell_fourier is not None:
+            ells = midbin_ell_fourier
+            if plot_d_ell:
+                prefactor = ells*(ells+1.)/(2*np.pi)
+        else:
+            ells = midbin_ells
+        
+        
+        print('ells has length', len(ells))
+        print('cls_fourier has shape', cls_fourier.shape)
+        if len(midbin_ells) > 50:
+            plt.plot(ells, prefactor*np.median(cls_fourier, axis=0), marker='.', color='C0', label='$C_{\\ell}$ (DFT)')
+            plt.fill_between(ells, prefactor*np.percentile(cls_fourier, 16, axis=0), prefactor*np.percentile(cls_fourier, 84, axis=0), alpha=0.3, color='C0')
+        else:
+            plt.errorbar(ells, prefactor*np.median(cls_fourier, axis=0), yerr=prefactor*np.std(cls_fourier, axis=0), marker='.', capsize=5, color='C0', label='$C_{\\ell}$ (DFT)')
+            if B_ell is not None:
+                plt.errorbar(ells, prefactor*np.median(cls_fourier, axis=0)/B_ell, yerr=prefactor*np.std(cls_fourier, axis=0)/np.sqrt(B_ell),linestyle='dashed', marker='.', capsize=5, color='C0', label='$C_{\\ell}$ (DFT, beam corrected)')
+
+    
+    if plot_ytc:
+        cls_dat = np.load('/Users/richardfeder/Downloads/Cls_data.npy')
+        ratio = cls_dat[-1][0]/midbin_ells[-1]    
+        prefy = (cls_dat[-1]/ratio)**2/(2*np.pi)
+        plt.errorbar(cls_dat[-1]/ratio, prefy*np.median(cls_dat[:-1], axis=0), yerr=prefy*np.std(cls_dat[:-1], axis=0), capsize=5, marker='.', label='Yun-Ting $C_{\\ell}$', color='g')
+
+    plt.yscale('log')
+    plt.xscale('log')
+#     plt.ylim(0.5, 1e4)
+    plt.xlabel('Multipole $\\ell$', fontsize=16)
+    if plot_d_ell:
+        plt.ylabel('$\\frac{\\ell(\\ell+1)C_{\\ell}}{2\\pi}$ [nW$^2$ m$^{-4}$ sr$^{-2}$]', fontsize=16)
+    else:
+        plt.ylabel('$C_{\\ell}$ [nW$^2$ m$^{-4}$ sr$^{-1}$]', fontsize=16)
+    plt.legend(fontsize=14)
+    
+    if show:
+        plt.show()
+    
+    if return_fig:
+        return f
+
+
+
 def plot_radavg_xspectrum(rbins, radprofs=[], raderrs=None, labels=[], \
 						  lmin=90., save=False, snspalette=None, pdf_or_png='png', \
 						 image_dim=1024, mode='cross', zbounds=None, shotnoise=None, \
@@ -31,13 +100,15 @@ def plot_radavg_xspectrum(rbins, radprofs=[], raderrs=None, labels=[], \
 		ylabel = '$\\ell(\\ell+1) C_{\\ell}/2\\pi$'
 		if raderrs is not None:
 			yerr = np.array([(rbins*lmin)**2*raderr/(2*np.pi) for raderr in raderrs]) 
+	
 	elif mode=='auto':
 		if titlestring is None:
 			titlestring = 'Auto Spectrum'
 		yvals = np.array([np.sqrt((rbins*lmin)**2*prof/(2*np.pi)) for prof in radprofs])
 		ylabel = '($\\ell(\\ell+1) C_{\\ell}/2\\pi)^{1/2}$'
+		
 		if raderrs is not None:
-			yerr = np.array([np.sqrt((rbins*lmin)**2/(2*np.pi))*raderr/(2*np.sqrt(prof)) for raderr in raderrs]) # I don't think this is right, modify at some point
+			yerr = np.array([np.sqrt((rbins*lmin)**2/(2*np.pi))*raderrs[i]/(2*np.sqrt(radprofs[i])) for i in range(len(raderrs))]) # I don't think this is right, modify at some point
 			print('yerr:', yerr)
 			mask = yerr > yvals
 			
@@ -430,7 +501,8 @@ def convert_pngs_to_gif(filenames, gifdir='../../M_ll_correction/', name='mkk', 
 
 
 def plot_ensemble_offset_stats(thetas, masked_xis, unmasked_xis, masked_varxi, unmasked_varxi, return_fig=True, logscale=True, \
-                              suptitle='Mock CIBER source map (no noise), SWIRE flight mask (50 realizations)'):
+                              suptitle='Mock CIBER source map (no noise), SWIRE flight mask (50 realizations)', \
+                              nsim_list=None, ylim=[-0.5, 0.5]):
 
     delta_xis = np.array([masked_xis[i]-unmasked_xis[i] for i in range(len(masked_xis))])
 
@@ -475,18 +547,19 @@ def plot_ensemble_offset_stats(thetas, masked_xis, unmasked_xis, masked_varxi, u
     plt.ylabel('$w(\\theta)_{masked} - w(\\theta)_{true}$', fontsize=18)
     plt.xscale('log')
     plt.subplot(1,4,4)
-#     plt.plot(thetas, np.mean(delta_xis, axis=0)/np.std(unmasked_xis, axis=0), marker='.', alpha=0.8, label='Standard dev. of $w(\\theta)_{true}$ across realizations')
-#     plt.plot(thetas, np.std(delta_xis, axis=0)/np.sqrt(np.mean(unmasked_varxi, axis=0)), marker='.', alpha=0.8, label='Mean of sample variance on $w(\\theta)$')
-#     plt.plot(thetas, np.mean(delta_xis/np.sqrt(unmasked_varxi), axis=0), marker='.', alpha=0.8, label='Mean of sample variance on $w(\\theta)$')
-    plt.plot(thetas, np.mean(delta_xis, axis=0)/np.sqrt(np.mean(unmasked_varxi, axis=0)), marker='.', alpha=0.8, label='Mean of sample variance on $w(\\theta)$')
-
-    # plt.errorbar(thetas, np.mean(frac_deltaxi, axis=0), yerr=np.std(frac_deltaxi),capsize=5,capthick=2, marker='.', alpha=0.8, label='masked')
+    if nsim_list is not None:
+        for nsim in nsim_list:
+            plt.plot(thetas, np.median(delta_xis[:nsim], axis=0)/np.sqrt(np.median(unmasked_varxi[:nsim], axis=0)), marker='.', alpha=0.8, label='$n_{sim}=$'+str(nsim))
+    else:  
+        plt.plot(thetas, np.mean(delta_xis, axis=0)/np.sqrt(np.mean(unmasked_varxi, axis=0)), marker='.', alpha=0.8)
     plt.xlabel('$\\theta$ [deg]', fontsize=18)
     plt.ylabel('$\\frac{\\langle w(\\theta)_{masked} - w(\\theta)_{true} \\rangle}{\\langle \\sigma(w(\\theta)_{true})_{SV}\\rangle}$', fontsize=20)
-    # plt.ylabel('$\\langle \\frac{w(\\theta)_{masked} - w(\\theta)_{true}}{\\sigma}{sample variance}}} \\rangle$', fontsize=18)
-
+    plt.axhline(0.1, linestyle='dashed', color='k')
+    plt.axhline(-0.1, linestyle='dashed', color='k')
+    plt.legend()
     plt.xscale('log')
-    plt.ylim(-0.5, 0.5)
+    
+    plt.ylim(ylim)
     plt.tight_layout()
     plt.show()
     
@@ -577,6 +650,165 @@ def ratio_corr_variances_masked_unmasked(bins, masked_varxi, unmasked_varxi, mas
         plt.show()
     if return_fig:
         return f
+
+
+
+def plot_readnoise_realization(rdn_real, cal_fac, show=True, return_fig=True, adupframe_range=[-0.75, 0.75]):
+    f = plt.figure(figsize=(15, 6))
+
+
+    plt.subplot(1,3,1)
+    plt.title('Read noise realization', fontsize=16)
+    plt.imshow(rdn_real*cal_fac, cmap='Greys')
+    plt.colorbar()
+    
+    plt.subplot(1,3,2)
+    plt.hist(rdn_real.ravel(), bins=np.linspace(adupframe_range[0], adupframe_range[1], 100))
+    plt.xlabel('Read noise [ADU/frame]', fontsize=16)
+    plt.ylabel('$N_{pix}$', fontsize=16)
+
+    plt.subplot(1,3,3)
+    plt.hist(rdn_real.ravel()*cal_fac, bins=100)
+    plt.xlabel('Read noise [nW m$^{-2}$ sr$^{-1}$]', fontsize=16)
+    plt.ylabel('$N_{pix}$', fontsize=16)
+
+    plt.tight_layout()
+    
+    if show:
+        plt.show()
+    
+    if return_fig:
+        return f
+
+
+def plot_median_std_2d_2pcf(wthetas_2d, suptitle='Read noise realizations, 256x256 pixel cutouts', suptitlefontsize=20, return_fig=True, show=True):
+
+    f = plt.figure(figsize=(10, 5))
+    plt.suptitle(suptitle, fontsize=suptitlefontsize)
+    plt.subplot(1,2,1)
+    plt.title('Median $w(\\theta_x, \\theta_y)$', fontsize=16)
+    plt.imshow(np.median(wthetas_2d, axis=0), origin='lower')
+    plt.xlabel('$\\theta_x$ [deg]', fontsize=14)
+    plt.ylabel('$\\theta_y$ [deg]', fontsize=14)
+    plt.yticks(np.arange(0, 64, 16), [str(x/512.) for x in np.arange(-256, 256, 16*8)])
+    plt.xticks(np.arange(0, 64, 16), [str(x/512.) for x in np.arange(-256, 256, 16*8)])
+    plt.colorbar()
+    plt.subplot(1,2,2)
+    plt.title('Variance of $w(\\theta_x, \\theta_y)$', fontsize=16)
+    plt.imshow(np.std(wthetas_2d, axis=0), vmax=200, origin='lower')
+    plt.colorbar()
+    plt.xlabel('$\\theta_x$ [deg]', fontsize=14)
+    plt.ylabel('$\\theta_y$ [deg]', fontsize=14)
+    plt.yticks(np.arange(0, 64, 16), [str(x/512.) for x in np.arange(-256, 256, 16*8)])
+    plt.xticks(np.arange(0, 64, 16), [str(x/512.) for x in np.arange(-256, 256, 16*8)])
+
+    if show:
+        plt.show()
+
+    if return_fig:
+        return f
+        
+
+def plot_w_thetax_thetay(wthetas_2d, return_fig=True, show=True, title='Read noise realizations, 256x256 pixel cutouts'):
+    
+    f = plt.figure(figsize=(10, 4))
+    plt.suptitle(title, fontsize=20)
+    plt.subplot(1,2,1)
+    plt.title('Median $w(\\theta_x, \\theta_y)$', fontsize=16)
+    plt.imshow(np.median(wthetas_2d, axis=0))
+    plt.colorbar()
+    plt.subplot(1,2,2)
+    plt.title('Variance of $w(\\theta_x, \\theta_y)$', fontsize=16)
+    plt.imshow(np.std(wthetas_2d, axis=0))
+    plt.colorbar()
+    if show:
+        plt.show()
+    if return_fig:
+        return f
+
+
+def plot_readnoise_2pcfs(bins, masked_wtheta=None, masked_var_wtheta=None, unmasked_wtheta=None, unmasked_var_wtheta=None,
+                         masked=True, ylim=[-0.00003, 0.00015], xscale='log'):
+    
+    if masked:
+        suptitle = 'Masked read noise realizations'
+        wtheta = masked_wtheta
+        var_wtheta = masked_var_wtheta
+    else:
+        suptitle = 'Unmasked read noise realizations'
+        wtheta = unmasked_wtheta
+        var_wtheta = unmasked_var_wtheta
+        
+    n_realization = len(wtheta)
+
+
+    f = plt.figure(figsize=(15,5))
+    plt.suptitle(suptitle, y=1.05, fontsize=20)
+    plt.subplot(1,3,1)
+    
+    for i in range(n_realization):
+        plt.errorbar(bins, wtheta[i], yerr=np.sqrt(var_wtheta[i]), alpha=0.3, color='C3', capsize=5)
+
+    plt.title('Individual realizations (+jackknife variance)')    
+    plt.xscale(xscale)
+    plt.xlabel('$\\theta$ [deg]', fontsize=16)
+    plt.ylabel('$w(\\theta)$', fontsize=16)
+
+    plt.ylim(ylim)
+    plt.subplot(1,3,2)
+    plt.title('Mean of realizations (+std. deviation)')   
+    plt.fill_between(bins, np.percentile(wtheta, 16, axis=0), np.percentile(wtheta, 84, axis=0), alpha=0.3)
+    plt.plot(bins, np.mean(wtheta, axis=0), marker='.')
+    plt.xscale(xscale)
+    plt.xlabel('$\\theta$ [deg]', fontsize=16)
+    plt.ylabel('$w(\\theta)$', fontsize=16)
+    plt.ylim(ylim)
+
+    plt.subplot(1,3,3)
+    plt.title('Standard deviation across realizations')
+    plt.errorbar(bins, np.std(wtheta, axis=0),  marker='.', capsize=5)
+
+    plt.xscale(xscale)
+    plt.yscale('log')
+    plt.xlabel('$\\theta$ [deg]', fontsize=16)
+    plt.ylabel('$\\sigma(w(\\theta))$', fontsize=16)
+    
+    plt.tight_layout()
+    
+    plt.show()
+    
+    return f
+
+
+def plot_wtheta(rnom, xi, varxi, skymap, pix_units='rad', return_fig=False, mask=None, title='Read noise realization', plot_xscale='log'):
+    
+    f = plt.figure(figsize=(10,4))
+    plt.subplot(1,2,1)
+    if mask is not None:
+        title += ' (masked)'
+    plt.title(title, fontsize=16)
+    if mask is None:
+        plt.imshow(skymap, cmap='Greys')
+    else:
+        plt.imshow(skymap*mask, cmap='Greys')
+    plt.colorbar()
+    plt.xlabel('x [pixel]', fontsize=16)
+    plt.ylabel('y [pixel]', fontsize=16)
+    plt.subplot(1,2,2)
+    plt.errorbar(rnom, xi, yerr=np.sqrt(varxi), marker='.')
+    plt.xlabel('$\\theta$ ('+str(pix_units)+')', fontsize=16)
+    plt.ylabel('$w(\\theta)$ [$nW^2 m^{-4} sr^{-2}$]', fontsize=16)
+    if plot_xscale=='log':
+        plt.xscale('log')
+    plt.tight_layout()
+    plt.show()
+    
+    if return_fig:
+        return f
+
+
+
+
 
 
 
