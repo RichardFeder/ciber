@@ -3,6 +3,7 @@ import numpy as np
 import matplotlib
 import matplotlib.pyplot as plt
 from scipy.interpolate import CubicSpline
+from plotting_fns import *
 
 
 # ------------------------------------------ main TreeCorr stuff below --------------------------------------------
@@ -35,11 +36,32 @@ def get_treecorr_catalog_vals(xind, yind, skymap, mask=None, prefilter=False):
             
     return xind_cat, yind_cat, ks, weights
 
+def wth2d_to_cl(wthetas, ell_bins, binl, pixsize=7., dim=1024, fac=1.):
+    
+    c_ells = np.zeros((len(wthetas), len(binl)-1))
+
+    cl2s = []
+    sterad_per_pix = (pixsize*fac/3600./180*np.pi)**2
+
+    for j, wthet in enumerate(wthetas):
+        cl2 = np.sqrt(np.real(fft2(wthet*sterad_per_pix)*np.conj(fft2(wthet*sterad_per_pix))))
+
+        V = dim * dim * sterad_per_pix
+
+        l2d = get_l2d(dim, dim, 7.*fac)
+        
+        cl2s.append(np.fft.ifftshift(cl2 / V))
+
+        lb, Cl, Clerr =  azim_average_cl2d(np.fft.ifftshift(cl2 / V), l2d, lbinedges=binl, lbins=ell_bins)
+
+        c_ells[j] = Cl
+
+    return c_ells, cl2s
 
 def compute_2pcf(skymaps=None, mask=None, nmaps=50, binning='log',nlinbin=100, pix_units='deg',\
-                      npatch=10, var_method='shot', return_cov=True, prefilter=False, verbose=False, plot=False,\
+                      npatch=10, var_method='shot', return_cov=True, prefilter=False, verbose=False, plot=False, thetamin_fac=2.0,\
                      thetamax=2., thetabin_size=0.3, pixel_size=7., imdim=1024, plot_title='Read noise realization',\
-                    datapath='/Users/richardfeder/Documents/ciber2/ciber/data/', tail_name='mmin=18.4_mmax=25', with_noise=False):
+                    datapath='/Users/richardfeder/Documents/ciber2/ciber/data/', tail_name='mmin=18.4_mmax=25', with_noise=False, bin_slop=0.1):
     
     ''' Inputs:
     
@@ -51,7 +73,10 @@ def compute_2pcf(skymaps=None, mask=None, nmaps=50, binning='log',nlinbin=100, p
     fs = []
     wthetas, varwthetas, covs = [], [], []
     deg_per_pix = (pixel_size/3600.) # arcseconds to degrees
-    thetamin = 2*deg_per_pix # minimum separation is twice the pixel size
+    thetamin = thetamin_fac*deg_per_pix # minimum separation is twice the pixel size
+    
+    print('thetamin is ', thetamin)
+    print('in arcseconds this is ', thetamin*3600.)
 
     if skymaps is not None:
         imdim = skymaps[0].shape[0]
@@ -90,17 +115,16 @@ def compute_2pcf(skymaps=None, mask=None, nmaps=50, binning='log',nlinbin=100, p
         else:
             load_srcmap = skymaps[i]
 
-        skymap = load_srcmap - np.mean(load_srcmap)
-        
+        skymap = load_srcmap.copy()
         
         xind_cat, yind_cat, ks, weights = get_treecorr_catalog_vals(xind, yind, skymap, mask=mask, prefilter=prefilter)
             
         cat = treecorr.Catalog(ra=xind_cat, dec=yind_cat, k=ks, w=weights, ra_units=pix_units, dec_units=pix_units, npatch=npatch)
         
         if binning=='linear':
-            kk = treecorr.KKCorrelation(min_sep=thetamin, max_sep=thetamax, bin_type='Linear', nbins=nlinbin, sep_units=pix_units)
+            kk = treecorr.KKCorrelation(min_sep=thetamin, max_sep=thetamax, bin_type='Linear', nbins=nlinbin, sep_units=pix_units, bin_slop=bin_slop)
         elif binning=='log':
-            kk = treecorr.KKCorrelation(min_sep=thetamin, max_sep=thetamax, bin_size=thetabin_size, sep_units=pix_units, var_method=var_method)
+            kk = treecorr.KKCorrelation(min_sep=thetamin, max_sep=thetamax, bin_size=thetabin_size, sep_units=pix_units, var_method=var_method, bin_slop=bin_slop)
 
         kk.process(cat, metric='Euclidean')
         
@@ -108,8 +132,8 @@ def compute_2pcf(skymaps=None, mask=None, nmaps=50, binning='log',nlinbin=100, p
         if verbose:
             print('var method is ', kk.var_method)
             print('number of pairs used is ', kk.npairs)
-            print('kk.r_nom is ', kk.rnom)
-            print('kk.meanr is ', kk.meanr)
+            print('kk.r_nom is ', kk.rnom*3600)
+            print('kk.meanr is ', kk.meanr*3600)
 
             
         npair_mask = (kk.npairs > 0.)
@@ -138,6 +162,77 @@ def compute_2pcf(skymaps=None, mask=None, nmaps=50, binning='log',nlinbin=100, p
             return wthetas, varwthetas, kk.rnom[npair_mask], covs
         else:
             return wthetas, varwthetas, kk.rnom[npair_mask]
+
+
+def compute_2pcf_2d(skymaps=None, mask=None, nmaps=20, nbins=64, imdim=1024, pixel_size=7., thetamax=2., \
+                   with_noise=True, plot=True, datapath='/Users/richardfeder/Documents/ciber2/ciber/data/', tail_name='mmin=18.4_mmax=25', brute=False, \
+                    bin_slop=0.05):
+        
+    
+    # for some reason, TreeCorr only works with radians as the units, so this always assumes radians unlike the 1d version
+
+    if skymaps is not None:
+        imdim = skymaps[0].shape[0]
+        
+        if nmaps > len(skymaps):
+            nmaps = len(skymaps)
+            
+    fs, wthetas_2d, varwthetas_2d, covs =[[] for x in range(4)]
+    deg_per_pix = (pixel_size/3600.) # arcseconds to degrees
+    deg_per_rad = np.pi/180.    
+    
+    xind = np.indices((imdim,imdim))[0].ravel()*deg_per_pix*deg_per_rad
+    yind = np.indices((imdim,imdim))[1].ravel()*deg_per_pix*deg_per_rad
+    
+    print('min/max xind:', np.min(xind), np.max(xind))
+    print('thetamax:', imdim*deg_per_pix*deg_per_rad)
+    
+    for i in range(nmaps):
+        
+        if skymaps is None:
+            load_srcmap = load_ciber_srcmap(i, with_noise=with_noise, datapath=datapath, tail_name=tail_name)
+        else:
+            print('skymaps is not None')
+            load_srcmap = skymaps[i]
+
+        skymap = load_srcmap - np.mean(load_srcmap)       
+        
+        
+        xind_cat, yind_cat, ks, weights = get_treecorr_catalog_vals(xind, yind, skymap, mask=mask, prefilter=False)
+        
+        cat = treecorr.Catalog(x=xind_cat, y=yind_cat, k=ks, w=weights, npatch=1)
+        if brute:
+            kk = treecorr.KKCorrelation(nbins=nbins, bin_type='TwoD', max_sep=imdim*deg_per_pix*deg_per_rad, sep_units='rad', brute=True)
+        else:
+            kk = treecorr.KKCorrelation(nbins=nbins, bin_type='TwoD', max_sep=imdim*deg_per_pix*deg_per_rad, sep_units='rad', bin_slop=bin_slop)
+        kk.process(cat, metric='Euclidean')
+        print('bin slop is ', kk.bin_slop)
+        
+        if plot:
+            plt.figure()
+            plt.title('npairs, 256x256 image, 256^2 bins')
+            plt.imshow(kk.npairs, vmin=0, vmax=10)
+            plt.colorbar()
+            plt.show()
+            
+            plt.figure()
+            plt.hist(kk.npairs.ravel(), bins=np.linspace(-1, 10, 10))
+            plt.show()
+            
+            plt.figure()
+            plt.imshow(kk.xi, vmin=np.percentile(kk.xi, 1), vmax=np.percentile(kk.xi, 99))
+            plt.colorbar()
+            plt.show()
+        
+        wthetas_2d.append(kk.xi)
+        
+    wthetas_2d = np.array(wthetas_2d)
+    
+    if plot:
+        f = plot_w_thetax_thetay(wthetas_2d)
+        return wthetas_2d, f
+    
+    return wthetas_2d
 	
 
 def compute_ensemble_offsets(mask=None, skymaps=None, mode='white', nmaps=10, imdim=1024, npatch=10, verbose=False, \
@@ -165,83 +260,4 @@ def compute_ensemble_offsets(mask=None, skymaps=None, mode='white', nmaps=10, im
 
 	return bins, frac_delta_xis, masked_xis, unmasked_xis, masked_varxis, unmasked_varxis
 		
-
-def spline_wtheta(thetas, wtheta):
-    
-    xs = thetas
-    ys = wtheta
-    
-    cs = CubicSpline(xs, ys)
-    
-    return cs
-
-def density_simpsons(func, a, b, N):
-
-    h = (b - a) / (N) 
-    integral = func(a) + func(b)
-    for i in np.arange(1, N, 2):
-        add = func(a + i*h)
-        integral += 4. * add
-    for i in np.arange(2, N-1, 2):
-        add = func(a + i*h)
-        integral += 2 * add
-    
-    return (1/3)*h*integral
-
-def make_integrand_ell(spline, ell):
-    def integrand_func(theta):
-        function = (theta * spline(theta) * np.sin(theta*ell) / (theta * ell))
-        return function
-    return integrand_func
-
-def integrate_spline_cell(integrand, ell, N=10, a=2e-3, b=1e-2):
-    return density_simpsons(integrand, a=a, b=b, N=N)
-
-def wtheta_to_c_ell_hb(thetabins, wtheta, ells, N=1000, a=2e-3, b=1e-2):
-    bins_rad = thetabins*np.pi/180.
-    cs = spline_wtheta(bins_rad, wtheta)
-    c_ell = []
-    for i in ells:
-        integrand = make_integrand_ell(cs, i)
-        c_ell_i = 2*np.pi*integrate_spline_cell(integrand, ell=i, N = N, a=a, b=b)
-        c_ell.append(c_ell_i)
-        
-    return c_ell
-
-
-def wtheta_to_cell(bins, wthetas, multipole_bins=None, thetamax=2., pixsize=7., ndim=2, N = 2000, h = 0.003):
-    
-    c_ells = []
-    
-    deg_per_pix=pixsize/3600. # pixsize in arcseconds convert to deg
-    
-    # get thetas, fine_thetas into units of radians across angular range
-    thetas = bins*(np.pi/180.)
-    ells = np.pi/thetas
-        
-    ft = SymmetricFourierTransform(ndim = ndim, N = N, h = h)
-    
-    for i in range(len(wthetas)):
-    
-        spline_w_theta = interpolate.InterpolatedUnivariateSpline(thetas, wthetas[i])    
-
-        plt.figure()
-        plt.plot(thetas, spline_w_theta(thetas))
-        finet = np.linspace(np.min(thetas), np.max(thetas), 1000)
-        plt.plot(finet, spline_w_theta(finet))
-        plt.show()
-        
-        g = lambda theta: spline_w_theta(theta)
-
-        if multipole_bins is not None:
-            c_ell = ft.transform(g ,multipole_bins, ret_err=False, inverse=False)
-        else:
-            c_ell = ft.transform(g, ells, ret_err=False, inverse=False)
-            
-        c_ells.append(np.abs(c_ell))
-                
-    if multipole_bins is None:
-        return ells, c_ells
-        
-    return multipole_bins, c_ells
 

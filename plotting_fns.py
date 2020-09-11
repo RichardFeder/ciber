@@ -14,7 +14,7 @@ figure_directory = '/Users/richardfeder/Documents/caltech/ciber2/figures/'
 
 
 def compare_c_ells_diff_estimators(midbin_ells, midbin_ell_fourier=None, cls_2pcf=None, cls_fourier=None, B_ell=None,\
-                                   plot_d_ell=False, return_fig=True, show=True, title=None, sqrt=False, plot_ytc=False, fudge_fac=1.):
+                                   plot_d_ell=False, return_fig=True, show=True, title=None, sqrt=False, ylim=None, plot_ytc=False, fudge_fac=1.):
     
 
     if plot_d_ell:
@@ -65,7 +65,8 @@ def compare_c_ells_diff_estimators(midbin_ells, midbin_ell_fourier=None, cls_2pc
 
     plt.yscale('log')
     plt.xscale('log')
-#     plt.ylim(0.5, 1e4)
+    if ylim is not None:
+        plt.ylim(ylim[0], ylim[1])
     plt.xlabel('Multipole $\\ell$', fontsize=16)
     if plot_d_ell:
         plt.ylabel('$\\frac{\\ell(\\ell+1)C_{\\ell}}{2\\pi}$ [nW$^2$ m$^{-4}$ sr$^{-2}$]', fontsize=16)
@@ -79,6 +80,39 @@ def compare_c_ells_diff_estimators(midbin_ells, midbin_ell_fourier=None, cls_2pc
     if return_fig:
         return f
 
+
+def filter_fns_config(bandpower_edges, theta_window, thetas, return_fig=True, mode='analytic'):
+    '''
+    bandpower_edges -- list specifying edges of multipole bins for bandpowers
+    theta_window -- length 2 list with minimum and maximum separation measured in 2PCF (in radians)
+    thetas -- list specifying range to compute filter function over
+    
+    '''
+    n_bandpower = len(bandpower_edges)
+    print("assuming 20 band powers")
+    fig = plt.figure(figsize=(15,8))
+    plt.suptitle('Full (black) vs. windowed (blue) bandpower filter functions', fontsize=20, y=1.02)
+    for b in range(n_bandpower):
+        if mode=='analytic':
+            tophat_vals = tophat_bp_window_configuration_space(thetas, bandpower_edges[b], bandpower_edges[b+1],\
+                                                               thetamin=theta_window[0], thetamax=theta_window[1])
+        plt.subplot(4, 5, b+1)
+        plt.title('Bandpower '+str(b))
+        # x axis has unit of degrees so multiply thetas by 180/np.pi
+        plt.plot(thetas*(180./np.pi), g_theta_tophat_bandpass(thetas, bandpower_edges[b], bandpower_edges[b+1]), color='k', label='full')
+        plt.plot(thetas*(180./np.pi), tophat_vals, label='apodized', color='b')
+        plt.axvline(theta_window[0]*180./np.pi, color='g', linestyle='dashed')
+        plt.axvline(theta_window[1]*180./np.pi, color='g', linestyle='dashed')
+        plt.xscale('log')
+        if b > 14:
+            plt.xlabel('$\\theta$ [deg]', fontsize=18)
+        if b % 5 ==0:
+            plt.ylabel('$g_b(\\theta)$', fontsize=18)
+    plt.tight_layout()
+    plt.show()
+    
+    if return_fig:
+        return fig
 
 
 def plot_radavg_xspectrum(rbins, radprofs=[], raderrs=None, labels=[], \
@@ -681,26 +715,30 @@ def plot_readnoise_realization(rdn_real, cal_fac, show=True, return_fig=True, ad
         return f
 
 
-def plot_median_std_2d_2pcf(wthetas_2d, suptitle='Read noise realizations, 256x256 pixel cutouts', suptitlefontsize=20, return_fig=True, show=True):
+def plot_median_std_2d_2pcf(wthetas_2d, suptitle='Read noise realizations, 256x256 pixel cutouts', suptitlefontsize=20, return_fig=True, show=True, pixsize=7., n_tick=5):
 
     f = plt.figure(figsize=(10, 5))
     plt.suptitle(suptitle, fontsize=suptitlefontsize)
     plt.subplot(1,2,1)
     plt.title('Median $w(\\theta_x, \\theta_y)$', fontsize=16)
-    plt.imshow(np.median(wthetas_2d, axis=0), origin='lower')
+    median_wtheta2d = np.median(wthetas_2d, axis=0)
+    plt.imshow(median_wtheta2d, cmap='Greys', vmin=np.percentile(median_wtheta2d, 5), vmax=np.percentile(median_wtheta2d, 99.9), origin='lower')
     plt.xlabel('$\\theta_x$ [deg]', fontsize=14)
     plt.ylabel('$\\theta_y$ [deg]', fontsize=14)
-    plt.yticks(np.arange(0, 64, 16), [str(x/512.) for x in np.arange(-256, 256, 16*8)])
-    plt.xticks(np.arange(0, 64, 16), [str(x/512.) for x in np.arange(-256, 256, 16*8)])
+    nx, ny = median_wtheta2d.shape[0], median_wtheta2d.shape[1]
+    plt.xticks(np.arange(0, nx, nx//n_tick), np.round(2*(np.arange(0, nx, nx//n_tick)-nx//2)*(pixsize/3600.), 1))
+    plt.yticks(np.arange(0, ny, ny//n_tick), np.round(2*(np.arange(0, ny, ny//n_tick)-ny//2)*(pixsize/3600.), 1))
     plt.colorbar()
     plt.subplot(1,2,2)
     plt.title('Variance of $w(\\theta_x, \\theta_y)$', fontsize=16)
-    plt.imshow(np.std(wthetas_2d, axis=0), vmax=200, origin='lower')
+    std_wtheta_2d = np.std(wthetas_2d, axis=0)
+    plt.imshow(std_wtheta_2d, vmax=np.percentile(std_wtheta_2d, 99), vmin=np.percentile(std_wtheta_2d, 1), cmap='Greys', origin='lower')
     plt.colorbar()
     plt.xlabel('$\\theta_x$ [deg]', fontsize=14)
     plt.ylabel('$\\theta_y$ [deg]', fontsize=14)
-    plt.yticks(np.arange(0, 64, 16), [str(x/512.) for x in np.arange(-256, 256, 16*8)])
-    plt.xticks(np.arange(0, 64, 16), [str(x/512.) for x in np.arange(-256, 256, 16*8)])
+    
+    plt.xticks(np.arange(0, nx, nx//n_tick), np.round(2*(np.arange(0, nx, nx//n_tick)-nx//2)*(pixsize/3600.), 1))
+    plt.yticks(np.arange(0, ny, ny//n_tick), np.round(2*(np.arange(0, ny, ny//n_tick)-ny//2)*(pixsize/3600.), 1))
 
     if show:
         plt.show()
@@ -711,15 +749,31 @@ def plot_median_std_2d_2pcf(wthetas_2d, suptitle='Read noise realizations, 256x2
 
 def plot_w_thetax_thetay(wthetas_2d, return_fig=True, show=True, title='Read noise realizations, 256x256 pixel cutouts'):
     
+    nx, ny = np.median(wthetas_2d, axis=0).shape[0], np.median(wthetas_2d, axis=0).shape[1]
+    pixsize = 7.
+    n_tick = 6
+    
     f = plt.figure(figsize=(10, 4))
-    plt.suptitle(title, fontsize=20)
+    plt.suptitle(title, fontsize=20, y=1.03)
     plt.subplot(1,2,1)
     plt.title('Median $w(\\theta_x, \\theta_y)$', fontsize=16)
-    plt.imshow(np.median(wthetas_2d, axis=0))
+    plt.imshow(np.median(wthetas_2d, axis=0), cmap='Greys', vmin=np.percentile(np.median(wthetas_2d, axis=0), 5), vmax=np.percentile(np.median(wthetas_2d, axis=0), 95))
+    plt.xticks(np.arange(0, nx, nx//n_tick), np.round(1*(np.arange(0, nx, nx//n_tick)-nx//2)*(pixsize/3600.), 1))
+    plt.yticks(np.arange(0, ny, ny//n_tick), np.round(1*(np.arange(0, ny, ny//n_tick)-ny//2)*(pixsize/3600.), 1))
+    plt.xlabel('$\\delta x$ [deg]', fontsize=16)
+    plt.ylabel('$\\delta y$ [deg]', fontsize=16)
+    
     plt.colorbar()
     plt.subplot(1,2,2)
-    plt.title('Variance of $w(\\theta_x, \\theta_y)$', fontsize=16)
-    plt.imshow(np.std(wthetas_2d, axis=0))
+    plt.title('Standard deviation of $w(\\theta_x, \\theta_y)$', fontsize=16)
+    plt.imshow(np.std(wthetas_2d, axis=0), cmap='Greys', vmin=np.percentile(np.std(wthetas_2d, axis=0), 5), vmax=np.percentile(np.std(wthetas_2d, axis=0), 95))
+
+    plt.xticks(np.arange(0, nx, nx//n_tick), np.round(1*(np.arange(0, nx, nx//n_tick)-nx//2)*(pixsize/3600.), 1))
+    plt.yticks(np.arange(0, ny, ny//n_tick), np.round(1*(np.arange(0, ny, ny//n_tick)-ny//2)*(pixsize/3600.), 1))
+   
+    plt.xlabel('$\\delta x$ [deg]', fontsize=16)
+    plt.ylabel('$\\delta y$ [deg]', fontsize=16)
+
     plt.colorbar()
     if show:
         plt.show()
@@ -807,8 +861,157 @@ def plot_wtheta(rnom, xi, varxi, skymap, pix_units='rad', return_fig=False, mask
         return f
 
 
+def threepanel_wthetaxy_to_cl2d_vs_dftcl2d(wthetaxy, cl2d_dft, zoom=False, return_fig=True, show=True, \
+                                          vrange1=[1e3, 1e8], vrange2=[1e3, 1e8]):
+
+    nx, ny = wthetaxy.shape[0], wthetaxy.shape[1]
+
+    f = plt.figure(figsize=(15, 5))
+    plt.subplot(1,3,1)
+    plt.title('$w(\\theta_x, \\theta_y)$', fontsize=20)
+    plt.imshow(wthetaxy.transpose(), cmap='Greys', vmin=-100, vmax=100)
+    plt.xticks(np.arange(0, nx, nx//5), np.round(4*(np.arange(0, nx, nx//5)-nx//2)*(7./3600.), 1))
+    plt.yticks(np.arange(0, ny, ny//5), np.round(4*(np.arange(0, ny, ny//5)-ny//2)*(7./3600.), 1))
+
+    plt.colorbar()
+    plt.xlabel('$\\theta_x$ [deg]', fontsize=16)
+    plt.ylabel('$\\theta_y$ [deg]', fontsize=16)
+
+    
+    cl2d = np.fft.ifftshift(np.sqrt(np.real(fft2(median_wth)*np.conj(fft2(median_wth)))))
+
+    plt.subplot(1,3,2)
+    plt.title('$C_{\\ell_x,\\ell_y} \\approx \\mathcal{F}(\\langle w(\\theta_x, \\theta_y) \\rangle)$', fontsize=20)
+    plt.imshow(cl2d.transpose(), norm=LogNorm(), cmap='Greys', vmax=vrange1[1], vmin=vrange1[0])
+    plt.colorbar()
+    plt.xlabel('$\\ell_x$', fontsize=16)
+    plt.ylabel('$\\ell_y$', fontsize=16)
+    
+    
+    plt.xticks([], [])
+    plt.yticks([], [])
+    # plt.xticks(np.arange(0, nx, nx//6), np.round(180*(np.arange(0, nx, nx//6)-nx//4 + 1), 2))
+    # plt.yticks(np.arange(0, ny, ny//6), np.round(180*(np.arange(0, nx, nx//6)-nx//4 +1), 2))
+    if zoom:
+        plt.xlim(nx//2-24, nx//2+24)
+        plt.ylim(ny//2-24, ny//2+24)        
+        
+        
+    nx2, ny2 = cl2d_dft.shape[0], cl2d_dft.shape[1]
+
+    plt.subplot(1,3,3)
+    plt.title('$C_{\\ell_x,\\ell_y}$ (full)', fontsize=20)
 
 
+    plt.imshow(cl2d_dft, norm=LogNorm(), cmap='Greys', vmax=vrange2[1], vmin=vrange2[0])
+    plt.colorbar()
+    plt.xlabel('$\\ell_x$', fontsize=16)
+    plt.ylabel('$\\ell_y$', fontsize=16)
+
+    if zoom:
+        plt.xlim(500, 524)
+        plt.ylim(500, 524)
+        plt.xticks([], [])
+        plt.yticks([], [])
+    else:
+        plt.xticks(np.arange(0, nx2, nx2//6), np.round(180*(np.arange(0, nx2, nx2//6)-nx2//2 + 2), 2))
+        plt.yticks(np.arange(0, ny2, ny2//6), np.round(180*(np.arange(0, nx2, nx2//6)-nx2//2 + 2), 2))
+    
+    plt.tight_layout()
+
+    if show:
+        plt.show()
+        
+    if return_fig:
+        return f
+
+
+def plot_hankel_integrand(bins_rad, fine_bins, wtheta, spline_wtheta, ell, integration_max):
+    
+    f = plt.figure(figsize=(10, 8))
+    plt.subplot(2,2,3)
+    plt.title('Discrete Integrand', fontsize=16)
+    plt.plot(bins_rad, bins_rad*wtheta*scipy.special.j0(ell*bins_rad), label='$\\ell = $'+str(ell))
+    plt.ylabel('$\\theta w(\\theta)J_0(\\ell\\theta)$', fontsize=18)
+    plt.xlabel('$\\theta$ [rad]', fontsize=18)
+    plt.legend(fontsize=14)
+    plt.xscale('log')
+    plt.subplot(2,2,4)
+    plt.title('Spline Integrand', fontsize=16)
+    plt.plot(fine_bins, fine_bins*spline_wtheta(fine_bins)*scipy.special.j0(ell*fine_bins), label='$\\ell = $'+str(ell))
+    plt.ylabel('$\\theta w(\\theta)J_0(\\ell\\theta)$', fontsize=18)
+    plt.xlabel('$\\theta$ [rad]', fontsize=18)
+    plt.axvline(integration_max, linestyle='dashed', color='k', label='$\\theta_{max}$='+str(np.round(integration_max*(180./np.pi), 2))+' deg.')
+    plt.legend(fontsize=14)
+    plt.xscale('log')
+    plt.subplot(2,2,1)
+    plt.title('Angular 2PCF', fontsize=16)
+    plt.plot(bins_rad, wtheta, marker='.', color='k')
+    plt.plot(np.linspace(np.min(bins_rad), np.max(bins_rad), 1000), spline_wtheta(np.linspace(np.min(bins_rad), np.max(bins_rad), 1000)), color='b', linestyle='dashed')
+    plt.xscale('log')
+    plt.yscale('symlog')
+    plt.xlabel('$\\theta$ [rad]', fontsize=18)
+    plt.ylabel('$w(\\theta)$', fontsize=18)
+    plt.subplot(2,2,2)
+    plt.title('Bessel function, $\\ell = $'+str(ell), fontsize=16)
+    plt.plot(fine_bins, scipy.special.j0(ell*fine_bins), label='$\\ell = $'+str(ell))
+    plt.ylabel('$J_0(\\ell\\theta)$', fontsize=18)
+    plt.xlabel('$\\theta$ [rad]', fontsize=18)
+    plt.xscale('log')
+    plt.tight_layout()
+    plt.show()
+    
+    return f
+
+
+def show_window_functions(bandpower_edges, bp_ells, window_matrix):
+    cmap = cm.get_cmap('viridis', 20)
+    cmap_colors = cmap(np.arange(len(bandpower_edges)-1))
+
+    plt.figure(figsize=(15, 4))
+    for b, bp_edge in enumerate(bandpower_edges[:-1]):
+        if b==0:
+            label = 'Bandpowers'
+        else:
+            label = None
+        plt.plot(bp_ells, tophat_func(bp_ells, bandpower_edges[b], bandpower_edges[b+1]), color='k', label=label)
+
+    for b, bp_edge in enumerate(bandpower_edges[:-1]):
+        if b==0:
+            label = 'Window functions'
+        else:
+            label = None
+        plt.plot(bp_ells, window_matrix[b], color=cmap_colors[b], label=label)
+    plt.xscale('log')
+    plt.xlabel('Multipole $\\ell$', fontsize=18)
+    plt.ylabel('Window functions $W_b(\\ell)$', fontsize=18)
+    plt.ylim(-0.5, 1.25)
+    plt.legend(fontsize=14)
+    plt.show()
+    
+def show_window_matrix(window_matrix, theta_window, bp_edge_idxs, return_fig=True):
+    fig = plt.figure(figsize=(15, 3))
+    plt.title('Window matrix, $\\theta_{min}=$'+str(np.round(theta_window[0]*(180./np.pi)*3600.))+'\", $\\theta_{max}=$'+str(np.round(theta_window[1]*(180./np.pi)))+' deg', \
+             fontsize=18)
+    plt.imshow(window_matrix, cmap='Greys', aspect='auto', vmin=-1, vmax=1)
+    for i, idx in enumerate(bp_edge_idxs):
+        if i==0:
+            label = 'Bandpower edges'
+        else:
+            label = None
+        plt.axvline(idx, color='r', linewidth=1, label=label)
+    plt.legend(loc=1)
+    tickmark = np.linspace(0, window_matrix.shape[1], 6)
+    exp_marks = ['$10^{1}$', '$10^2$', '$10^3$', '$10^4$', '$10^5$', '$10^6$']
+    plt.xticks(tickmark, exp_marks)
+    plt.yticks(np.arange(0, window_matrix.shape[0], 4), np.arange(0, window_matrix.shape[0], 4))
+    plt.xlabel('Multipole $\\ell$', fontsize=18)
+    plt.ylabel('Bandpower index', fontsize=18)
+    plt.colorbar()
+    plt.show()
+    
+    if return_fig:
+        return fig
 
 
 
