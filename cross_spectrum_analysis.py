@@ -4,12 +4,15 @@ import matplotlib.pyplot as plt
 from ciber_mocks import *
 from plotting_fns import *
 from mock_galaxy_catalogs import *
+from integrate_cl_wtheta import *
+from angular_2pcf import *
 import pandas as pd
 import pyfftw
 from numpy.fft import fftshift as fftshift
 from numpy.fft import ifftshift as ifftshift
 from numpy.fft import fft2 as fft2
 from numpy.fft import ifft2 as ifft2
+
 
 
 def azimuthalAverage(image, ell_min=90, center=None, logbins=True, nbins=60, sterad_term=None):
@@ -31,7 +34,7 @@ def azimuthalAverage(image, ell_min=90, center=None, logbins=True, nbins=60, ste
     # Calculate the indices from the image
     y, x = np.indices(image.shape)
 
-    if not center:
+    if center is None:
         center = np.array([(x.max()-x.min())/2.0, (x.max()-x.min())/2.0])
     r = np.hypot(x - center[0], y - center[1])
 
@@ -67,6 +70,37 @@ def azimuthalAverage(image, ell_min=90, center=None, logbins=True, nbins=60, ste
     return av_rbins, np.array(rad_avg), np.array(rad_std)
 
 
+def azim_average_cl2d(ps2d, l2d, lbinedges=None, lbins=None, weights=None, logbin=False):
+    
+    if lbinedges is None:
+        lmin = np.min(l2d[l2d!=0])
+        lmax = np.max(l2d[l2d!=0])
+        if logbin:
+            lbinedges = np.logspace(np.log10(lmin), np.log10(lmax), nbins)
+            lbins = np.sqrt(lbinedges[:-1] * lbinedges[1:])
+        else:
+            lbinedges = np.linspace(lmin, lmax, nbins)
+            lbins = (lbinedges[:-1] + lbinedges[1:]) / 2
+
+        lbinedges[-1] = lbinedges[-1]*(1.01)
+        
+    if weights is None:
+        weights = np.ones(ps2d.shape)
+        
+    Cl = np.zeros(len(lbins))
+    Clerr = np.zeros(len(lbins))
+    Nmodes = np.zeros(len(lbins),dtype=int)
+    for i,(lmin, lmax) in enumerate(zip(lbinedges[:-1], lbinedges[1:])):
+        sp = np.where((l2d>=lmin) & (l2d<lmax))
+        p = ps2d[sp]
+        w = weights[sp]
+        Cl[i] = np.sum(p*w) / np.sum(w)
+        Clerr[i] = np.std(p) / np.sqrt(len(p))
+        Nmodes[i] = len(p)
+        
+    return lbins, Cl, Clerr
+
+
 
 def compute_beam_correction(psf, nbins=60):
     ''' This function computes the power spectrum of a beam as provided through a PSF template. The beam power spectrum
@@ -92,6 +126,53 @@ def compute_cross_spectrum(map_a, map_b, n_deg_across=2.0, sterad_a=True, sterad
     xspectrum = np.abs(ffta*np.conj(fftb)+fftb*np.conj(ffta))
     
     return np.fft.fftshift(xspectrum)
+
+
+def compare_2pcf_estimators(maps, imsize=256, sigma=None, nmaps=None, pixsize=7., n_ft_bins=200, ft_logbins=False, tc_logbins=False, n_tc_bins=64, log_tc_size=0.01, n_int_steps=200):
+    
+    if nmaps is None:
+        nmaps = len(maps)
+        
+    Mkk = Mkk_bare(ell_min=150.*(1024./imsize), logbin=False, nbins=nbins, dimx=imsize, dimy=imsize, pixsize=pixsize)
+    Mkk.check_precomputed_values(precompute_all=True, shift=True)
+    
+    zc_maps = np.array([x[:imsize, :imsize]-np.nanmean(x[:imsize,:imsize]) for x in maps])
+    
+    dft_cls = np.zeros((len(zc_maps), n_ft_bins))
+    for i, zc_map in enumerate(zc_maps):
+        
+        l2b, cl_dft, clerr_dft = get_power_spec(zc_map, lbinedges=Mkk.binl, lbins=Mkk.midbin_ell)
+    
+        dft_cls[i] = cl_dft
+        
+        
+    if tc_logbins:
+        wthetas, var_wthetas, th_bins, covs, fz = compute_2pcf(binning='log', thetabin_size=log_tc_size, \
+                                        skymaps=rdns, mask=None, nmaps=nmaps, \
+                                        var_method='shot', npatch=1, verbose=False, \
+                                        pix_units='deg', plot=True, thetamax=thetamax, pixel_size=pixsize, bin_slop=0.01)
+    else:
+        wthetas, var_wthetas, th_bins, covs, fz = compute_2pcf(binning='linear', nlinbin=n_tc_bins, \
+                                        skymaps=rdns, mask=None, nmaps=nmaps, \
+                                        var_method='shot', npatch=1, verbose=False, \
+                                        pix_units='deg', plot=True, thetamax=thetamax, pixel_size=pixsize, bin_slop=0.01)
+
+
+        
+    
+    cls_from_wthetas, wthetas_from_cls = [], []
+        
+    thetas = np.linspace(1e-4, thetamax, 100)
+    
+    for i in range(nmaps):
+        wth_from_cl = c_ell_to_wtheta_hb(Mkk.midbin_ell, dft_cls[i], thetas, a=np.min(Mkk.binl), b=np.max(Mkk.binl), N=n_int_steps)
+        wthetas_from_cls.append(np.abs(wth_from_cl))
+        
+        cl_from_wth = wtheta_to_c_ell_hb_sp(th_bins, wthetas[i], Mkk.midbin_ell, a=np.min(thetas)*np.pi/180., b=np.max(thetas)*np.pi/180., N=n_int_steps)
+        cls_from_wthetas.append(cl_from_wth)
+        
+        
+    return Mkk.midbin_ell, th_bins, cls_from_wthetas, dft_cls, wthetas, wthetas_from_cls
 
 
 def allocate_fftw_memory(data_shape, n_blocks=2):
@@ -152,6 +233,103 @@ def compute_cl(map_a, map_b=None, ell_min=90., nbins=60, sterad_term=None, stera
     rbins, radprof, radstd = azimuthalAverage(xcorrs, ell_min=ell_min, nbins=nbins, sterad_term=sterad_term)
     
     return rbins, radprof, radstd
+
+
+def get_power_spectrum_2d(map_a, map_b=None, pixsize=7.):
+    '''
+    calculate 2d cross power spectrum Cl
+    
+    Inputs:
+    =======
+    map_a: 
+    map_b:map_b=map_a if no input, i.e. map_a auto
+    pixsize:[arcsec]
+    
+    Outputs:
+    ========
+    l2d: corresponding ell modes
+    ps2d: 2D Cl
+    '''
+    
+    if map_b is None:
+        map_b = map_a.copy()
+        
+    dimx, dimy = map_a.shape
+    sterad_per_pix = (pixsize/3600/180*np.pi)**2
+    V = dimx * dimy * sterad_per_pix
+    
+    ffta = np.fft.fftn(map_a*sterad_per_pix)
+    fftb = np.fft.fftn(map_b*sterad_per_pix)
+    ps2d = np.real(ffta * np.conj(fftb)) / V 
+    ps2d = np.fft.ifftshift(ps2d)
+    
+    l2d = get_l2d(dimx, dimy, pixsize)
+
+    return l2d, ps2d
+
+def get_l2d(dimx, dimy, pixsize):
+    lx = np.fft.fftfreq(dimx)*2
+    ly = np.fft.fftfreq(dimy)*2
+    lx = np.fft.ifftshift(lx)*(180*3600./pixsize)
+    ly = np.fft.ifftshift(ly)*(180*3600./pixsize)
+    ly, lx = np.meshgrid(ly, lx)
+    l2d = np.sqrt(lx**2 + ly**2)
+    
+    return l2d
+
+
+def get_power_spec(map_a, map_b=None, mask=None, pixsize=7., 
+                   lbinedges=None, lbins=None, nbins=29, 
+                   logbin=True, weights=None, return_full=False, return_Dl=False):
+    '''
+    calculate 1d cross power spectrum Cl
+    
+    Inputs:
+    =======
+    map_a: 
+    map_b:map_b=map_a if no input, i.e. map_a auto
+    mask: common mask for both map
+    pixsize:[arcsec]
+    lbinedges: predefined lbinedges
+    lbins: predefined lbinedges
+    nbins: number of ell bins
+    logbin: use log or linear ell bin
+    weights: Fourier weight
+    return_full: return full output or not
+    return_Dl: return Dl=Cl*l*(l+1)/2pi or Cl
+    
+    Outputs:
+    ========
+    lbins: 1d ell bins
+    ps2d: 2D Cl
+    Clerr: Cl error, calculate from std(Cl2d(bins))/sqrt(Nmode)
+    Nmodes: # of ell modes per ell bin
+    lbinedges: 1d ell binedges
+    l2d: 2D ell modes
+    ps2d: 2D Cl before radial binning
+    '''
+
+    if map_b is None:
+        map_b = map_a.copy()
+
+    if mask is not None:
+        map_a = map_a*mask - np.mean(map_a[mask==1])
+        map_b = map_b*mask - np.mean(map_b[mask==1])
+    else:
+        map_a = map_a - np.mean(map_a)
+        map_b = map_b - np.mean(map_b)
+        
+    l2d, ps2d = get_power_spectrum_2d(map_a, map_b=map_b, pixsize=pixsize)
+            
+    lbins, Cl, Clerr = azim_average_cl2d(ps2d, l2d, lbinedges=lbinedges, lbins=lbins, weights=weights)
+    
+    if return_Dl:
+        Cl = Cl * lbins * (lbins+1) / 2 / np.pi
+        
+    if return_full:
+        return lbins, Cl, Clerr, Nmodes, lbinedges, l2d, ps2d
+    else:
+        return lbins, Cl, Clerr
 
 
 def compute_snr(average, errors):

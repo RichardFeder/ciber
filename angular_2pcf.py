@@ -59,9 +59,9 @@ def wth2d_to_cl(wthetas, ell_bins, binl, pixsize=7., dim=1024, fac=1.):
     return c_ells, cl2s
 
 def compute_2pcf(skymaps=None, mask=None, nmaps=50, binning='log',nlinbin=100, pix_units='deg',\
-                      npatch=10, var_method='shot', return_cov=True, prefilter=False, verbose=False, plot=False, thetamin_fac=2.0,\
-                     thetamax=2., thetabin_size=0.3, pixel_size=7., imdim=1024, plot_title='Read noise realization',\
-                    datapath='/Users/richardfeder/Documents/ciber2/ciber/data/', tail_name='mmin=18.4_mmax=25', with_noise=False, bin_slop=0.1):
+                      npatch=10, var_method='shot', return_cov=True, prefilter=False, verbose=False,\
+                      plot=False, thetamin_fac=1.0, mask_list=None,\
+                     thetamax=2., thetabin_size=0.3, pixel_size=7., imdim=1024, plot_title='realization', bin_slop=0.1):
     
     ''' Inputs:
     
@@ -110,15 +110,18 @@ def compute_2pcf(skymaps=None, mask=None, nmaps=50, binning='log',nlinbin=100, p
         if verbose:
             print('i = ', i)
 
-        if skymaps is None:
-            load_srcmap = load_ciber_srcmap(i, with_noise=with_noise, datapath=datapath, tail_name=tail_name)
-        else:
-            load_srcmap = skymaps[i]
+        load_srcmap = skymaps[i]
 
         skymap = load_srcmap.copy()
         
-        xind_cat, yind_cat, ks, weights = get_treecorr_catalog_vals(xind, yind, skymap, mask=mask, prefilter=prefilter)
+        if mask_list is not None:
+            xind_cat, yind_cat, ks, weights = get_treecorr_catalog_vals(xind, yind, skymap, mask=mask_list[i], prefilter=prefilter)
             
+        else:
+            xind_cat, yind_cat, ks, weights = get_treecorr_catalog_vals(xind, yind, skymap, mask=mask, prefilter=prefilter)
+            
+        print('sum of weights is ', np.sum(weights))
+
         cat = treecorr.Catalog(ra=xind_cat, dec=yind_cat, k=ks, w=weights, ra_units=pix_units, dec_units=pix_units, npatch=npatch)
         
         if binning=='linear':
@@ -128,14 +131,12 @@ def compute_2pcf(skymaps=None, mask=None, nmaps=50, binning='log',nlinbin=100, p
 
         kk.process(cat, metric='Euclidean')
         
-        
         if verbose:
             print('var method is ', kk.var_method)
             print('number of pairs used is ', kk.npairs)
             print('kk.r_nom is ', kk.rnom*3600)
             print('kk.meanr is ', kk.meanr*3600)
 
-            
         npair_mask = (kk.npairs > 0.)
 
         if plot:

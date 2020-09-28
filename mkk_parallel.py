@@ -37,7 +37,6 @@ def compute_inverse_mkk(mkk):
     
     return inverse_mkk
 
-
   
 def group_idxs(idx_list, imdim=1024):
     
@@ -204,14 +203,14 @@ class Mkk_bare():
         return av_Mkk
     
     
-    def map_from_phase_realization(self, idx=0, shift=True,nsims=1, mode=None, sub_bins=False):
+    def map_from_phase_realization(self, idx=0, shift=True,nsims=1, mode=None, sub_bins=False, pix_size=7.):
 
         ''' This makes maps very quickly given some precomputed quantities. The unshifted ringmasks are used to generate
         the pure tones within each band, so then this gets multiplied by the precalculated noise and fourier transformed to real space. These
         maps are then stored in the variable self.c (self.fft_object_b goes from self.b --> self.c)'''
     
         if self.ell_map is None:
-            self.get_ell_bins(shift=shift)
+            self.get_ell_bins(shift=shift, pix_size=pix_size)
             
         if self.binl is None:
             self.compute_multipole_bins()
@@ -378,13 +377,13 @@ class Mkk_bare():
             
 
     def check_precomputed_values(self, precompute_all=False, ell_map=False, binl=False, weights=False, ringmasks=False,\
-                                masked_weight_sums=False, masked_weights=False, midbin_delta_ells=False, shift=False, sub_bins=False):
+                                masked_weight_sums=False, masked_weights=False, midbin_delta_ells=False, shift=False, sub_bins=False, pix_size=7.):
         
         
         if ell_map or precompute_all:
             if self.ell_map is None:
                 print('Generating ell bins..')
-                self.get_ell_bins(shift=shift)
+                self.get_ell_bins(shift=shift, pix_size=pix_size)
                  
         if binl or precompute_all:
             if self.binl is None:
@@ -444,6 +443,54 @@ class Mkk_bare():
                     C_ell[i] = np.sum(self.masked_weights[i]*fftsq[np.array(self.ringmasks[i])])/self.masked_weight_sums[i]
 
             return C_ell
+
+    def compute_error_vs_nsims(self, all_mkks, mask, mode='pure', n_realizations=200, tone_idxs=[0, 1, 2], nsims=[1,5,10,50,100, 200], \
+                          analytic_estimate=False):
+
+        inverse_mkks = []
+
+        for nsim in nsims:
+            avmkk = np.average(all_mkks[:nsim, :,:], axis=0)
+            print('avmkk has shape', avmkk.shape)
+            inverse_mkks.append(compute_inverse_mkk(avmkk))
+
+
+        abs_errors = np.zeros((len(tone_idxs), n_realizations, len(nsims)))
+
+        dcl_cl_list = []
+
+        for j, idx in enumerate(tone_idxs):
+
+            if analytic_estimate:
+                ell = 0.5*(self.binl[idx]+self.binl[idx+1])
+                d_ell = self.binl[idx+1]-self.binl[idx]
+
+                dcl_cl = np.array([np.sqrt(2/(ell*d_ell*nsim)) for nsim in nsims])
+                dcl_cl_list.append(dcl_cl)
+                print('dcl/cl=', dcl_cl)
+
+            print('tone index ', idx)
+            abs_error = []
+
+            for k in range(n_realizations):
+                if mode=='pure':
+                    testmap = ifft2(self.unshifted_ringmasks[idx]*np.array(np.random.normal(size=(self.dimx, self.dimy))+1j*np.random.normal(size=(self.dimx, self.dimy)))).real
+                elif mode=='white':
+                    testmap = ifft2(np.array(np.random.normal(size=(self.dimx, self.dimy))+1j*np.random.normal(size=(self.dimx, self.dimy)))).real
+
+                c_ell, dc_ell = self.compute_cl_indiv(testmap)
+                c_ell_masked, dc_ell_masked = self.compute_cl_indiv(testmap*mask)
+
+                for n, nsim in enumerate(nsims):
+
+                    c_ell_rectified = np.dot(np.array(inverse_mkks[n]).transpose(), np.array(c_ell_masked))
+
+                    abs_errors[j,k,n] = np.abs((c_ell[idx] - c_ell_rectified[idx])/c_ell[idx])
+
+
+        if analytic_estimate:
+            return abs_errors, np.array(dcl_cl_list)
+        return abs_errors
     
     def plot_tone_map_realization(self, tonemap, idx=None, return_fig=False):
 
@@ -458,6 +505,36 @@ class Mkk_bare():
         plt.colorbar()
         plt.show()    
         
+        if return_fig:
+            return f
+
+    def plot_twopanel_Mkk(self, signal_map, mask, inverse_mkk, xlims=None, ylims=None, colorbar=True, return_fig=False, logbin=False):
+
+        c_ell, dc_ell = self.compute_cl_indiv(signal_map)
+        c_ell_masked, dc_ell_masked = self.compute_cl_indiv(signal_map*mask)
+
+        f = plt.figure(figsize=(10,5))
+        plt.suptitle(str(np.round(self.binl[i],0))+'<$\\ell$<'+str(np.round(self.binl[i+1],0)), fontsize=20)
+        plt.subplot(1,2,1)
+        plt.imshow(signal_map*mask)
+
+        if xlims is not None:
+            plt.xlim(xlims[0], xlims[1])
+        if ylims is not None:
+            plt.ylim(ylims[0], ylims[1])
+        if colorbar:
+            plt.colorbar()
+
+        plt.subplot(1,2,2)
+
+        plt.errorbar(self.midbin_ell, c_ell, yerr=dc_ell, label='Unmasked', fmt='x', capsize=5, markersize=10)
+        plt.scatter(self.midbin_ell, c_ell_masked, label='Masked, uncorrected')
+        plt.errorbar(self.midbin_ell, np.dot(np.array(inverse_mkk), np.array(c_ell_masked)), yerr=dc_ell_masked, label='Masked, corrected',markersize=10, alpha=0.8, fmt='*', capsize=5)
+        if logbin:
+            plt.xscale('log')
+        plt.legend(loc='best')
+        plt.show()
+
         if return_fig:
             return f
 

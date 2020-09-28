@@ -13,6 +13,34 @@ from image_eval import psf_poly_fit, image_model_eval
 import sys
 
 
+def ihl_conv_templates(psf=None, rvir_min=1, rvir_max=50, dimx=150, dimy=150):
+    
+    ''' 
+    This function precomputes a range of IHL templates that can then be queried quickly when making mocks, rather than generating a
+    separate IHL template for each source. This template is convolved with the mock PSF.
+
+    Inputs:
+        psf (np.array, default=None): point spread function used to convolve IHL template
+        rvir_min/rvir_max (int, default=1/50): these set range of virial radii in pixels for convolved IHL templates.
+        dimx, dimy (int, default=150): dimension of IHL template in x/y.
+
+    Output:
+        ihl_conv_temps (list of np.arrays): list of PSF-convolved IHL templates. 
+
+    '''
+
+    ihl_conv_temps = []
+    rvir_range = np.arange(rvir_min, rvir_max).astype(np.float)
+    for rvir in rvir_range:
+        ihl = normalized_ihl_template(R_vir=rvir, dimx=dimx, dimy=dimy)
+        if psf is not None:
+            conv = scipy.signal.convolve2d(ihl, psf, 'same')
+            ihl_conv_temps.append(conv)
+        else:
+            ihl_conv_temps.append(ihl)
+    return ihl_conv_temps
+
+
 def initialize_cblas_ciber(libmmult):
 
     print('initializing c routines and data structs')
@@ -54,32 +82,7 @@ def rebin_map_coarse(original_map, Nsub):
     
     return original_map.reshape(m, Nsub, n, Nsub).mean((1,3))
 
-def ihl_conv_templates(psf=None, rvir_min=1, rvir_max=50, dimx=150, dimy=150):
-    
-    ''' 
-    This function precomputes a range of IHL templates that can then be queried quickly when making mocks, rather than generating a
-    separate IHL template for each source. This template is convolved with the mock PSF.
 
-    Inputs:
-        psf (np.array, default=None): point spread function used to convolve IHL template
-        rvir_min/rvir_max (int, default=1/50): these set range of virial radii in pixels for convolved IHL templates.
-        dimx, dimy (int, default=150): dimension of IHL template in x/y.
-
-    Output:
-        ihl_conv_temps (list of np.arrays): list of PSF-convolved IHL templates. 
-
-    '''
-
-    ihl_conv_temps = []
-    rvir_range = np.arange(rvir_min, rvir_max).astype(np.float)
-    for rvir in rvir_range:
-        ihl = normalized_ihl_template(R_vir=rvir, dimx=dimx, dimy=dimy)
-        if psf is not None:
-            conv = scipy.signal.convolve2d(ihl, psf, 'same')
-            ihl_conv_temps.append(conv)
-        else:
-            ihl_conv_temps.append(ihl)
-    return ihl_conv_temps
 
 def save_mock_items_to_npz(filepath, catalog=None, srcmap_full=None, srcmap_nb=None, \
                            conv_noise=None, m_min=None, m_min_nb=None, ihl_map=None, m_lim=None):
@@ -152,7 +155,7 @@ class ciber_mock():
         m_arr = cat[2,:]
         return x_arr, y_arr, m_arr
         
-    def get_psf(self, ifield=4, band=0, nx=1024, ny=1024, multfac=7.0, nbin=0., poly_fit=True, nwide=12):
+    def get_psf(self, ifield=4, band=0, nx=1024, ny=1024, multfac=7.0, nbin=0., poly_fit=True, nwide=17, width_psf_temp=50):
         
         beta, rc, norm = find_psf_params(self.ciberdir+'/data/psfparams.txt', tm=band+1, field=self.ciber_field_dict[ifield])
 
@@ -164,17 +167,30 @@ class ciber_mock():
         self.psf_full = norm * np.power(1 + radmap, -3*beta/2.)
         self.psf_full /= np.sum(self.psf_full)     
         self.psf_template = self.psf_full[Nlarge-nwide:Nlarge+nwide+1, Nlarge-nwide:Nlarge+nwide+1]
+        # self.psf_template = self.psf_full[Nlarge-nwide:Nlarge+nwide, Nlarge-nwide:Nlarge+nwide]
         
         print('imap center has shape', self.psf_template.shape)
 
-        
         if poly_fit:
-            psf = np.zeros((50,50))
-            psf[0:25,0:25] = self.psf_template
-            psf = scipy.misc.imresize(psf, (250, 250), interp='lanczos', mode='F')
-            psfnew = np.array(psf[0:125, 0:125])
-            psfnew[0:123,0:123] = psf[2:125,2:125]  # shift due to lanczos kernel
+
+            psf = np.zeros((70,70))
+            psf[0:35,0:35] = self.psf_template
+            psf = scipy.misc.imresize(psf, (350, 350), interp='lanczos', mode='F')
+            psfnew = np.array(psf[0:175, 0:175])
+
+            psfnew[0:173,0:173] = psf[2:175,2:175]  # shift due to lanczos kernel
+            psfnew[0:173,0:173] = psf[2:175,2:175]  # shift due to lanczos kernel
             self.cf = psf_poly_fit(psfnew, nbin=5)
+
+
+            # psf = np.zeros((50,50))
+            # psf[0:25,0:25] = self.psf_template
+            # psf = scipy.misc.imresize(psf, (250, 250), interp='lanczos', mode='F')
+            # psfnew = np.array(psf[0:125, 0:125])
+            # psfnew[0:123,0:123] = psf[2:125,2:125]  # shift due to lanczos kernel
+            # self.cf = psf_poly_fit(psfnew, nbin=5)
+
+        return beta, rc, norm
         
 
     def get_darktime_name(self, flight, field):
@@ -214,6 +230,7 @@ class ciber_mock():
 
 
         if self.psf_template is None:
+            print('generating psf template because it was none')
             
             self.get_psf(ifield=ifield, band=band, nx=nx, ny=ny, multfac=multfac, poly_fit=pcat_model_eval, nwide=nwide)
             
@@ -222,8 +239,9 @@ class ciber_mock():
         
 
         if pcat_model_eval:
-            
-            srcmap = image_model_eval(np.array(cat[:,0]).astype(np.float32)+2.5, np.array(cat[:,1]).astype(np.float32)-1.0 ,np.array(cat[:, flux_idx]).astype(np.float32),0., (nx, ny), 25, self.cf, lib=self.libmmult.pcat_model_eval)
+            srcmap = image_model_eval(np.array(cat[:,0]).astype(np.float32)+dx, np.array(cat[:,1]).astype(np.float32)-dy ,np.array(cat[:, flux_idx]).astype(np.float32),0., (nx, ny), 35, self.cf, lib=self.libmmult.pcat_model_eval)
+
+            # srcmap = image_model_eval(np.array(cat[:,0]).astype(np.float32)+dx, np.array(cat[:,1]).astype(np.float32)-dy ,np.array(cat[:, flux_idx]).astype(np.float32),0., (nx, ny), 25, self.cf, lib=self.libmmult.pcat_model_eval)
             
             return srcmap
         else:
@@ -279,9 +297,17 @@ class ciber_mock():
             tracer_cat = self.catalog_mag_cut(catalog_list[c], catalog_list[c][:,3], m_min, m_tracer_max)
             I_arr_full = self.mag_2_nu_Inu(cat_full[:,3], band)
             cat_full = np.hstack([cat_full, np.expand_dims(I_arr_full.value, axis=1)])
-            srcmap_full = self.make_srcmap(ifield, cat_full, band=band, pcat_model_eval=pcat_model_eval)
-            noise = np.random.normal(self.sky_brightness[band].value, self.instrument_noise[band].value, size=srcmap_full.shape)
-            conv_noise = scipy.signal.convolve2d(noise, self.psf_template, 'same')
+            srcmap_full = self.make_srcmap(ifield, cat_full, band=band, pcat_model_eval=pcat_model_eval, nwide=17)
+
+            large_noise = np.random.normal(self.sky_brightness[band].value, self.instrument_noise[band].value, size=(srcmap_full.shape[0]+100, srcmap_full.shape[1]+100))
+            print('large noise has shape ', large_noise.shape)
+            large_conv_noise = scipy.signal.convolve2d(large_noise, self.psf_template, 'same')
+
+            conv_noise = large_conv_noise[50:50+srcmap_full.shape[0], 50:50+srcmap_full.shape[1]]
+
+            print('conv noise has shape ', conv_noise.shape)
+            # noise = np.random.normal(self.sky_brightness[band].value, self.instrument_noise[band].value, size=srcmap_full.shape)
+            # conv_noise = scipy.signal.convolve2d(noise, self.psf_template, 'same')
             
             catalogs.append(cat_full)
             noise_realizations.append(conv_noise)

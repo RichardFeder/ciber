@@ -17,9 +17,9 @@ def find_psf_params(path, tm=1, field='elat10'):
     return False
 
 def load_ciber_srcmap(idx, with_noise=True, datapath='/Users/richardfeder/Documents/ciber2/ciber/mock_data/',tail_name='mmin=18.4_mmax=25'):
-    load_srcmap = np.load(datapath+'/ciber_mock_'+str(i)+tail_name+'.npz')['srcmap']
+    load_srcmap = np.load(datapath+'/ciber_mock_'+str(idx)+tail_name+'.npz')['srcmap']
     if with_noise:
-        noise = np.load(datapath+'/ciber_mock_'+str(i)+tail_name+'.npz')['conv_noise']
+        noise = np.load(datapath+'/ciber_mock_'+str(idx)+tail_name+'.npz')['conv_noise']
         load_srcmap += noise
         
     return load_srcmap

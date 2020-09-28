@@ -8,6 +8,8 @@ from PIL import Image
 # from Pillow import Image
 import glob
 
+from integrate_cl_wtheta import *
+
 
 
 figure_directory = '/Users/richardfeder/Documents/caltech/ciber2/figures/'
@@ -80,8 +82,7 @@ def compare_c_ells_diff_estimators(midbin_ells, midbin_ell_fourier=None, cls_2pc
     if return_fig:
         return f
 
-
-def filter_fns_config(bandpower_edges, theta_window, thetas, return_fig=True, mode='analytic'):
+def filter_fns_config(bandpower_edges, theta_window, thetas, return_fig=True, mode='analytic', apodize=False, lndth=0.5):
     '''
     bandpower_edges -- list specifying edges of multipole bins for bandpowers
     theta_window -- length 2 list with minimum and maximum separation measured in 2PCF (in radians)
@@ -90,19 +91,46 @@ def filter_fns_config(bandpower_edges, theta_window, thetas, return_fig=True, mo
     '''
     n_bandpower = len(bandpower_edges)
     print("assuming 20 band powers")
+    
+    if apodize:
+        mint = theta_window[0]
+        maxt = theta_window[1]
+        hann_window_vals = np.array([hann_window(np.log10(theta), 0.5, np.log10(mint), np.log10(maxt)) for theta in thetas])
+
+        plt.figure()
+        plt.title('Hann window, $\\Delta\\ln x=0.5$')
+        plt.plot(thetas*(180./np.pi), hann_window_vals)
+        plt.xscale('log')
+        plt.xlabel('$\\theta$ [deg]')
+        plt.ylabel('$T(\\theta)$')
+        plt.show()
+    
+    
     fig = plt.figure(figsize=(15,8))
     plt.suptitle('Full (black) vs. windowed (blue) bandpower filter functions', fontsize=20, y=1.02)
-    for b in range(n_bandpower):
-        if mode=='analytic':
-            tophat_vals = tophat_bp_window_configuration_space(thetas, bandpower_edges[b], bandpower_edges[b+1],\
-                                                               thetamin=theta_window[0], thetamax=theta_window[1])
+    for b in range(min(20, n_bandpower-1)):
+        
+        if apodize:
+            tophat_vals = g_theta_tophat_bandpass(thetas, bandpower_edges[b], bandpower_edges[b+1])
+            tophat_vals *= hann_window_vals
+
+        else:
+            tophat_vals = tophat_bp_window_config_space(thetas, bandpower_edges[b], bandpower_edges[b+1],\
+                                                             thetamin=theta_window[0], thetamax=theta_window[1])
+
         plt.subplot(4, 5, b+1)
-        plt.title('Bandpower '+str(b))
+        plt.title('Bandpower '+str(b+1))
         # x axis has unit of degrees so multiply thetas by 180/np.pi
         plt.plot(thetas*(180./np.pi), g_theta_tophat_bandpass(thetas, bandpower_edges[b], bandpower_edges[b+1]), color='k', label='full')
         plt.plot(thetas*(180./np.pi), tophat_vals, label='apodized', color='b')
-        plt.axvline(theta_window[0]*180./np.pi, color='g', linestyle='dashed')
-        plt.axvline(theta_window[1]*180./np.pi, color='g', linestyle='dashed')
+        if theta_window[0] > np.min(thetas):
+            plt.axvline(theta_window[0]*180./np.pi, color='g', linestyle='dashed')
+        if theta_window[1] < np.max(thetas):
+            plt.axvline(theta_window[1]*180./np.pi, color='g', linestyle='dashed')
+        
+        if apodize:
+            plt.axvline(180./np.pi*theta_window[0]*10**(-0.5*lndth), color='b', linestyle='dashed')
+            plt.axvline(180./np.pi*theta_window[1]*10**(0.5*lndth), color='b', linestyle='dashed')
         plt.xscale('log')
         if b > 14:
             plt.xlabel('$\\theta$ [deg]', fontsize=18)
@@ -113,7 +141,6 @@ def filter_fns_config(bandpower_edges, theta_window, thetas, return_fig=True, mo
     
     if return_fig:
         return fig
-
 
 def plot_radavg_xspectrum(rbins, radprofs=[], raderrs=None, labels=[], \
 						  lmin=90., save=False, snspalette=None, pdf_or_png='png', \
@@ -197,6 +224,97 @@ def plot_radavg_xspectrum(rbins, radprofs=[], raderrs=None, labels=[], \
 
 	
 	return f, yvals, yerr
+
+
+def plot_radavg_xspectrum2(rbins, radprofs=[], raderrs=None, labels=None, \
+                          lmin=90., save=False, snspalette=None, pdf_or_png='png', \
+                         image_dim=1024, mode='cross', zbounds=None, shotnoise=None, \
+                         add_shot_noise=None, Ntot=160000, sn_npoints=10, titlestring=None, \
+                          ylims=None):
+
+    steradperpixel = ((np.pi/lmin)/image_dim)**2 
+
+    f = plt.figure(figsize=(8,6))
+    xvals = rbins
+    
+    if labels is None:
+        labels = [None for x in range(len(radprofs))]
+
+    yerr = None # this gets changed from None to actual errors if they are fed in
+    if mode=='cross':
+        if titlestring is None:
+            titlestring = 'Cross Spectrum'
+        yvals = np.array([(rbins*lmin)**2*prof/(2*np.pi) for prof in radprofs])
+        ylabel = '$\\ell(\\ell+1) C_{\\ell}/2\\pi$'
+        if raderrs is not None:
+            yerr = np.array([(rbins*lmin)**2*raderr/(2*np.pi) for raderr in raderrs]) 
+    elif mode=='auto':
+        if titlestring is None:
+            titlestring = 'Auto Spectrum'
+        
+        yvals = np.array([np.sqrt((rbins)**2*prof/(2*np.pi)) for prof in radprofs])
+
+        ylabel = '($\\ell(\\ell+1) C_{\\ell}/2\\pi)^{1/2}$'
+        if raderrs is not None:
+            yerr = np.array([np.sqrt((rbins*lmin)**2/(2*np.pi))*raderr/(2*np.sqrt(prof)) for raderr in raderrs]) # I don't think this is right, modify at some point
+            print('yerr:', yerr)
+            mask = yerr > yvals
+
+            print(mask)
+            yerr2 = np.array(yerr)
+            yerr2[yerr >= yvals] = yvals[yerr>=yvals]*0.99999
+
+
+    if zbounds is not None:
+        titlestring +=', '+str(zmin)+'$<z<$'+str(zmax)
+
+    plt.title(titlestring, fontsize=16)
+    ax = plt.gca()
+    for i, prof in enumerate(radprofs):
+        color = next(ax._get_lines.prop_cycler)['color']
+
+        if shotnoise is not None:
+            if shotnoise[i]:
+                if mode=='auto':
+                    shot_noise_fit = np.poly1d(np.polyfit(np.log10(xvals[-sn_npoints:]), np.log10(np.sqrt(xvals[-sn_npoints:]**2*prof[-sn_npoints:]/(2*np.pi))), 1))
+                else:
+                    shot_noise_fit = np.poly1d(np.polyfit(np.log10(xvals[-sn_npoints:]), np.log10(xvals[-sn_npoints:]**2*prof[-sn_npoints:]/(2*np.pi)), 1))
+                sn_vals = 10**(shot_noise_fit(np.log10(xvals)))
+                if mode=='auto':
+                    sn_level = 2*np.pi*sn_vals[0]**2/lmin**2
+                elif mode=='cross':
+                    sn_level = 2*np.pi*sn_vals[0]/lmin**2 
+                print('sn level:', sn_level)
+                if i==0:
+                    label='Best fit Poisson fluctuations'
+                else:
+                    label=None
+                plt.plot(xvals, sn_vals, label=label,linestyle='dashed', color=color)
+
+            if add_shot_noise is not None:
+                if add_shot_noise[i]:
+                    sn = surface_area*Ntot*steradperpixel/(image_dim**2)
+                    print(surface_area, sn, Ntot)
+                    yvals[i] += np.sqrt((rbin*lmin)**2*(surface_area*Ntot*steradperpixel/(image_dim**2))/(2*np.pi))
+        
+        if raderrs is not None:
+            plt.errorbar(xvals, yvals[i], yerr=yerr[i], marker='.', label=labels[i], color=color)
+        else:
+            plt.plot(xvals, yvals[i], marker='.', label=labels[i], color=color)
+
+    if ylims is not None:
+        plt.ylim(ylims[0], ylims[1])
+    plt.legend(fontsize=14)
+    plt.xscale('log')
+    plt.yscale('log')
+    plt.xlabel('$\\ell$', fontsize=14)
+    plt.ylabel(ylabel, fontsize=14)
+    if save:
+        plt.savefig(figure_directory+'radavg_xspectrum.'+pdf_or_png, bbox_inches='tight')
+    plt.show()
+
+
+    return f, yvals, yerr
 
 
 def plot_2d_xspectrum(xspec, minpercentile=5, maxpercentile=95, save=False, pdf_or_png='png'):
@@ -963,55 +1081,6 @@ def plot_hankel_integrand(bins_rad, fine_bins, wtheta, spline_wtheta, ell, integ
     
     return f
 
-
-def show_window_functions(bandpower_edges, bp_ells, window_matrix):
-    cmap = cm.get_cmap('viridis', 20)
-    cmap_colors = cmap(np.arange(len(bandpower_edges)-1))
-
-    plt.figure(figsize=(15, 4))
-    for b, bp_edge in enumerate(bandpower_edges[:-1]):
-        if b==0:
-            label = 'Bandpowers'
-        else:
-            label = None
-        plt.plot(bp_ells, tophat_func(bp_ells, bandpower_edges[b], bandpower_edges[b+1]), color='k', label=label)
-
-    for b, bp_edge in enumerate(bandpower_edges[:-1]):
-        if b==0:
-            label = 'Window functions'
-        else:
-            label = None
-        plt.plot(bp_ells, window_matrix[b], color=cmap_colors[b], label=label)
-    plt.xscale('log')
-    plt.xlabel('Multipole $\\ell$', fontsize=18)
-    plt.ylabel('Window functions $W_b(\\ell)$', fontsize=18)
-    plt.ylim(-0.5, 1.25)
-    plt.legend(fontsize=14)
-    plt.show()
-    
-def show_window_matrix(window_matrix, theta_window, bp_edge_idxs, return_fig=True):
-    fig = plt.figure(figsize=(15, 3))
-    plt.title('Window matrix, $\\theta_{min}=$'+str(np.round(theta_window[0]*(180./np.pi)*3600.))+'\", $\\theta_{max}=$'+str(np.round(theta_window[1]*(180./np.pi)))+' deg', \
-             fontsize=18)
-    plt.imshow(window_matrix, cmap='Greys', aspect='auto', vmin=-1, vmax=1)
-    for i, idx in enumerate(bp_edge_idxs):
-        if i==0:
-            label = 'Bandpower edges'
-        else:
-            label = None
-        plt.axvline(idx, color='r', linewidth=1, label=label)
-    plt.legend(loc=1)
-    tickmark = np.linspace(0, window_matrix.shape[1], 6)
-    exp_marks = ['$10^{1}$', '$10^2$', '$10^3$', '$10^4$', '$10^5$', '$10^6$']
-    plt.xticks(tickmark, exp_marks)
-    plt.yticks(np.arange(0, window_matrix.shape[0], 4), np.arange(0, window_matrix.shape[0], 4))
-    plt.xlabel('Multipole $\\ell$', fontsize=18)
-    plt.ylabel('Bandpower index', fontsize=18)
-    plt.colorbar()
-    plt.show()
-    
-    if return_fig:
-        return fig
 
 
 

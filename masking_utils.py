@@ -35,16 +35,6 @@ def filter_trilegal_cat(trilegal_cat, m_max=17, I_band_idx=16):
     return filtered_trilegal_cat
 
 
-def make_radius_map_yt(mapin, cenx, ceny):
-    '''
-    return radmap of size mapin.shape. 
-    radmap[i,j] = distance between (i,j) and (cenx, ceny)
-    '''
-    Nx, Ny = mapin.shape
-    xx, yy = np.meshgrid(np.arange(Nx), np.arange(Ny), indexing='ij')
-    radmap = np.sqrt((xx - cenx)**2 + (yy - ceny)**2)
-    return radmap
-
 
 def magnitude_to_radius_linear(magnitudes, alpha_m=-6.25, beta_m=110.):
     ''' Masking radius function as given by Zemcov+2014. alpha_m has units of arcsec mag^{-1}, while beta_m
@@ -150,7 +140,7 @@ def get_mask_radius_th_rf(m_arr, beta, rc, norm, band=0, Ith=1., fac=0.7, plot=F
 
 
 def I_threshold_mask_simple(xs, ys, ms,psf=None, beta=None, rc=None, norm=None, ciber_mock=None, ifield=None, band=0, dimx=1024, dimy=1024, m_min=-np.inf, m_max=20, \
-                    I_thresh=1., method='radmap', nwide=12, fac=0.7):
+                    I_thresh=1., method='radmap', nwide=12, fac=0.7, plot=False):
     
     # get the CIBER PSF for a given ifield if desired
 
@@ -165,7 +155,11 @@ def I_threshold_mask_simple(xs, ys, ms,psf=None, beta=None, rc=None, norm=None, 
     
     xs, ys, ms = xs[mag_mask], ys[mag_mask], ms[mag_mask]
     
-    rs, f = get_mask_radius_th_rf(ms, beta, rc, norm, band=band, Ith=I_thresh, fac=fac)
+    if plot:
+        rs, f = get_mask_radius_th_rf(ms, beta, rc, norm, band=band, Ith=I_thresh, fac=fac, plot=True)
+    else:
+        rs = get_mask_radius_th_rf(ms, beta, rc, norm, band=band, Ith=I_thresh, fac=fac, plot=False)
+
         
     for i,(x,y,r) in enumerate(zip(xs, ys, rs)):
         radmap = make_radius_map_yt(np.zeros(shape=(dimx, dimy)), x, y)
@@ -177,6 +171,40 @@ def I_threshold_mask_simple(xs, ys, ms,psf=None, beta=None, rc=None, norm=None, 
         
     return mask, rs, beta, rc, norm
 
+
+def I_threshold_image_th(xs, ys, ms, psf=None, beta=None, rc=None, norm=None, ciber_mock=None, ifield=None, band=0, dimx=1024, dimy=1024, m_min=-np.inf, m_max=20, \
+                    I_thresh=1., nwide=17, nc=35):
+
+    # get the CIBER PSF for a given ifield if desired
+    if ifield is not None:
+        if ciber_mock is None:
+            print('Need ciber_mock class to obtain PSF for ifield '+str(ifield))
+            return None
+        else:
+            ciber_mock.get_psf(poly_fit=True, nwide=17)
+            psf = ciber_mock.psf_template
+
+    mask = np.ones([dimx, dimy], dtype=int)    
+
+    mag_mask = np.where((ms > m_min) & (ms < m_max))[0]
+    
+    xs, ys, ms = xs[mag_mask], ys[mag_mask], ms[mag_mask]
+    
+    print('len xs is ', len(xs))
+
+    if ciber_mock is not None:
+        Is = ciber_mock.mag_2_nu_Inu(ms, band)
+    else:
+        lam_effs = np.array([1.05, 1.79])*1e-6 # effective wavelength for bands
+        sr = ((7./3600.0)*(np.pi/180.0))**2
+        Is=3631*10**(-ms/2.5)*(3/lam_effs[band])*1e6/(sr*1e9)
+
+    print("Using bright source map threshold..")
+    srcmap = image_model_eval(np.array(xs).astype(np.float32)+2.5, np.array(ys).astype(np.float32)+1.0 ,np.array(Is.value).astype(np.float32),0., (dimx, dimy), nc, ciber_mock.cf, lib=ciber_mock.libmmult.pcat_model_eval)
+    
+    mask[srcmap > I_thresh] = 0
+
+    return mask, srcmap
 
 
 def I_threshold_mask(xs, ys, ms,psf=None, beta=None, rc=None, norm=None, ciber_mock=None, ifield=None, band=0, dimx=1024, dimy=1024, m_min=-np.inf, m_max=20, \
