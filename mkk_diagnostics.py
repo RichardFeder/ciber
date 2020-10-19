@@ -236,8 +236,8 @@ class Mkk_diag():
                 plt.axvline(np.median(all_Mkks[:,i+shift_ix,i+shift_iy]), linestyle='dashed', label=median_label, color='C1')
    
             plt.ylabel('Number of realizations')
-
-            plt.legend(frameon=False, fontsize=labelfontsize)
+            if i==0:
+                plt.legend(frameon=False, fontsize=labelfontsize)
 
         
         plt.tight_layout()
@@ -367,3 +367,58 @@ class Mkk_diag():
             
         if return_fig:
             return f
+
+def get_Mkk_kdes(all_Mkks, nbin=50, nfine=1000):
+    
+    bin_minmax = np.zeros(shape=(all_Mkks.shape[1], all_Mkks.shape[2], 2))
+    Mkk_kdes = [[[] for i in range(all_Mkks.shape[1])] for j in range(all_Mkks.shape[2])]
+    
+    for i in range(all_Mkks.shape[1]):
+        
+        
+        for j in range(all_Mkks.shape[2]):
+            
+            bin_minmax[i,j,:] = [0.5*np.min(all_Mkks[:,i,j]), np.max(all_Mkks[:,i,j])]
+            Mkk_kdes[i][j] = scipy.stats.gaussian_kde(all_Mkks[:,i,j], bw_method=0.2)
+                            
+    return Mkk_kdes, bin_minmax
+
+
+def kdes_to_fine_pdf_grid(Mkk_kdes, bin_minmax, nfine=100):
+
+    fine_bins = np.zeros(shape=(len(Mkk_kdes), len(Mkk_kdes[0]), nfine))
+
+    fine_pdfs = np.zeros(shape=(len(Mkk_kdes), len(Mkk_kdes[0]), nfine))
+    
+    
+    for i in range(len(Mkk_kdes)):
+        for j in range(len(Mkk_kdes[0])):
+            
+            fine_bins[i,j] = np.linspace(bin_minmax[i,j,0], bin_minmax[i,j,1], nfine)
+            fine_pdfs[i,j] = Mkk_kdes[i][j](fine_bins[i,j])
+            fine_pdfs[i,j] /= np.sum(fine_pdfs[i,j])
+            
+            
+        
+    return fine_bins, fine_pdfs
+
+def sample_Mkk(Mkk_kdes, bin_minmax, nsamp=10, nfine=100):
+    
+
+    sampled_mkks = []
+    fine_bins, fine_pdfs = kdes_to_fine_pdf_grid(Mkk_kdes, bin_minmax, nfine=nfine)
+
+    for n in np.arange(nsamp):
+        
+        mkk = np.zeros((bin_minmax.shape[0], bin_minmax.shape[1]))
+        
+        for i in range(bin_minmax.shape[0]):
+            for j in range(bin_minmax.shape[1]):
+                
+                mkk[i,j] = np.random.choice(fine_bins[i,j], p=fine_pdfs[i,j])
+          
+        sampled_mkks.append(mkk)
+        
+        plot_mkk_matrix(mkk, inverse=False, logscale=True)
+
+    return sampled_mkks

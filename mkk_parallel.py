@@ -55,7 +55,7 @@ def group_idxs(idx_list, imdim=1024):
 
 class Mkk_bare():
     
-    def __init__(self, pixsize=7., dimx=1024, dimy=1024, ell_min=150., logbin=True, nbins=30, n_fine_bins=0):
+    def __init__(self, pixsize=7., dimx=1024, dimy=1024, ell_min=180., logbin=True, nbins=20, n_fine_bins=0):
         
         for attr, valu in locals().items():
             setattr(self, attr, valu)
@@ -72,19 +72,18 @@ class Mkk_bare():
         self.ell_map = None # used to compute ring masks in fourier space
         self.binl = None # radially averaged multipole bins
         self.weights = None # fourier weights for angular power spectrum calculation
-        self.ringmasks = None
-        self.all_Mkks = None
-        self.av_Mkk = None
-        self.empty_aligned_objs = None 
-        self.fft_objs = None
+        self.ringmasks = None # 2D multipole masks for each bin
+        self.all_Mkks = None # this can be used if one wants all phase realizations of the Mkk matrix that are usually averaged down
+        self.av_Mkk = None # average Mkk matrix for many realizations
+        self.empty_aligned_objs = None # used for fast fourier transforms through pyfftw
+        self.fft_objs = None # used for fast fourier transforms through pyfftw
 
 
     def set_bin_edges(self, binl):
         self.binl = binl
 
-
     def get_mkk_sim(self, mask, nsims, show_tone_map=False, mode='auto', n_split=1, \
-                    print_timestats=False, return_all_Mkks=False, n_fine_bins=None, sub_bins=False, store_Mkks=True):
+                    print_timestats=False, return_all_Mkks=False, n_fine_bins=None, sub_bins=False, store_Mkks=True, precompute_all=False):
         
         ''' This is the main function that computes an estimate of the mode coupling matrix Mkk from nsims generated tone maps. 
         Knox errors are also computed based on the mask/number of modes/etc. (note: should this also include a beam factor?) This implementation is more memory intensive,
@@ -119,7 +118,7 @@ class Mkk_bare():
             100 sims -> 80 s
 
         '''
-        print('number of CPU threads available:', multiprocessing.cpu_count())
+        print('Number of CPU threads available:', multiprocessing.cpu_count())
 
 
         self.print_timestats = print_timestats
@@ -128,7 +127,7 @@ class Mkk_bare():
             self.n_fine_bins = n_fine_bins
             
         if n_split > 1:
-            print('Splitting up computation of', nsims, 'simulations into', n_split, 'chunks..')
+            print('Splitting up computation of '+str(nsims)+' simulations into '+str(n_split)+' chunks..')
             assert (nsims % n_split) == 0
 
         self.mask = mask
@@ -140,8 +139,10 @@ class Mkk_bare():
         Mkks, dC_ell_list = [], []
         
         # lets precompute a few things that are used later..
-        self.check_precomputed_values(precompute_all=True, shift=True, sub_bins=sub_bins)
+        if precompute_all:
+            self.precompute_mkk_quantities(precompute_all=True, shift=True, sub_bins=sub_bins)
         
+        # this is for measuring individual 2D fourier modes for some number of bins 
         if sub_bins and self.n_fine_bins > 0:
             n_total_bins = len(self.unshifted_sub_ringmasks)
         else:
@@ -149,13 +150,14 @@ class Mkk_bare():
         
         self.n_total_bins = n_total_bins
 
-        all_Mkks = np.zeros((nsims, n_total_bins, n_total_bins))
+        if return_all_Mkks or store_Mkks:
+            all_Mkks = np.zeros((nsims, n_total_bins, n_total_bins))
         
         for i in range(n_split):
-            print('split ', i+1, 'of', n_split)
+            print('Split '+str(i+1)+' of '+str(n_split))
 
             # compute noise realizations beforehand so time isn't wasted generating a whole new set each time. We can do this because the ring masks
-            # that we multiply by the noise realizations are spatially disjoint, i.e. the union of all of the masks is the null set. 
+            # that we multiply by the noise realizations are spatially disjoint, i.e. the union of all of the Fourier masks is the null set. 
             self.noise = np.random.normal(size=maplist_split_shape)+ 1j*np.random.normal(size=maplist_split_shape)
             
             Mkk = np.zeros((n_total_bins, n_total_bins))
@@ -179,14 +181,12 @@ class Mkk_bare():
                     if return_all_Mkks or store_Mkks:
                         all_Mkks[i*nsims//n_split :(i+1)*nsims//n_split ,j,:] = np.array(masked_Cl)
 
-
                     # row entry for Mkk is average over realizations
                     Mkk[j,:] = np.mean(np.array(masked_Cl), axis=0)
 
             Mkks.append(Mkk)
 
         if store_Mkks:
-
             self.all_Mkks = all_Mkks
 
         if return_all_Mkks:
@@ -210,7 +210,7 @@ class Mkk_bare():
         maps are then stored in the variable self.c (self.fft_object_b goes from self.b --> self.c)'''
     
         if self.ell_map is None:
-            self.get_ell_bins(shift=shift, pix_size=pix_size)
+            self.get_ell_map(shift=shift, pix_size=pix_size)
             
         if self.binl is None:
             self.compute_multipole_bins()
@@ -226,8 +226,7 @@ class Mkk_bare():
 
     
     def get_ensemble_angular_autospec(self, nsims=2, sub_bins=False, apply_mask=False):
-        
-                    
+                 
         if apply_mask:
             self.empty_aligned_objs[1] *= self.mask
 
@@ -251,7 +250,7 @@ class Mkk_bare():
     
     
     def compute_ringmasks(self, sub_bins=False):        
-        print('minimum ell_map value is ', np.min(self.ell_map))
+        print('Minimum ell_map value is '+str(np.min(self.ell_map)))
         
         self.correspond_bins = []
         
@@ -350,11 +349,11 @@ class Mkk_bare():
         self.logbin to True makes bins that are spaced equally in log space, rather than just linearly.'''
 
         if self.logbin:
-            self.binl = 10**(np.linspace(np.log10(self.ell_min), np.log10(self.ell_max), self.nbins))
+            self.binl = 10**(np.linspace(np.log10(self.ell_min), np.log10(self.ell_max), self.nbins+1))
         else:
-            self.binl = np.linspace(self.ell_min, self.ell_max, self.nbins)
+            self.binl = np.linspace(self.ell_min, self.ell_max, self.nbins+1)
                 
-    def get_ell_bins(self, shift=True, pix_size=7.):
+    def get_ell_map(self, shift=True, pix_size=7.):
 
         ''' this will take input map dimensions along with a pixel scale (in arcseconds) and compute the 
         corresponding multipole bins for the 2d map.'''
@@ -376,24 +375,24 @@ class Mkk_bare():
             self.ell_map = fftshift(self.ell_map)
             
 
-    def check_precomputed_values(self, precompute_all=False, ell_map=False, binl=False, weights=False, ringmasks=False,\
-                                masked_weight_sums=False, masked_weights=False, midbin_delta_ells=False, shift=False, sub_bins=False, pix_size=7.):
+    def precompute_mkk_quantities(self, precompute_all=False, ell_map=False, binl=False, weights=False, ringmasks=False,\
+                                masked_weight_sums=False, masked_weights=False, midbin_delta_ells=False, shift=True, sub_bins=False):
         
         
         if ell_map or precompute_all:
-            if self.ell_map is None:
-                print('Generating ell bins..')
-                self.get_ell_bins(shift=shift, pix_size=pix_size)
+            print('Generating 2D ell map..')
+            self.get_ell_map(shift=shift, pix_size=self.pixsize)
+
                  
         if binl or precompute_all:
-            if self.binl is None:
-                print('Generating multipole bins..')
-                self.compute_multipole_bins()
+            print('Generating multipole bins..')
+            self.compute_multipole_bins()
+            print('Multipole bin edges:', self.binl)
                 
         if weights or precompute_all:
             # if no weights provided by user, weights are unity across image
             if self.weights is None:
-                print('Setting Fourier weights to unity')
+                print('No Fourier weights provided, setting to unity..')
                 self.weights = np.ones((self.dimx, self.dimy))   
             
         if ringmasks or precompute_all:
@@ -411,12 +410,12 @@ class Mkk_bare():
             self.compute_midbin_delta_ells()
         
         
-    def compute_cl_indiv(self, map1, map2=None, weights=None, precompute=False, sub_bins=False):
+    def compute_cl_indiv(self, map1, map2=None, weights=None, precompute=False, sub_bins=False, rebin=False):
         ''' this is for individual map realizations and should be more of a standalone, compared to Mkk.get_ensemble_angular_spec(),
         which is optimized for computing many realizations in parallel.'''
         
         if precompute:
-            self.check_precomputed_values(precompute_all=True, shift=True)
+            self.precompute_mkk_quantities(precompute_all=True, shift=True)
 
         fac = self.arcsec_pp_to_radian**2
 
@@ -432,7 +431,13 @@ class Mkk_bare():
 
             for i in range(self.n_total_bins):
                 if self.sub_ringmask_sums[i] > 0:
-                    C_ell_star[i] = np.sum(self.masked_weights[i]*fftsq[np.array(self.ringmasks[i])])/self.masked_weight_sums[i]
+                    # print(np.array(self.unshifted_sub_ringmasks[i]))
+                    # print(fftsq[np.array(self.unshifted_sub_ringmasks[i])])
+                    C_ell_star[i] = np.sum(self.sub_masked_weights[i]*fftsq[np.array(self.sub_ringmasks[i])])/self.sub_masked_weight_sums[i]
+
+            if rebin:
+                C_ell_star_rb = np.array([np.mean(C_ell_star[self.correspond_bins[k]]) for k in range(len(self.correspond_bins))])
+                return C_ell_star_rb
 
             return C_ell_star
             
@@ -440,7 +445,7 @@ class Mkk_bare():
             C_ell = np.zeros(len(self.binl)-1)
             for i in range(len(self.binl)-1):
                 if self.ringmask_sums[i] > 0:
-                    C_ell[i] = np.sum(self.masked_weights[i]*fftsq[np.array(self.ringmasks[i])])/self.masked_weight_sums[i]
+                    C_ell[i] = np.sum(self.masked_weights[i]*fftsq[np.array(self.unshifted_ringmasks[i])])/self.masked_weight_sums[i]
 
             return C_ell
 
@@ -498,9 +503,9 @@ class Mkk_bare():
 
         f = plt.figure()
         if idx is not None:
-            plt.title('Tone map ('+str(np.round(self.binl[idx], 2))+'<$\\ell$<'+str(np.round(self.binl[idx+1], 2))+')', fontsize=16)
+            plt.title('Tone map ('+str(int(self.binl[idx]))+'<$\\ell$<'+str(int(self.binl[idx+1]))+')', fontsize=14)
         else:
-            plt.title('Tone map')
+            plt.title('Tone map', fontsize=14)
         plt.imshow(tonemap)
         plt.colorbar()
         plt.show()    
@@ -538,11 +543,23 @@ class Mkk_bare():
         if return_fig:
             return f
 
+    def show_mask(self, return_fig=False):
+
+        f = plt.figure()
+        plt.title('Input mask', fontsize=18)
+        plt.imshow(self.mask, interpolation=None)
+        plt.xlabel('$x$ [pixels]', fontsize=16)
+        plt.ylabel('$y$ [pixels]', fontsize=16)
+        plt.colorbar()
+        plt.show()
+
+        if return_fig:
+            return f
+
                     
-def wrapped_mkk(nsims):
-    x = Mkk(nbins=20)
-    mask = np.ones((x.dimx, x.dimy))
-    mkk, dc_ell = x.get_mkk_sim(mask, nsims, show_tone_map=False, n_split=1)
+def wrapped_mkk(mask, nsims, nbins=20, show_tone_map=False, n_split=1):
+    x = Mkk_bare(nbins=nbins)
+    mkk, dc_ell = x.get_mkk_sim(mask, nsims, show_tone_map=show_tone_map, n_split=n_split)
     return mkk
 
 def multithreaded_mkk(n_process=4, nsims=100):
@@ -556,7 +573,7 @@ def multithreaded_mkk(n_process=4, nsims=100):
     return mkk
 
 
-def plot_mkk_matrix(mkk, inverse=False, logscale=False, title=None, vmin=None, vmax=None, return_fig=False):
+def plot_mkk_matrix(mkk, inverse=False, logscale=False, symlogscale=False, symlinthresh=1e-6, title=None, vmin=None, vmax=None, return_fig=False):
     if title is None:
         if inverse:
             title = '$M_{\\ell \\ell^\\prime}^{-1}$'
@@ -567,11 +584,13 @@ def plot_mkk_matrix(mkk, inverse=False, logscale=False, title=None, vmin=None, v
     plt.title(title, fontsize=16)
     if logscale:
         plt.imshow(mkk, norm=matplotlib.colors.LogNorm(), vmin=vmin, vmax=vmax, origin='upper')
+    elif symlogscale:
+        plt.imshow(mkk, norm=matplotlib.colors.SymLogNorm(symlinthresh), vmin=vmin, vmax=vmax, origin='upper')
     else:
         plt.imshow(mkk, origin='upper')
     plt.colorbar()
-    plt.xticks(np.arange(0, mkk.shape[0], 10))
-    plt.yticks(np.arange(0, mkk.shape[1], 10))
+    plt.xticks(np.arange(0, mkk.shape[0], mkk.shape[0]//5))
+    plt.yticks(np.arange(0, mkk.shape[1], mkk.shape[1]//5))
     plt.xlabel('Bin index', fontsize='large')
     plt.ylabel('Bin index', fontsize='large')
     plt.tight_layout()
