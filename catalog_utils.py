@@ -3,7 +3,76 @@ import matplotlib
 import matplotlib.pyplot as plt
 import scipy.stats
 from astropy.table import Table
+from astropy.io import fits
+from astropy.coordinates import SkyCoord
+from astropy.coordinates import match_coordinates_sky
 import pandas as pd
+from scipy.ndimage import gaussian_filter
+
+
+
+def catalog_df_add_xy(field, df, datadir='/Users/luminatech/Documents/ciber2/ciber/data/', imcut=True):
+    order = [c for c in df.columns]
+    # find the x, y solution with all quad
+    for inst in [1,2]:
+        print('TM'+str(inst))
+        hdrdir = datadir+'astroutputs/inst'+str(inst)+'/'
+        xoff = [0,0,512,512]
+        yoff = [0,512,0,512]
+        for iquad,quad in enumerate(['A','B','C','D']):
+            print('quad '+quad)
+            hdulist = fits.open(hdrdir + field + '_' + quad + '_astr.fits')
+            wcs_hdr=wcs.WCS(hdulist[('primary',1)].header, hdulist)
+            hdulist.close()
+            src_coord = SkyCoord(ra=df['ra']*u.degree, dec=df['dec']*u.degree, frame='icrs')
+
+            x_arr, y_arr = wcs_hdr.all_world2pix(df['ra'],df['dec'],0)
+            df['x' + quad] = x_arr + xoff[iquad]
+            df['y' + quad] = y_arr + yoff[iquad]
+
+        df['meanx'] = (df['xA'] + df['xB'] + df['xC'] + df['xD']) / 4
+        df['meany'] = (df['yA'] + df['yB'] + df['yC'] + df['yD']) / 4
+        
+        # assign the x, y with the nearest quad solution
+        df['x'+str(inst)] = df['xA'].copy()
+        df['y'+str(inst)] = df['yA'].copy()
+        bound = 511.5
+        df.loc[ (df['meanx'] < bound) & (df['meany'] > bound),'x'+str(inst)] = df['xB']
+        df.loc[ (df['meanx'] < bound) & (df['meany'] > bound),'y'+str(inst)] = df['yB']
+        
+        df.loc[ (df['meanx'] > bound) & (df['meany'] < bound),'x'+str(inst)] = df['xC']
+        df.loc[ (df['meanx'] > bound) & (df['meany'] < bound),'y'+str(inst)] = df['yC']
+
+        df.loc[ (df['meanx'] > bound) & (df['meany'] > bound),'x'+str(inst)] = df['xD']
+        df.loc[ (df['meanx'] > bound) & (df['meany'] > bound),'y'+str(inst)] = df['yD']
+
+    if imcut:
+        print('making cut on image bounds')
+        inst1_mask = (df['x1'] > 0)&(df['x1'] < 1023)&(df['y1'] > 0)&(df['y1'] < 1023)
+        inst2_mask = (df['x2'] > 0)&(df['x2'] < 1023)&(df['y2'] > 0)&(df['y2'] < 1023)
+        imcut_idx = np.where(inst1_mask | inst2_mask)
+        df = df.iloc[imcut_idx].copy()
+        df = df.reset_index(drop=True)
+        
+    # write x, y to df
+    order = order[:2] + ['x1','y1','x2','y2'] + order[2:]
+    dfout = df[order].copy()
+    
+    return dfout
+
+def check_for_catalog_duplicates(cat, match_thresh=0.1, nthneighbor=2, ra_errors=None, dec_errors=None, zscore=None):
+    cat_src_coord = SkyCoord(ra=cat['ra']*u.degree, dec=cat['dec']*u.degree, frame='icrs')
+
+    # choose nthneighbor=2 to not just include the same source
+    idx, d2d, _ = match_coordinates_sky(cat_src_coord, cat_src_coord, nthneighbor=nthneighbor) # there is an order specific element to this
+    if ra_errors is not None:
+        match_thresh = zscore*np.sqrt(ra_errors**2 + dec_errors**2)
+        print('match threshes is ', match_thresh)
+       
+    no_dup_mask = np.where(d2d.arcsec > match_thresh)
+    no_dup_cat = cat.iloc[no_dup_mask].copy()
+
+    return no_dup_cat, d2d, idx
 
 
 def dataframe_to_fits(df, fits_path):
@@ -14,6 +83,14 @@ def fits_to_dataframe(fits_path):
     table = Table.read(fits_path)
     df = table.to_pandas()
     return df
+
+def get_smoothed_count_field(x_all, y_all, imdim=1024, smooth_sig=20):
+    
+    H, xedge, yedge = np.histogram2d(x_all, y_all, [np.arange(imdim), np.arange(imdim)])
+    gf = gaussian_filter(H.transpose(), sigma=smooth_sig)
+    gf -= np.median(gf)
+    
+    return gf
 
 def hsc_positions(hsc_cat, nchoose, z, dz=10, ra_min=241.5, ra_max=243.5, dec_min=54.0, dec_max=56.0, rmag_max=29.0, scatter=True):
 
@@ -67,6 +144,57 @@ def hsc_positions(hsc_cat, nchoose, z, dz=10, ra_min=241.5, ra_max=243.5, dec_mi
     
     return tx, ty
 
+def panstarrs_preprocess(fieldstr, datadir='/Users/luminatech/Documents/ciber2/ciber/data/cats/', \
+                        detect_any=True, detect_y=True, cat_keys=None, apply_flags=True):
+
+    if cat_keys is None:
+        cat_keys = ['ra', 'dec', 'gMeanPSFMag', 'rMeanPSFMag', 'iMeanPSFMag', 'zMeanPSFMag', 'yMeanPSFMag']
+    df = pd.read_csv(datadir+'PanSTARRS/raw/'+fieldstr+'.csv')
+    
+    # combine the data
+    df_raw = df.drop(['ObjID'],axis=1)
+    
+    # select flag 8 and flag 16 column
+    flag_arr = df_raw.qualityFlag
+    bin_values = np.flip(2 ** np.arange(11),0)
+    flag_bin_arr = np.zeros([len(flag_arr),len(bin_values)],dtype=int)
+
+    for i, flag in enumerate(flag_arr):
+        bin_str = "{:011b}".format(flag)
+        bin_int = list(map(int,list(bin_str)))
+        flag_bin_arr[i,:] = bin_int
+
+    flag_bin_arr8 = flag_bin_arr[:,int(np.where(bin_values==8)[0])]
+    flag_bin_arr16 = flag_bin_arr[:,int(np.where(bin_values==16)[0])]
+
+    for i,bin_value in enumerate(bin_values):
+            df_raw['flag{}'.format(bin_value)] = flag_bin_arr[:,i]
+
+    if apply_flags:
+        df = df_raw[(df_raw.flag8 == 1) | (df_raw.flag16 == 1)].copy()
+    else:
+        df = df_raw.copy()
+    # set the default value to -99
+    df.replace([-999],-99,inplace=True)
+    # select source having band y magnitude
+    if detect_any:
+        print('selecting sources detected in any of the five bands')
+        sp = np.where((df['gMeanPSFMag']!=-99)|(df['rMeanPSFMag']!=-99)|\
+                   (df['iMeanPSFMag']!=-99)|(df['zMeanPSFMag']!=-99)|(df['yMeanPSFMag']!=-99))[0]
+        df = df.iloc[sp].copy()
+        df = df.reset_index(drop=True) 
+    elif detect_y:
+        print('selecting sources with PSF mags in y band')
+        sp = np.where((df['yMeanPSFMag']!=-99))[0]
+        df = df.iloc[sp].copy()
+        df = df.reset_index(drop=True)
+    else:
+        print('no cuts on PSF mags in grizy or y')
+        
+    df = df[cat_keys].copy()
+
+    return df
+
 def sdss_preprocess(sdss_path, redshift_keyword='redshift', class_cut=False, object_class_cut=None, warning_cut=False):
     
     ''' 
@@ -119,3 +247,26 @@ def sdss_preprocess(sdss_path, redshift_keyword='redshift', class_cut=False, obj
     print('after cuts:', len(sdss_df.index))
     return sdss_df
 
+
+def unWISE_flag_filter(cat, flags_unwise_val=0, flags_info_val=0, primary=True, band_merged_idx=0):
+    mask = np.bool((cat.shape[0]))
+    if primary:
+        mask *= (cat['primary']==1)
+    if flags_unwise_val is not None:
+        mask *= (cat['flags_unwise'][:,band_merged_idx]==0)
+    if flags_info_val is not None:
+        mask *= (cat['flags_info'][:,band_merged_idx]==0)
+        
+    return mask
+
+def unWISE_fluxes_to_mags(fluxes, mode='AB'):
+    Vega = 22.5-2.5*np.log10(fluxes)
+    
+    if mode=='Vega':
+        return Vega
+    else:
+        AB = Vega.copy()
+        AB[:,0] + 2.699
+        AB[:,1] + 3.339
+        
+        return AB

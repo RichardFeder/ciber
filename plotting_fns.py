@@ -157,29 +157,79 @@ def plot_catalog_properties(cat, zidx=2, mapp_idx=3, mabs_idx=4, mhalo_idx=5, rv
 	plt.show()
 	return f
 
-def plot_cumulative_numbercounts(cat, mag_idx, field=None, df=True, m_min=18, m_max=30, \
-								nbin=100, label=None, pdf_or_png='pdf', save=False, show=True):
-	f = plt.figure()
-	title = 'Cumulative number count distribution'
-	if field is not None:
-		title += ' -- '+str(field)
-	plt.title(title)
-	magspace = np.linspace(m_min, m_max, nbin)
-	if df:
-		cdf_nm = np.array([len(cat.loc[cat[mag_idx]<x]) for x in magspace])
-	else:
-		cdf_nm = np.array([len(cat[cat[mag_idx] < x]) for x in magspace])
-	plt.plot(magspace, cdf_nm, label=label)
-	plt.yscale('log')
-	plt.ylabel('N[r < magnitude]', fontsize=14)
-	plt.xlabel('magnitude', fontsize=14)
-	plt.legend()
-	if save and field is not None:
-		plt.savefig('../figures/catalog_map_figures/number_cts_'+str(field)+'_catalog.'+pdf_or_png, bbox_inches='tight')
-	if show:
-		plt.show()
-		
-	return f
+def plot_cumulative_numbercounts(cat, mag_idx, field=None, df=True, m_min=18, m_max=30, vlines=None, hlines=None, \
+                                nbin=100, label=None, pdf_or_png='pdf', band_label='W1', show=True, \
+                                  return_fig=True, magsys='AB'):
+    f = plt.figure()
+    title = 'Cumulative number count distribution'
+    if field is not None:
+        title += ' -- '+str(field)
+    plt.title(title, fontsize=14)
+    magspace = np.linspace(m_min, m_max, nbin)
+    if df:
+        cdf_nm = np.array([len(cat.loc[cat[mag_idx]<x]) for x in magspace])
+    else:
+        print(len(cat))
+        cdf_nm = np.array([len(cat[(cat[:,mag_idx] < x)]) for x in magspace])
+    plt.plot(magspace, cdf_nm, label=label)
+    if vlines is not None:
+        for vline in vlines:
+            plt.axvline(vline, linestyle='dashed')
+    if hlines is not None:
+        for hline in hlines:
+            plt.axhline(hline, linestyle='dashed')
+    plt.yscale('log')
+    plt.ylabel('N['+band_label+' < magnitude]', fontsize=14)
+    plt.xlabel(band_label+' magnitude ('+magsys+')', fontsize=14)
+    plt.legend()
+    if show:
+        plt.show()
+    if return_fig:
+        return f
+
+def plot_number_counts_uk(df, binedges=None, bands=['yAB', 'jAB', 'hAB', 'kAB'], magstr='', add_title_str='', return_fig=False):
+    if binedges is None:
+        binedges = np.arange(7,23,0.5)
+
+    f = plt.figure()
+    plt.title(magstr+add_title_str, fontsize=16)
+    bins = (binedges[:-1] + binedges[1:])/2
+    
+    for band in bands:
+        d = df[band+magstr]
+        shist,_ = np.histogram(d, bins = binedges)
+        plt.plot(bins,shist / (binedges[1]-binedges[0]) / 4,'o-',label=band)
+
+    plt.yscale('log')
+    plt.xlabel('$m_{AB}$', fontsize=14)
+    plt.ylabel('counts / mag / deg$^2$', fontsize=14)
+    plt.legend()
+    plt.grid()
+    plt.show()
+    if return_fig:
+        return f
+
+def plot_number_counts(df, binedges=None, bands=['g', 'r', 'i', 'z', 'y'], magstr='MeanPSFMag', add_title_str='', return_fig=False):
+    if binedges is None:
+        binedges = np.arange(7,23,0.5)
+
+    f = plt.figure()
+    plt.title(magstr+add_title_str, fontsize=16)
+    bins = (binedges[:-1] + binedges[1:])/2
+    
+    for band in bands:
+        d = df[band+magstr]
+        shist,_ = np.histogram(d, bins = binedges)
+        plt.plot(bins,shist / (binedges[1]-binedges[0]) / 4,'o-',label=band)
+
+    plt.yscale('log')
+    plt.xlabel('$m_{AB}$', fontsize=14)
+    plt.ylabel('counts / mag / deg$^2$', fontsize=14)
+    plt.legend()
+    plt.grid()
+    plt.show()
+    if return_fig:
+        return f
 
 def plot_dm_powerspec(show=True):
     
