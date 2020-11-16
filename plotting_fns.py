@@ -8,9 +8,139 @@ from PIL import Image
 # from Pillow import Image
 import glob
 
+from integrate_cl_wtheta import *
+
 
 
 figure_directory = '/Users/richardfeder/Documents/caltech/ciber2/figures/'
+
+
+def compare_c_ells_diff_estimators(midbin_ells, midbin_ell_fourier=None, cls_2pcf=None, cls_fourier=None, B_ell=None,\
+                                   plot_d_ell=False, return_fig=True, show=True, title=None, sqrt=False, ylim=None, plot_ytc=False, fudge_fac=1.):
+    
+
+    if plot_d_ell:
+        prefactor = midbin_ells*(midbin_ells+1.)/(2*np.pi)
+    else:
+        prefactor = 1.
+    
+    f = plt.figure(figsize=(8, 6))
+    
+    if title is not None:
+        plt.title(title, fontsize=16)
+    
+    
+    if cls_2pcf is not None:
+        if len(midbin_ells) > 50:
+            plt.plot(midbin_ells, fudge_fac*prefactor*np.median(cls_2pcf, axis=0), marker='.', color='r', label='$w(\\theta)\\rightarrow C_{\\ell}$')
+            plt.fill_between(midbin_ells, prefactor*np.percentile(cls_2pcf, 16, axis=0), prefactor*np.percentile(cls_2pcf, 84, axis=0), alpha=0.3, color='r')
+        else:
+            plt.errorbar(midbin_ells, fudge_fac*prefactor*np.median(cls_2pcf, axis=0), yerr=fudge_fac*prefactor*np.std(cls_2pcf, axis=0), marker='.', capsize=5, color='r', label='$w(\\theta)\\rightarrow C_{\\ell}$')
+            if B_ell is not None:
+                plt.errorbar(midbin_ells, fudge_fac*prefactor*np.median(cls_2pcf, axis=0)/np.sqrt(B_ell), yerr=fudge_fac*prefactor*np.std(cls_2pcf, axis=0)/np.sqrt(B_ell), marker='.', capsize=5, color='r', linestyle='dashed', label='$w(\\theta)\\rightarrow C_{\\ell}$ (Beam corrected)')
+
+    if cls_fourier is not None:
+        if midbin_ell_fourier is not None:
+            ells = midbin_ell_fourier
+            if plot_d_ell:
+                prefactor = ells*(ells+1.)/(2*np.pi)
+        else:
+            ells = midbin_ells
+        
+        
+        print('ells has length', len(ells))
+        print('cls_fourier has shape', cls_fourier.shape)
+        if len(midbin_ells) > 50:
+            plt.plot(ells, prefactor*np.median(cls_fourier, axis=0), marker='.', color='C0', label='$C_{\\ell}$ (DFT)')
+            plt.fill_between(ells, prefactor*np.percentile(cls_fourier, 16, axis=0), prefactor*np.percentile(cls_fourier, 84, axis=0), alpha=0.3, color='C0')
+        else:
+            plt.errorbar(ells, prefactor*np.median(cls_fourier, axis=0), yerr=prefactor*np.std(cls_fourier, axis=0), marker='.', capsize=5, color='C0', label='$C_{\\ell}$ (DFT)')
+            if B_ell is not None:
+                plt.errorbar(ells, prefactor*np.median(cls_fourier, axis=0)/B_ell, yerr=prefactor*np.std(cls_fourier, axis=0)/np.sqrt(B_ell),linestyle='dashed', marker='.', capsize=5, color='C0', label='$C_{\\ell}$ (DFT, beam corrected)')
+
+    
+    if plot_ytc:
+        cls_dat = np.load('/Users/richardfeder/Downloads/Cls_data.npy')
+        ratio = cls_dat[-1][0]/midbin_ells[-1]    
+        prefy = (cls_dat[-1]/ratio)**2/(2*np.pi)
+        plt.errorbar(cls_dat[-1]/ratio, prefy*np.median(cls_dat[:-1], axis=0), yerr=prefy*np.std(cls_dat[:-1], axis=0), capsize=5, marker='.', label='Yun-Ting $C_{\\ell}$', color='g')
+
+    plt.yscale('log')
+    plt.xscale('log')
+    if ylim is not None:
+        plt.ylim(ylim[0], ylim[1])
+    plt.xlabel('Multipole $\\ell$', fontsize=16)
+    if plot_d_ell:
+        plt.ylabel('$\\frac{\\ell(\\ell+1)C_{\\ell}}{2\\pi}$ [nW$^2$ m$^{-4}$ sr$^{-2}$]', fontsize=16)
+    else:
+        plt.ylabel('$C_{\\ell}$ [nW$^2$ m$^{-4}$ sr$^{-1}$]', fontsize=16)
+    plt.legend(fontsize=14)
+    
+    if show:
+        plt.show()
+    
+    if return_fig:
+        return f
+
+def filter_fns_config(bandpower_edges, theta_window, thetas, return_fig=True, mode='analytic', apodize=False, lndth=0.5):
+    '''
+    bandpower_edges -- list specifying edges of multipole bins for bandpowers
+    theta_window -- length 2 list with minimum and maximum separation measured in 2PCF (in radians)
+    thetas -- list specifying range to compute filter function over
+    
+    '''
+    n_bandpower = len(bandpower_edges)
+    print("assuming 20 band powers")
+    
+    if apodize:
+        mint = theta_window[0]
+        maxt = theta_window[1]
+        hann_window_vals = np.array([hann_window(np.log10(theta), 0.5, np.log10(mint), np.log10(maxt)) for theta in thetas])
+
+        plt.figure()
+        plt.title('Hann window, $\\Delta\\ln x=0.5$')
+        plt.plot(thetas*(180./np.pi), hann_window_vals)
+        plt.xscale('log')
+        plt.xlabel('$\\theta$ [deg]')
+        plt.ylabel('$T(\\theta)$')
+        plt.show()
+    
+    
+    fig = plt.figure(figsize=(15,8))
+    plt.suptitle('Full (black) vs. windowed (blue) bandpower filter functions', fontsize=20, y=1.02)
+    for b in range(min(20, n_bandpower-1)):
+        
+        if apodize:
+            tophat_vals = g_theta_tophat_bandpass(thetas, bandpower_edges[b], bandpower_edges[b+1])
+            tophat_vals *= hann_window_vals
+
+        else:
+            tophat_vals = tophat_bp_window_config_space(thetas, bandpower_edges[b], bandpower_edges[b+1],\
+                                                             thetamin=theta_window[0], thetamax=theta_window[1])
+
+        plt.subplot(4, 5, b+1)
+        plt.title('Bandpower '+str(b+1))
+        # x axis has unit of degrees so multiply thetas by 180/np.pi
+        plt.plot(thetas*(180./np.pi), g_theta_tophat_bandpass(thetas, bandpower_edges[b], bandpower_edges[b+1]), color='k', label='full')
+        plt.plot(thetas*(180./np.pi), tophat_vals, label='apodized', color='b')
+        if theta_window[0] > np.min(thetas):
+            plt.axvline(theta_window[0]*180./np.pi, color='g', linestyle='dashed')
+        if theta_window[1] < np.max(thetas):
+            plt.axvline(theta_window[1]*180./np.pi, color='g', linestyle='dashed')
+        
+        if apodize:
+            plt.axvline(180./np.pi*theta_window[0]*10**(-0.5*lndth), color='b', linestyle='dashed')
+            plt.axvline(180./np.pi*theta_window[1]*10**(0.5*lndth), color='b', linestyle='dashed')
+        plt.xscale('log')
+        if b > 14:
+            plt.xlabel('$\\theta$ [deg]', fontsize=18)
+        if b % 5 ==0:
+            plt.ylabel('$g_b(\\theta)$', fontsize=18)
+    plt.tight_layout()
+    plt.show()
+    
+    if return_fig:
+        return fig
 
 def plot_radavg_xspectrum(rbins, radprofs=[], raderrs=None, labels=[], \
 						  lmin=90., save=False, snspalette=None, pdf_or_png='png', \
@@ -31,13 +161,15 @@ def plot_radavg_xspectrum(rbins, radprofs=[], raderrs=None, labels=[], \
 		ylabel = '$\\ell(\\ell+1) C_{\\ell}/2\\pi$'
 		if raderrs is not None:
 			yerr = np.array([(rbins*lmin)**2*raderr/(2*np.pi) for raderr in raderrs]) 
+	
 	elif mode=='auto':
 		if titlestring is None:
 			titlestring = 'Auto Spectrum'
 		yvals = np.array([np.sqrt((rbins*lmin)**2*prof/(2*np.pi)) for prof in radprofs])
 		ylabel = '($\\ell(\\ell+1) C_{\\ell}/2\\pi)^{1/2}$'
+		
 		if raderrs is not None:
-			yerr = np.array([np.sqrt((rbins*lmin)**2/(2*np.pi))*raderr/(2*np.sqrt(prof)) for raderr in raderrs]) # I don't think this is right, modify at some point
+			yerr = np.array([np.sqrt((rbins*lmin)**2/(2*np.pi))*raderrs[i]/(2*np.sqrt(radprofs[i])) for i in range(len(raderrs))]) # I don't think this is right, modify at some point
 			print('yerr:', yerr)
 			mask = yerr > yvals
 			
@@ -92,6 +224,97 @@ def plot_radavg_xspectrum(rbins, radprofs=[], raderrs=None, labels=[], \
 
 	
 	return f, yvals, yerr
+
+
+def plot_radavg_xspectrum2(rbins, radprofs=[], raderrs=None, labels=None, \
+                          lmin=90., save=False, snspalette=None, pdf_or_png='png', \
+                         image_dim=1024, mode='cross', zbounds=None, shotnoise=None, \
+                         add_shot_noise=None, Ntot=160000, sn_npoints=10, titlestring=None, \
+                          ylims=None):
+
+    steradperpixel = ((np.pi/lmin)/image_dim)**2 
+
+    f = plt.figure(figsize=(8,6))
+    xvals = rbins
+    
+    if labels is None:
+        labels = [None for x in range(len(radprofs))]
+
+    yerr = None # this gets changed from None to actual errors if they are fed in
+    if mode=='cross':
+        if titlestring is None:
+            titlestring = 'Cross Spectrum'
+        yvals = np.array([(rbins*lmin)**2*prof/(2*np.pi) for prof in radprofs])
+        ylabel = '$\\ell(\\ell+1) C_{\\ell}/2\\pi$'
+        if raderrs is not None:
+            yerr = np.array([(rbins*lmin)**2*raderr/(2*np.pi) for raderr in raderrs]) 
+    elif mode=='auto':
+        if titlestring is None:
+            titlestring = 'Auto Spectrum'
+        
+        yvals = np.array([np.sqrt((rbins)**2*prof/(2*np.pi)) for prof in radprofs])
+
+        ylabel = '($\\ell(\\ell+1) C_{\\ell}/2\\pi)^{1/2}$'
+        if raderrs is not None:
+            yerr = np.array([np.sqrt((rbins*lmin)**2/(2*np.pi))*raderr/(2*np.sqrt(prof)) for raderr in raderrs]) # I don't think this is right, modify at some point
+            print('yerr:', yerr)
+            mask = yerr > yvals
+
+            print(mask)
+            yerr2 = np.array(yerr)
+            yerr2[yerr >= yvals] = yvals[yerr>=yvals]*0.99999
+
+
+    if zbounds is not None:
+        titlestring +=', '+str(zmin)+'$<z<$'+str(zmax)
+
+    plt.title(titlestring, fontsize=16)
+    ax = plt.gca()
+    for i, prof in enumerate(radprofs):
+        color = next(ax._get_lines.prop_cycler)['color']
+
+        if shotnoise is not None:
+            if shotnoise[i]:
+                if mode=='auto':
+                    shot_noise_fit = np.poly1d(np.polyfit(np.log10(xvals[-sn_npoints:]), np.log10(np.sqrt(xvals[-sn_npoints:]**2*prof[-sn_npoints:]/(2*np.pi))), 1))
+                else:
+                    shot_noise_fit = np.poly1d(np.polyfit(np.log10(xvals[-sn_npoints:]), np.log10(xvals[-sn_npoints:]**2*prof[-sn_npoints:]/(2*np.pi)), 1))
+                sn_vals = 10**(shot_noise_fit(np.log10(xvals)))
+                if mode=='auto':
+                    sn_level = 2*np.pi*sn_vals[0]**2/lmin**2
+                elif mode=='cross':
+                    sn_level = 2*np.pi*sn_vals[0]/lmin**2 
+                print('sn level:', sn_level)
+                if i==0:
+                    label='Best fit Poisson fluctuations'
+                else:
+                    label=None
+                plt.plot(xvals, sn_vals, label=label,linestyle='dashed', color=color)
+
+            if add_shot_noise is not None:
+                if add_shot_noise[i]:
+                    sn = surface_area*Ntot*steradperpixel/(image_dim**2)
+                    print(surface_area, sn, Ntot)
+                    yvals[i] += np.sqrt((rbin*lmin)**2*(surface_area*Ntot*steradperpixel/(image_dim**2))/(2*np.pi))
+        
+        if raderrs is not None:
+            plt.errorbar(xvals, yvals[i], yerr=yerr[i], marker='.', label=labels[i], color=color)
+        else:
+            plt.plot(xvals, yvals[i], marker='.', label=labels[i], color=color)
+
+    if ylims is not None:
+        plt.ylim(ylims[0], ylims[1])
+    plt.legend(fontsize=14)
+    plt.xscale('log')
+    plt.yscale('log')
+    plt.xlabel('$\\ell$', fontsize=14)
+    plt.ylabel(ylabel, fontsize=14)
+    if save:
+        plt.savefig(figure_directory+'radavg_xspectrum.'+pdf_or_png, bbox_inches='tight')
+    plt.show()
+
+
+    return f, yvals, yerr
 
 
 def plot_2d_xspectrum(xspec, minpercentile=5, maxpercentile=95, save=False, pdf_or_png='png'):
@@ -480,7 +703,8 @@ def convert_pngs_to_gif(filenames, gifdir='../../M_ll_correction/', name='mkk', 
 
 
 def plot_ensemble_offset_stats(thetas, masked_xis, unmasked_xis, masked_varxi, unmasked_varxi, return_fig=True, logscale=True, \
-                              suptitle='Mock CIBER source map (no noise), SWIRE flight mask (50 realizations)'):
+                              suptitle='Mock CIBER source map (no noise), SWIRE flight mask (50 realizations)', \
+                              nsim_list=None, ylim=[-0.5, 0.5]):
 
     delta_xis = np.array([masked_xis[i]-unmasked_xis[i] for i in range(len(masked_xis))])
 
@@ -525,18 +749,19 @@ def plot_ensemble_offset_stats(thetas, masked_xis, unmasked_xis, masked_varxi, u
     plt.ylabel('$w(\\theta)_{masked} - w(\\theta)_{true}$', fontsize=18)
     plt.xscale('log')
     plt.subplot(1,4,4)
-#     plt.plot(thetas, np.mean(delta_xis, axis=0)/np.std(unmasked_xis, axis=0), marker='.', alpha=0.8, label='Standard dev. of $w(\\theta)_{true}$ across realizations')
-#     plt.plot(thetas, np.std(delta_xis, axis=0)/np.sqrt(np.mean(unmasked_varxi, axis=0)), marker='.', alpha=0.8, label='Mean of sample variance on $w(\\theta)$')
-#     plt.plot(thetas, np.mean(delta_xis/np.sqrt(unmasked_varxi), axis=0), marker='.', alpha=0.8, label='Mean of sample variance on $w(\\theta)$')
-    plt.plot(thetas, np.mean(delta_xis, axis=0)/np.sqrt(np.mean(unmasked_varxi, axis=0)), marker='.', alpha=0.8, label='Mean of sample variance on $w(\\theta)$')
-
-    # plt.errorbar(thetas, np.mean(frac_deltaxi, axis=0), yerr=np.std(frac_deltaxi),capsize=5,capthick=2, marker='.', alpha=0.8, label='masked')
+    if nsim_list is not None:
+        for nsim in nsim_list:
+            plt.plot(thetas, np.median(delta_xis[:nsim], axis=0)/np.sqrt(np.median(unmasked_varxi[:nsim], axis=0)), marker='.', alpha=0.8, label='$n_{sim}=$'+str(nsim))
+    else:  
+        plt.plot(thetas, np.mean(delta_xis, axis=0)/np.sqrt(np.mean(unmasked_varxi, axis=0)), marker='.', alpha=0.8)
     plt.xlabel('$\\theta$ [deg]', fontsize=18)
     plt.ylabel('$\\frac{\\langle w(\\theta)_{masked} - w(\\theta)_{true} \\rangle}{\\langle \\sigma(w(\\theta)_{true})_{SV}\\rangle}$', fontsize=20)
-    # plt.ylabel('$\\langle \\frac{w(\\theta)_{masked} - w(\\theta)_{true}}{\\sigma}{sample variance}}} \\rangle$', fontsize=18)
-
+    plt.axhline(0.1, linestyle='dashed', color='k')
+    plt.axhline(-0.1, linestyle='dashed', color='k')
+    plt.legend()
     plt.xscale('log')
-    plt.ylim(-0.5, 0.5)
+    
+    plt.ylim(ylim)
     plt.tight_layout()
     plt.show()
     
@@ -627,6 +852,285 @@ def ratio_corr_variances_masked_unmasked(bins, masked_varxi, unmasked_varxi, mas
         plt.show()
     if return_fig:
         return f
+
+
+
+def plot_readnoise_realization(rdn_real, cal_fac, show=True, return_fig=True, adupframe_range=[-0.75, 0.75]):
+    f = plt.figure(figsize=(15, 6))
+
+
+    plt.subplot(1,3,1)
+    plt.title('Read noise realization', fontsize=16)
+    plt.imshow(rdn_real*cal_fac, cmap='Greys')
+    plt.colorbar()
+    
+    plt.subplot(1,3,2)
+    plt.hist(rdn_real.ravel(), bins=np.linspace(adupframe_range[0], adupframe_range[1], 100))
+    plt.xlabel('Read noise [ADU/frame]', fontsize=16)
+    plt.ylabel('$N_{pix}$', fontsize=16)
+
+    plt.subplot(1,3,3)
+    plt.hist(rdn_real.ravel()*cal_fac, bins=100)
+    plt.xlabel('Read noise [nW m$^{-2}$ sr$^{-1}$]', fontsize=16)
+    plt.ylabel('$N_{pix}$', fontsize=16)
+
+    plt.tight_layout()
+    
+    if show:
+        plt.show()
+    
+    if return_fig:
+        return f
+
+
+def plot_median_std_2d_2pcf(wthetas_2d, suptitle='Read noise realizations, 256x256 pixel cutouts', suptitlefontsize=20, return_fig=True, show=True, pixsize=7., n_tick=5):
+
+    f = plt.figure(figsize=(10, 5))
+    plt.suptitle(suptitle, fontsize=suptitlefontsize)
+    plt.subplot(1,2,1)
+    plt.title('Median $w(\\theta_x, \\theta_y)$', fontsize=16)
+    median_wtheta2d = np.median(wthetas_2d, axis=0)
+    plt.imshow(median_wtheta2d, cmap='Greys', vmin=np.percentile(median_wtheta2d, 5), vmax=np.percentile(median_wtheta2d, 99.9), origin='lower')
+    plt.xlabel('$\\theta_x$ [deg]', fontsize=14)
+    plt.ylabel('$\\theta_y$ [deg]', fontsize=14)
+    nx, ny = median_wtheta2d.shape[0], median_wtheta2d.shape[1]
+    plt.xticks(np.arange(0, nx, nx//n_tick), np.round(2*(np.arange(0, nx, nx//n_tick)-nx//2)*(pixsize/3600.), 1))
+    plt.yticks(np.arange(0, ny, ny//n_tick), np.round(2*(np.arange(0, ny, ny//n_tick)-ny//2)*(pixsize/3600.), 1))
+    plt.colorbar()
+    plt.subplot(1,2,2)
+    plt.title('Variance of $w(\\theta_x, \\theta_y)$', fontsize=16)
+    std_wtheta_2d = np.std(wthetas_2d, axis=0)
+    plt.imshow(std_wtheta_2d, vmax=np.percentile(std_wtheta_2d, 99), vmin=np.percentile(std_wtheta_2d, 1), cmap='Greys', origin='lower')
+    plt.colorbar()
+    plt.xlabel('$\\theta_x$ [deg]', fontsize=14)
+    plt.ylabel('$\\theta_y$ [deg]', fontsize=14)
+    
+    plt.xticks(np.arange(0, nx, nx//n_tick), np.round(2*(np.arange(0, nx, nx//n_tick)-nx//2)*(pixsize/3600.), 1))
+    plt.yticks(np.arange(0, ny, ny//n_tick), np.round(2*(np.arange(0, ny, ny//n_tick)-ny//2)*(pixsize/3600.), 1))
+
+    if show:
+        plt.show()
+
+    if return_fig:
+        return f
+        
+
+def plot_w_thetax_thetay(wthetas_2d, return_fig=True, show=True, title='Read noise realizations, 256x256 pixel cutouts'):
+    
+    nx, ny = np.median(wthetas_2d, axis=0).shape[0], np.median(wthetas_2d, axis=0).shape[1]
+    pixsize = 7.
+    n_tick = 6
+    
+    f = plt.figure(figsize=(10, 4))
+    plt.suptitle(title, fontsize=20, y=1.03)
+    plt.subplot(1,2,1)
+    plt.title('Median $w(\\theta_x, \\theta_y)$', fontsize=16)
+    plt.imshow(np.median(wthetas_2d, axis=0), cmap='Greys', vmin=np.percentile(np.median(wthetas_2d, axis=0), 5), vmax=np.percentile(np.median(wthetas_2d, axis=0), 95))
+    plt.xticks(np.arange(0, nx, nx//n_tick), np.round(1*(np.arange(0, nx, nx//n_tick)-nx//2)*(pixsize/3600.), 1))
+    plt.yticks(np.arange(0, ny, ny//n_tick), np.round(1*(np.arange(0, ny, ny//n_tick)-ny//2)*(pixsize/3600.), 1))
+    plt.xlabel('$\\delta x$ [deg]', fontsize=16)
+    plt.ylabel('$\\delta y$ [deg]', fontsize=16)
+    
+    plt.colorbar()
+    plt.subplot(1,2,2)
+    plt.title('Standard deviation of $w(\\theta_x, \\theta_y)$', fontsize=16)
+    plt.imshow(np.std(wthetas_2d, axis=0), cmap='Greys', vmin=np.percentile(np.std(wthetas_2d, axis=0), 5), vmax=np.percentile(np.std(wthetas_2d, axis=0), 95))
+
+    plt.xticks(np.arange(0, nx, nx//n_tick), np.round(1*(np.arange(0, nx, nx//n_tick)-nx//2)*(pixsize/3600.), 1))
+    plt.yticks(np.arange(0, ny, ny//n_tick), np.round(1*(np.arange(0, ny, ny//n_tick)-ny//2)*(pixsize/3600.), 1))
+   
+    plt.xlabel('$\\delta x$ [deg]', fontsize=16)
+    plt.ylabel('$\\delta y$ [deg]', fontsize=16)
+
+    plt.colorbar()
+    if show:
+        plt.show()
+    if return_fig:
+        return f
+
+
+def plot_readnoise_2pcfs(bins, masked_wtheta=None, masked_var_wtheta=None, unmasked_wtheta=None, unmasked_var_wtheta=None,
+                         masked=True, ylim=[-0.00003, 0.00015], xscale='log'):
+    
+    if masked:
+        suptitle = 'Masked read noise realizations'
+        wtheta = masked_wtheta
+        var_wtheta = masked_var_wtheta
+    else:
+        suptitle = 'Unmasked read noise realizations'
+        wtheta = unmasked_wtheta
+        var_wtheta = unmasked_var_wtheta
+        
+    n_realization = len(wtheta)
+
+
+    f = plt.figure(figsize=(15,5))
+    plt.suptitle(suptitle, y=1.05, fontsize=20)
+    plt.subplot(1,3,1)
+    
+    for i in range(n_realization):
+        plt.errorbar(bins, wtheta[i], yerr=np.sqrt(var_wtheta[i]), alpha=0.3, color='C3', capsize=5)
+
+    plt.title('Individual realizations (+jackknife variance)')    
+    plt.xscale(xscale)
+    plt.xlabel('$\\theta$ [deg]', fontsize=16)
+    plt.ylabel('$w(\\theta)$', fontsize=16)
+
+    plt.ylim(ylim)
+    plt.subplot(1,3,2)
+    plt.title('Mean of realizations (+std. deviation)')   
+    plt.fill_between(bins, np.percentile(wtheta, 16, axis=0), np.percentile(wtheta, 84, axis=0), alpha=0.3)
+    plt.plot(bins, np.mean(wtheta, axis=0), marker='.')
+    plt.xscale(xscale)
+    plt.xlabel('$\\theta$ [deg]', fontsize=16)
+    plt.ylabel('$w(\\theta)$', fontsize=16)
+    plt.ylim(ylim)
+
+    plt.subplot(1,3,3)
+    plt.title('Standard deviation across realizations')
+    plt.errorbar(bins, np.std(wtheta, axis=0),  marker='.', capsize=5)
+
+    plt.xscale(xscale)
+    plt.yscale('log')
+    plt.xlabel('$\\theta$ [deg]', fontsize=16)
+    plt.ylabel('$\\sigma(w(\\theta))$', fontsize=16)
+    
+    plt.tight_layout()
+    
+    plt.show()
+    
+    return f
+
+
+def plot_wtheta(rnom, xi, varxi, skymap, pix_units='rad', return_fig=False, mask=None, title='Read noise realization', plot_xscale='log'):
+    
+    f = plt.figure(figsize=(10,4))
+    plt.subplot(1,2,1)
+    if mask is not None:
+        title += ' (masked)'
+    plt.title(title, fontsize=16)
+    if mask is None:
+        plt.imshow(skymap, cmap='Greys')
+    else:
+        plt.imshow(skymap*mask, cmap='Greys')
+    plt.colorbar()
+    plt.xlabel('x [pixel]', fontsize=16)
+    plt.ylabel('y [pixel]', fontsize=16)
+    plt.subplot(1,2,2)
+    plt.errorbar(rnom, xi, yerr=np.sqrt(varxi), marker='.')
+    plt.xlabel('$\\theta$ ('+str(pix_units)+')', fontsize=16)
+    plt.ylabel('$w(\\theta)$ [$nW^2 m^{-4} sr^{-2}$]', fontsize=16)
+    if plot_xscale=='log':
+        plt.xscale('log')
+    plt.tight_layout()
+    plt.show()
+    
+    if return_fig:
+        return f
+
+
+def threepanel_wthetaxy_to_cl2d_vs_dftcl2d(wthetaxy, cl2d_dft, zoom=False, return_fig=True, show=True, \
+                                          vrange1=[1e3, 1e8], vrange2=[1e3, 1e8]):
+
+    nx, ny = wthetaxy.shape[0], wthetaxy.shape[1]
+
+    f = plt.figure(figsize=(15, 5))
+    plt.subplot(1,3,1)
+    plt.title('$w(\\theta_x, \\theta_y)$', fontsize=20)
+    plt.imshow(wthetaxy.transpose(), cmap='Greys', vmin=-100, vmax=100)
+    plt.xticks(np.arange(0, nx, nx//5), np.round(4*(np.arange(0, nx, nx//5)-nx//2)*(7./3600.), 1))
+    plt.yticks(np.arange(0, ny, ny//5), np.round(4*(np.arange(0, ny, ny//5)-ny//2)*(7./3600.), 1))
+
+    plt.colorbar()
+    plt.xlabel('$\\theta_x$ [deg]', fontsize=16)
+    plt.ylabel('$\\theta_y$ [deg]', fontsize=16)
+
+    
+    cl2d = np.fft.ifftshift(np.sqrt(np.real(fft2(median_wth)*np.conj(fft2(median_wth)))))
+
+    plt.subplot(1,3,2)
+    plt.title('$C_{\\ell_x,\\ell_y} \\approx \\mathcal{F}(\\langle w(\\theta_x, \\theta_y) \\rangle)$', fontsize=20)
+    plt.imshow(cl2d.transpose(), norm=LogNorm(), cmap='Greys', vmax=vrange1[1], vmin=vrange1[0])
+    plt.colorbar()
+    plt.xlabel('$\\ell_x$', fontsize=16)
+    plt.ylabel('$\\ell_y$', fontsize=16)
+    
+    
+    plt.xticks([], [])
+    plt.yticks([], [])
+    # plt.xticks(np.arange(0, nx, nx//6), np.round(180*(np.arange(0, nx, nx//6)-nx//4 + 1), 2))
+    # plt.yticks(np.arange(0, ny, ny//6), np.round(180*(np.arange(0, nx, nx//6)-nx//4 +1), 2))
+    if zoom:
+        plt.xlim(nx//2-24, nx//2+24)
+        plt.ylim(ny//2-24, ny//2+24)        
+        
+        
+    nx2, ny2 = cl2d_dft.shape[0], cl2d_dft.shape[1]
+
+    plt.subplot(1,3,3)
+    plt.title('$C_{\\ell_x,\\ell_y}$ (full)', fontsize=20)
+
+
+    plt.imshow(cl2d_dft, norm=LogNorm(), cmap='Greys', vmax=vrange2[1], vmin=vrange2[0])
+    plt.colorbar()
+    plt.xlabel('$\\ell_x$', fontsize=16)
+    plt.ylabel('$\\ell_y$', fontsize=16)
+
+    if zoom:
+        plt.xlim(500, 524)
+        plt.ylim(500, 524)
+        plt.xticks([], [])
+        plt.yticks([], [])
+    else:
+        plt.xticks(np.arange(0, nx2, nx2//6), np.round(180*(np.arange(0, nx2, nx2//6)-nx2//2 + 2), 2))
+        plt.yticks(np.arange(0, ny2, ny2//6), np.round(180*(np.arange(0, nx2, nx2//6)-nx2//2 + 2), 2))
+    
+    plt.tight_layout()
+
+    if show:
+        plt.show()
+        
+    if return_fig:
+        return f
+
+
+def plot_hankel_integrand(bins_rad, fine_bins, wtheta, spline_wtheta, ell, integration_max):
+    
+    f = plt.figure(figsize=(10, 8))
+    plt.subplot(2,2,3)
+    plt.title('Discrete Integrand', fontsize=16)
+    plt.plot(bins_rad, bins_rad*wtheta*scipy.special.j0(ell*bins_rad), label='$\\ell = $'+str(ell))
+    plt.ylabel('$\\theta w(\\theta)J_0(\\ell\\theta)$', fontsize=18)
+    plt.xlabel('$\\theta$ [rad]', fontsize=18)
+    plt.legend(fontsize=14)
+    plt.xscale('log')
+    plt.subplot(2,2,4)
+    plt.title('Spline Integrand', fontsize=16)
+    plt.plot(fine_bins, fine_bins*spline_wtheta(fine_bins)*scipy.special.j0(ell*fine_bins), label='$\\ell = $'+str(ell))
+    plt.ylabel('$\\theta w(\\theta)J_0(\\ell\\theta)$', fontsize=18)
+    plt.xlabel('$\\theta$ [rad]', fontsize=18)
+    plt.axvline(integration_max, linestyle='dashed', color='k', label='$\\theta_{max}$='+str(np.round(integration_max*(180./np.pi), 2))+' deg.')
+    plt.legend(fontsize=14)
+    plt.xscale('log')
+    plt.subplot(2,2,1)
+    plt.title('Angular 2PCF', fontsize=16)
+    plt.plot(bins_rad, wtheta, marker='.', color='k')
+    plt.plot(np.linspace(np.min(bins_rad), np.max(bins_rad), 1000), spline_wtheta(np.linspace(np.min(bins_rad), np.max(bins_rad), 1000)), color='b', linestyle='dashed')
+    plt.xscale('log')
+    plt.yscale('symlog')
+    plt.xlabel('$\\theta$ [rad]', fontsize=18)
+    plt.ylabel('$w(\\theta)$', fontsize=18)
+    plt.subplot(2,2,2)
+    plt.title('Bessel function, $\\ell = $'+str(ell), fontsize=16)
+    plt.plot(fine_bins, scipy.special.j0(ell*fine_bins), label='$\\ell = $'+str(ell))
+    plt.ylabel('$J_0(\\ell\\theta)$', fontsize=18)
+    plt.xlabel('$\\theta$ [rad]', fontsize=18)
+    plt.xscale('log')
+    plt.tight_layout()
+    plt.show()
+    
+    return f
+
 
 
 
