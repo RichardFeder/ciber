@@ -2,30 +2,11 @@ import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 from ciber_data_helpers import make_radius_map
-from ciber_mocks import *
+''' TO DO : CAMB does not compile with Python 3 at the moment -- need to update Fortran compiler '''
+# from ciber_mocks import *
 
-# Yun-Ting's code for this stuff is here https://github.com/yuntingcheng/python_ciber/blob/master/stack_modelfit/mask.py
+# Yun-Ting's code for masking is here https://github.com/yuntingcheng/python_ciber/blob/master/stack_modelfit/mask.py
 
-
-def compute_star_gal_mask(stellar_cat, galaxy_cat, star_mag_idx=2, gal_mag_idx=3, m_max=18.4, return_indiv_masks=False):
-    
-    '''star and galaxy catalogs reported with AB magnitudes. 
-    Default indices assume stellar catalog already passed through make_synthetic_trilegal_cat()'''
-    
-    filt_star_cat = filter_trilegal_cat(stellar_cat, I_band_idx=star_mag_idx, m_max=m_max)
-    
-    cmock = ciber_mock()
-    filt_gal_cat = cmock.catalog_mag_cut(galaxy_cat, galaxy_cat[:, gal_mag_idx], m_min=0., m_max=m_max)
-    
-    mask_filt_star = mask_from_cat(filt_x, mag_idx=star_mag_idx)
-    mask_gal = mask_from_cat(bright_cat, mag_idx=gal_mag_idx)
-    
-    joined_mask = mask_filt_star*mask_gal
-    
-    if return_indiv_masks:
-        return mask_filt_star, mask_gal
-    
-    return joined_mask
 
 
 def filter_trilegal_cat(trilegal_cat, m_max=17, I_band_idx=16):
@@ -35,10 +16,31 @@ def filter_trilegal_cat(trilegal_cat, m_max=17, I_band_idx=16):
     return filtered_trilegal_cat
 
 
-
 def magnitude_to_radius_linear(magnitudes, alpha_m=-6.25, beta_m=110.):
     ''' Masking radius function as given by Zemcov+2014. alpha_m has units of arcsec mag^{-1}, while beta_m
-    has units of arcseconds.'''
+    has units of arcseconds.
+
+    Parameters
+    ----------
+    
+    magnitudes : float, or list of floats
+        Source magnitudes used to find masking radii. 
+
+    alpha_m : float, optional
+        Slope of radius/magnitude equation. Default is -6.25. 
+
+    beta_m : float, optional
+        Zero point of radius/magnitude equation. Default from Zemcov+14 is 110.
+
+    Returns
+    -------
+
+    r : float, or list of floats
+        masking radii for input sources 
+
+    '''
+
+
     
     r = alpha_m*magnitudes + beta_m
 
@@ -80,11 +82,32 @@ def mask_from_cat(catalog, xidx=0, yidx=1, mag_idx=3, dimx=1024, dimy=1024, pixs
     return mask 
 
 
+def mask_from_df_cat(cat_df, dimx=1024, dimy=1024, pixsize=7., mode='Zemcov+14', magstr='zMeanPSFMag', mod_fac=-4.):
+    
+    # can take mean color between PanSTARRS band and J band as zeroth order approx. ideally would regress, 
+    # but probably doesn't make big difference
+    
+    mask = np.ones([dimx,dimy], dtype=int)
+
+    print('magnitude mod fac is ', mod_fac)
+
+    radii = magnitude_to_radius_linear(cat_df[magstr]+mod_fac) # vega to AB factor?
+
+    
+    xs = np.array(cat_df['x1'])
+    ys = np.array(cat_df['y1'])
+
+    
+    for i, r in enumerate(radii):
+        radmap = make_radius_map(dimx=dimx, dimy=dimy, cenx=xs[i], ceny=ys[i], rc=1.)
+        mask[radmap<r/pixsize] = 0.
+            
+    return mask, radii
+
+
 
 def get_mask_radius_th_rf(m_arr, beta, rc, norm, band=0, Ith=1., fac=0.7, plot=False):
-    '''
-    r_arr: arcsec
-    '''
+
     m_arr = np.array(m_arr)
     Nlarge = 100
     radmap = make_radius_map_yt(np.zeros([2*Nlarge+1, 2*Nlarge+1]), Nlarge, Nlarge)
@@ -144,9 +167,19 @@ def I_threshold_mask_simple(xs, ys, ms,psf=None, beta=None, rc=None, norm=None, 
     
     # get the CIBER PSF for a given ifield if desired
 
+    '''
+    Parameters
+    ----------
+
+
+    Returns
+    -------
+
+
+    '''
     beta, rc, norm = ciber_mock.get_psf(ifield=ifield, band=band, nx=dimx, ny=dimy, poly_fit=False, nwide=nwide)
 
-    beta, rc, norm = 1.593e+00, 4.781e+00, 9.477e-03
+    # beta, rc, norm = 1.593e+00, 4.781e+00, 9.477e-03
     
     print('beta, rc, norm:', beta, rc, norm)
     mask = np.ones([dimx, dimy], dtype=int)

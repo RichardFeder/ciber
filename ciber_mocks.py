@@ -13,6 +13,27 @@ from image_eval import psf_poly_fit, image_model_eval
 import sys
 
 
+
+def compute_star_gal_mask(stellar_cat, galaxy_cat, star_mag_idx=2, gal_mag_idx=3, m_max=18.4, return_indiv_masks=False):
+    
+    '''star and galaxy catalogs reported with AB magnitudes. 
+    Default indices assume stellar catalog already passed through make_synthetic_trilegal_cat()'''
+    
+    filt_star_cat = filter_trilegal_cat(stellar_cat, I_band_idx=star_mag_idx, m_max=m_max)
+    
+    cmock = ciber_mock()
+    filt_gal_cat = cmock.catalog_mag_cut(galaxy_cat, galaxy_cat[:, gal_mag_idx], m_min=0., m_max=m_max)
+    
+    mask_filt_star = mask_from_cat(filt_x, mag_idx=star_mag_idx)
+    mask_gal = mask_from_cat(bright_cat, mag_idx=gal_mag_idx)
+    
+    joined_mask = mask_filt_star*mask_gal
+    
+    if return_indiv_masks:
+        return mask_filt_star, mask_gal
+    
+    return joined_mask
+
 def ihl_conv_templates(psf=None, rvir_min=1, rvir_max=50, dimx=150, dimy=150):
     
     ''' 
@@ -90,6 +111,7 @@ def save_mock_items_to_npz(filepath, catalog=None, srcmap_full=None, srcmap_nb=N
     np.savez_compressed(filepath, catalog=catalog, srcmap_full=srcmap_full, \
                         srcmap_nb=srcmap_nb, conv_noise=conv_noise, \
                         ihl_map=ihl_map, m_lim=m_lim, m_min=m_min, m_min_nb=m_min_nb)
+
 
 
 
