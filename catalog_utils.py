@@ -4,6 +4,8 @@ import matplotlib.pyplot as plt
 import scipy.stats
 from astropy.table import Table
 from astropy.io import fits
+import astropy.wcs as wcs
+from astropy import units as u
 from astropy.coordinates import SkyCoord
 from astropy.coordinates import match_coordinates_sky
 import pandas as pd
@@ -60,11 +62,18 @@ def catalog_df_add_xy(field, df, datadir='/Users/luminatech/Documents/ciber2/cib
     
     return dfout
 
-def check_for_catalog_duplicates(cat, match_thresh=0.1, nthneighbor=2, ra_errors=None, dec_errors=None, zscore=None):
+def check_for_catalog_duplicates(cat, cat2=None, match_thresh=0.1, nthneighbor=2, ra_errors=None, dec_errors=None, zscore=1):
+    
     cat_src_coord = SkyCoord(ra=cat['ra']*u.degree, dec=cat['dec']*u.degree, frame='icrs')
+    
+    if cat2 is None:
+        cat2_src_coord = cat_src_coord
+    else:
+        cat2_src_coord = SkyCoord(ra=cat2['ra']*u.degree, dec=cat['dec']*u.degree, frame='icrs')
 
     # choose nthneighbor=2 to not just include the same source
-    idx, d2d, _ = match_coordinates_sky(cat_src_coord, cat_src_coord, nthneighbor=nthneighbor) # there is an order specific element to this
+    idx, d2d, _ = match_coordinates_sky(cat_src_coord, cat2_src_coord, nthneighbor=nthneighbor) # there is an order specific element to this
+    
     if ra_errors is not None:
         match_thresh = zscore*np.sqrt(ra_errors**2 + dec_errors**2)
         print('match threshes is ', match_thresh)
@@ -73,6 +82,16 @@ def check_for_catalog_duplicates(cat, match_thresh=0.1, nthneighbor=2, ra_errors
     no_dup_cat = cat.iloc[no_dup_mask].copy()
 
     return no_dup_cat, d2d, idx
+
+
+def compute_tpr_fpr(predictions, labels):
+    tpr = np.array(predictions[labels.astype(np.bool)] == 1)
+    tpr = np.sum(tpr)/len(tpr)
+    
+    fpr = np.array(predictions[~labels.astype(np.bool)] == 1)
+    fpr = np.sum(fpr)/len(fpr)
+    
+    return tpr, fpr
 
 
 def dataframe_to_fits(df, fits_path):
@@ -143,6 +162,80 @@ def hsc_positions(hsc_cat, nchoose, z, dz=10, ra_min=241.5, ra_max=243.5, dec_mi
         ty += np.random.uniform(-0.5, 0.5, size=(len(idxs)))
     
     return tx, ty
+
+
+def crossmatch_unWISE_PanSTARRS(base_cat='unWISE', fieldstr_tail_PS='BootesA_DR1_richard_feder', fieldstr='BootesA', nsig=2, \
+    datdir = '/Users/luminatech/Documents/ciber2/ciber/data/cats/'):
+    
+    '''
+    Parameters
+    ----------
+    
+    base_cat : 'string', optional
+        specifies which catalog is the reference catalog for cross matching
+        Default is 'unWISE'.
+        
+    nsig : 'float', optional
+        Positional cross matching criterion for sources is for 
+        matching radius to be less than nsig x positional error.
+        Default is 2.
+    
+    '''
+    unWISE_cat_wxy = pd.read_csv('data/cats/unWISE/'+fieldstr+'/unWISE_'+fieldstr+'_filt_xy_dpos.csv')
+    unWISE_src_coord = SkyCoord(ra=unWISE_cat_wxy['ra']*u.degree, dec=unWISE_cat_wxy['dec']*u.degree, frame='icrs')
+
+    PS_cat_wxy = pd.read_csv(datdir+'PanSTARRS/filt/'+fieldstr_tail_PS+'_filt_any_band_detect.csv')
+    PS_src_coord = SkyCoord(ra=PS_cat_wxy['ra']*u.degree, dec=PS_cat_wxy['dec']*u.degree, frame='icrs')
+
+    if base_cat=='unWISE':
+        idx, d2d, _ = match_coordinates_sky(unWISE_src_coord, PS_src_coord) # the order of the input catalogs matters!
+        
+        # Vega magnitudes
+        unWISE_cat_wxy['gMeanPSFMag'] = np.array(PS_cat_wxy.iloc[idx].gMeanPSFMag) - 0.08
+        unWISE_cat_wxy['rMeanPSFMag'] = np.array(PS_cat_wxy.iloc[idx].rMeanPSFMag) - 0.16
+        unWISE_cat_wxy['iMeanPSFMag'] = np.array(PS_cat_wxy.iloc[idx].iMeanPSFMag) - 0.37
+        unWISE_cat_wxy['zMeanPSFMag'] = np.array(PS_cat_wxy.iloc[idx].zMeanPSFMag) - 0.54
+        unWISE_cat_wxy['yMeanPSFMag'] = np.array(PS_cat_wxy.iloc[idx].yMeanPSFMag) - 0.634
+
+        unWISE_cat_wxy['mag_W1'] = np.array(22.5 - 2.5*np.log10(unWISE_cat_wxy['flux_W1']))
+        unWISE_cat_wxy['mag_W2'] = np.array(22.5 - 2.5*np.log10(unWISE_cat_wxy['flux_W2']))
+
+        unWISE_cat_wxy['x1_PS'] = np.array(PS_cat_wxy.iloc[idx].x1)
+        unWISE_cat_wxy['y1_PS'] = np.array(PS_cat_wxy.iloc[idx].y1)
+        unWISE_cat_wxy['ra_PS'] = np.array(PS_cat_wxy.iloc[idx].ra)
+        unWISE_cat_wxy['dec_PS'] = np.array(PS_cat_wxy.iloc[idx].dec)
+
+        unWISE_cat_wxy['dmatch_arcsec'] = d2d.arcsec
+    
+        unWISE_PS_xmatch_mask = np.where(np.array(unWISE_cat_wxy['dmatch_arcsec']) <= nsig*3600*np.array(unWISE_cat_wxy['dpos']))[0]
+        
+        crossmatch_PS_unWISE = unWISE_cat_wxy.iloc[unWISE_PS_xmatch_mask].copy()
+
+    elif base_cat=='PanSTARRS':
+        idx, d2d, _ = match_coordinates_sky(PS_src_coord, unWISE_src_coord) # the order of the input catalogs matters!
+        
+        PS_cat_wxy['dpos'] = np.array(unWISE_cat_wxy.iloc[idx].dpos)
+        PS_cat_wxy['primary'] = np.array(unWISE_cat_wxy.iloc[idx].primary)
+        PS_cat_wxy['flux_W1'] = np.array(unWISE_cat_wxy.iloc[idx].flux_W1)
+        PS_cat_wxy['flux_W2'] = np.array(unWISE_cat_wxy.iloc[idx].flux_W2)
+        
+        # Vega magnitudes
+        PS_cat_wxy['mag_W1'] = np.array(22.5 - 2.5*np.log10(PS_cat_wxy['flux_W1']))
+        PS_cat_wxy['mag_W2'] = np.array(22.5 - 2.5*np.log10(PS_cat_wxy['flux_W2']))
+
+        PS_cat_wxy['x1_unWISE'] = np.array(unWISE_cat_wxy.iloc[idx].x1)
+        PS_cat_wxy['y1_unWISE'] = np.array(unWISE_cat_wxy.iloc[idx].y1)
+        PS_cat_wxy['ra_unWISE'] = np.array(unWISE_cat_wxy.iloc[idx].ra)
+        PS_cat_wxy['dec_unWISE'] = np.array(unWISE_cat_wxy.iloc[idx].dec)
+
+        PS_cat_wxy['dmatch_arcsec'] = d2d.arcsec
+
+        PS_unWISE_xmatch_mask = np.where(np.array(PS_cat_wxy['dmatch_arcsec']) <= nsig*3600*np.array(PS_cat_wxy['dpos']))[0]
+        
+        crossmatch_PS_unWISE = PS_cat_wxy.iloc[PS_unWISE_xmatch_mask].copy()
+
+
+    return crossmatch_PS_unWISE
 
 def panstarrs_preprocess(fieldstr, datadir='/Users/luminatech/Documents/ciber2/ciber/data/cats/', \
                         detect_any=True, detect_y=True, cat_keys=None, apply_flags=True):

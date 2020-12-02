@@ -7,7 +7,7 @@ from mock_galaxy_catalogs import *
 from integrate_cl_wtheta import *
 from angular_2pcf import *
 import pandas as pd
-import pyfftw
+# import pyfftw
 from numpy.fft import fftshift as fftshift
 from numpy.fft import ifftshift as ifftshift
 from numpy.fft import fft2 as fft2
@@ -70,7 +70,7 @@ def azimuthalAverage(image, ell_min=90, center=None, logbins=True, nbins=60, ste
     return av_rbins, np.array(rad_avg), np.array(rad_std)
 
 
-def azim_average_cl2d(ps2d, l2d, lbinedges=None, lbins=None, weights=None, logbin=False):
+def azim_average_cl2d(ps2d, l2d, nbins=29, lbinedges=None, lbins=None, weights=None, logbin=False):
     
     if lbinedges is None:
         lmin = np.min(l2d[l2d!=0])
@@ -207,19 +207,30 @@ def compute_cl(map_a, map_b=None, ell_min=90., nbins=60, sterad_term=None, stera
     ''' This function computes the angular power spectrum C_ell by 1) computing the cross spectrum of the images and
     2) radially averaging over multipole bins. If only one map is specified, then this calculates the auto power spectrum.
 
-    Inputs:
-        map_a (np.array): One of potentially two input map for which cross spectrum is computed.
-        map_b (np.array, optional, default=None): second input map for which to compute cross spectrum with map_a. If left unspecified,
-            the function computes auto spectrum of map_a.
-        ell_min (float, default=90.): minimum mulitpole for which to compute angular cross spectrum, corresponds to largest mode of FOV
-        nbins (int, default=60): number of bins to compute cross spectrum for. 
-        sterad_term (float, optional, default=None): unit conversion term that is used to divide power spectrum in azimuthalAverage()
-        sterad_a/sterad_b (bool, default=True): if True, multiplies map to convert from map proportional to 1/steradian to 1/pixel
+    Parameters
+    ----------
+    map_a : '~numpy.ndarray' of shape (Nx, Ny)
+        One of potentially two input map for which cross spectrum is computed.
+    map_b : `~numpy.ndarray' of shape (Nx, Ny), optional
+        Second input map for which to compute cross spectrum with map_a. If left unspecified,
+        the function computes auto spectrum of map_a. Default is 'None'.
 
-    Outputs:
-        rbins (np.array): radial bins for computed cross spectrum. note that these are multipole bins, not physical/comoving radius bins
-        radprof (np.array): profile of cross power spectrum
-        radstd (np.array): uncertainties on each binned power spectrum value determined by the number of available spatial modes. 
+    ell_min (float, default=90.): minimum mulitpole for which to compute angular cross spectrum, corresponds to largest mode of FOV
+    
+    nbins (int, default=60): number of bins to compute cross spectrum for. 
+    
+    sterad_term (float, optional, default=None): unit conversion term that is used to divide power spectrum in azimuthalAverage()
+    
+    sterad_a/sterad_b (bool, default=True): if True, multiplies map to convert from map proportional to 1/steradian to 1/pixel
+
+    Returns
+    -------
+    
+    rbins (np.array): radial bins for computed cross spectrum. note that these are multipole bins, not physical/comoving radius bins
+    
+    radprof (np.array): profile of cross power spectrum
+    
+    radstd (np.array): uncertainties on each binned power spectrum value determined by the number of available spatial modes. 
             In other words, this is the uncertainty from cosmic variance
     ''' 
 
@@ -321,7 +332,7 @@ def get_power_spec(map_a, map_b=None, mask=None, pixsize=7.,
         
     l2d, ps2d = get_power_spectrum_2d(map_a, map_b=map_b, pixsize=pixsize)
             
-    lbins, Cl, Clerr = azim_average_cl2d(ps2d, l2d, lbinedges=lbinedges, lbins=lbins, weights=weights)
+    lbins, Cl, Clerr = azim_average_cl2d(ps2d, l2d, nbins=nbins, lbinedges=lbinedges, lbins=lbins, weights=weights, logbin=logbin)
     
     if return_Dl:
         Cl = Cl * lbins * (lbins+1) / 2 / np.pi

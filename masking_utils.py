@@ -3,7 +3,10 @@ import matplotlib.pyplot as plt
 import numpy as np
 from ciber_data_helpers import make_radius_map
 ''' TO DO : CAMB does not compile with Python 3 at the moment -- need to update Fortran compiler '''
-# from ciber_mocks import *
+import sys
+
+if sys.version_info[0]==2:
+    from ciber_mocks import *
 
 # Yun-Ting's code for masking is here https://github.com/yuntingcheng/python_ciber/blob/master/stack_modelfit/mask.py
 
@@ -82,7 +85,7 @@ def mask_from_cat(catalog, xidx=0, yidx=1, mag_idx=3, dimx=1024, dimy=1024, pixs
     return mask 
 
 
-def mask_from_df_cat(cat_df, dimx=1024, dimy=1024, pixsize=7., mode='Zemcov+14', magstr='zMeanPSFMag', mod_fac=-4.):
+def mask_from_df_cat(cat_df, dimx=1024, dimy=1024, pixsize=7., mode='Zemcov+14', magstr='zMeanPSFMag', mod_fac=-4., alpha_m=-6.25, beta_m=110):
     
     # can take mean color between PanSTARRS band and J band as zeroth order approx. ideally would regress, 
     # but probably doesn't make big difference
@@ -91,7 +94,7 @@ def mask_from_df_cat(cat_df, dimx=1024, dimy=1024, pixsize=7., mode='Zemcov+14',
 
     print('magnitude mod fac is ', mod_fac)
 
-    radii = magnitude_to_radius_linear(cat_df[magstr]+mod_fac) # vega to AB factor?
+    radii = magnitude_to_radius_linear(cat_df[magstr]+mod_fac, alpha_m=alpha_m, beta_m=beta_m) # vega to AB factor?
 
     
     xs = np.array(cat_df['x1'])

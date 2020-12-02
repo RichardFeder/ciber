@@ -10,7 +10,10 @@ from astropy.coordinates import SkyCoord
 from astropy.coordinates import match_coordinates_sky
 
 from sklearn import tree
-from sklearn.tree import plot_tree
+import sys
+
+if sys.version_info[0] == 3:
+	from sklearn.tree import plot_tree
 
 from catalog_utils import *
 
@@ -41,10 +44,10 @@ def compute_tpr_fpr(predictions, labels):
 	'''
 	
 	tpr = np.array(predictions[labels.astype(np.bool)] == 1)
-	tpr = np.sum(tpr)/len(tpr)
+	tpr = float(np.sum(tpr))/float(len(tpr))
 	
 	fpr = np.array(predictions[~labels.astype(np.bool)] == 1)
-	fpr = np.sum(fpr)/len(fpr)
+	fpr = float(np.sum(fpr))/float(len(fpr))
 	
 	return tpr, fpr
 
@@ -96,50 +99,98 @@ def compute_tpr_fpr_curves(predictions, labels, vals, nbin=30, minval=13, bounda
 
 
 
-def crossmatch_IBIS_unWISE_PS(field, datdir='/Users/luminatech/Documents/ciber2/ciber/data/cats/'):
-	
+def crossmatch_IBIS_unWISE_PS(field, df_IBIS_wxy=None, crossmatch_unWISE_PS=None, \
+        datdir='/Users/luminatech/Documents/ciber2/ciber/data/cats/', xmatch_cut=False, xmatch_radius=0.5, \
+        compute_WISE_mags=False, PS_mAB_to_mVega=False):
 
-	df_IBIS_wxy = pd.read_csv(datdir+'IBIS_'+field+'_filt_wxy_ML_selected_best.csv')
-	IBIS_src_coord = SkyCoord(ra=df_IBIS_wxy['ra']*u.degree, dec=df_IBIS_wxy['dec']*u.degree, frame='icrs')
+    '''
 
-	crossmatch_unWISE_PS = pd.read_csv(datdir+'unWISE/'+field+'/unWISE_PS_crossmatch_2sig_dpos_'+field+'.csv')
-	crossmatch_unWISE_PS_src_coord = SkyCoord(ra=crossmatch_unWISE_PS['ra']*u.degree, dec=crossmatch_unWISE_PS['dec']*u.degree, frame='icrs')
+    Parameters
+    ----------
 
-	idx_IBIS_unWISE_PS, d2d_IBIS, _ = match_coordinates_sky(crossmatch_unWISE_PS_src_coord, IBIS_src_coord) # there is an order specific element to this
+    field : 'string'
+        Field to perform crossmatching on. 
 
-	crossmatch_unWISE_PS['j_mag_best'] = np.array(df_IBIS_wxy.iloc[idx_IBIS_unWISE_PS].j_mag_best)
-	crossmatch_unWISE_PS['h_mag_best'] = np.array(df_IBIS_wxy.iloc[idx_IBIS_unWISE_PS].h_mag_best)
-	crossmatch_unWISE_PS['k_mag_best'] = np.array(df_IBIS_wxy.iloc[idx_IBIS_unWISE_PS].k_mag_best)
-	
-	crossmatch_unWISE_PS['j_magerr_best'] = np.array(df_IBIS_wxy.iloc[idx_IBIS_unWISE_PS].j_magerr_best)
-	crossmatch_unWISE_PS['h_magerr_best'] = np.array(df_IBIS_wxy.iloc[idx_IBIS_unWISE_PS].h_magerr_best)
-	crossmatch_unWISE_PS['k_magerr_best'] = np.array(df_IBIS_wxy.iloc[idx_IBIS_unWISE_PS].k_magerr_best)
-	
-	crossmatch_unWISE_PS['dmatch_arcsec_IBIS'] = d2d_IBIS.arcsec
+    datdir : 'string', optional
 
-	crossmatch_unWISE_PS['mag_W2'] = np.array(22.5 - 2.5*np.log10(crossmatch_unWISE_PS['flux_W2']) + 3.339)
-	crossmatch_unWISE_PS['mag_W1'] = np.array(22.5 - 2.5*np.log10(crossmatch_unWISE_PS['flux_W1']) + 2.699)
+    xmatch_cut : 'bool', optional
+        if True, only return crossmatches with source positions within xmatch_radius of each other. 
+        Default is False.
+    xmatch_radius : 'float', optional
+        maximum cross matching radius permitted for merged catalogs if xmatch_cut is False.
+        Default is 0.5 [arcseconds].
 
-	IBIS_PS_unWISE_xmatch_mask = np.where(np.array(crossmatch_unWISE_PS['dmatch_arcsec_IBIS']) <= 0.5)[0]
+    Returns
+    -------
 
-	crossmatch_unWISE_PS_IBIS = crossmatch_unWISE_PS.iloc[IBIS_PS_unWISE_xmatch_mask].copy()
-	
-	return crossmatch_unWISE_PS_IBIS
+    crossmatch_unWISE_PS_IBIS : class 'pandas.core.frame.DataFrame'
+        Dataframe containing crossmatched unWISE + PanSTARRS + IBIS catalog.
 
+    '''
+
+    if df_IBIS_wxy is None:
+    	print('loading IBIS catalog because it was not provided')
+        df_IBIS_wxy = pd.read_csv(datdir+'IBIS_'+field+'_filt_wxy_ML_selected_best.csv')
+    if crossmatch_unWISE_PS is None:
+    	print('loading crossmatch catalog because it was not provided')
+        crossmatch_unWISE_PS = pd.read_csv(datdir+'unWISE/'+field+'/unWISE_PS_crossmatch_2sig_dpos_'+field+'.csv')
+
+    IBIS_src_coord = SkyCoord(ra=df_IBIS_wxy['ra']*u.degree, dec=df_IBIS_wxy['dec']*u.degree, frame='icrs')
+
+    crossmatch_unWISE_PS_src_coord = SkyCoord(ra=crossmatch_unWISE_PS['ra']*u.degree, dec=crossmatch_unWISE_PS['dec']*u.degree, frame='icrs')
+
+    idx_IBIS_unWISE_PS, d2d_IBIS, _ = match_coordinates_sky(crossmatch_unWISE_PS_src_coord, IBIS_src_coord) # there is an order specific element to this
+
+    # IBIS sources are already in Vega magnitude system
+    crossmatch_unWISE_PS['j_mag_best'] = np.array(df_IBIS_wxy.iloc[idx_IBIS_unWISE_PS].j_mag_best)
+    crossmatch_unWISE_PS['h_mag_best'] = np.array(df_IBIS_wxy.iloc[idx_IBIS_unWISE_PS].h_mag_best)
+    crossmatch_unWISE_PS['k_mag_best'] = np.array(df_IBIS_wxy.iloc[idx_IBIS_unWISE_PS].k_mag_best)
+
+    crossmatch_unWISE_PS['j_magerr_best'] = np.array(df_IBIS_wxy.iloc[idx_IBIS_unWISE_PS].j_magerr_best)
+    crossmatch_unWISE_PS['h_magerr_best'] = np.array(df_IBIS_wxy.iloc[idx_IBIS_unWISE_PS].h_magerr_best)
+    crossmatch_unWISE_PS['k_magerr_best'] = np.array(df_IBIS_wxy.iloc[idx_IBIS_unWISE_PS].k_magerr_best)
+
+
+
+    crossmatch_unWISE_PS['dmatch_arcsec_IBIS'] = d2d_IBIS.arcsec
+
+    # converting WISE fluxes to Vega magnitudes
+    if compute_WISE_mags:
+        print('computing WISE mags (Vega)..')
+        crossmatch_unWISE_PS['mag_W2'] = np.array(22.5 - 2.5*np.log10(crossmatch_unWISE_PS['flux_W2']))
+        crossmatch_unWISE_PS['mag_W1'] = np.array(22.5 - 2.5*np.log10(crossmatch_unWISE_PS['flux_W1']))
+
+    # PanSTARRS catalog PSF magnitudes are given w.r.t. the AB system, correcting to Vega for consistent calibration
+    if PS_mAB_to_mVega:
+        print('converting PanSTARRS AB magnitudes to Vega..')
+        crossmatch_unWISE_PS['gMeanPSFMag'] -= -0.08
+        crossmatch_unWISE_PS['rMeanPSFMag'] -= 0.16
+        crossmatch_unWISE_PS['iMeanPSFMag'] -= 0.37
+        crossmatch_unWISE_PS['zMeanPSFMag'] -= 0.54
+        crossmatch_unWISE_PS['yMeanPSFMag'] -= 0.634
+
+    if xmatch_cut:
+        IBIS_PS_unWISE_xmatch_mask = np.where(np.array(crossmatch_unWISE_PS['dmatch_arcsec_IBIS']) <= xmatch_radius)[0]
+
+        crossmatch_unWISE_PS_IBIS = crossmatch_unWISE_PS.iloc[IBIS_PS_unWISE_xmatch_mask].copy()
+    else:
+        crossmatch_unWISE_PS_IBIS = crossmatch_unWISE_PS.copy()
+
+    return crossmatch_unWISE_PS_IBIS
 
 
 def train_decision_tree(training_catalog, feature_names, outlablstr='j_mag_best', J_mag_lim=18.5, max_depth=5):
-    
-    classes_train = np.array(training_catalog[outlablstr] < J_mag_lim).astype(np.int)
+	
+	classes_train = np.array(training_catalog[outlablstr] < J_mag_lim).astype(np.int)
 
-    train_features = feature_matrix_from_df(training_catalog, feature_names, filter_nans=True)
+	train_features = feature_matrix_from_df(training_catalog, feature_names, filter_nans=True)
 
-    clf = tree.DecisionTreeClassifier(max_depth=max_depth)
-    fig = clf.fit(train_features, classes_train)
-    
-    return fig, classes_train, train_features
-    
-    
+	clf = tree.DecisionTreeClassifier(max_depth=max_depth)
+	fig = clf.fit(train_features, classes_train)
+	
+	return fig, classes_train, train_features
+	
+	
 
 def decision_tree_train_and_test(training_catalog, feature_names, feature_bands=None, test_catalog=None, outlablstr='j_mag_best', J_mag_lim=18.5, max_depth=5, show_tree=False):
 
@@ -200,57 +251,57 @@ def decision_tree_train_and_test(training_catalog, feature_names, feature_bands=
 
 	'''
 
-    decision_tree, classes_train, train_features = train_decision_tree(training_catalog, feature_names, outlablstr=outlablstr, J_mag_lim=J_mag_lim, max_depth=max_depth)
+	decision_tree, classes_train, train_features = train_decision_tree(training_catalog, feature_names, outlablstr=outlablstr, J_mag_lim=J_mag_lim, max_depth=max_depth)
 
-    if show_tree:
-        above_label = 'J > '+str(J_mag_lim)
-        below_label = 'J < '+str(J_mag_lim)
-        if feature_bands is None:
-            print('cant show decision tree without feature labels!')
-            pass
-        dt_fig = plot_decision_tree(decision_tree, feature_bands, class_names=[above_label, below_label], max_depth=max_depth)
+	if show_tree:
+		above_label = 'J > '+str(J_mag_lim)
+		below_label = 'J < '+str(J_mag_lim)
+		if feature_bands is None:
+			print('cant show decision tree without feature labels!')
+			pass
+		dt_fig = plot_decision_tree(decision_tree, feature_bands, class_names=[above_label, below_label], max_depth=max_depth)
 
-    predictions_train = decision_tree.predict(train_features)
+	predictions_train = decision_tree.predict(train_features)
 
-    tpr_train, fpr_train = compute_tpr_fpr(predictions_train, classes_train)
+	tpr_train, fpr_train = compute_tpr_fpr(predictions_train, classes_train)
 
-    if test_catalog is not None:
+	if test_catalog is not None:
 
-        classes_test = np.array(test_catalog[outlablstr] < J_mag_lim).astype(np.int)
+		classes_test = np.array(test_catalog[outlablstr] < J_mag_lim).astype(np.int)
 
-        test_features = feature_matrix_from_df(test_catalog, feature_names, filter_nans=True)
+		test_features = feature_matrix_from_df(test_catalog, feature_names, filter_nans=True)
 
-        predictions_test = decision_tree.predict(test_features)
+		predictions_test = decision_tree.predict(test_features)
 
-        tpr_test, fpr_test = compute_tpr_fpr(predictions_test, classes_test)
+		tpr_test, fpr_test = compute_tpr_fpr(predictions_test, classes_test)
 
-        if show_tree:
-            return train_features, tpr_train, fpr_train, classes_train, predictions_train,\
-                     test_features, tpr_test, fpr_test, classes_test, predictions_test, dt_fig
-
-
-        return train_features, tpr_train, fpr_train, classes_train, predictions_train, \
-                test_features, tpr_test, fpr_test, classes_test, predictions_test
-
-    if show_tree:
-        return train_features, tpr_train, fpr_train, classes_train, predictions_train, dt_fig
+		if show_tree:
+			return train_features, tpr_train, fpr_train, classes_train, predictions_train,\
+					 test_features, tpr_test, fpr_test, classes_test, predictions_test, dt_fig
 
 
-    return train_features, tpr_train, fpr_train, classes_train, predictions_train
+		return train_features, tpr_train, fpr_train, classes_train, predictions_train, \
+				test_features, tpr_test, fpr_test, classes_test, predictions_test
+
+	if show_tree:
+		return train_features, tpr_train, fpr_train, classes_train, predictions_train, dt_fig
+
+
+	return train_features, tpr_train, fpr_train, classes_train, predictions_train
 
   
 
-def feature_matrix_from_df(df, feature_names, filter_nans=True):
-	
+def feature_matrix_from_df(df, feature_names, filter_nans=True, verbose=True):
+
 	'''
 	Helper function for loading catalog values into feature matrix.
 
 	Parameters
 	----------
-	
+
 	df : class 'pandas.core.frame.DataFrame'
 		Dataframe containing catalog data.
-	
+
 	feature_names : `list' of strings with length [Nfeatures]
 		list containing names of features used for classification
 
@@ -267,27 +318,45 @@ def feature_matrix_from_df(df, feature_names, filter_nans=True):
 
 	'''
 
-	feature_matrix = []
-	for feature_name in feature_names:
-		feature_matrix.append(df[feature_name])
-	
-	feature_matrix = np.array(feature_matrix).transpose()
-	
-	if filter_nans:
-		
-		feature_matrix[np.isinf(feature_matrix)] = 30
-		feature_matrix[np.isnan(feature_matrix)] = 30
-		feature_matrix[feature_matrix==-99.] = 30
+    feature_matrix = []
+    for feature_name in feature_names:
+        if feature_name in list(df.columns):
+            feature_matrix.append(df[feature_name])
+        else:
+        	if verbose:
+            	print(feature_name+' not in input dataframe, adding nans to column')
+            feature_matrix.append([np.nan for x in range(len(df))])
 
-	return feature_matrix
+    feature_matrix = np.array(feature_matrix).transpose()
+
+    if filter_nans:
+
+        feature_matrix[np.isinf(feature_matrix)] = 30.
+        feature_matrix[np.isnan(feature_matrix)] = 30.
+        feature_matrix[feature_matrix<0.0] = 30.
+
+    return feature_matrix
+
+
+def filter_mask_cat_dt(input_cat, decision_tree, feature_names):
+	
+	cat_feature_matrix = feature_matrix_from_df(input_cat, feature_names)
+	
+	mask_predict = decision_tree.predict(cat_feature_matrix)
+	
+	mask_src_bool = np.where(mask_predict==1)[0]
+	
+	filt_cat = input_cat.iloc[mask_src_bool].copy()
+	
+	return filt_cat
 
 def magnitude_to_radius_linear(magnitudes, alpha_m=-6.25, beta_m=110.):
-    ''' Masking radius function as given by Zemcov+2014. alpha_m has units of arcsec mag^{-1}, while beta_m
-    has units of arcseconds.'''
-    
-    r = alpha_m*magnitudes + beta_m
+	''' Masking radius function as given by Zemcov+2014. alpha_m has units of arcsec mag^{-1}, while beta_m
+	has units of arcseconds.'''
+	
+	r = alpha_m*magnitudes + beta_m
 
-    return r
+	return r
 
 
 def plot_decision_tree(dt, feature_names, line1='Left branches = condition True; Right branches = condition False',\

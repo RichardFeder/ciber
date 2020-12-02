@@ -1,13 +1,17 @@
 import numpy as np
 import astropy.units as u
 from scipy import stats
-from halo_model import *
 from helgason import *
 from lognormal_counts import *
 from catalog_utils import *
+
+import sys
 import camb
-from hmf import MassFunction
-import hmf
+
+if sys.version_info[0] == 3:
+    from halo_model import *
+    from hmf import MassFunction
+    import hmf
 
 pars = camb.CAMBparams()
 pars.set_cosmology(H0=67.5, ombh2=0.022, omch2=0.122)
@@ -71,7 +75,7 @@ This involves:
 class galaxy_catalog():
     
     lf = Luminosity_Function()
-    mass_function = MassFunction(z=0., dlog10m=0.02)
+    # mass_function = MassFunction(z=0., dlog10m=0.02)
     cosmo = FlatLambdaCDM(H0=70, Om0=0.28)
 
 

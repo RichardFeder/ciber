@@ -2,13 +2,13 @@ import numpy as np
 import numpy.ctypeslib as npct
 import ctypes
 from ctypes import c_int, c_double
-
 import astropy.units as u
 from astropy import constants as const
 import scipy.signal
 from mock_galaxy_catalogs import *
 from helgason import *
 from ciber_data_helpers import *
+from PIL import Image
 from image_eval import psf_poly_fit, image_model_eval
 import sys
 
@@ -136,7 +136,7 @@ def virial_radius_2_reff(r_vir, zs, theta_fov_deg=2.0, npix_sidelength=1024.):
 class ciber_mock():
     sb_intensity_unit = u.nW/u.m**2/u.steradian # helpful unit to have on hand
 
-    ciberdir = '/Users/richardfeder/Documents/caltech/ciber2'
+    # ciberdir = '/Users/richardfeder/Documents/caltech/ciber2'
     darktime_name_dict = dict({36265:['NEP', 'BootesA'],36277:['SWIRE', 'NEP', 'BootesB'], \
     40030:['DGL', 'NEP', 'Lockman', 'elat10', 'elat30', 'BootesB', 'BootesA', 'SWIRE']})
     ciber_field_dict = dict({4:'elat10', 5:'elat30',6:'BootesB', 7:'BootesA', 8:'SWIRE'})
@@ -147,15 +147,22 @@ class ciber_mock():
     sky_brightness = np.array([300., 370.])*sb_intensity_unit
     instrument_noise = np.array([33.1, 17.5])*sb_intensity_unit
 
-    def __init__(self, pcat_model_eval=True):
+    def __init__(self, pcat_model_eval=True, ciberdir='/Users/richardfeder/Documents/caltech/ciber2/ciber/'):
         self.psf_template=None
-        
+
+        self.ciberdir = ciberdir
+
         if pcat_model_eval:
 
-            if sys.version_info[0] < 3:
-                self.libmmult = npct.load_library('pcat-lion', '.')
-            else:
-                self.libmmult = npct.load_library('pcat-lion.so', '/Users/richardfeder/Documents/caltech/ciber2/ciber/')
+            try:
+                if sys.version_info[0] < 3:
+                    self.libmmult = npct.load_library('pcat-lion', '.')
+                else:
+                    self.libmmult = npct.load_library('pcat-lion.so', self.ciberdir)
+            except:
+                print('pcat-lion.so not loading, trying blas.so now..')
+                self.libmmult = ctypes.cdll['./blas.so'] # not sure how stable this is, trying to find a good Python 3 fix to deal with path configuration
+
 
             initialize_cblas_ciber(self.libmmult)
 
@@ -197,20 +204,14 @@ class ciber_mock():
 
             psf = np.zeros((70,70))
             psf[0:35,0:35] = self.psf_template
-            psf = scipy.misc.imresize(psf, (350, 350), interp='lanczos', mode='F')
+
+            psf = np.array(Image.fromarray(psf).resize((350, 350), resample=Image.LANCZOS))
+            # psf = scipy.misc.imresize(psf, (350, 350), interp='lanczos', mode='F') # deprecated for Python 3
             psfnew = np.array(psf[0:175, 0:175])
 
             psfnew[0:173,0:173] = psf[2:175,2:175]  # shift due to lanczos kernel
             psfnew[0:173,0:173] = psf[2:175,2:175]  # shift due to lanczos kernel
             self.cf = psf_poly_fit(psfnew, nbin=5)
-
-
-            # psf = np.zeros((50,50))
-            # psf[0:25,0:25] = self.psf_template
-            # psf = scipy.misc.imresize(psf, (250, 250), interp='lanczos', mode='F')
-            # psfnew = np.array(psf[0:125, 0:125])
-            # psfnew[0:123,0:123] = psf[2:125,2:125]  # shift due to lanczos kernel
-            # self.cf = psf_poly_fit(psfnew, nbin=5)
 
         return beta, rc, norm
         
@@ -227,10 +228,11 @@ class ciber_mock():
         jansky_arr = self.mag_2_jansky(mags)
         return jansky_arr.to(u.nW*u.s/u.m**2)*const.c/(self.pix_sr*self.lam_effs[band])
 
-    def make_srcmap(self, ifield, cat, flux_idx=-1, band=0, nbin=0., nx=1024, ny=1024, nwide=12, multfac=7.0, \
+    def make_srcmap(self, ifield, cat, flux_idx=-1, band=0, nbin=0., nx=1024, ny=1024, nwide=17, multfac=7.0, \
                     pcat_model_eval=False, libmmult=None, dx=2.5, dy=-1.0):
         
-        ''' This function takes in a catalog, finds the PSF for the specific ifield, makes a PSF template and then populates an image with 
+        ''' 
+        This function takes in a catalog, finds the PSF for the specific ifield, makes a PSF template and then populates an image with 
         model sources. When we use galaxies for mocks we can do this because CIBER's angular resolution is large enough that galaxies are
         well modeled as point sources. 
 
@@ -252,21 +254,18 @@ class ciber_mock():
 
 
         if self.psf_template is None:
+
             print('generating psf template because it was none')
             
             self.get_psf(ifield=ifield, band=band, nx=nx, ny=ny, multfac=multfac, poly_fit=pcat_model_eval, nwide=nwide)
             
-    
-        print('Making source map TM, mrange=(%d,%d), %d sources'%(np.min(cat[:,3]),np.max(cat[:,3]),Nsrc))
-        
-
         if pcat_model_eval:
+
             srcmap = image_model_eval(np.array(cat[:,0]).astype(np.float32)+dx, np.array(cat[:,1]).astype(np.float32)-dy ,np.array(cat[:, flux_idx]).astype(np.float32),0., (nx, ny), 35, self.cf, lib=self.libmmult.pcat_model_eval)
 
-            # srcmap = image_model_eval(np.array(cat[:,0]).astype(np.float32)+dx, np.array(cat[:,1]).astype(np.float32)-dy ,np.array(cat[:, flux_idx]).astype(np.float32),0., (nx, ny), 25, self.cf, lib=self.libmmult.pcat_model_eval)
-            
             return srcmap
         else:
+
             xs = np.round(cat[:,0]).astype(np.int32)
             ys = np.round(cat[:,1]).astype(np.int32)
 
@@ -278,7 +277,8 @@ class ciber_mock():
    
     def make_ihl_map(self, map_shape, cat, ihl_frac, flux_idx=-1, dimx=150, dimy=150, psf=None, extra_trim=20):
         
-        ''' Given a catalog amnd a fractional ihl contribution, this function precomputes an array of IHL templates and then 
+        ''' 
+        Given a catalog amnd a fractional ihl contribution, this function precomputes an array of IHL templates and then 
         uses them to populate a source map image.
         '''
 
@@ -295,7 +295,6 @@ class ciber_mock():
             ihl_map[int(x0):int(x0+ihl_temps[0].shape[0]), int(y0):int(y0 + ihl_temps[0].shape[1])] += ihl_temps[int(np.ceil(rvirs[i])-1)]*ihl_frac*src[flux_idx]
 
         return ihl_map[(ihl_temps[0].shape[0] + extra_trim)/2:-(ihl_temps[0].shape[0] + extra_trim)/2, (ihl_temps[0].shape[0] + extra_trim)/2:-(ihl_temps[0].shape[0] + extra_trim)/2]
-        # return ihl_map[(norm_ihl.shape[0] + extra_trim)/2:-(norm_ihl.shape[0] + extra_trim)/2, (norm_ihl.shape[0] + extra_trim)/2:-(norm_ihl.shape[0] + extra_trim)/2]
      
 
     def mocks_from_catalogs(self, catalog_list, ncatalog, mock_data_directory=None, m_min=9., m_max=30., m_tracer_max=25., \
