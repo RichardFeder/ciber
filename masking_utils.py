@@ -10,8 +10,6 @@ if sys.version_info[0]==2:
 
 # Yun-Ting's code for masking is here https://github.com/yuntingcheng/python_ciber/blob/master/stack_modelfit/mask.py
 
-
-
 def filter_trilegal_cat(trilegal_cat, m_max=17, I_band_idx=16):
     
     filtered_trilegal_cat = np.array([x for x in trilegal_cat if x[I_band_idx]<m_max])
@@ -42,8 +40,6 @@ def magnitude_to_radius_linear(magnitudes, alpha_m=-6.25, beta_m=110.):
         masking radii for input sources 
 
     '''
-
-
     
     r = alpha_m*magnitudes + beta_m
 
@@ -85,24 +81,28 @@ def mask_from_cat(catalog, xidx=0, yidx=1, mag_idx=3, dimx=1024, dimy=1024, pixs
     return mask 
 
 
-def mask_from_df_cat(cat_df, dimx=1024, dimy=1024, pixsize=7., mode='Zemcov+14', magstr='zMeanPSFMag', mod_fac=-4., alpha_m=-6.25, beta_m=110):
+def mask_from_df_cat(cat_df, dimx=1024, dimy=1024, pixsize=7., mode='Zemcov+14', magstr='zMeanPSFMag', alpha_m=-6.25, beta_m=110, \
+    a1=252.8, b1=3.632, c1=8.52, Vega_to_AB = 0., mag_lim =None, mag_lim_str='j_mag_best'):
     
     # can take mean color between PanSTARRS band and J band as zeroth order approx. ideally would regress, 
     # but probably doesn't make big difference
     
+    if mag_lim is not None:
+        mag_lim_mask = np.where(cat_df[magstr] < mag_lim)[0]
+        cat_df = cat_df.iloc[mag_lim_mask]
     mask = np.ones([dimx,dimy], dtype=int)
 
-    print('magnitude mod fac is ', mod_fac)
-
-    radii = magnitude_to_radius_linear(cat_df[magstr]+mod_fac, alpha_m=alpha_m, beta_m=beta_m) # vega to AB factor?
-
+    if mode=='Zemcov+14':
+        radii = magnitude_to_radius_linear(cat_df[magstr], alpha_m=alpha_m, beta_m=beta_m) # vega to AB factor?
+    elif mode=='Simon':
+        AB_mags = np.array(cat_df[magstr]) + Vega_to_AB
+        radii = a1*np.exp(-((cat_df[magstr]-b1)/c1)**2)
     
     xs = np.array(cat_df['x1'])
     ys = np.array(cat_df['y1'])
 
-    
     for i, r in enumerate(radii):
-        radmap = make_radius_map(dimx=dimx, dimy=dimy, cenx=xs[i], ceny=ys[i], rc=1.)
+        radmap = make_radius_map(dimx=dimx, dimy=dimy, cenx=xs[i], ceny=ys[i], rc=1., sqrt=True)
         mask[radmap<r/pixsize] = 0.
             
     return mask, radii
@@ -298,7 +298,33 @@ def I_threshold_mask(xs, ys, ms,psf=None, beta=None, rc=None, norm=None, ciber_m
 
 
 
+def simon_r_m(mags, a1=252.8, b1=3.632, c1=8.52, Vega_to_AB=0.):
+    '''
+    Masking radius formula based on best fit from Simon's analysis.
 
+    Parameters
+    ----------
+
+    mags : `numpy.ndarray' of shape (Nsrc,)
+        Source magnitudes
+
+    a1 : `float', optional
+        Normalization coefficient. Default is 252.8.
+    b1 : `float', optional
+        mean of fit Gaussian. Default is 3.632.
+    c1 : `float', optional
+        scale radius of Gaussian. Default is 8.52.
+
+    Returns
+    -------
+    radii : `numpy.ndarray' of shape (Nsrc,)
+        Masking radii, given in arcseconds. 
+
+
+    '''
+    radii = a1*np.exp(-((mags-b1)/c1)**2)
+
+    return radii
 
 
 

@@ -44,12 +44,12 @@ def compute_tpr_fpr(predictions, labels):
 	'''
 	
 	tpr = np.array(predictions[labels.astype(np.bool)] == 1)
-	tpr = float(np.sum(tpr))/float(len(tpr))
+	true_positive_rate = float(np.sum(tpr))/float(len(tpr))
 	
 	fpr = np.array(predictions[~labels.astype(np.bool)] == 1)
-	fpr = float(np.sum(fpr))/float(len(fpr))
+	false_positive_rate = float(np.sum(fpr))/float(len(fpr))
 	
-	return tpr, fpr
+	return true_positive_rate, false_positive_rate
 
 def compute_tpr_fpr_curves(predictions, labels, vals, nbin=30, minval=13, boundary=17.5):
 	
@@ -98,97 +98,80 @@ def compute_tpr_fpr_curves(predictions, labels, vals, nbin=30, minval=13, bounda
 	return np.array(tpr_bin), np.array(fpr_bin), np.array(fnr_bin), val_bins, np.array(tpr_stds), np.array(fpr_stds), np.array(fnr_stds)
 
 
+def train_decision_tree(training_catalog, feature_names, extra_features=None, extra_feature_names=None, outlablstr='j_mag_best', J_mag_lim=18.5, max_depth=5):
 
-def crossmatch_IBIS_unWISE_PS(field, df_IBIS_wxy=None, crossmatch_unWISE_PS=None, \
-        datdir='/Users/luminatech/Documents/ciber2/ciber/data/cats/', xmatch_cut=False, xmatch_radius=0.5, \
-        compute_WISE_mags=False, PS_mAB_to_mVega=False):
+    classes_train = np.array(training_catalog[outlablstr] < J_mag_lim).astype(np.int)
+    train_features = feature_matrix_from_df(training_catalog, feature_names, filter_nans=True)
+    
 
-    '''
+    if extra_features is not None:
+        all_features = []
+        print("train features has shape", train_features.shape)
+        for i in range(train_features.shape[1]):
+            all_features.append(list(train_features[:,i]))
+            
+        print('all features has shape ', np.array(all_features).shape)
+        for j in range(np.array(extra_features).transpose().shape[1]):
+            all_features.append(list(np.array(extra_features).transpose()[:,j]))
+            
+        all_features = np.array(all_features).transpose()
+        all_features[np.isinf(all_features)] = 30.
+        all_features[np.isnan(all_features)] = 30.
+        all_features[all_features<0.0] = 30.
 
-    Parameters
-    ----------
-
-    field : 'string'
-        Field to perform crossmatching on. 
-
-    datdir : 'string', optional
-
-    xmatch_cut : 'bool', optional
-        if True, only return crossmatches with source positions within xmatch_radius of each other. 
-        Default is False.
-    xmatch_radius : 'float', optional
-        maximum cross matching radius permitted for merged catalogs if xmatch_cut is False.
-        Default is 0.5 [arcseconds].
-
-    Returns
-    -------
-
-    crossmatch_unWISE_PS_IBIS : class 'pandas.core.frame.DataFrame'
-        Dataframe containing crossmatched unWISE + PanSTARRS + IBIS catalog.
-
-    '''
-
-    if df_IBIS_wxy is None:
-    	print('loading IBIS catalog because it was not provided')
-        df_IBIS_wxy = pd.read_csv(datdir+'IBIS_'+field+'_filt_wxy_ML_selected_best.csv')
-    if crossmatch_unWISE_PS is None:
-    	print('loading crossmatch catalog because it was not provided')
-        crossmatch_unWISE_PS = pd.read_csv(datdir+'unWISE/'+field+'/unWISE_PS_crossmatch_2sig_dpos_'+field+'.csv')
-
-    IBIS_src_coord = SkyCoord(ra=df_IBIS_wxy['ra']*u.degree, dec=df_IBIS_wxy['dec']*u.degree, frame='icrs')
-
-    crossmatch_unWISE_PS_src_coord = SkyCoord(ra=crossmatch_unWISE_PS['ra']*u.degree, dec=crossmatch_unWISE_PS['dec']*u.degree, frame='icrs')
-
-    idx_IBIS_unWISE_PS, d2d_IBIS, _ = match_coordinates_sky(crossmatch_unWISE_PS_src_coord, IBIS_src_coord) # there is an order specific element to this
-
-    # IBIS sources are already in Vega magnitude system
-    crossmatch_unWISE_PS['j_mag_best'] = np.array(df_IBIS_wxy.iloc[idx_IBIS_unWISE_PS].j_mag_best)
-    crossmatch_unWISE_PS['h_mag_best'] = np.array(df_IBIS_wxy.iloc[idx_IBIS_unWISE_PS].h_mag_best)
-    crossmatch_unWISE_PS['k_mag_best'] = np.array(df_IBIS_wxy.iloc[idx_IBIS_unWISE_PS].k_mag_best)
-
-    crossmatch_unWISE_PS['j_magerr_best'] = np.array(df_IBIS_wxy.iloc[idx_IBIS_unWISE_PS].j_magerr_best)
-    crossmatch_unWISE_PS['h_magerr_best'] = np.array(df_IBIS_wxy.iloc[idx_IBIS_unWISE_PS].h_magerr_best)
-    crossmatch_unWISE_PS['k_magerr_best'] = np.array(df_IBIS_wxy.iloc[idx_IBIS_unWISE_PS].k_magerr_best)
-
-
-
-    crossmatch_unWISE_PS['dmatch_arcsec_IBIS'] = d2d_IBIS.arcsec
-
-    # converting WISE fluxes to Vega magnitudes
-    if compute_WISE_mags:
-        print('computing WISE mags (Vega)..')
-        crossmatch_unWISE_PS['mag_W2'] = np.array(22.5 - 2.5*np.log10(crossmatch_unWISE_PS['flux_W2']))
-        crossmatch_unWISE_PS['mag_W1'] = np.array(22.5 - 2.5*np.log10(crossmatch_unWISE_PS['flux_W1']))
-
-    # PanSTARRS catalog PSF magnitudes are given w.r.t. the AB system, correcting to Vega for consistent calibration
-    if PS_mAB_to_mVega:
-        print('converting PanSTARRS AB magnitudes to Vega..')
-        crossmatch_unWISE_PS['gMeanPSFMag'] -= -0.08
-        crossmatch_unWISE_PS['rMeanPSFMag'] -= 0.16
-        crossmatch_unWISE_PS['iMeanPSFMag'] -= 0.37
-        crossmatch_unWISE_PS['zMeanPSFMag'] -= 0.54
-        crossmatch_unWISE_PS['yMeanPSFMag'] -= 0.634
-
-    if xmatch_cut:
-        IBIS_PS_unWISE_xmatch_mask = np.where(np.array(crossmatch_unWISE_PS['dmatch_arcsec_IBIS']) <= xmatch_radius)[0]
-
-        crossmatch_unWISE_PS_IBIS = crossmatch_unWISE_PS.iloc[IBIS_PS_unWISE_xmatch_mask].copy()
+        clf = tree.DecisionTreeClassifier(max_depth=max_depth)
+        fig = clf.fit(all_features, classes_train)
     else:
-        crossmatch_unWISE_PS_IBIS = crossmatch_unWISE_PS.copy()
+        clf = tree.DecisionTreeClassifier(max_depth=max_depth)
+        fig = clf.fit(train_features, classes_train)
 
-    return crossmatch_unWISE_PS_IBIS
+    return fig, classes_train, train_features
+    
+
+def test_prediction(cat, decision_tree, feature_names, extra_features=None, extra_feature_names=None, outlablstr='j_mag_best', maglim=18.5):
+    classes_cat = np.array(cat[outlablstr] < maglim).astype(np.int)
+    features_cat = feature_matrix_from_df(cat, feature_names=feature_names)
+    if extra_features is not None:
+        all_features = []
+        for i in range(features_cat.shape[1]):
+            all_features.append(list(features_cat[:,i]))
+        for j in range(np.array(extra_features).transpose().shape[1]):
+            all_features.append(list(np.array(extra_features).transpose()[:,j]))
+            
+        all_features = np.array(all_features).transpose()
+
+        
+        all_features[np.isinf(all_features)] = 30.
+        all_features[np.isnan(all_features)] = 30.
+        all_features[all_features<0.0] = 30.
+        
+        predictions_cat = decision_tree.predict(all_features)
+
+    else:
+        predictions_cat = decision_tree.predict(features_cat)
+    
+    tpr, fpr = compute_tpr_fpr(predictions_cat, classes_cat)
+    
+    return tpr, fpr, predictions_cat, classes_cat
 
 
-def train_decision_tree(training_catalog, feature_names, outlablstr='j_mag_best', J_mag_lim=18.5, max_depth=5):
-	
-	classes_train = np.array(training_catalog[outlablstr] < J_mag_lim).astype(np.int)
+def evaluate_decision_tree_performance(decision_tree, test_catalog, extra_features=None,extra_feature_names=None, feature_names=None, feature_bands=None, J_mag_lim=18.5, \
+                                      outlablstr='j_mag_best'):
+    
+    if feature_names is None:
+        feature_names = ['rMeanPSFMag', 'iMeanPSFMag', 'gMeanPSFMag', 'zMeanPSFMag', 'yMeanPSFMag', 'mag_W1', 'mag_W2']
+    if feature_bands is None:
+        feature_bands = ['r', 'i', 'g', 'z', 'y', 'W1']
 
-	train_features = feature_matrix_from_df(training_catalog, feature_names, filter_nans=True)
-
-	clf = tree.DecisionTreeClassifier(max_depth=max_depth)
-	fig = clf.fit(train_features, classes_train)
-	
-	return fig, classes_train, train_features
+    
+    tpr, fpr, predictions, J_mask_bool = test_prediction(test_catalog, decision_tree, feature_names, extra_features=extra_features, extra_feature_names=extra_feature_names, maglim=J_mag_lim, \
+                                                         outlablstr=outlablstr)
+    tpr_curve, fpr_curve, fnr_curve, \
+            mag_bins, tpr_stds, fpr_stds, fnr_stds = compute_tpr_fpr_curves(predictions, J_mask_bool, \
+                                                                            np.array(test_catalog[outlablstr]), \
+                                                                           nbin=25, minval=14, boundary=J_mag_lim)
+    
+    return tpr_curve, fpr_curve, mag_bins, predictions, J_mask_bool
 	
 	
 
@@ -318,24 +301,24 @@ def feature_matrix_from_df(df, feature_names, filter_nans=True, verbose=True):
 
 	'''
 
-    feature_matrix = []
-    for feature_name in feature_names:
-        if feature_name in list(df.columns):
-            feature_matrix.append(df[feature_name])
-        else:
-        	if verbose:
-            	print(feature_name+' not in input dataframe, adding nans to column')
-            feature_matrix.append([np.nan for x in range(len(df))])
+	feature_matrix = []
+	for feature_name in feature_names:
+		if feature_name in list(df.columns):
+			feature_matrix.append(df[feature_name])
+		else:
+			if verbose:
+				print(feature_name+' not in input dataframe, adding nans to column')
+			feature_matrix.append([np.nan for x in range(len(df))])
 
-    feature_matrix = np.array(feature_matrix).transpose()
+	feature_matrix = np.array(feature_matrix).transpose()
 
-    if filter_nans:
+	if filter_nans:
 
-        feature_matrix[np.isinf(feature_matrix)] = 30.
-        feature_matrix[np.isnan(feature_matrix)] = 30.
-        feature_matrix[feature_matrix<0.0] = 30.
+		feature_matrix[np.isinf(feature_matrix)] = 30.
+		feature_matrix[np.isnan(feature_matrix)] = 30.
+		feature_matrix[feature_matrix<0.0] = 30.
 
-    return feature_matrix
+	return feature_matrix
 
 
 def filter_mask_cat_dt(input_cat, decision_tree, feature_names):
@@ -553,7 +536,7 @@ def plot_completeness_fdr_curves_decision_tree(mag_bins, J_mag_lim, tpr_binned, 
 	midbin = 0.5*(mag_bins[1:]+mag_bins[:-1])
 	
 	if type(tpr_binned)==list:
-		f = plt.figure(figsize=(10, 5))
+		f = plt.figure(figsize=(8, 5))
 	else:
 		f = plt.figure(figsize=(6,5))
 	titlestr = ''

@@ -702,6 +702,22 @@ def convert_pngs_to_gif(filenames, gifdir='../../M_ll_correction/', name='mkk', 
                    duration=duration, loop=loop)
 
 
+def plot_srcmap_mask(mask, titlestr, len_cat, return_fig=True, show=True):
+    f = plt.figure(figsize=(10, 10))
+    
+    plt.title(titlestr + ' \n N='+str(len_cat)+', '+str(np.round(100*np.sum(mask)/(mask.shape[0]**2), 2))+'% of pixels unmasked', fontsize=18)
+    plt.imshow(mask, cmap='Greys_r', origin='lower')
+    plt.xlabel('x [pix]', fontsize=18)
+    plt.ylabel('y [pix]', fontsize=18)
+    cbar = plt.colorbar(orientation='vertical', fraction=0.046, pad=0.08)
+    
+    if show:
+        plt.show()
+        
+    if return_fig:
+        return f
+
+
 def plot_ensemble_offset_stats(thetas, masked_xis, unmasked_xis, masked_varxi, unmasked_varxi, return_fig=True, logscale=True, \
                               suptitle='Mock CIBER source map (no noise), SWIRE flight mask (50 realizations)', \
                               nsim_list=None, ylim=[-0.5, 0.5]):
@@ -1131,6 +1147,17 @@ def plot_hankel_integrand(bins_rad, fine_bins, wtheta, spline_wtheta, ell, integ
     
     return f
 
-
+def show_masked_srcmap(masked_srcmap, headstr='IBIS + 2MASS masked source map', vmin=None, vmax=None, return_fig=True, jmaglim=18.5):
+    f = plt.figure(figsize=(8,8))
+    plt.title(headstr+'\n Bootes A, J < '+str(jmaglim), fontsize=20)
+    plt.imshow(masked_srcmap,vmin=vmin, vmax=vmax, cmap='bwr')
+    cbar = plt.colorbar(orientation='vertical', fraction=0.046, pad=0.08)
+    cbar.set_label('$\\nu I_{\\nu}$ [nW m$^{-2}$ sr$^{-1}$]', fontsize=16)
+    plt.tight_layout()
+    plt.xlabel('x [pix]', fontsize=18)
+    plt.xlabel('y [pix]', fontsize=18)
+    plt.show()
+    if return_fig:
+        return f
 
 

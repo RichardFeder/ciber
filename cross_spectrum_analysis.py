@@ -101,6 +101,12 @@ def azim_average_cl2d(ps2d, l2d, nbins=29, lbinedges=None, lbins=None, weights=N
     return lbins, Cl, Clerr
 
 
+def compute_beam_correction_Mkk(psf, Mkk_obj):
+    ''' This function computes the power spectrum of a beam as provided through a PSF template. The beam power spectrum
+    can then be used to correct the autospectrum of a mock intensity map which is convolved with an instrument PSF''' 
+    rb, Bl, Bl_std = get_power_spec(psf-np.mean(psf), lbinedges=Mkk_obj.binl, lbins=Mkk_obj.midbin_ell, return_Dl=False)
+    B_ell = np.sqrt(Bl)/np.max(np.sqrt(Bl))
+    return rb, B_ell
 
 def compute_beam_correction(psf, nbins=60):
     ''' This function computes the power spectrum of a beam as provided through a PSF template. The beam power spectrum
@@ -126,6 +132,22 @@ def compute_cross_spectrum(map_a, map_b, n_deg_across=2.0, sterad_a=True, sterad
     xspectrum = np.abs(ffta*np.conj(fftb)+fftb*np.conj(ffta))
     
     return np.fft.fftshift(xspectrum)
+
+def compute_mkk_bl_corrected_powerspectra(srcmap, mask, Mkk_obj, inv_Mkk, threshcut=None, verbose=False):
+    lbins, cl_unmasked, cl_std_unmasked = get_power_spec(srcmap - np.mean(srcmap), lbinedges=Mkk_obj.binl, lbins=Mkk_obj.midbin_ell, return_Dl=False)
+    unmasked_pix_mean = np.mean(srcmap[mask==1])
+    masked_srcmap = srcmap*mask
+    masked_srcmap[mask==1] -= unmasked_pix_mean
+    if verbose:
+        print('mean map value after subtraction is ', np.mean(masked_srcmap))
+    
+    if threshcut is not None:
+        masked_srcmap[masked_srcmap > threshcut] = 0.
+    
+    lbins, cl_masked, cl_std_unmasked = get_power_spec(masked_srcmap, lbinedges=Mkk_obj.binl, lbins=Mkk_obj.midbin_ell, return_Dl=False)
+    rectified_cl = np.dot(inv_Mkk.transpose(), cl_masked)
+    
+    return lbins, rectified_cl, masked_srcmap
 
 
 def compare_2pcf_estimators(maps, imsize=256, sigma=None, nmaps=None, pixsize=7., n_ft_bins=200, ft_logbins=False, tc_logbins=False, n_tc_bins=64, log_tc_size=0.01, n_int_steps=200):
