@@ -142,6 +142,139 @@ def filter_fns_config(bandpower_edges, theta_window, thetas, return_fig=True, mo
     if return_fig:
         return fig
 
+
+def multi_panel_mc_power_spectrum_vs_Jlim_plot(lbins, all_cl_proc_vs_Jlim, ground_truth_cl_vs_Jlim,Jmags, \
+                                             delta_ell=None, B_ell=None, fsky=None, unmasked_N_ell=None, masked_N_ells=None,\
+                                               return_fig=True, show=True, inst=None, suptitle=None, suptitlefontsize=20, supy=1.04):
+    
+    
+    prefac = (lbins*(lbins+1)/(2*np.pi))
+    
+    if unmasked_N_ell is not None:
+        f = plt.figure(figsize=(12, 10))
+        plt.subplot(2,2,1)
+    else:
+        f = plt.figure(figsize=(15, 5))
+        plt.subplot(1,3,1)
+        
+    if suptitle is not None:
+        plt.suptitle(suptitle, fontsize=suptitlefontsize, y=supy)
+        
+    plt.title('True vs. recovered power spectra', fontsize=18)
+    plt.xscale("log")
+    plt.yscale('log')
+    
+    for j, all_cl_proc in enumerate(all_cl_proc_vs_Jlim):
+
+        yerrs = [prefac*(np.mean(all_cl_proc, axis=0)-np.percentile(all_cl_proc, 16, axis=0)), prefac*(np.percentile(all_cl_proc, 84, axis=0)-np.mean(all_cl_proc, axis=0))]
+        tlabel = None
+        rlabel = None
+        nlabel = None
+        nmlabel = None
+        if j==0:
+            tlabel = 'Truth'
+            rlabel = 'Recovered'
+            nlabel = 'Noise (unmasked, unweighted)'
+            nmlabel = 'Noise (masked, weighted)'
+            
+        plt.errorbar(lbins, prefac*np.mean(all_cl_proc, axis=0), yerr=yerrs, label=rlabel, color='C'+str(j), capsize=3, linewidth=2)
+        plt.plot(lbins, prefac*ground_truth_cl_vs_Jlim[j], label=tlabel, marker='.',linewidth=2, color='C'+str(j), linestyle='dashdot')    
+
+        if masked_N_ells is not None:
+            plt.plot(lbins, prefac*masked_N_ells[j], linestyle='solid', alpha=0.2, color='k', label=nmlabel)
+
+            
+    plt.legend(fontsize=12)
+    plt.xlabel('Multipole $\\ell$', fontsize=18)
+    plt.ylabel('$\\ell(\\ell+1)C_{\\ell}/2\\pi$ [(nW m$^{-2}$ sr$^{-1})$$^2$]', fontsize=18)
+    plt.ylim(2e-3, 4e4)
+    knoxes_dcl_cl = []
+    mc_dcl_cl = []
+    plt.tick_params(labelsize=14)
+    
+    if unmasked_N_ell is not None:
+        plt.subplot(2,2,2)
+    else:
+        plt.subplot(1,3,2)
+    plt.title('Fractional bias', fontsize=18)
+    for j, all_cl_proc in enumerate(all_cl_proc_vs_Jlim):
+
+        fractional_biases = np.array([(cl_proc - ground_truth_cl_vs_Jlim[j])/ground_truth_cl_vs_Jlim[j] for cl_proc in all_cl_proc])
+        yerrs = [(np.mean(fractional_biases, axis=0)-np.percentile(fractional_biases, 16, axis=0))/np.sqrt(len(all_cl_proc)), (np.percentile(fractional_biases, 84, axis=0)-np.mean(fractional_biases, axis=0))/np.sqrt(len(all_cl_proc))]
+        plt.errorbar(lbins, np.mean(fractional_biases, axis=0), yerr=yerrs, capsize=5, color='C'+str(j), marker='.')
+
+    plt.ylabel('$(\\langle C_{\\ell} \\rangle^{M.C.} - C_{\\ell}^{True})/C_{\\ell}^{True}$', fontsize=18)
+    plt.xlabel('Multipole $\\ell$', fontsize=18)
+    plt.ylim(-1.5, 1.5)
+    plt.xscale('log')
+    plt.tick_params(labelsize=14)
+    
+
+    if unmasked_N_ell is not None:
+        knoxes_cl_dcl, mc_cl_dcl = [], []
+        plt.subplot(2,2,3)
+    else:
+        plt.subplot(1,3,3)
+    
+    for j, all_cl_proc in enumerate(all_cl_proc_vs_Jlim):
+        if j==0:
+            mlabel = 'Masked, $J_{lim}=$'+str(Jmags[j])
+        else:
+            mlabel = '$J_{lim}=$'+str(Jmags[j])
+    
+    
+        plt.plot(lbins, 2*np.median(all_cl_proc, axis=0)/(np.percentile(all_cl_proc, 84, axis=0)-np.percentile(all_cl_proc, 16, axis=0)), label=mlabel, color='C'+str(j))
+        
+        if unmasked_N_ell is not None:
+
+            knox_cl_dcl = compute_knox_errors(lbins, ground_truth_cl_vs_Jlim[j], unmasked_N_ell, delta_ell, fsky=fsky, \
+                                         B_ell=B_ell, snr=True)
+            
+            knoxes_cl_dcl.append(knox_cl_dcl)
+            mc_cl_dcl.append(np.abs(2*np.median(all_cl_proc, axis=0)/(np.percentile(all_cl_proc, 84, axis=0)-np.percentile(all_cl_proc, 16, axis=0))))
+
+        
+            if j == 0:
+                klabel = 'Knox errors'
+            else:
+                klabel = None
+            plt.plot(lbins, knox_cl_dcl, label=klabel, color='C'+str(j), linestyle='dashed')
+
+    plt.xscale('log')
+    plt.yscale('log')
+    plt.xlabel('Multipole $\\ell$', fontsize=18)
+    plt.ylim(1e-2, 2e2)
+    plt.ylabel('$C_{\\ell}/\\delta C_{\\ell}$', fontsize=18)
+    plt.legend(fontsize=12, loc='best', ncol=2)
+    plt.title('Signal to noise', fontsize=18)
+    plt.tick_params(labelsize=14)
+
+    if unmasked_N_ell is not None:
+        plt.subplot(2,2,4)
+
+        plt.xscale('log')
+
+        for j, all_cl_proc in enumerate(all_cl_proc_vs_Jlim):
+            plt.plot(lbins, knoxes_cl_dcl[j]/mc_cl_dcl[j], label='Masked, $J_{lim}=$'+str(Jmags[j]), marker='.', color='C'+str(j))
+
+        plt.ylabel('$\\delta C_{\\ell}^{M.C.}/\\delta C_{\\ell}^{Knox}$', fontsize=18)
+        plt.xlabel('Multipole $\\ell$', fontsize=18)
+        plt.title('Deviation from Knox errors', fontsize=18)
+        plt.tight_layout()
+        plt.ylim(0, 10)
+        plt.tick_params(labelsize=14)
+        plt.axhline(1, linestyle='dashed', color='k')
+    
+    
+    if show:
+        plt.show()
+    if return_fig:
+        if unmasked_N_ell is not None:
+            return f, knoxes_cl_dcl, mc_cl_dcl
+        
+        return f
+        
+
 def plot_radavg_xspectrum(rbins, radprofs=[], raderrs=None, labels=[], \
 						  lmin=90., save=False, snspalette=None, pdf_or_png='png', \
 						 image_dim=1024, mode='cross', zbounds=None, shotnoise=None, \
