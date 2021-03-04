@@ -16,6 +16,8 @@ def filter_trilegal_cat(trilegal_cat, m_max=17, I_band_idx=16):
     
     return filtered_trilegal_cat
 
+def radius_vs_mag_gaussian(mags, a1, b1, c1):
+    return a1*np.exp(-((mags-b1)/c1)**2)
 
 def magnitude_to_radius_linear(magnitudes, alpha_m=-6.25, beta_m=110.):
     ''' Masking radius function as given by Zemcov+2014. alpha_m has units of arcsec mag^{-1}, while beta_m
@@ -82,7 +84,7 @@ def mask_from_cat(catalog, xidx=0, yidx=1, mag_idx=3, dimx=1024, dimy=1024, pixs
 
 
 def mask_from_df_cat(cat_df, dimx=1024, dimy=1024, pixsize=7., mode='Zemcov+14', magstr='zMeanPSFMag', alpha_m=-6.25, beta_m=110, \
-    a1=252.8, b1=3.632, c1=8.52, Vega_to_AB = 0., mag_lim =None, mag_lim_str='j_mag_best'):
+    a1=252.8, b1=3.632, c1=8.52, Vega_to_AB = 0., mag_lim =None, mag_lim_str='j_mag_best', inst=1):
     
     # can take mean color between PanSTARRS band and J band as zeroth order approx. ideally would regress, 
     # but probably doesn't make big difference
@@ -96,10 +98,11 @@ def mask_from_df_cat(cat_df, dimx=1024, dimy=1024, pixsize=7., mode='Zemcov+14',
         radii = magnitude_to_radius_linear(cat_df[magstr], alpha_m=alpha_m, beta_m=beta_m) # vega to AB factor?
     elif mode=='Simon':
         AB_mags = np.array(cat_df[magstr]) + Vega_to_AB
-        radii = a1*np.exp(-((cat_df[magstr]-b1)/c1)**2)
+        radii = radius_vs_mag_gaussian(cat_df[magstr], a1=a1, b1=b1, c1=c1)
+        # radii = a1*np.exp(-((cat_df[magstr]-b1)/c1)**2)
     
-    xs = np.array(cat_df['x1'])
-    ys = np.array(cat_df['y1'])
+    xs = np.array(cat_df['x'+str(inst)])
+    ys = np.array(cat_df['y'+str(inst)])
 
     for i, r in enumerate(radii):
         radmap = make_radius_map(dimx=dimx, dimy=dimy, cenx=xs[i], ceny=ys[i], rc=1., sqrt=True)
