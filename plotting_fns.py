@@ -9,10 +9,12 @@ from PIL import Image
 import glob
 
 from integrate_cl_wtheta import *
+# from ciber_powerspec_pipeline import compute_knox_errors
 
 
 
 figure_directory = '/Users/richardfeder/Documents/caltech/ciber2/figures/'
+
 
 
 def compare_c_ells_diff_estimators(midbin_ells, midbin_ell_fourier=None, cls_2pcf=None, cls_fourier=None, B_ell=None,\
@@ -1031,6 +1033,89 @@ def plot_readnoise_realization(rdn_real, cal_fac, show=True, return_fig=True, ad
     if return_fig:
         return f
 
+
+def plot_means_vs_vars(m_o_m, v_o_d, timestr_cut=None, var_frac_thresh=None, xlim=None, ylim=None, all_set_numbers_list=None, all_timestr_list=None,\
+                      nfr=5, inst=1, fit_line=True, itersigma=4.0, niter=5):
+    
+    mask = [True for x in range(len(m_o_m))]
+    
+    from astropy.stats import sigma_clip
+    from astropy.modeling import models, fitting
+    
+    if timestr_cut is not None:
+        mask *= np.array([t==timestr_cut for t in all_timestr_list])
+    
+    photocurrent = m_o_m[mask]
+    varcurrent = v_o_d[mask]
+    
+    if fit_line:
+        # initialize a linear fitter
+        fit = fitting.LinearLSQFitter()
+        # initialize the outlier removal fitter
+        or_fit = fitting.FittingWithOutlierRemoval(fit, sigma_clip, niter=niter, sigma=itersigma)
+        # initialize a linear model
+        line_init = models.Linear1D()
+        # fit the data with the fitter
+        sigmask, fitted_line = or_fit(line_init, photocurrent, varcurrent)
+        
+        g1_iter = get_g1_from_slope_T_N(0.5*fitted_line.slope.value, N=nfr)
+
+    
+    if var_frac_thresh is not None:
+        median_var = np.median(varcurrent)
+        print('median variance is ', median_var)
+        mask *= (np.abs(v_o_d-median_var) < var_frac_thresh*median_var) 
+        
+        print(np.sum(mask), len(v_o_d))
+        
+    min_x_val, max_x_val = np.min(photocurrent), np.max(photocurrent)
+    
+        
+    if all_set_numbers_list is not None:
+        colors = np.array(all_set_numbers_list)[mask]
+    else:
+        colors = np.arange(len(m_o_m))[mask]
+        
+    f = plt.figure(figsize=(12, 6))
+    title = 'TM'+str(inst)
+    if timestr_cut is not None:
+        title += ', '+timestr_cut
+        
+    plt.title(title, fontsize=18)
+        
+    timestrs = ['03-13-2013', '04-25-2013', '05-13-2013']
+    markers = ['o', 'x', '*']
+    set_color_idxs = []
+    for t, target_timestr in enumerate(timestrs):
+        tstrmask = np.array([tstr==target_timestr for tstr in all_timestr_list])
+        
+        tstr_colors = None
+        if all_set_numbers_list is not None:
+            tstr_colors = np.array(all_set_numbers_list)[mask*tstrmask]
+        
+        if fit_line:
+            if t==0:
+                if inst==1:
+                    xvals = np.linspace(-5, -18, 100)
+                else:
+                    xvals = np.linspace(np.min(photocurrent), np.max(photocurrent), 100)
+                    print('xvals:', xvals)
+                plt.plot(xvals, fitted_line(xvals), label='Iterative sigma clip, $G_1$='+str(np.round(g1_iter, 3)))
+            plt.scatter(photocurrent[tstrmask], sigmask[tstrmask], s=100, marker=markers[t], c=tstr_colors, label=target_timestr)
+            plt.xlim(xlim)
+
+        else:
+            plt.scatter(photocurrent[tstrmask], varcurrent[tstrmask], s=100, marker=markers[t], c=tstr_colors, label=target_timestr)
+            plt.xlim(xlim)
+            plt.ylim(ylim)            
+
+    plt.legend(fontsize=16)
+    plt.xlabel('mean [ADU/fr]', fontsize=18)
+    plt.ylabel('$\\sigma^2$ [(ADU/fr)$^2$]', fontsize=18)
+    plt.tick_params(labelsize=14)
+    plt.show()
+    
+    return m, f
 
 def plot_median_std_2d_2pcf(wthetas_2d, suptitle='Read noise realizations, 256x256 pixel cutouts', suptitlefontsize=20, return_fig=True, show=True, pixsize=7., n_tick=5):
 
