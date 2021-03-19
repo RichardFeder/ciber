@@ -277,6 +277,50 @@ def multi_panel_mc_power_spectrum_vs_Jlim_plot(lbins, all_cl_proc_vs_Jlim, groun
         return f
         
 
+def plot_stacked_smoothed_expmap(sum_im_smoothed, lightsrcmask, minpct=1, maxpct=99, show=True, return_fig=True):
+    f = plt.figure(figsize=(10, 4))
+    plt.suptitle('Stacked/smoothed exposure map, $\\sigma=5$ pix', fontsize=20, y=1.03)
+    plt.subplot(1,2,1)
+    plt.imshow(sum_im_smoothed, vmin=np.percentile(sum_im_smoothed, 1), vmax=np.percentile(sum_im_smoothed, 99), origin='lower')
+    cbar = plt.colorbar(fraction=0.046, pad=0.04)
+    cbar.set_label('[ADU/fr]', fontsize=16)
+    plt.xlabel('x [pix]', fontsize=16)
+    plt.ylabel('y [pix]', fontsize=16)
+    plt.subplot(1,2,2)
+    plt.imshow(lightsrcmask, origin='lower')
+    plt.colorbar(fraction=0.046, pad=0.04)
+    plt.xlabel('x [pix]', fontsize=16)
+    plt.ylabel('y [pix]', fontsize=16)
+    plt.tight_layout()
+
+    if show:
+        plt.show()
+    if return_fig:
+        return f
+
+
+def plot_g1_hist(g1facs, mask=None, return_fig=True, show=True, title=None):
+    if mask is not None:
+        g1facs = g1facs[mask]
+        
+    f = plt.figure(figsize=(6,5))
+    if title is not None:
+        plt.title(title, fontsize=18)
+    plt.hist(g1facs)
+    plt.axvline(np.median(g1facs), label='Median $G_1$ = '+str(np.round(np.median(g1facs), 3)), linestyle='dashed', color='k', linewidth=2)
+    plt.axvline(np.mean(g1facs), label='Mean $G_1$ = '+str(np.round(np.mean(g1facs), 3)), linestyle='dashed', color='r', linewidth=2)
+    plt.xlabel('$G_1$ [(e-/s)/(ADU/fr)]', fontsize=16)
+    plt.ylabel('N', fontsize=16)
+    plt.legend(fontsize=14)
+    plt.tick_params(labelsize=14)
+    
+    if show:
+        plt.show()
+    
+    if return_fig:
+        return f
+        
+
 def plot_radavg_xspectrum(rbins, radprofs=[], raderrs=None, labels=[], \
 						  lmin=90., save=False, snspalette=None, pdf_or_png='png', \
 						 image_dim=1024, mode='cross', zbounds=None, shotnoise=None, \
@@ -837,22 +881,6 @@ def convert_pngs_to_gif(filenames, gifdir='../../M_ll_correction/', name='mkk', 
                    duration=duration, loop=loop)
 
 
-def plot_srcmap_mask(mask, titlestr, len_cat, return_fig=True, show=True):
-    f = plt.figure(figsize=(10, 10))
-    
-    plt.title(titlestr + ' \n N='+str(len_cat)+', '+str(np.round(100*np.sum(mask)/(mask.shape[0]**2), 2))+'% of pixels unmasked', fontsize=18)
-    plt.imshow(mask, cmap='Greys_r', origin='lower')
-    plt.xlabel('x [pix]', fontsize=18)
-    plt.ylabel('y [pix]', fontsize=18)
-    cbar = plt.colorbar(orientation='vertical', fraction=0.046, pad=0.08)
-    
-    if show:
-        plt.show()
-        
-    if return_fig:
-        return f
-
-
 def plot_ensemble_offset_stats(thetas, masked_xis, unmasked_xis, masked_varxi, unmasked_varxi, return_fig=True, logscale=True, \
                               suptitle='Mock CIBER source map (no noise), SWIRE flight mask (50 realizations)', \
                               nsim_list=None, ylim=[-0.5, 0.5]):
@@ -918,6 +946,49 @@ def plot_ensemble_offset_stats(thetas, masked_xis, unmasked_xis, masked_varxi, u
     
     if return_fig:
         return f
+
+
+def plot_exposure_pair_diffs_means(pair_diff, pair_mean, pair_mask, diffidx, minpct=1, maxpct=99, show=True, return_fig=True):
+    f = plt.figure(figsize=(16,8))
+    plt.subplot(1,2,2)
+    plt.title('Masked pair difference, i = '+str(diffidx), fontsize=20)
+    plt.imshow(pair_diff, vmin=np.nanpercentile(pair_diff, minpct), vmax=np.nanpercentile(pair_diff, maxpct), origin='lower')
+    cbar = plt.colorbar(fraction=0.046, pad=0.04)
+    cbar.set_label('ADU/fr', fontsize=14)
+    plt.xlabel('x [pix]', fontsize=16)
+    plt.ylabel('y [pix]', fontsize=16)
+
+    plt.subplot(1,2,1)
+    plt.title('Masked pair average, i = '+str(diffidx), fontsize=20)
+    plt.imshow(pair_mean*pair_mask, vmin=np.nanpercentile(pair_mean*pair_mask, minpct), vmax=np.nanpercentile(pair_mean*pair_mask, maxpct), origin='lower')
+    cbar = plt.colorbar(fraction=0.046, pad=0.04)
+    cbar.set_label('ADU/fr', fontsize=14)
+    plt.xlabel('x [pix]', fontsize=16)
+    plt.ylabel('y [pix]', fontsize=16)
+
+    if show:
+        plt.show()
+        
+    if return_fig:
+        return f
+
+
+def plot_srcmap_mask(mask, titlestr, len_cat, return_fig=True, show=True):
+    f = plt.figure(figsize=(10, 10))
+    
+    plt.title(titlestr + ' \n N='+str(len_cat)+', '+str(np.round(100*np.sum(mask)/(mask.shape[0]**2), 2))+'% of pixels unmasked', fontsize=18)
+    plt.imshow(mask, cmap='Greys_r', origin='lower')
+    plt.xlabel('x [pix]', fontsize=18)
+    plt.ylabel('y [pix]', fontsize=18)
+    cbar = plt.colorbar(orientation='vertical', fraction=0.046, pad=0.08)
+    
+    if show:
+        plt.show()
+        
+    if return_fig:
+        return f
+
+
 
 def plot_correlation_matrices_masked_unmasked(masked_corr, unmasked_corr, return_fig=True, show=True,\
                                               corr_lims=[-0.8, 1.0], dcorr_lims=[-0.2, 0.2]):

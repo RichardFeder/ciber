@@ -1,6 +1,8 @@
 import numpy as np
 import astropy.io.fits as fits
 import astropy.wcs as wcs
+from astropy.stats import sigma_clip
+from astropy.modeling import models, fitting
 import pandas as pd
 import scipy.io
 import matplotlib
@@ -9,9 +11,72 @@ from astropy.table import Table
 import glob
 from scipy.io import loadmat
 from scipy.ndimage import gaussian_filter
+from ciber_powerspec_pipeline import CIBER_PS_pipeline
+from datetime import datetime
+
+
+def chop_up_masks(sigmap, nside=5, ravel=False, show=False, verbose=True):
+    
+    nx, ny = sigmap.shape[0], sigmap.shape[1]
+    
+    masks = np.zeros((nside,nside, sigmap.shape[0], sigmap.shape[1]))
+    for i in range(nside):
+        for j in range(nside):
+            masks[i,j,i*nx//nside:(i+1)*nx//nside,j*ny//nside:(j+1)*ny//nside] = 1
+            
+    masks = np.reshape(masks, (nside**2, nx, ny))        
+    
+    if verbose:
+        print('masks has shape ', masks.shape)
+    
+    if show:
+        plt.figure()
+        plt.imshow(masks[0])
+        plt.colorbar()
+        plt.show()
+    
+    return masks
+
+def extract_datetime_strings_mat(basepath, timestr, inst=1, verbose=True):
+    fpath = basepath+timestr+'/TM'+str(inst)+'/'
+        
+    setfilelist = glob.glob(fpath+'set*')
+        
+    print(setfilelist)
+    all_datetime_strings = []
+    for s, setfpath in enumerate(setfilelist):
+            
+        set_number = int(setfpath[-1])
+
+        within_set_filelist = glob.glob(setfpath+'/*.mat')
+        
+        for set_file in within_set_filelist:
+            pt = datetime.strptime(timestr+' '+set_file[-21:-13],'%m-%d-%Y %H-%M-%S')
+            
+            all_datetime_strings.append(pt)
+            
+    if verbose:
+        print('All datetime strings:')
+        print(all_datetime_strings)
+            
+    return all_datetime_strings
+
+def fit_meanphot_vs_varphot(meanphot, varphot, nfr=5, itersigma=4.0, niter=5):
+    
+    fit = fitting.LinearLSQFitter()
+    # initialize the outlier removal fitter
+    or_fit = fitting.FittingWithOutlierRemoval(fit, sigma_clip, niter=niter, sigma=itersigma)
+    # initialize a linear model
+    line_init = models.Linear1D()
+    # fit the data with the fitter
+    sigmask, fitted_line = or_fit(line_init, meanphot, varphot)
+    slope = fitted_line.slope.value
+    g1_iter = get_g1_from_slope_T_N(slope, N=nfr)
+    
+    return fitted_line, sigmask, g1_iter
 
 def focus_data_means_and_vars(timestr_list, nfr=5, inst=1, ravel=True, basepath='data/Focus/slopedata/', get_inst_mask=True,\
-                              sub_divide_images=False, bins=10, plot=False):
+                              sub_divide_images=False, bins=10, plot=False, chop_up_images=False, nside=5):
     
     inst_mask = None
     if get_inst_mask:
@@ -32,6 +97,7 @@ def focus_data_means_and_vars(timestr_list, nfr=5, inst=1, ravel=True, basepath=
             
     all_timestr_list, all_set_numbers_list, all_vars_of_diffs, all_means_of_means = [[] for x in range(4)] # for each pair difference
     
+    all_mask_idxs = []
     for t, timestr in enumerate(timestr_list):
         
         fpath = basepath+timestr+'/TM'+str(inst)+'/'
@@ -64,7 +130,10 @@ def focus_data_means_and_vars(timestr_list, nfr=5, inst=1, ravel=True, basepath=
             
             binmasks = None
             if sub_divide_images:
-                submasks = masks_from_sigmap(gaussian_filter(masked_sum_image, 5), bins=bins, show=True)
+                if chop_up_images:
+                    submasks = chop_up_masks(masked_sum_image, nside=nside, show=True)
+                else:
+                    submasks = masks_from_sigmap(gaussian_filter(masked_sum_image, 5), bins=bins, show=True)
                 if ravel:
                     binmasks = [lightsrcmask*(mask.ravel()) for mask in submasks]
                 else:
@@ -73,9 +142,8 @@ def focus_data_means_and_vars(timestr_list, nfr=5, inst=1, ravel=True, basepath=
             else:
                 binmasks = [lightsrcmask]
 
-            for image_mask in binmasks:
+            for im_idx, image_mask in enumerate(binmasks):
                 
-                print('im list and image mask have shapes', im_list[0].shape, image_mask.shape)
                 pair_means_cut, pair_diffs_cut, vars_of_diffs, means_of_means = pairwise_means_variances(im_list, initial_mask=image_mask, plot=plot)
 
                 if np.sum(image_mask) > 1000:
@@ -84,12 +152,14 @@ def focus_data_means_and_vars(timestr_list, nfr=5, inst=1, ravel=True, basepath=
                     all_timestr_list.extend([timestr for x in range(len(vars_of_diffs))])
                     all_vars_of_diffs.extend(vars_of_diffs)
                     all_means_of_means.extend(means_of_means)
+                    
+                    all_mask_idxs.extend([im_idx for i in range(len(means_of_means))])
 
-            
-    return all_set_numbers_list, all_timestr_list, all_vars_of_diffs, all_means_of_means
+    return all_set_numbers_list, all_timestr_list, all_vars_of_diffs, all_means_of_means, all_mask_idxs, binmasks
 
 
 def get_g1_from_slope_T_N(slope, N=5, T_frame=1.78):
+    # follows Garnett and Forest (1993?) equation for photon noise associated with signal
     
     return (slope*T_frame*N)**(-1.)*(6./5.)*(N**2+1.)/(N**2-1.)
 
@@ -102,28 +172,20 @@ def get_lightsrc_mask_unsharp_masking(im_list, inst_mask=None, small_scale=5, la
         sum_im *= inst_mask
         
     brightpixmask = sigma_clip_maskonly(sum_im, sig=4)
-    
-    sum_im *= brightpixmask
     plt.figure(figsize=(8,8))
-    plt.imshow(sum_im*brightpixmask)
+    plt.title('orig image')
+    plt.imshow(sum_im, vmin=np.nanpercentile(sum_im, 5), vmax=np.nanpercentile(sum_im, 95))
     plt.colorbar()
     plt.show()
+    sum_im *= brightpixmask
     
     small_smooth_sum_im = gaussian_filter(sum_im, small_scale)
     large_smooth_sum_im = gaussian_filter(sum_im, large_scale)
 
     small_over_large = small_smooth_sum_im/large_smooth_sum_im
-    large_over_small = large_smooth_sum_im/small_smooth_sum_im
 
-    large_over_small[np.abs(large_over_small) > 50] = 0.
     
     if plot:
-        
-        plt.figure(figsize=(10,10))
-        plt.title('small over large')
-        plt.imshow(small_over_large, origin='lower')
-        plt.colorbar()
-        plt.show()
         
         plt.figure()
         hist_small_over_large = small_over_large.ravel()
@@ -145,11 +207,29 @@ def get_lightsrc_mask_unsharp_masking(im_list, inst_mask=None, small_scale=5, la
     if inst_mask is not None:
         mask *= inst_mask
         
+    mask *= brightpixmask
+        
     if plot:
-        plt.figure(figsize=(8,8))
-        plt.title("light source mask")
-        plt.imshow(sum_im*mask, origin='lower')
-        plt.colorbar()
+        
+        plt.figure(figsize=(15, 8))
+        plt.subplot(1,2,1)
+        plt.title('Image ($\\sigma_{smooth}=2$) / Image ($\\sigma_{smooth}=10$)', fontsize=18)
+
+        plt.imshow(small_over_large, origin='lower', vmin=0.5, vmax=2.)
+
+        cbar = plt.colorbar(fraction=0.046, pad=0.04)
+        plt.xlabel('x [pix]', fontsize=16)
+        plt.ylabel('y [pix]', fontsize=16)
+        
+        plt.subplot(1,2,2)
+        plt.title('Masked sum image', fontsize=18)
+        plt.imshow(mask*sum_im, origin='lower', vmin=np.nanpercentile(mask*sum_im, 5), vmax=np.nanpercentile(mask*sum_im, 70))
+
+        cbar = plt.colorbar(fraction=0.046, pad=0.04)
+        plt.xlabel('x [pix]', fontsize=16)
+        plt.ylabel('y [pix]', fontsize=16)
+        
+        plt.tight_layout()
         plt.show()
          
     return mask, sum_im*mask
@@ -209,7 +289,7 @@ def masks_from_sigmap(sigmap, bins=10, ravel=False, show=False):
             
     return masks
 
-def pairwise_means_variances(im_list, initial_mask=None, plot=False, imdim=1024, savedir=None):
+def pairwise_means_variances(im_list, initial_mask=None, plot=False, imdim=1024, savedir=None, verbose=True):
     
     
     ''' I am going to assume that the im_list is a list of 1d arrays, this makes some of the code much easier'''
@@ -248,63 +328,177 @@ def pairwise_means_variances(im_list, initial_mask=None, plot=False, imdim=1024,
         
         pair_means_cut.append(pair_mean)
         pair_diffs_cut.append(pair_diff)
-        
-#         print('pair mean, pair diff, sigclipmask have shapes', pair_mean.shape, pair_diff.shape, sigclipmask.shape)
-#         print('sum of sigclipmask is ', np.sum(sigclipmask))
-#         print(len(pair_diff[~np.isnan(pair_diff)]), len(pair_diff[(~np.isnan(pair_diff))*sigclipmasks[diffidx]]))
-#         print(pair_diff[(~np.isnan(pair_diff))*sigclipmasks[diffidx]])
-#         plt.figure()
-#         plt.subplot(1,2,1)
-#         plt.hist(pair_diff[~np.isnan(pair_diff)], bins=30)
-#         plt.yscale('log')
-#         plt.subplot(1,2,2)
-#         plt.hist(pair_diff[sigclipmasks[diffidx]==1], bins=30)
-#         plt.yscale('log')
-#         plt.show()
-        
-#         print('number of pixels in estimate is ', np.sum(pair_mask*sigclipmask))
     
-
         diffidx += 1
 
     vars_of_diffs = np.array([np.nanvar(pair_diff_cut[sigclipmasks[i]==1]) for i, pair_diff_cut in enumerate(pair_diffs_cut)])
     means_of_means = np.array([np.nanmean(pair_mean_cut[sigclipmasks[i]==1]) for i, pair_mean_cut in enumerate(pair_means_cut)])
     
-    print('vars of diffs:', vars_of_diffs)
-    print('means of means:', means_of_means)
+    if verbose:
+        print('vars of diffs:', vars_of_diffs)
+        print('means of means:', means_of_means)
 
     return pair_means_cut, pair_diffs_cut, vars_of_diffs, means_of_means
 
-
-def sigma_clip_maskonly(vals, previous_mask=None, sig=5, show=False):
-
-    if previous_mask is not None:
-        vals[previous_mask==0] = np.nan
-        sigma_val = np.nanstd(vals)
-    else:
-        sigma_val = np.nanstd(vals)
-            
-    abs_dev = np.abs(vals-np.nanmedian(vals))
+def plot_means_vs_vars(m_o_m, v_o_d, timestrs, timestr_cut=None, var_frac_thresh=None, xlim=None, ylim=None, all_set_numbers_list=None, all_timestr_list=None,\
+                      nfr=5, inst=1, fit_line=True, itersigma=4.0, niter=5, imdim=1024, figure_size=(12,6), markersize=100, titlestr=None):
     
-    if show:
-        plt.figure()
-        plt.title('absolute deviations')
-        plt.hist(abs_dev[~np.isnan(abs_dev)], bins=30)
-        plt.yscale('log')
-        plt.show()
+    mask = [True for x in range(len(m_o_m))]
     
-    mask = (abs_dev < sig*sigma_val).astype(np.int)
-    mask *= (~np.isnan(abs_dev)).astype(np.int)
+    if timestr_cut is not None:
+        mask *= np.array([t==timestr_cut for t in all_timestr_list])
     
-    if show:
+    photocurrent = m_o_m[mask]
+    varcurrent = v_o_d[mask]
         
-        plt.figure()
-        plt.title('hist in sigma_clip_maskonly')
-        plt.hist(vals[mask==1], bins=30)
-        plt.yscale('log')
-        plt.show()
+    if fit_line:
+        
+        fitted_line, sigmask, g1_iter = fit_meanphot_vs_varphot(photocurrent, 0.5*varcurrent, nfr=nfr, itersigma=itersigma, niter=niter)
+        
+#         m, b = np.polyfit(photocurrent, varcurrent, 1)
+#         best_fit_line = np.poly1d(np.polyfit(photocurrent, varcurrent, 1))
+#         g1_polyfit = get_g1_from_slope_T_N(0.5*m, N=nfr)
+    else:
+        g1_iter = None
+        
+    
+    if var_frac_thresh is not None:
+        median_var = np.median(varcurrent)
+        print('median variance is ', median_var)
+        mask *= (np.abs(v_o_d-median_var) < var_frac_thresh*median_var) 
+        
+        print(np.sum(mask), len(v_o_d))
+        
+    min_x_val, max_x_val = np.min(photocurrent), np.max(photocurrent)
+            
+    if all_set_numbers_list is not None:
+        colors = np.array(all_set_numbers_list)[mask]
+    else:
+        colors = np.arange(len(m_o_m))[mask]
+        
+    
+    f = plt.figure(figsize=figure_size)
+    title = 'TM'+str(inst)
+    if timestr_cut is not None:
+        title += ', '+timestr_cut
+    if titlestr is not None:
+        title += ' '+titlestr
+                
+    plt.title(title, fontsize=18)
+        
+    markers = ['o', 'x', '*', '^', '+']
+    set_color_idxs = []
+    
+    
+    for t, target_timestr in enumerate(timestrs):
+        tstrmask = np.array([tstr==target_timestr for tstr in all_timestr_list])
+        
+        tstr_colors = None
+        if all_set_numbers_list is not None:
+            tstr_colors = np.array(all_set_numbers_list)[mask*tstrmask]
+        
+        if fit_line:
+            if t==0:
+                if inst==1:
+                    xvals = np.linspace(-5, -18, 100)
+                else:
+                    xvals = np.linspace(np.min(photocurrent), np.max(photocurrent), 100)
+
+                plt.plot(xvals, fitted_line(xvals), label='$G_1$='+str(np.round(g1_iter, 3)))
+            plt.scatter(photocurrent[tstrmask], sigmask[tstrmask], s=markersize, marker=markers[t], c=tstr_colors, label=target_timestr)
+        else:
+            plt.scatter(photocurrent[tstrmask], 0.5*varcurrent[tstrmask], s=markersize, marker=markers[t], c=tstr_colors, label=target_timestr)
+            plt.xlim(xlim)
+            plt.ylim(ylim)            
+
+    plt.legend(fontsize=16)
+    plt.xlabel('mean [ADU/fr]', fontsize=18)
+    plt.ylabel('$\\sigma^2$ [(ADU/fr)$^2$]', fontsize=18)
+    plt.tick_params(labelsize=14)
+    plt.show()
+    
+    return m, f, g1_iter
+
+def sigma_clip_maskonly(vals, previous_mask=None, sig=5):
+    
+    valcopy = vals.copy()
+    if previous_mask is not None:
+        valcopy[previous_mask==0] = np.nan
+        sigma_val = np.nanstd(valcopy)
+    else:
+        sigma_val = np.nanstd(valcopy)
+    
+    abs_dev = np.abs(vals-np.nanmedian(valcopy))
+    mask = (abs_dev < sig*sigma_val).astype(np.int)
 
     return mask
+
+def slice_by_timestr(all_means_of_means, all_vars_of_diffs, all_timestr_list, timestrs, all_set_nos=None, set_bins=None, photocurrent_bins=None, \
+                    itersigma=4.0, niter=5, inst=1, minpts=10):
+
+    listo_param_masks = []
+    listo_g1s = []
+    listo_tstrs, listo_sets, listo_photocurrents = [], [], []
+    listo_figs = []
+        
+    for t, tstr in enumerate(timestrs):
+        tstr_mask = (all_timestr_list==tstr)
+        
+        if set_bins is not None and all_set_nos is not None:
+            for s, set_no in enumerate(set_bins):
+                set_no_mask = (all_set_nos==set_no)
+                
+                if photocurrent_bins is not None:
+                    for p, photocurrent in enumerate(photocurrent_bins[:-1]):
+                        meanphot = 0.5*(photocurrent+photocurrent_bins[p+1]) # 1/2 because pair difference doubles variance
+                        photocurrent_mask = (all_means_of_means > photocurrent)*(all_means_of_means < photocurrent_bins[p+1])
+                        listo_param_masks.append(set_no_mask*tstr_mask*photocurrent_mask)
+                        listo_tstrs, listo_sets, listo_photocurrents = update_lists(listo_tstrs=listo_tstrs, listo_sets=listo_sets, listo_photocurrents=listo_photocurrents, tstr=tstr, set_no=set_no, phot=meanphot)
+                else:
+                    listo_param_masks.append(set_no_mask*tstr_mask)
+                    listo_tstrs, listo_sets, _ = update_lists(listo_tstrs=listo_tstrs, listo_sets=listo_sets, tstr=tstr, set_no=set_no)
+
+        else:            
+            if photocurrent_bins is not None:
+                for p, photocurrent in enumerate(photocurrent_bins[:-1]):
+                    meanphot = 0.5*(photocurrent+photocurrent_bins[p+1])
+                    photocurrent_mask = (all_means_of_means > photocurrent)*(all_means_of_means < photocurrent_bins[p+1])
+                    listo_param_masks.append(tstr_mask*photocurrent_mask)
+                    listo_tstrs, _, listo_photocurrents = update_lists(listo_tstrs=listo_tstrs, listo_photocurrents=listo_photocurrents, tstr=tstr, phot=meanphot)
+                
+            else:
+                listo_param_masks.append(tstr_mask)
+                listo_tstrs, _, _ = update_lists(listo_tstrs=listo_tstrs, tstr=tstr)
+                
+                
+    final_param_masks = []
+    for p, param_mask in enumerate(listo_param_masks):
+        if np.sum(param_mask) > 5:
+            dphot = np.abs(np.max(all_means_of_means[param_mask])-np.min(all_means_of_means[param_mask]))
+            if dphot > minpts:
+                m_tm, f_tm, g1_iter = plot_means_vs_vars(all_means_of_means[param_mask], all_vars_of_diffs[param_mask],\
+                                                     [listo_tstrs[p]], itersigma=itersigma, niter=niter, inst=inst,\
+                                                     fit_line=True, all_set_numbers_list=all_set_nos[param_mask],\
+                                                     all_timestr_list=all_timestr_list[param_mask], figure_size=(6, 6), markersize=20)
+                listo_g1s.append(g1_iter)
+                final_param_masks.append(param_mask)
+                listo_figs.append(f_tm)
+            else:
+                print('nope :(')
+        else:
+            print('nope :(')
+    
+    return np.array(listo_g1s), final_param_masks, listo_figs
+
+def update_lists(listo_tstrs=None, listo_sets=None, listo_photocurrents=None, tstr=None, set_no=None, phot=None):
+    if listo_tstrs is not None:
+        listo_tstrs.append(tstr)
+    if listo_sets is not None:
+        listo_sets.append(set_no)
+    if listo_photocurrents is not None:
+        listo_photocurrents.append(phot)
+    
+    return listo_tstrs, listo_sets, listo_photocurrents
 
 
 
