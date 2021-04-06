@@ -303,12 +303,13 @@ def plot_g1_hist(g1facs, mask=None, return_fig=True, show=True, title=None):
     if mask is not None:
         g1facs = g1facs[mask]
         
+    std_g1 = np.std(g1facs)/np.sqrt(len(g1facs))
     f = plt.figure(figsize=(6,5))
     if title is not None:
         plt.title(title, fontsize=18)
     plt.hist(g1facs)
-    plt.axvline(np.median(g1facs), label='Median $G_1$ = '+str(np.round(np.median(g1facs), 3)), linestyle='dashed', color='k', linewidth=2)
-    plt.axvline(np.mean(g1facs), label='Mean $G_1$ = '+str(np.round(np.mean(g1facs), 3)), linestyle='dashed', color='r', linewidth=2)
+    plt.axvline(np.median(g1facs), label='Median $G_1$ = '+str(np.round(np.median(g1facs), 3))+'$\\pm$'+str(np.round(std_g1, 3)), linestyle='dashed', color='k', linewidth=2)
+    plt.axvline(np.mean(g1facs), label='Mean $G_1$ = '+str(np.round(np.mean(g1facs), 3))+'$\\pm$'+str(np.round(std_g1, 3)), linestyle='dashed', color='r', linewidth=2)
     plt.xlabel('$G_1$ [(e-/s)/(ADU/fr)]', fontsize=16)
     plt.ylabel('N', fontsize=16)
     plt.legend(fontsize=14)
