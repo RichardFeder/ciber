@@ -75,6 +75,30 @@ def fit_meanphot_vs_varphot(meanphot, varphot, nfr=5, itersigma=4.0, niter=5):
     
     return fitted_line, sigmask, g1_iter
 
+def fit_meanphot_vs_varphot_levmar(meanphot, varphot, nfr=5, itersigma=4.0, niter=5, mode='linear'):
+    # does not currently work, using fit_meanphot_vs_varphot()
+
+    if mode=='linear':
+        fit = fitting.LinearLSQFitter()
+    elif mode=='LevMar':
+        fit = fitting.LevMarLSQFitter()
+
+    # initialize the outlier removal fitter
+    or_fit = fitting.FittingWithOutlierRemoval(fit, sigma_clip, niter=niter, sigma=itersigma)
+    # initialize a linear model
+    line_init = models.Linear1D()
+    # fit the data with the fitter
+    sigmask, fitted_line = or_fit(line_init, meanphot, varphot)
+    slope = fitted_line.slope.value
+    g1_iter = get_g1_from_slope_T_N(slope, N=nfr)
+    
+    if mode=='LevMar':
+        cov_diag = np.diag(or_fit.fit_info['param_cov'])
+        print('cov diag:')
+        print(cov_diag)
+    
+    return fitted_line, sigmask, g1_iter
+
 def focus_data_means_and_vars(timestr_list, nfr=5, inst=1, ravel=True, basepath='data/Focus/slopedata/', get_inst_mask=True,\
                               sub_divide_images=False, bins=10, plot=False, chop_up_images=False, nside=5, maxframe=8):
     

@@ -34,6 +34,24 @@ def compute_star_gal_mask(stellar_cat, galaxy_cat, star_mag_idx=2, gal_mag_idx=3
     
     return joined_mask
 
+def generate_diffuse_realization(N, M, power_law_idx=-3.7, scale_fac=1.):
+
+    freq_x = fftshift(np.fft.fftfreq(N, d=1.0))
+    freq_y = fftshift(np.fft.fftfreq(M, d=1.0))
+
+    ell_x,ell_y = np.meshgrid(freq_x,freq_y)
+    ell_x = ifftshift(ell_x)
+    ell_y = ifftshift(ell_y)
+
+    ell_map = np.sqrt(ell_x**2 + ell_y**2)
+
+    ps = ell_map**power_law_idx
+    ps[0,0] = 0.
+
+    diffuse_realiz = ifft2(np.sqrt(ps)*(np.random.normal(0, 1, size=(N, M)) + 1j*np.random.normal(0, 1, size=(N, M))))
+
+    return ell_map, ps, scale_fac*diffuse_realiz.real
+
 def ihl_conv_templates(psf=None, rvir_min=1, rvir_max=50, dimx=150, dimy=150):
     
     ''' 
