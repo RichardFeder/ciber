@@ -366,10 +366,66 @@ class detector_readout():
     def grab_timestreams(self):
         pass
         
-    def subtract_ref_pixels(self, n_ref_rows=4, per_column = True, ncol_per=2, ncol_list=None):
+    def grab_ref_pixels(self, image, inplace=True, refwide=4):
         
-        pass
+        ref_pixels_top = image[-refwide:,:]
+        ref_pixels_bottom = image[:refwide,:]
+        ref_pixels_left = image[:,:refwide]
+        ref_pixels_right = image[:,-refwide:]
+                
+        if inplace:
+            self.ref_pixels_top = ref_pixels_top
+            self.ref_pixels_bottom = ref_pixels_bottom
+            self.ref_pixels_left = ref_pixels_left
+            self.ref_pixels_right = ref_pixels_right
+            
+        else:
+            return ref_pixels_top, ref_pixels_bottom, ref_pixels_left, ref_pixels_right
         
+        
+    def subtract_ref_pixels(self, image, refwide=4, per_column=True, refwide_per_indiv=1, refwide_list=None, side_list=['bottom']):
+        
+        n_col_split = self.dimx//self.ncol_per_channel # typically periodic readout channel behavior
+        
+        self.grab_ref_pixels(image, refwide=refwide, inplace=True)
+        
+        ref_corrected_arr = image.copy()
+        ref_vals_all_cols = []
+
+        for j in range(n_col_split):
+        
+            if refwide_list is None:
+                refwide_list = [refwide_per_indiv for x in range(self.ncol_per_channel//refwide_per_indiv)]
+
+            ref_vals = []
+            running_idx = 0
+        
+            for k in range(len(refwide_list)):
+                combine_ref_vals = []
+                
+                for side in side_list:
+                    if side=='bottom':
+                        combine_ref_vals.extend(self.ref_pixels_bottom[:,j*self.ncol_per_channel+running_idx:j*self.ncol_per_channel+running_idx+refwide_list[k]].ravel())
+                    elif side=='top':
+                        combine_ref_vals.extend(self.ref_pixels_top[:,j*self.ncol_per_channel+running_idx:j*self.ncol_per_channel+running_idx+refwide_list[k]].ravel())
+                    
+                    # not sure how left/right pixels will be used, fill in later TODO
+#                     elif side=='left':
+#                         combine_ref_vals.extend(ref_pixels_left[])
+#                     elif side=='right':
+#                         combine_ref_vals.extend(ref_pixels_left[])
+                        
+                ref_val = np.median(combine_ref_vals)
+                
+                ref_corrected_arr[:,j*self.ncol_per_channel+running_idx:j*self.ncol_per_channel+running_idx+refwide_list[k]] -= ref_val
+                running_idx += refwide_list[k]
+                ref_vals.append(ref_val)
+
+
+            ref_vals_all_cols.append(ref_vals)
+
+        return ref_corrected_arr, ref_vals_all_cols
+                
     def line_fit(self, exp_idxs, nskip=1, frame0idx=0, parallel=False, nparallel=None, verbose=False, memmax=2048):
         
         
@@ -413,6 +469,7 @@ class detector_readout():
     def fourier_transform_timestreams(self, timestreams, plot=True):
         
         pass
+    
     
     
 
