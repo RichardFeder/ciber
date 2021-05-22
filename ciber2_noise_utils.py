@@ -6,7 +6,7 @@ import matplotlib.mlab as mlab
 from astropy.io import fits
 from astropy.stats import sigma_clip
 from scipy.stats import norm
-
+import os
 
 def read_in_run_info(path):
     if path.lower().endswith('.xlsx'):
@@ -224,7 +224,7 @@ class ciber2_noisedata():
 
         return img1 - img2
 
-    def load_fits_from_timestr(self, timestr, fits_or_img='fits', dat_idx=0, frame_or_exp='exposure', frame_idx=None):
+    def load_fits_from_timestr(self, timestr, fits_or_img='fits', dat_idx=0, frame_or_exp='exposure', frame_idx=None, verbose=False):
         
         if len(str(timestr)) < 6:
             timestr = '0'+str(timestr)
@@ -235,7 +235,8 @@ class ciber2_noisedata():
         elif frame_or_exp=='frame':
             path = self.indiv_exposure_path+'/ch'+str(self.channel)+'/'+self.timestr_head+'_'+str(timestr)+'/FRM'+str(frame_idx)+'_PIX.fts'
 
-        print('path:', path)
+        if verbose:
+            print('path:', path)
         f = fits.open(path)
 
         if fits_or_img=='fits':
@@ -348,5 +349,71 @@ class ciber2_noisedata():
             
         return median_values, width_values, ims, load_idxs, diffs, diff_figs, hist_figs
     
-   
+
+
+class detector_readout():
+    
+    
+    def __init__(self, exp_number, dimx=2048, dimy=2048, timestr_head='RUN02102020', base_path='../data/20200210_noise_data', \
+                channel=1, power_key=None, exp_time_key=None, notes_key=None, figdim=8, ncol_per_channel=64, tframe = 1.35168):
+        
+        for attr, valu in locals().items():
+            setattr(self, attr, valu)
+        
+        self.nd_obj = ciber2_noisedata(timestr_head=timestr_head, base_path=base_path, channel=channel, dimx=dimx, dimy=dimy,\
+                                       exp_time_key=self.exp_time_key, power_key=self.power_key, notes_key=self.notes_key, figdim=self.figdim)
+        
+    def grab_timestreams(self):
+        pass
+        
+    def subtract_ref_pixels(self, n_ref_rows=4, per_column = True, ncol_per=2, ncol_list=None):
+        
+        pass
+        
+    def line_fit(self, exp_idxs, nskip=1, frame0idx=0, parallel=False, nparallel=None, verbose=False, memmax=2048):
+        
+        
+        ''' I think this will assume the detector array is divisible by a power of 2, which does hold for CIBER/CIBER2.'''
+        nMB = (len(exp_idxs)-nskip-1)*self.dimx*self.dimy*8//1024**2
+    
+        nsplit = 1
+        if nMB > memmax:
+            print('Splitting up into sub-chunks, memory required for arrays in full (' +str(int(nMB))+' MB) is larger than memmax='+str(memmax)+' MB')
+            
+            while nMB/nsplit > memmax:
+                nsplit *= 2
+                
+            print('Splitting into ', nsplit, ' chunks..')
+        
+        volt_rav = np.zeros((len(exp_idxs)-nskip-1, self.dimx*self.dimy//nsplit))
+        ncol_perfit = self.dimy//nsplit 
+        best_fit_slope = np.zeros((self.dimx, self.dimy))
+        
+        for n in range(nsplit):
+        
+            nframe=len(volt_rav)
+
+            if verbose:
+                print('volt_rav has shape ', volt_rav.shape, ' nframe = ', nframe)
+
+            for i, frame_idx in enumerate(exp_idxs[nskip:-1]):
+                with HiddenPrints():
+                    img1 = self.nd_obj.load_fits_from_timestr(self.exp_number, fits_or_img='img', frame_or_exp='frame', frame_idx=frame_idx)    
+                    volt_rav[i,:] = img1[:,n*ncol_perfit:(n+1)*ncol_perfit].ravel()
+
+            x_matrix = np.array([[1 for x in range(nframe)], [self.tframe*i for i in range(nframe)]]).transpose()
+            inv_xprod = np.linalg.inv(np.dot(x_matrix.transpose(), x_matrix))
+            second_prod = np.dot(inv_xprod, x_matrix.transpose())
+            best_fit = np.dot(second_prod, volt_rav)
+
+            best_fit_slope[:,n*ncol_perfit:(n+1)*ncol_perfit] = (np.reshape(best_fit[1,:], (self.dimx, self.dimy//nsplit)))/self.nd_obj.V_to_e # returns in units of electrons
+
+        return best_fit_slope
+        
+    def fourier_transform_timestreams(self, timestreams, plot=True):
+        
+        pass
+    
+    
+
     
