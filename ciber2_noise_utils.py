@@ -7,6 +7,16 @@ from astropy.io import fits
 from astropy.stats import sigma_clip
 from scipy.stats import norm
 import os
+import sys
+
+class HiddenPrints:
+    def __enter__(self):
+        self._original_stdout = sys.stdout
+        sys.stdout = open(os.devnull, 'w')
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        sys.stdout.close()
+        sys.stdout = self._original_stdout
 
 def read_in_run_info(path):
     if path.lower().endswith('.xlsx'):
@@ -279,8 +289,14 @@ class ciber2_noisedata():
             return exp_idxs
 
         elif frame_or_exp == 'frame':
+
             frame_idxs = []
-            for file in os.listdir(self.indiv_exposure_path+'ch'+str(self.channel)+'/'+self.timestr_head+'_'+str(exp_number)):
+
+            exp_number_str = str(exp_number)
+            if exp_number < 1e5:
+                exp_number_str = exp_number_str.zfill(6)
+
+            for file in os.listdir(self.indiv_exposure_path+'ch'+str(self.channel)+'/'+self.timestr_head+'_'+exp_number_str):
                 if file.endswith('PIX.fts'):
                     frame_digits = [int(i) for i in str(file).split()[0] if i.isdigit()]
                     frame_idx = map(str, frame_digits)
@@ -354,7 +370,7 @@ class ciber2_noisedata():
 class detector_readout():
     
     
-    def __init__(self, exp_number, dimx=2048, dimy=2048, timestr_head='RUN02102020', base_path='../data/20200210_noise_data', \
+    def __init__(self, exp_number=None, dimx=2048, dimy=2048, timestr_head='RUN02102020', base_path='../data/20200210_noise_data', \
                 channel=1, power_key=None, exp_time_key=None, notes_key=None, figdim=8, ncol_per_channel=64, tframe = 1.35168):
         
         for attr, valu in locals().items():
@@ -366,11 +382,94 @@ class detector_readout():
     def grab_timestreams(self):
         pass
         
-    def subtract_ref_pixels(self, n_ref_rows=4, per_column = True, ncol_per=2, ncol_list=None):
+    def grab_ref_pixels(self, image, inplace=True, refwide=4):
         
-        pass
+        ref_pixels_top = image[-refwide:,:]
+        ref_pixels_bottom = image[:refwide,:]
+        ref_pixels_left = image[:,:refwide]
+        ref_pixels_right = image[:,-refwide:]
+                
+        if inplace:
+            self.ref_pixels_top = ref_pixels_top
+            self.ref_pixels_bottom = ref_pixels_bottom
+            self.ref_pixels_left = ref_pixels_left
+            self.ref_pixels_right = ref_pixels_right
+            
+        else:
+            return ref_pixels_top, ref_pixels_bottom, ref_pixels_left, ref_pixels_right
         
-    def line_fit(self, exp_idxs, nskip=1, frame0idx=0, parallel=False, nparallel=None, verbose=False, memmax=2048):
+        
+    def subtract_ref_pixels(self, image, refwide=4, per_column=True, refwide_per_indiv=1, refwide_list=None, side_list=['bottom']):
+        
+        n_col_split = self.dimx//self.ncol_per_channel # typically periodic readout channel behavior
+        
+        self.grab_ref_pixels(image, refwide=refwide, inplace=True)
+        
+        ref_corrected_arr = image.copy()
+        ref_vals_all_cols = []
+
+        for j in range(n_col_split):
+        
+            if refwide_list is None:
+                refwide_list = [refwide_per_indiv for x in range(self.ncol_per_channel//refwide_per_indiv)]
+
+            ref_vals = []
+            running_idx = 0
+        
+            for k in range(len(refwide_list)):
+                combine_ref_vals = []
+                
+                for side in side_list:
+                    if side=='bottom':
+                        combine_ref_vals.extend(self.ref_pixels_bottom[:,j*self.ncol_per_channel+running_idx:j*self.ncol_per_channel+running_idx+refwide_list[k]].ravel())
+                    elif side=='top':
+                        combine_ref_vals.extend(self.ref_pixels_top[:,j*self.ncol_per_channel+running_idx:j*self.ncol_per_channel+running_idx+refwide_list[k]].ravel())
+                    
+                    # not sure how left/right pixels will be used, fill in later TODO
+#                     elif side=='left':
+#                         combine_ref_vals.extend(ref_pixels_left[])
+#                     elif side=='right':
+#                         combine_ref_vals.extend(ref_pixels_left[])
+                        
+                ref_val = np.median(combine_ref_vals)
+                
+                ref_corrected_arr[:,j*self.ncol_per_channel+running_idx:j*self.ncol_per_channel+running_idx+refwide_list[k]] -= ref_val
+                running_idx += refwide_list[k]
+                ref_vals.append(ref_val)
+
+
+            ref_vals_all_cols.append(ref_vals)
+
+        return ref_corrected_arr, ref_vals_all_cols
+                
+    def line_fit(self, exp_idxs, nskip=1, postrfr=True, frame0idx=0, parallel=False, plot=False, nparallel=None, verbose=False, memmax=2048):
+        
+        ''' nskip with postrfr False will skip first nskip PIX frames, even if that includes ones before a reset.
+            with postrfr True, will find reset frames and choose frame index nskip after those. '''
+        
+        if postrfr:
+            
+            exp_str = str(self.exp_number)
+            if len(exp_str) < 6:
+                exp_str = '0'+str(exp_str)
+                
+            path = self.nd_obj.base_path + '/ch'+str(self.channel)+'/'+self.nd_obj.timestr_head+'_'+exp_str
+
+            print('path is ', path)
+            filenames = os.listdir(path)
+            print('filenames are ', filenames)
+            
+            rfr_fnames = [fname for fname in filenames if 'RFR' in fname]
+            print('rfr fnames are ', rfr_fnames)
+            
+            if len(rfr_fnames) > 0:
+                rfr_digs = [int(re.sub("[^0-9]", "", rfr_fname)) for rfr_fname in rfr_fnames]
+    
+                max_rfr_dig = np.max(rfr_digs)
+            
+                exp_idxs = [e for e in exp_idxs if e > max_rfr_dig]
+            
+                print('exp idxs is now ', exp_idxs)
         
         
         ''' I think this will assume the detector array is divisible by a power of 2, which does hold for CIBER/CIBER2.'''
@@ -389,16 +488,35 @@ class detector_readout():
         ncol_perfit = self.dimy//nsplit 
         best_fit_slope = np.zeros((self.dimx, self.dimy))
         
-        for n in range(nsplit):
         
+        for n in range(nsplit):
+            
             nframe=len(volt_rav)
 
             if verbose:
                 print('volt_rav has shape ', volt_rav.shape, ' nframe = ', nframe)
 
             for i, frame_idx in enumerate(exp_idxs[nskip:-1]):
+                
+                
                 with HiddenPrints():
                     img1 = self.nd_obj.load_fits_from_timestr(self.exp_number, fits_or_img='img', frame_or_exp='frame', frame_idx=frame_idx)    
+                        
+                    
+                    if i > 0:
+                        
+                        if plot:
+                            plt.figure(figsize=(8,8))
+                            plt.subplot(1,2,1)
+                            plt.title('frame '+str(i)+' - frame '+str(i-1), fontsize=18)
+                            plt.imshow(img1-img0, cmap='Greys', vmin=np.nanpercentile(img1-img0, 16), vmax=np.nanpercentile(img1-img0, 84))
+                            cbar = plt.colorbar(fraction=0.046, pad=0.04)
+                            cbar.set_label('e-/s', fontsize=16)
+                            plt.tick_params(labelsize=14)
+                            plt.show()
+
+                    img0 = img1
+                    
                     volt_rav[i,:] = img1[:,n*ncol_perfit:(n+1)*ncol_perfit].ravel()
 
             x_matrix = np.array([[1 for x in range(nframe)], [self.tframe*i for i in range(nframe)]]).transpose()
@@ -414,6 +532,107 @@ class detector_readout():
         
         pass
     
+
+
+def construct_ciber_photmap_fits(image_list, card_names=['photmap'], wcs_header=None, primary_header=None):
+    
+    # primary header info
+    hdu = fits.PrimaryHDU(None)
+    if primary_header is not None:
+        hdu.header = primary_header
+    temphdu = None
+    cards = [hdu]
+
+    # add image cards
+    for e, card_name in enumerate(card_names):
+        card_hdu = fits.ImageHDU(image_list[e], name=card_name)
+        cards.append(card_hdu)
+
+    if wcs_header is not None:
+        for card_hdu in cards:
+            card_hdu.header.update(wcs_header.to_header())
+
+    hdulist = fits.HDUList(cards)
+    
+    return hdulist
+
+
+def convert_integrations_to_photmaps(channel, timestr_head, base_path, run_info_fname, memmax=1024, verbose=False, \
+                                    ref_pix_corr=False, save_fits=False, fits_base_path=None, refwide_per_indiv=64, side_list=['bottom'], \
+                                    wcs_header=None, clobber=True, nskip=1):
+    
+    dr_obj = detector_readout(channel=channel, timestr_head=timestr_head, base_path=base_path)
+    
+    run_df = read_in_run_info(base_path+'/'+run_info_fname)
+    
+    dr_obj.nd_obj.parse_run_df(run_df)
+    
+    dr_obj.nd_obj.indiv_exposure_path = dr_obj.nd_obj.base_path
+
+    exp_numbers = dr_obj.nd_obj.exp_numbers
+    
+    for i, exp_number in enumerate(exp_numbers):
+        
+        if exp_number==0:
+            continue
+        
+        print('exp number is ', exp_number)
+        dr_obj.exp_number=exp_number
+        try:
+            exp_idxs = dr_obj.nd_obj.get_available_idxs(frame_or_exp='frame', exp_number=exp_number)
+        except:
+            exp_number += 1
+            try:
+                exp_idxs = dr_obj.nd_obj.get_available_idxs(frame_or_exp='frame', exp_number=exp_number)
+            except:
+                exp_number -= 2
+                try:
+                    exp_idxs = dr_obj.nd_obj.get_available_idxs(frame_or_exp='frame', exp_number=exp_number)
+                except:
+                    print('no dice')
+                    continue
+        
+        dr_obj.exp_number=exp_number
+            
+        bestfitslop = dr_obj.line_fit(exp_idxs[nskip:], verbose=verbose, memmax=memmax)
+        card_names=['photmap']
+        
+        if ref_pix_corr:
+            ref_pix_corr, _ = dr_obj.subtract_ref_pixels(bestfitslop, refwide_per_indiv=refwide_per_indiv, side_list=side_list)
+            card_names.append('photmap_refcorr')
+        
+        if save_fits:
+            if verbose:
+                print('saving files, exp name ', exp_number)
+                
+            if fits_base_path is None:
+                photpath = base_path+'/photmaps'
+            else:
+                photpath = fits_base_path+'/photmaps'
+                
+            if not os.path.isdir(photpath):
+                os.mkdir(photpath)
+            
+            photpath +='/ch'+str(channel)
+            if not os.path.isdir(photpath):
+                os.mkdir(photpath)
+                
+            photpath += '/'+timestr_head+'_'+str(exp_number).zfill(6)+'.fits'
+            
+            ciber_fits = construct_ciber_photmap_fits([bestfitslop], card_names=card_names, wcs_header=wcs_header)
+            
+            if verbose:
+                print('saving photmap to ', photpath)
+            try:
+                ciber_fits.writeto(photpath, clobber=clobber)
+            except:
+                if verbose:
+                    print('clobber set to '+str(clobber)+' and file exists, continuing to next one')
+                continue
+                
+            
+
+
     
 
     
