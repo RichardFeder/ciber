@@ -8,6 +8,7 @@ from astropy.stats import sigma_clip
 from scipy.stats import norm
 import os
 import sys
+import re
 
 class HiddenPrints:
     def __enter__(self):
@@ -23,8 +24,10 @@ def read_in_run_info(path):
         run_df = pd.read_excel(path)
     return run_df
 
-def img_from_fits(fits_file, dat_idx=0):
-    return fits_file[dat_idx].data
+def img_from_fits(fits_file, dat_key=None):
+    if dat_key is None:
+        dat_key = 0
+    return fits_file[dat_key].data
 
 def make_frame_diff_str(idx1, idx2):
     return 'Frame '+str(idx1)+' - Frame '+str(idx2)
@@ -209,41 +212,51 @@ class ciber2_noisedata():
     
     V_to_e = 4e-6 # this converts individual frames from Volts to electrons
     
-    def __init__(self, timestr_head='RUN02102020', base_path='../data/20200210_noise_data',\
+    def __init__(self, timestr_head='RUN02102020', base_path='../data/20200210_noise_data', indiv_exposure_path=None, \
                  shutter_key='Shutter', exp_time_key='Exp Time [s]', idx_no_key='Image', power_key='Power', \
                 notes_key='Notes', channel=1, figdim=8, dimx=2048, dimy=2048):
         
         for attr, valu in locals().items():
             setattr(self, attr, valu)
 
-        self.indiv_exposure_path = base_path+'/indiv_exposures/'
+        if indiv_exposure_path is None:
+            self.indiv_exposure_path = base_path+'/indiv_exposures/'
 
-    def frame_difference(self, img1=None, img2=None, idx1=None, idx2=None, frame_or_exp='exposure', exp_number=None):
+    def img_difference(self, exp_number_idx1=None, exp_number_idx2=None, img1=None, img2=None, idx1=None, idx2=None, frame_or_exp='exposure', exp_number=None, dat_key=None, verbose=False):
         
         if img1 is None:
             
             if frame_or_exp=='exposure':
 
-                img1 = self.load_fits_from_timestr(self.exp_numbers[idx1], fits_or_img='img', frame_or_exp=frame_or_exp)
-                img2 = self.load_fits_from_timestr(self.exp_numbers[idx2], fits_or_img='img', frame_or_exp=frame_or_exp)
+                if exp_number_idx1 is None:
+                    exp_number_idx1 = self.exp_numbers[idx1]
+                if exp_number_idx2 is None:
+                    exp_number_idx2 = self.exp_numbers[idx2]
+
+                img1 = self.load_fits_from_timestr(exp_number_idx1, fits_or_img='img', frame_or_exp=frame_or_exp, verbose=verbose, dat_key=dat_key)
+                img2 = self.load_fits_from_timestr(exp_number_idx2, fits_or_img='img', frame_or_exp=frame_or_exp, verbose=verbose, dat_key=dat_key)
 
             elif frame_or_exp=='frame':
 
-                img1 = self.load_fits_from_timestr(exp_number, fits_or_img='img', frame_or_exp=frame_or_exp, frame_idx=idx1)
-                img2 = self.load_fits_from_timestr(exp_number, fits_or_img='img', frame_or_exp=frame_or_exp, frame_idx=idx2)
+                img1 = self.load_fits_from_timestr(exp_number, fits_or_img='img', frame_or_exp=frame_or_exp, frame_idx=idx1, verbose=verbose, dat_key=dat_key)
+                img2 = self.load_fits_from_timestr(exp_number, fits_or_img='img', frame_or_exp=frame_or_exp, frame_idx=idx2, verbose=verbose, dat_key=dat_key)
 
         return img1 - img2
 
-    def load_fits_from_timestr(self, timestr, fits_or_img='fits', dat_idx=0, frame_or_exp='exposure', frame_idx=None, verbose=False):
+    def load_fits_from_timestr(self, timestr, fits_or_img='fits', dat_key=None, frame_or_exp='exposure', frame_idx=None, verbose=False):
         
         if len(str(timestr)) < 6:
             timestr = '0'+str(timestr)
-            
+        
+        if verbose:
+            print('timestr = ', timestr)
         if frame_or_exp=='exposure':
             path = self.base_path+'/ch'+str(self.channel)+'/'+self.timestr_head+'_'+str(timestr)+'.fits'
+            print('path is ', path)
         
         elif frame_or_exp=='frame':
             path = self.indiv_exposure_path+'/ch'+str(self.channel)+'/'+self.timestr_head+'_'+str(timestr)+'/FRM'+str(frame_idx)+'_PIX.fts'
+
 
         if verbose:
             print('path:', path)
@@ -252,7 +265,7 @@ class ciber2_noisedata():
         if fits_or_img=='fits':
             return f
         else:
-            return img_from_fits(f,dat_idx=dat_idx)
+            return img_from_fits(f,dat_key=dat_key)
         
         
     def parse_run_df(self, run_df, verbose=False):
@@ -321,7 +334,7 @@ class ciber2_noisedata():
         return cds, cds_fig, cds_hist_fig
 
     def compute_diff_images(self, missing_exposures_dict=None, exp_min_idx=0, exp_max_idx=30, \
-                       show=True, histmin=-100, histmax=100, frame_or_exp='exposure', exp_number=133255, figdim=None):
+                       show=True, histmin=-100, histmax=100, frame_or_exp='exposure', exp_number=133255, figdim=None, dat_key=None):
         median_values, width_values, ims, load_idxs, diffs, diff_figs, hist_figs = [[] for x in range(7)]
         
         if figdim is None:
@@ -338,7 +351,7 @@ class ciber2_noisedata():
                 continue
 
             try:
-                im = self.frame_difference(idx1=exp_no, idx2=exp_idxs[i-1], frame_or_exp=frame_or_exp, exp_number=exp_number)
+                im = self.img_difference(idx1=exp_no, idx2=exp_idxs[i-1], frame_or_exp=frame_or_exp, exp_number=exp_number, dat_key=dat_key)
                 title = make_exp_diff_str(idx1=exp_no, idx2=exp_idxs[i-1])+' [e-/s] (Channel '+str(self.channel)+')'
                 im_path = 'diff_image/exp'+str(exp_no)+'_'+str(exp_idxs[i-1])
                 hist_path = 'diff_hist/exp'+str(exp_no)+'_'+str(exp_idxs[i-1])
@@ -534,12 +547,110 @@ class detector_readout():
     
 
 
-def construct_ciber_photmap_fits(image_list, card_names=['photmap'], wcs_header=None, primary_header=None):
+def badpixmask_construct(exp_idxs, channel, nd_obj=None, mask_venn='union', timestr_head=None, base_path=None, mode='difference_exp',\
+                         plot_indiv=False, plot_mask=True, save_figs=False, figpath=None, dimx=2048, dimy=2048, \
+                        sig_clip_sigma=5.0, nitermax=50, png_or_pdf='png', figdim=8, verbose=False, dat_key='photmap', tailfigstr=None):
+    
+    median_values, width_values, load_idxs, fracs_bad_indiv = [[] for x in range(4)]
+    diffs = []
+    
+    if nd_obj is None:
+        if timestr_head is None:
+            print("need to specify timestr_head")
+            return
+        nd_obj = ciber2_noisedata(timestr_head=timestr_head, base_path=base_path, channel=channel, dimx=dimx, dimy=dimy)
+        
+    print('file path is ', nd_obj.base_path)
+    npix = nd_obj.dimx*nd_obj.dimy
+    sum_badpixmask = np.zeros((nd_obj.dimx, nd_obj.dimy))
+
+    if figpath is None:
+        figpath = base_path
+        
+    for i, exp_no in enumerate(exp_idxs):
+        if exp_no==exp_idxs[0] and mode=='difference_exp':
+            print('exp_no = ', exp_no, 'pass')
+            continue
+    
+        if mode=='single_exp':
+
+            im = nd_obj.load_fits_from_timestr(nd_obj.frame_numbers[exp_no], fits_or_img='img', dat_key=dat_key)
+            title = 'Frame '+str(exp_no)+' (Channel '+str(nd_obj.channel)+')'
+            im_path = 'frame_image/exp'+str(exp_no)
+            hist_path = 'frame_hist/exp'+str(exp_no)
+            
+            ims.append(im)
+            load_idxs.append(exp_no)
+
+        elif mode=='difference_exp':
+            try:
+                im = nd_obj.img_difference(exp_number_idx1=exp_no, exp_number_idx2=exp_idxs[i-1], dat_key=dat_key, verbose=True)
+                title = make_exp_diff_str(idx1=exp_no, idx2=exp_idxs[i-1])+' [e-/s] (Channel '+str(nd_obj.channel)+')'
+            
+                im_path = 'diff_image/exp'+str(exp_no)+'_'+str(exp_idxs[i-1])
+                hist_path = 'diff_hist/exp'+str(exp_no)+'_'+str(exp_idxs[i-1])
+                
+                if verbose:
+                    print('impath:', im_path, ', histpath:', hist_path)
+
+                diffs.append(im)
+                load_idxs.append(exp_no)
+
+            except:
+                print('no luck here on', exp_idxs[i], exp_idxs[i-1], ', moving on')
+                continue
+
+        if plot_indiv:
+            framefig = view_img(im, title=title, titlefontsize=20, return_fig=True)
+            histfig = view_hist(im, histmin=-100.0, histmax=100.0, nbins=150, return_fig=True, title=title, titlefontsize=16, yscale='symlog')
+            if save_figs:
+                if figpath is not None:
+                    framefig.savefig(figpath+'/'+im_path+'_image_'+str(exposure_time)+'s_exposure_ch'+str(channel)+'.'+png_or_pdf, bbox_inches='tight')
+                    histfig.savefig(figpath+'/'+hist_path+'_hist_'+str(exposure_time)+'s_exposure_ch'+str(channel)+'.'+png_or_pdf, bbox_inches='tight')
+                else:
+                    print('need figpath specified to save, continuing..')
+
+        badpixmask_indiv = iter_sigma_clip_mask(im, sig=sig_clip_sigma, nitermax=nitermax)
+        sum_badpixmask += badpixmask_indiv
+        fracs_bad_indiv.append(float(npix - np.sum(badpixmask_indiv))/float(npix))
+
+        
+    if mask_venn == 'intersect':
+        badpixmask = (sum_badpixmask > 0)
+        frac_bad_mask = float(npix - np.sum(badpixmask))/float(npix)
+
+    elif mask_venn == 'union':
+        badpixmask = (sum_badpixmask == len(diffs))
+        frac_bad_mask = float(npix - np.sum(badpixmask))/float(npix)
+        
+    print('frac_bad_mask is ', frac_bad_mask)
+    if plot_mask:
+        badpixmask_fig = view_img(~badpixmask, figdim=figdim, vmax=1., vmin=0., title=str(np.round(100*frac_bad_mask, 4))+'% $\\sigma$-clipped pixels', return_fig=True)
+        
+        if tailfigstr is None:
+            tailfigstr = ''
+        else:
+            tailfigstr = '_'+tailfigstr
+        if save_figs:
+            fname = figpath+'/ch'+str(channel)+'_badpixmask_'+mask_venn+'_'+mode+'_'+str(sig_clip_sigma)+'sig'+tailfigstr+'.'+png_or_pdf
+            print('saving to ', fname)
+            badpixmask_fig.savefig(fname, bbox_inches='tight')
+
+    return badpixmask, frac_bad_mask, fracs_bad_indiv
+
+
+
+def construct_ciber_photmap_fits(image_list, card_names=['photmap'], wcs_header=None, primary_header=None, header_keys=None, header_vals=None):
     
     # primary header info
     hdu = fits.PrimaryHDU(None)
     if primary_header is not None:
         hdu.header = primary_header
+
+        if header_keys is not None:
+            for h, header_key in enumerate(header_keys):
+                hdu.header.set(header_key, header_vals[h])
+                
     temphdu = None
     cards = [hdu]
 
@@ -557,13 +668,18 @@ def construct_ciber_photmap_fits(image_list, card_names=['photmap'], wcs_header=
     return hdulist
 
 
-def convert_integrations_to_photmaps(channel, timestr_head, base_path, run_info_fname, memmax=1024, verbose=False, \
+def convert_integrations_to_photmaps(channel, timestr_head, base_path, run_info_fname=None, run_df=None, memmax=1024, verbose=False, \
                                     ref_pix_corr=False, save_fits=False, fits_base_path=None, refwide_per_indiv=64, side_list=['bottom'], \
-                                    wcs_header=None, clobber=True, nskip=1):
+                                    wcs_header=None, clobber=True, nskip=1, plot=False, header_keys=None, header_vals=None):
     
     dr_obj = detector_readout(channel=channel, timestr_head=timestr_head, base_path=base_path)
     
-    run_df = read_in_run_info(base_path+'/'+run_info_fname)
+    if run_df is None:
+        if run_info_fname is not None:
+            run_df = read_in_run_info(base_path+'/'+run_info_fname)
+        else:
+            print('No run info spreadsheet specified and no dataframe provided, exiting')
+            return
     
     dr_obj.nd_obj.parse_run_df(run_df)
     
@@ -596,6 +712,9 @@ def convert_integrations_to_photmaps(channel, timestr_head, base_path, run_info_
             
         bestfitslop = dr_obj.line_fit(exp_idxs[nskip:], verbose=verbose, memmax=memmax)
         card_names=['photmap']
+
+        if plot:
+            view_img(bestfitslop)
         
         if ref_pix_corr:
             ref_pix_corr, _ = dr_obj.subtract_ref_pixels(bestfitslop, refwide_per_indiv=refwide_per_indiv, side_list=side_list)
@@ -619,7 +738,7 @@ def convert_integrations_to_photmaps(channel, timestr_head, base_path, run_info_
                 
             photpath += '/'+timestr_head+'_'+str(exp_number).zfill(6)+'.fits'
             
-            ciber_fits = construct_ciber_photmap_fits([bestfitslop], card_names=card_names, wcs_header=wcs_header)
+            ciber_fits = construct_ciber_photmap_fits([bestfitslop], card_names=card_names, wcs_header=wcs_header, header_keys=header_keys, header_vals=header_vals)
             
             if verbose:
                 print('saving photmap to ', photpath)
@@ -629,6 +748,8 @@ def convert_integrations_to_photmaps(channel, timestr_head, base_path, run_info_
                 if verbose:
                     print('clobber set to '+str(clobber)+' and file exists, continuing to next one')
                 continue
+                
+    
                 
             
 
