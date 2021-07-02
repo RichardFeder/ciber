@@ -12,6 +12,10 @@ from PIL import Image
 from image_eval import psf_poly_fit, image_model_eval
 import sys
 
+from numpy.fft import fftshift as fftshift
+from numpy.fft import ifftshift as ifftshift
+from numpy.fft import fft2 as fft2
+from numpy.fft import ifft2 as ifft2
 
 
 def compute_star_gal_mask(stellar_cat, galaxy_cat, star_mag_idx=2, gal_mag_idx=3, m_max=18.4, return_indiv_masks=False):
@@ -51,6 +55,14 @@ def generate_diffuse_realization(N, M, power_law_idx=-3.7, scale_fac=1.):
     diffuse_realiz = ifft2(np.sqrt(ps)*(np.random.normal(0, 1, size=(N, M)) + 1j*np.random.normal(0, 1, size=(N, M))))
 
     return ell_map, ps, scale_fac*diffuse_realiz.real
+
+def make_synthetic_trilegal_cat(trilegal_path, I_band_idx=16, H_band_idx=17, imdim=1024.):
+    trilegal = np.loadtxt(trilegal_path)
+    nsrc = trilegal.shape[0]
+    synthetic_cat = np.random.uniform(0, imdim, size=(nsrc, 2))
+    synthetic_cat = np.array([synthetic_cat[:,0], synthetic_cat[:,1], trilegal[:,I_band_idx], trilegal[:,H_band_idx]]).transpose()
+    print('synthetic cat has shape ', synthetic_cat.shape)
+    return synthetic_cat
 
 def ihl_conv_templates(psf=None, rvir_min=1, rvir_max=50, dimx=150, dimy=150):
     
@@ -165,18 +177,20 @@ class ciber_mock():
     sky_brightness = np.array([300., 370.])*sb_intensity_unit
     instrument_noise = np.array([33.1, 17.5])*sb_intensity_unit
 
-    def __init__(self, pcat_model_eval=True, ciberdir='/Users/richardfeder/Documents/caltech/ciber2/ciber/'):
-        self.psf_template=None
+    def __init__(self, pcat_model_eval=True, ciberdir='/Users/richardfeder/Documents/caltech/ciber2/ciber/', \
+                nx=1024, ny=1024, psf_template=None):
 
-        self.ciberdir = ciberdir
+        for attr, valu in locals().items():
+            if '__' not in attr and attr != 'gdat':
+                setattr(self, attr, valu)
 
         if pcat_model_eval:
-
             try:
-                if sys.version_info[0] < 3:
-                    self.libmmult = npct.load_library('pcat-lion', '.')
-                else:
-                    self.libmmult = npct.load_library('pcat-lion.so', self.ciberdir)
+                self.libmmult = npct.load_library('pcat-lion', '.')
+                # if sys.version_info[0] <3:
+                #     self.libmmult = npct.load_library('pcat-lion', '.')
+                # else:
+                #     self.libmmult = npct.load_library('pcat-lion.so', self.ciberdir)
             except:
                 print('pcat-lion.so not loading, trying blas.so now..')
                 self.libmmult = ctypes.cdll['./blas.so'] # not sure how stable this is, trying to find a good Python 3 fix to deal with path configuration
@@ -202,11 +216,11 @@ class ciber_mock():
         m_arr = cat[2,:]
         return x_arr, y_arr, m_arr
         
-    def get_psf(self, ifield=4, band=0, nx=1024, ny=1024, multfac=7.0, nbin=0., poly_fit=True, nwide=17, width_psf_temp=50):
+    def get_psf(self, ifield=4, band=0, multfac=7.0, nbin=0., poly_fit=True, nwide=17, width_psf_temp=50):
         
         beta, rc, norm = find_psf_params(self.ciberdir+'/data/psfparams.txt', tm=band+1, field=self.ciber_field_dict[ifield])
 
-        Nlarge = nx+30+30 
+        Nlarge = self.nx+30+30 
 
         radmap = make_radius_map(2*Nlarge+nbin, 2*Nlarge+nbin, Nlarge+nbin, Nlarge+nbin, rc)*multfac # is the input supposed to be 2d?
         
@@ -246,7 +260,7 @@ class ciber_mock():
         jansky_arr = self.mag_2_jansky(mags)
         return jansky_arr.to(u.nW*u.s/u.m**2)*const.c/(self.pix_sr*self.lam_effs[band])
 
-    def make_srcmap(self, ifield, cat, flux_idx=-1, band=0, nbin=0., nx=1024, ny=1024, nwide=17, multfac=7.0, \
+    def make_srcmap(self, ifield, cat, flux_idx=-1, band=0, nbin=0., nwide=17, multfac=7.0, \
                     pcat_model_eval=False, libmmult=None, dx=2.5, dy=-1.0):
         
         ''' 
@@ -266,20 +280,20 @@ class ciber_mock():
 
         Nsrc = cat.shape[0]
 
-        srcmap = np.zeros((nx*2, ny*2))
+        srcmap = np.zeros((self.nx*2, self.ny*2))
         
-        Nlarge = nx+30+30 
+        Nlarge = self.nx+30+30 
 
 
         if self.psf_template is None:
 
             print('generating psf template because it was none')
             
-            self.get_psf(ifield=ifield, band=band, nx=nx, ny=ny, multfac=multfac, poly_fit=pcat_model_eval, nwide=nwide)
+            self.get_psf(ifield=ifield, band=band, multfac=multfac, poly_fit=pcat_model_eval, nwide=nwide)
             
         if pcat_model_eval:
 
-            srcmap = image_model_eval(np.array(cat[:,0]).astype(np.float32)+dx, np.array(cat[:,1]).astype(np.float32)-dy ,np.array(cat[:, flux_idx]).astype(np.float32),0., (nx, ny), 35, self.cf, lib=self.libmmult.pcat_model_eval)
+            srcmap = image_model_eval(np.array(cat[:,0]).astype(np.float32)+dx, np.array(cat[:,1]).astype(np.float32)-dy ,np.array(cat[:, flux_idx]).astype(np.float32),0., (self.nx, self.ny), 35, self.cf, lib=self.libmmult.pcat_model_eval)
 
             return srcmap
         else:
@@ -288,9 +302,9 @@ class ciber_mock():
             ys = np.round(cat[:,1]).astype(np.int32)
 
             for i in range(Nsrc):
-                srcmap[Nlarge/2+2+xs[i]-nwide:Nlarge/2+2+xs[i]+nwide+1, Nlarge/2-1+ys[i]-nwide:Nlarge/2-1+ys[i]+nwide+1] += self.psf_template*cat[i, flux_idx]
+                srcmap[Nlarge//2+2+xs[i]-nwide:Nlarge//2+2+xs[i]+nwide+1, Nlarge//2-1+ys[i]-nwide:Nlarge//2-1+ys[i]+nwide+1] += self.psf_template*cat[i, flux_idx]
         
-            return srcmap[nx/2+30:3*nx/2+30, ny/2+30:3*ny/2+30]
+            return srcmap[self.nx//2+30:3*self.nx//2+30, self.ny//2+30:3*self.ny//2+30]
 
    
     def make_ihl_map(self, map_shape, cat, ihl_frac, flux_idx=-1, dimx=150, dimy=150, psf=None, extra_trim=20):
@@ -316,7 +330,7 @@ class ciber_mock():
      
 
     def mocks_from_catalogs(self, catalog_list, ncatalog, mock_data_directory=None, m_min=9., m_max=30., m_tracer_max=25., \
-                        ihl_frac=0.0, ifield=4, band=0, save=False, extra_name='', pcat_model_eval=False):
+                        ihl_frac=0.0, ifield=4, band=0, save=False, extra_name='', pcat_model_eval=False, add_noise=False, cat_return='tracer'):
     
         srcmaps_full, catalogs, noise_realizations, ihl_maps = [[] for x in range(4)]
         
@@ -338,18 +352,25 @@ class ciber_mock():
             cat_full = np.hstack([cat_full, np.expand_dims(I_arr_full.value, axis=1)])
             srcmap_full = self.make_srcmap(ifield, cat_full, band=band, pcat_model_eval=pcat_model_eval, nwide=17)
 
-            large_noise = np.random.normal(self.sky_brightness[band].value, self.instrument_noise[band].value, size=(srcmap_full.shape[0]+100, srcmap_full.shape[1]+100))
-            print('large noise has shape ', large_noise.shape)
-            large_conv_noise = scipy.signal.convolve2d(large_noise, self.psf_template, 'same')
+            if add_noise:
 
-            conv_noise = large_conv_noise[50:50+srcmap_full.shape[0], 50:50+srcmap_full.shape[1]]
+                large_noise = np.random.normal(self.sky_brightness[band].value, self.instrument_noise[band].value, size=(srcmap_full.shape[0]+100, srcmap_full.shape[1]+100))
+                print('large noise has shape ', large_noise.shape)
+                large_conv_noise = scipy.signal.convolve2d(large_noise, self.psf_template, 'same')
 
-            print('conv noise has shape ', conv_noise.shape)
-            # noise = np.random.normal(self.sky_brightness[band].value, self.instrument_noise[band].value, size=srcmap_full.shape)
-            # conv_noise = scipy.signal.convolve2d(noise, self.psf_template, 'same')
+                conv_noise = large_conv_noise[50:50+srcmap_full.shape[0], 50:50+srcmap_full.shape[1]]
+
+                print('conv noise has shape ', conv_noise.shape)
+                # noise = np.random.normal(self.sky_brightness[band].value, self.instrument_noise[band].value, size=srcmap_full.shape)
+                # conv_noise = scipy.signal.convolve2d(noise, self.psf_template, 'same')
+                noise_realizations.append(conv_noise)
+
             
-            catalogs.append(cat_full)
-            noise_realizations.append(conv_noise)
+            if cat_return=='tracer':
+                catalogs.append(tracer_cat)
+            else:
+                catalogs.append(cat_full)
+
             srcmaps_full.append(srcmap_full)
             
             if ihl_frac > 0:
@@ -367,13 +388,14 @@ class ciber_mock():
                     np.savez_compressed(mock_data_directory+'ciber_mock_'+str(c)+'_mmin='+str(m_min)+extra_name+'.npz', \
                                         catalog=tracer_cat, srcmap_full=srcmap_full, conv_noise=conv_noise)
                    
+
         if ihl_frac > 0: 
             return srcmaps_full, catalogs, noise_realizations, ihl_maps
         else:
             return srcmaps_full, catalogs, noise_realizations
 
     def make_mock_ciber_map(self, ifield, m_min, m_max, mock_cat=None, band=0, ihl_frac=0., ng_bins=8,\
-                            zmin=0.0, zmax=2.0, pcat_model_eval=True, ncatalog=1):
+                            zmin=0.0, zmax=2.0, pcat_model_eval=True, ncatalog=1, add_noise=False, cat_return='tracer', m_tracer_max=20.):
         ''' This is the parent function that uses other functions in the class to generate a full mock catalog/CIBER image. If there is 
         no mock catalog input, the function draws a galaxy catalog from the Helgason model with the galaxy_catalog() class. With a catalog 
         in hand, the function then imposes any cuts on magnitude, computes mock source intensities and then generates the corresponding 
@@ -392,6 +414,9 @@ class ciber_mock():
                 clustering field drawn with the lognormal technique. 
             zmin/zmax (float, default=0.01/5.0): form redshift range from which to draw galaxies from Helgason model.
 
+            add_noise (boolean, default=False): determines whether to make gaussian noise realization based on sky brightnesses. in most cases
+                                                this will be outdated since we use a more detailed read noise/photon noise model
+
         Outputs:
 
             full_map/srcmap/noise/ihl_map (np.array): individual and combined components of mock CIBER map
@@ -408,21 +433,28 @@ class ciber_mock():
         
         if ihl_frac > 0:
             srcmaps, cats, noise_realizations, ihl_maps = self.mocks_from_catalogs(cat, ncatalog, m_min=m_min,\
-                                                                                   m_max=m_max,ifield=ifield,band=band,pcat_model_eval=pcat_model_eval, ihl_frac=ihl_frac)
+                                                                                   m_max=m_max,ifield=ifield,band=band,pcat_model_eval=pcat_model_eval, ihl_frac=ihl_frac, \
+                                                                                   add_noise=add_noise, cat_return=cat_return, m_tracer_max=m_tracer_max)
         else:
             srcmaps, cats, noise_realizations = self.mocks_from_catalogs(cat, ncatalog, m_min=m_min,\
-                                                                                   m_max=m_max,ifield=ifield,band=band,pcat_model_eval=pcat_model_eval)
+                                                                                   m_max=m_max,ifield=ifield,band=band,pcat_model_eval=pcat_model_eval, \
+                                                                                   add_noise=add_noise, cat_return=cat_return, m_tracer_max=m_tracer_max)
 
-        full_maps = []
+        full_maps = np.zeros((ncatalog, self.nx, self.ny))
     
         for c in range(ncatalog):
+            full_maps[c] = srcmaps[c]
+            if add_noise:
+                full_maps[c] += noise_realizations[c]
             if ihl_frac > 0:
-                full_maps.append(srcmaps[c]+noise_realizations[c]+ihl_maps[c])
-            else:
-                full_maps.append(srcmaps[c]+noise_realizations[c])
+                full_maps[c] += ihl_maps[c]
+
             
         if ihl_frac > 0:
         
             return full_maps, srcmaps, noise_realizations, ihl_maps, cats
         else:
             return full_maps, srcmaps, noise_realizations, cats
+
+
+

@@ -6,16 +6,17 @@ from lognormal_counts import *
 from catalog_utils import *
 
 import sys
-import camb
 
 if sys.version_info[0] == 3:
     from halo_model import *
     from hmf import MassFunction
     import hmf
+    import camb
 
-pars = camb.CAMBparams()
-pars.set_cosmology(H0=67.5, ombh2=0.022, omch2=0.122)
-pars.InitPower.set_params(ns=0.965)
+
+    pars = camb.CAMBparams()
+    pars.set_cosmology(H0=67.5, ombh2=0.022, omch2=0.122)
+    pars.InitPower.set_params(ns=0.965)
 
 def k_to_ell(k, comoving_dist):
     ''' Convert wavenumber to multipole for fixed redshift '''
@@ -30,7 +31,6 @@ def make_lists_arrays(list_of_lists):
     for l in list_of_lists:
         list_of_arrays.append(np.array(l))
     return list_of_arrays
-
 
 def positions_from_counts(counts_map, cat_len=None):
 
@@ -49,7 +49,6 @@ def positions_from_counts(counts_map, cat_len=None):
         thetay = np.array(thetay)[idxs]
 
     return np.array(thetax), np.array(thetay)
-
 
 def w_theta(theta, A=0.2, gamma=1.8):
     ''' Simple power law function for angular correlation function'''
@@ -75,7 +74,8 @@ This involves:
 class galaxy_catalog():
     
     lf = Luminosity_Function()
-    # mass_function = MassFunction(z=0., dlog10m=0.02)
+    if sys.version_info[0] == 3:
+        mass_function = MassFunction(z=0., dlog10m=0.02)
     cosmo = FlatLambdaCDM(H0=70, Om0=0.28)
 
 

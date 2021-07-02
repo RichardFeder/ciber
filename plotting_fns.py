@@ -654,6 +654,33 @@ def plot_dm_powerspec(show=True):
     
     return f
 
+def plot_map(image, figsize=(8,8), title=None, titlefontsize=16, xlabel='x [pix]', ylabel='y [pix]',\
+             x0=None, x1=None, y0=None, y1=None, lopct=5, hipct=99,\
+             return_fig=True, show=True, xkcd=False, nanpct=True, cmap='viridis'):
+    f = plt.figure(figsize=figsize)
+    if title is not None:
+    
+        plt.title(title, fontsize=titlefontsize)
+    if nanpct:
+        plt.imshow(image, vmin=np.nanpercentile(image, lopct), vmax=np.nanpercentile(image, hipct), cmap=cmap)
+        print('min max of image in plot map are ', np.min(image), np.max(image))
+    else:
+        plt.imshow(image, cmap=cmap)
+    plt.colorbar(fraction=0.046, pad=0.04)
+    if x0 is not None and x1 is not None:
+        plt.xlim(x0, x1)
+        plt.ylim(y0, y1)
+        
+    plt.xlabel(xlabel, fontsize=16)
+    plt.ylabel(ylabel, fontsize=16)
+    
+    plt.tick_params(labelsize=14)
+
+    if show:
+        plt.show()
+    if return_fig:
+        return f
+
 def plot_mock_images(full, srcs, ihl=None, fullminp=1., fullmaxp=99.9, \
 					srcminp=1., srcmaxp=99.9, ihlminp=1., ihlmaxp=99.9, \
 					save=False, show=True, xmin=None, xmax=None, ymin=None, \
@@ -974,7 +1001,7 @@ def plot_exposure_pair_diffs_means(pair_diff, pair_mean, pair_mask, diffidx, min
         return f
 
 
-def plot_srcmap_mask(mask, titlestr, len_cat, return_fig=True, show=True):
+def plot_srcmap_mask(mask, titlestr, len_cat, return_fig=True, show=True, ):
     f = plt.figure(figsize=(10, 10))
     
     plt.title(titlestr + ' \n N='+str(len_cat)+', '+str(np.round(100*np.sum(mask)/(mask.shape[0]**2), 2))+'% of pixels unmasked', fontsize=18)

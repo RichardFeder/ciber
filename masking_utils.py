@@ -10,10 +10,10 @@ if sys.version_info[0]==2:
 
 # Yun-Ting's code for masking is here https://github.com/yuntingcheng/python_ciber/blob/master/stack_modelfit/mask.py
 
-def filter_trilegal_cat(trilegal_cat, m_max=17, I_band_idx=16):
+def filter_trilegal_cat(trilegal_cat, m_min=4, m_max=17, I_band_idx=16):
     
-    filtered_trilegal_cat = np.array([x for x in trilegal_cat if x[I_band_idx]<m_max])
-    
+    filtered_trilegal_cat = np.array([x for x in trilegal_cat if x[I_band_idx]<m_max and x[I_band_idx]>m_min])
+
     return filtered_trilegal_cat
 
 def radius_vs_mag_gaussian(mags, a1, b1, c1):
@@ -83,26 +83,50 @@ def mask_from_cat(catalog, xidx=0, yidx=1, mag_idx=3, dimx=1024, dimy=1024, pixs
     return mask 
 
 
-def mask_from_df_cat(cat_df, dimx=1024, dimy=1024, pixsize=7., mode='Zemcov+14', magstr='zMeanPSFMag', alpha_m=-6.25, beta_m=110, \
-    a1=252.8, b1=3.632, c1=8.52, Vega_to_AB = 0., mag_lim =None, mag_lim_str='j_mag_best', inst=1):
+def mask_from_df_cat(xs=None, ys=None, mags=None, cat_df=None, dimx=1024, dimy=1024, pixsize=7., mode='Zemcov+14', magstr='zMeanPSFMag', alpha_m=-6.25, beta_m=110, \
+    a1=252.8, b1=3.632, c1=8.52, Vega_to_AB = 0., mag_lim_min=0, mag_lim=None, inst=1):
     
     # can take mean color between PanSTARRS band and J band as zeroth order approx. ideally would regress, 
     # but probably doesn't make big difference
     
+    if mags is None and cat_df is None:
+        print('Need magnitudes one way or another, please specify with mags parameter or cat_df')
+        return
+
+    if cat_df is None:
+        if xs is None or ys is None or mags is None:
+            print('cat_df=None, but no input information for xs, ys, mags')
+            return
+
     if mag_lim is not None:
-        mag_lim_mask = np.where(cat_df[magstr] < mag_lim)[0]
-        cat_df = cat_df.iloc[mag_lim_mask]
+
+        if cat_df is not None:
+            mag_lim_mask = np.where((cat_df[magstr] < mag_lim)&(cat_df[magstr] > mag_lim_min))[0]
+            cat_df = cat_df.iloc[mag_lim_mask]
+            xs = np.array(cat_df['x'+str(inst)])
+            ys = np.array(cat_df['y'+str(inst)])
+
+        elif mags is not None:
+            mag_lim_mask = (mags < mag_lim)*(mags > mag_lim_min)
+            mags = mags[mag_lim_mask]
+            xs = xs[mag_lim_mask]
+            ys = ys[mag_lim_mask]
+
     mask = np.ones([dimx,dimy], dtype=int)
 
     if mode=='Zemcov+14':
-        radii = magnitude_to_radius_linear(cat_df[magstr], alpha_m=alpha_m, beta_m=beta_m) # vega to AB factor?
+        if cat_df is not None:
+            radii = magnitude_to_radius_linear(cat_df[magstr], alpha_m=alpha_m, beta_m=beta_m) # vega to AB factor?
+        elif mags is not None:
+            radii = magnitude_to_radius_linear(mags, alpha_m=alpha_m, beta_m=beta_m)
+
     elif mode=='Simon':
         AB_mags = np.array(cat_df[magstr]) + Vega_to_AB
-        radii = radius_vs_mag_gaussian(cat_df[magstr], a1=a1, b1=b1, c1=c1)
+        if cat_df is not None:
+            radii = radius_vs_mag_gaussian(cat_df[magstr], a1=a1, b1=b1, c1=c1)
         # radii = a1*np.exp(-((cat_df[magstr]-b1)/c1)**2)
-    
-    xs = np.array(cat_df['x'+str(inst)])
-    ys = np.array(cat_df['y'+str(inst)])
+        elif mags is not None:
+            radii = radius_vs_mag_gaussian(mags, a1=a1, b1=b1, c1=c1)
 
     for i, r in enumerate(radii):
         radmap = make_radius_map(dimx=dimx, dimy=dimy, cenx=xs[i], ceny=ys[i], rc=1., sqrt=True)
@@ -110,7 +134,34 @@ def mask_from_df_cat(cat_df, dimx=1024, dimy=1024, pixsize=7., mode='Zemcov+14',
             
     return mask, radii
 
+def get_masks(star_cat_df, mask_fn_param_combo, intercept_mag_AB, mag_lim_AB, instrument_mask=None, minrad=14., dm=3, dimx=1024, dimy=1024, verbose=True):
+    
+    intercept = radius_vs_mag_gaussian(intercept_mag_AB, a1=mask_fn_param_combo[0], b1=mask_fn_param_combo[1],\
+                                       c1=mask_fn_param_combo[2])
+    
+    alpha_m, beta_m = find_alpha_beta(intercept, minrad=minrad, dm=dm, pivot=intercept_mag_AB)
+    
+    if verbose:
+        print('alpha, beta are ', alpha_m, beta_m)
+        print('making bright star mask..')
+        
+    mask_stars_simon, radii_stars_simon = mask_from_df_cat(cat_df = star_cat_df, mag_lim_min=0,\
+                                                                    mag_lim=intercept_mag_AB, mode='Simon', a1=mask_fn_param_combo[0], b1=mask_fn_param_combo[1], c1=mask_fn_param_combo[2], magstr='j_m', Vega_to_AB=0., dimx=dimx, dimy=dimy)
 
+
+    mask_stars_Z14, radii_stars_Z14 = mask_from_df_cat(cat_df = star_cat_df, mag_lim_min=intercept_mag_AB, mag_lim=mag_lim_AB, mode='Zemcov+14', alpha_m=alpha_m, beta_m=beta_m, magstr='j_m', Vega_to_AB=0., dimx=dimx, dimy=dimy)
+
+    joint_mask = mask_stars_simon*mask_stars_Z14
+    
+    print('joint mask is type ', type(joint_mask))
+    joint_mask = joint_mask.astype(np.int)
+    
+    if instrument_mask is not None:
+        if verbose:
+            print('instrument mask being applied as well')
+        joint_mask *= instrument_mask.astype(np.int)
+        
+    return joint_mask, radii_stars_simon, radii_stars_Z14
 
 def get_mask_radius_th_rf(m_arr, beta, rc, norm, band=0, Ith=1., fac=0.7, plot=False):
 
