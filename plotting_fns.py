@@ -662,10 +662,10 @@ def plot_map(image, figsize=(8,8), title=None, titlefontsize=16, xlabel='x [pix]
     
         plt.title(title, fontsize=titlefontsize)
     if nanpct:
-        plt.imshow(image, vmin=np.nanpercentile(image, lopct), vmax=np.nanpercentile(image, hipct), cmap=cmap)
+        plt.imshow(image, vmin=np.nanpercentile(image, lopct), vmax=np.nanpercentile(image, hipct), cmap=cmap, origin='lower')
         print('min max of image in plot map are ', np.min(image), np.max(image))
     else:
-        plt.imshow(image, cmap=cmap)
+        plt.imshow(image, cmap=cmap, origin='lower')
     plt.colorbar(fraction=0.046, pad=0.04)
     if x0 is not None and x1 is not None:
         plt.xlim(x0, x1)

@@ -48,11 +48,12 @@ def compute_stack_ff_estimate(images, masks=None, target_image=None, target_mask
 	
 	print('but means here are ', means)
 
-	if inv_var_weight:
-		weights = np.array([1./image_mean for image_mean in means])
-		weights /= np.sum(weights)        
-	elif weights is None:
-		weights = np.ones((len(images),))
+	if weights is None:
+		if inv_var_weight:
+			weights = np.array([1./image_mean for image_mean in means])
+			weights /= np.sum(weights)        
+		else:
+			weights = np.ones((len(images),))
 	
 	print('weights are ', weights)
    
@@ -95,10 +96,10 @@ def compute_stack_ff_estimate(images, masks=None, target_image=None, target_mask
 
 		ff_estimate[ff_mask==0] = 1.0
 
-		return ff_estimate, ff_mask
+		return ff_estimate, ff_mask, weights
 
 	else:
-		return sumim
+		return sumim, weights
 
 
 def plot_indiv_ps_results_fftest(lb, list_of_recovered_cls, cls_truth=None, n_skip_last = 3, mean_labels=None, return_fig=True, ciblab = 'CIB + DGL ground truth', truthlab='truth field average', ylim=[1e-3, 1e2]):
