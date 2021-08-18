@@ -85,7 +85,8 @@ class CIBER_PS_pipeline():
         self.photFactor = np.sqrt(1.2)
         self.Mkk_obj.delta_ell = self.Mkk_obj.binl[1:]-self.Mkk_obj.binl[:-1]
         self.fsky = self.dimx*self.dimy*self.Mkk_obj.arcsec_pp_to_radian**2 / (4*np.pi)
-        
+        self.field_nfrs = dict({4:24, 5:9, 6:29, 7:28, 8:25})
+        self.ciber_field_dict = dict({4:'elat10', 5:'elat30',6:'BootesB', 7:'BootesA', 8:'SWIRE'})
         self.field_exposure = 50. # seconds
         self.frame_period = 1.78 # seconds
         self.nfr = int(self.field_exposure/self.frame_period)
@@ -181,7 +182,8 @@ class CIBER_PS_pipeline():
             rnmaps *= self.cal_facs[inst]/self.arcsec_pp_to_radian
 
         if len(maplist_split_shape)==2:
-            snmaps = snmaps[0]
+            if photon_noise:
+                snmaps = snmaps[0]
 
         return rnmaps, snmaps
     
@@ -194,6 +196,12 @@ class CIBER_PS_pipeline():
         
         if image is None:
             image = self.image
+
+        if self.field_nfrs is not None and ifield is not None:
+            field_nfr = self.field_nfrs[ifield]
+        else:
+            field_nfr = self.nfr
+
         if noise_model is None:
             if noise_model_fpath is None:
                 if ifield is not None and inst is not None:
@@ -214,7 +222,7 @@ class CIBER_PS_pipeline():
             print('photon noise set to True but no shot noise sigma map provided')
             if image is not None:
                 print('getting sigma map from input image')
-                shot_sigma_sb = self.compute_shot_sigma_map(inst, image=image)
+                shot_sigma_sb = self.compute_shot_sigma_map(inst, image=image, nfr=field_nfr)
             
         if show:
             plt.figure(figsize=(10, 5))
@@ -320,18 +328,6 @@ class CIBER_PS_pipeline():
         else:
             return fits.open(flight_fpath)[0].data
 
-
-    def estimate_FF(self, ifield_stack_list, inst=None, use_masks=True, masks=None):
-
-
-        ''' function to take list of field indexes, images and assocaited masks and compute a flat field estimate '''
-
-
-        # get all images
-
-        # get all masks, loop over indices and get instrument+src masks
-
-        # stack ff estimate and cut on 
         
     def load_noise_Cl2D(self, ifield=None, inst=None, noise_model=None, noise_fpath=None, verbose=False, inplace=True, transpose=True, mode=None):
         
@@ -605,6 +601,7 @@ class CIBER_PS_pipeline():
         if psf_fpath is None:
             psf_fpath = self.data_path + 'TM'+str(inst)+'/beam_effect/field'+str(ifield)+'_psf.fits'
         
+        # place PSF in CIBER sized image array, some measured PSFs are evaluated over smaller region 
         psf = fits.open(psf_fpath)[0].data
         psf_template = np.zeros(shape=(self.dimx, self.dimy))
         psf_template[:psf.shape[0], :psf.shape[1]] = psf
@@ -655,14 +652,14 @@ class CIBER_PS_pipeline():
 
         return unit_noise*shot_sigma_sb
 
-    def compute_shot_sigma_map(self, inst, image, nfr=None, frame_rate=None):
+    def compute_shot_sigma_map(self, inst, image, nfr=None, frame_rate=None, verbose=True):
         # assume image is in surface brightness units, returns shot noise map in surface brightness units
         if nfr is None:
             nfr = self.nfr
         if frame_rate is None:
             frame_rate = self.frame_rate
-
-        print('nfr, frame_rate:', nfr, frame_rate)
+        if verbose:
+            print('nfr, frame_rate:', nfr, frame_rate)
         flight_signal = image*self.g1_facs[inst]/self.cal_facs[inst]
         shot_sigma = np.sqrt((np.abs(flight_signal)/(nfr/frame_rate))*((nfr**2+1.)/(nfr**2 - 1.)))
 
@@ -704,7 +701,7 @@ class CIBER_PS_pipeline():
 
             psf = self.psf_template.copy()
         
-        rb, Bl, Bl_std = get_power_spec(psf-np.mean(psf), lbinedges=self.Mkk_obj.binl, lbins=self.Mkk_obj.midbin_ell, return_Dl=False)
+        lb, Bl, Bl_std = get_power_spec(psf-np.mean(psf), lbinedges=self.Mkk_obj.binl, lbins=self.Mkk_obj.midbin_ell, return_Dl=False)
         
         B_ell = np.sqrt(Bl)/np.max(np.sqrt(Bl))
         B_ell_std = (Bl_std/(2*np.sqrt(Bl)))/np.max(np.sqrt(Bl))
@@ -1036,13 +1033,15 @@ def generate_synthetic_mock_test_set(test_set_fpath, trilegal_sim_idx=1, inst=1,
                                      apply_flat_field = True, include_inst_noise=True, include_photon_noise=True, ff_truth=None, ff_truth_fpath='dr40030_TM2_200613_p2.pkl',\
                                      apply_masking=True, mask_galaxies=False, mask_stars=True, intercept_mag=16.0, a1=220., b1=3.632, c1=8.52, Vega_to_AB=0.91, mag_lim_Vega = 18.0, \
                                      n_split_mkk=1, verbose=False, \
-                                    show_plots=True, ifield_psf=None):
+                                    show_plots=True, ifield_psf=None, use_field_nfrs=True, mock_trilegal_path=None, use_trilegal_bl=False, B_ells=None):
 
     if cmock is None:
         cmock = ciber_mock(ciberdir='/Users/luminatech/Documents/ciber2/ciber/', pcat_model_eval=pcat_model_eval)
         
     if cbps is None:
         cbps = CIBER_PS_pipeline(n_ps_bin=n_ps_bin, dimx=dimx, dimy=dimy)
+        if not use_field_nfrs:
+            cbps.field_nfrs = None
 
 
     mock_cib_ims = np.load(test_set_fpath)['full_maps']
@@ -1059,13 +1058,19 @@ def generate_synthetic_mock_test_set(test_set_fpath, trilegal_sim_idx=1, inst=1,
     observed_ims, total_signals, \
         noise_models, shot_sigma_sb_maps, rnmaps, joint_masks, diff_realizations = instantiate_dat_arrays_fftest(cbps.dimx, cbps.dimy, nfields)
 
-    cls_gt, cls_diffuse, cls_cib, cls_postff, B_ells = instantiate_cl_arrays_fftest(nfields, cbps.n_ps_bin)
+    cls_gt, cls_diffuse, cls_cib, cls_postff, B_ells_new = instantiate_cl_arrays_fftest(nfields, cbps.n_ps_bin)
 
     mag_lim_AB = mag_lim_Vega + Vega_to_AB
     intercept_mag_AB = intercept_mag + Vega_to_AB
 
     for imidx in range(nfields):
         ifield = ifield_list[imidx]
+
+        if cbps.field_nfrs is not None:
+            field_nfr = cbps.field_nfrs[ifield]
+        else:
+            field_nfr = cbps.nfr
+
         field_name_trilegal = cmock.ciber_field_dict[ifield]
     
         
@@ -1078,10 +1083,17 @@ def generate_synthetic_mock_test_set(test_set_fpath, trilegal_sim_idx=1, inst=1,
         cbps.load_data_products(ifield, inst, verbose=verbose, ifield_psf=ifield_psf)
         cmock.get_psf(ifield=ifield_psf)
 
-        print('loading BEAM')
-        B_ell, B_ell_std = cbps.compute_beam_correction(psf=cmock.psf_full, inplace=False)
-        print('B_ell is ', B_ell)
-        B_ells[imidx] = B_ell
+        if B_ells is None:
+            if use_trilegal_bl:
+                # use trilegal mock image to estimate Bl
+                print('computing Bl from trilegal')
+            else:
+                print('no beam correction provided, computing from cmock.psf_full..')
+                B_ell, B_ell_std = cbps.compute_beam_correction(psf=cmock.psf_full, inplace=False)
+            print('B_ell is ', B_ell)
+            B_ells_new[imidx] = B_ell
+        else:
+            B_ell = B_ells[imidx]
         
         newnoisefpath = 'data/fluctuation_data/dr20210120/TM'+str(inst)+'/readCl2D/field'+str(ifield)+'_readCl2D.fits'
         if include_photon_noise or include_inst_noise:
@@ -1089,7 +1101,9 @@ def generate_synthetic_mock_test_set(test_set_fpath, trilegal_sim_idx=1, inst=1,
             noise_models[imidx] = noise_model
         instrument_mask = cbps.maskInst_clean
         
-        mock_trilegal = np.load('data/mock_trilegal_realizations_051321/'+field_name_trilegal+'/mock_trilegal_'+field_name_trilegal+'_idx'+str(trilegal_sim_idx)+'_051321.npz')
+        if mock_trilegal_path is None:
+            mock_trilegal_path = 'data/mock_trilegal_realizations_051321/'+field_name_trilegal+'/mock_trilegal_'+field_name_trilegal+'_idx'+str(trilegal_sim_idx)+'_051321.npz'
+        mock_trilegal = np.load(mock_trilegal_path)
         mock_trilegal_im = mock_trilegal['srcmaps'][inst-1,:,:]
         print('mock_trilegal_im has shape ', mock_trilegal_im.shape)
         mock_trilegal_cat = mock_trilegal['cat']
@@ -1110,6 +1124,7 @@ def generate_synthetic_mock_test_set(test_set_fpath, trilegal_sim_idx=1, inst=1,
                 cl_pivot_fac = cl_dgl_iras[0]*cbps.dimx*cbps.dimy 
                 _, _, diff_realization = generate_diffuse_realization_new(cbps.dimx, cbps.dimy, power_law_idx=-3.0, scale_fac=cl_pivot_fac)
 
+                # TO DO convolve diffuse realization by PSF..
                 # _, _, diff_realization = generate_diffuse_realization(cbps.dimx, cbps.dimy, power_law_idx=-4.5, scale_fac=2e-1)
         
             # new bare_bones
@@ -1122,7 +1137,6 @@ def generate_synthetic_mock_test_set(test_set_fpath, trilegal_sim_idx=1, inst=1,
         total_signal = mock_cib_ims[imidx] + mock_trilegal_im
         if include_diffuse_comp:
             total_signal += diff_realization
-            
         
         total_signal += bkg_val[imidx]
             
@@ -1136,7 +1150,7 @@ def generate_synthetic_mock_test_set(test_set_fpath, trilegal_sim_idx=1, inst=1,
         
         #  ----------------- generate read and shot noise realizations -------------------
         
-        shot_sigma_sb = cbps.compute_shot_sigma_map(inst, image=total_signal)
+        shot_sigma_sb = cbps.compute_shot_sigma_map(inst, image=total_signal, nfr=field_nfr)
         
         if include_photon_noise:
             shot_sigma_sb_maps[imidx] = shot_sigma_sb
@@ -1151,7 +1165,6 @@ def generate_synthetic_mock_test_set(test_set_fpath, trilegal_sim_idx=1, inst=1,
                 with open(ff_truth_fpath, "rb") as f:
                     dr = pickle.load(f)
                 ff_truth = dr[ifield]['FF']
-                
                 ff_truth[np.isnan(ff_truth)] = 1.0
                 ff_truth[ff_truth==0] = 1.0
         else:
@@ -1217,6 +1230,9 @@ def generate_synthetic_mock_test_set(test_set_fpath, trilegal_sim_idx=1, inst=1,
                 plot_map(post_ff_image*joint_mask, title='postff observed image with full mask')
                 plot_srcmap_mask(joint_mask, 'joint mask', len(radii_stars_simon)+len(radii_stars_Z14))
 
+    if B_ells is None:
+        B_ells = B_ells_new
+
     return joint_masks, observed_ims, total_signals, rnmaps, shot_sigma_sb_maps, noise_models, cls_gt, cls_diffuse, cls_cib, cls_postff, B_ells, ff_truth, diff_realizations
         
     
@@ -1254,11 +1270,18 @@ def calculate_powerspec_quantities(cbps, observed_ims, joint_masks, shot_sigma_s
             
             stack_obs = list(observed_ims.copy())
             stack_mask = list(joint_masks.copy().astype(np.bool))
+
+            if cbps.field_nfrs is not None:
+                field_nfrs = list(cbps.field_nfrs.copy())
+                del(field_nfrs[imidx])
+            else:
+                field_nfrs = None
     
             del(stack_obs[imidx])
             del(stack_mask[imidx])
 
-            ff_estimate, ff_mask, ff_weights = compute_stack_ff_estimate(stack_obs, target_mask=joint_masks[imidx], masks=stack_mask, means=None, inv_var_weight=inv_var_weight, ff_stack_min=ff_stack_min)
+            ff_estimate, ff_mask, ff_weights = compute_stack_ff_estimate(stack_obs, target_mask=joint_masks[imidx], masks=stack_mask, means=None, inv_var_weight=inv_var_weight, ff_stack_min=ff_stack_min, \
+                                                                        field_nfrs=field_nfrs)
             ff_estimates[imidx] = ff_estimate
 
             sum_stack_mask = np.sum(stack_mask, axis=0)
@@ -1353,35 +1376,53 @@ def calculate_powerspec_quantities(cbps, observed_ims, joint_masks, shot_sigma_s
     return ff_estimates, inverse_Mkks, lb, recovered_cls, masked_images, masked_Nls, masked_Nls_noff, cls_intermediate
 
 
-def grab_recovered_cl_dat(fpath, mean_or_median='mean'):
+def grab_recovered_cl_dat(fpath, mean_or_median='mean', inter_idx=None, per_field=True):
     
-    ff_test_dat = np.load(fpath)
+    ff_test_dat = np.load(fpath, allow_pickle=True)
     
     lb = ff_test_dat['lb']
-    recovered_cls = ff_test_dat['recovered_cls']
+    
+    if inter_idx is not None:
+        recovered_cls = [ff_test_dat['cls_intermediate'][j][inter_idx] for j in range(len(ff_test_dat['cls_intermediate']))]
+        if recovered_cls[0] is None:
+            recovered_cls = [ff_test_dat['cls_intermediate'][j][inter_idx-1] for j in range(len(ff_test_dat['cls_intermediate']))]
+
+    else:
+        recovered_cls = ff_test_dat['recovered_cls']
+            
     true_cls = ff_test_dat['true_cls']
     
-    if mean_or_median=='median':
-        mean_recovered_cls = np.median(recovered_cls, axis=0)
-        mean_true_cls = np.median(true_cls, axis=0)
+    if recovered_cls is None:
+        mean_recovered_cls, mean_true_cls, est_true_ratio = None, None, None                
     else:
-        mean_recovered_cls = np.mean(recovered_cls, axis=0)
-        mean_true_cls = np.mean(true_cls, axis=0)
-    
-    est_true_ratio = mean_recovered_cls/mean_true_cls
+        if per_field:
+            est_true_ratio = np.array([recovered_cls[field_idx]/true_cls[field_idx] for field_idx in range(recovered_cls.shape[0])])
+            mean_recovered_cls, mean_recovered_cls, mean_true_cls = None, None, None
+        else:
+        
+            if mean_or_median=='median':
+                mean_recovered_cls = np.median(recovered_cls, axis=0)
+                mean_true_cls = np.median(true_cls, axis=0)
+            else:
+                mean_recovered_cls = np.mean(recovered_cls, axis=0)
+                mean_true_cls = np.mean(true_cls, axis=0)
+
+            est_true_ratio = mean_recovered_cls/mean_true_cls
+        
 
     return lb, recovered_cls, true_cls, mean_recovered_cls, mean_true_cls, est_true_ratio
 
 
-def grab_all_simidx_dat(fpaths, mean_or_median='mean'):
+def grab_all_simidx_dat(fpaths, mean_or_median='mean', inter_idx=None, per_field=True):
     est_true_ratios, all_mean_true_cls, all_recovered_cls = [], [], []
     
     for fpath in fpaths:
-        lb, recovered_cls, true_cls, mean_recovered_cls, mean_true_cl, est_true_ratio = grab_recovered_cl_dat(fpath, mean_or_median=mean_or_median)
-        
+        lb, recovered_cls, true_cls, mean_recovered_cls, mean_true_cl, est_true_ratio = grab_recovered_cl_dat(fpath, mean_or_median=mean_or_median, inter_idx=inter_idx, \
+                                                                                                              per_field=per_field)
+        est_true_ratios.append(est_true_ratio)
+            
         all_recovered_cls.append(mean_recovered_cls)
         all_mean_true_cls.append(mean_true_cl)
-        est_true_ratios.append(est_true_ratio)
 
     est_true_ratios = np.array(est_true_ratios)
     all_mean_true_cls = np.array(all_mean_true_cls)

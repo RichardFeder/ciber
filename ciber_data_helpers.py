@@ -16,6 +16,30 @@ def find_psf_params(path, tm=1, field='elat10'):
             return beta, rc, norm
     return False
 
+def load_psf_params_dict(inst, field=None, ifield=None, tail_path='psf_model_dict_updated_081121_ciber.npz', verbose=True):
+    
+    ''' Parses PSF parameter file, which is two sets of dictionaries with the best fit beta model parameters. '''
+    
+    psf_mod = np.load(tail_path, allow_pickle=True)['PSF_model_dict'].item()
+
+    if ifield is None:
+        ifield_title_dict = dict({'Elat 10':4,'Elat 30':5, 'Bootes B':6, 'Bootes A':7, 'SWIRE':8})
+        ifield = ifield_title_dict[field]
+
+
+    params = psf_mod[inst][ifield]
+
+    beta = params[0]
+    rc = params[1]
+    norm = params[2]
+
+    if verbose:
+        print('beta = ', beta)
+        print('rc = ', rc)
+        print('norm = ', norm)
+
+    return beta, rc, norm
+
 def load_ciber_srcmap(idx, with_noise=True, datapath='/Users/richardfeder/Documents/ciber2/ciber/mock_data/',tail_name='mmin=18.4_mmax=25'):
     load_srcmap = np.load(datapath+'/ciber_mock_'+str(idx)+tail_name+'.npz')['srcmap']
     if with_noise:
@@ -30,6 +54,7 @@ def make_psf_template(path, field, band, nx=1024, pad=30, nwide=20, nbin=0, mult
     The PSF is parameterized as a power law'''
 
     beta, rc, norm = find_psf_params(path, tm=band+1, field=field)
+    beta, rc, norm = load_psf_params_dict()
     Nlarge = nx+pad+pad
     radmap = make_radius_map(2*Nlarge+nbin, 2*Nlarge+nbin, Nlarge+nbin, Nlarge+nbin, rc)*multfac
     Imap_large = norm*np.power(1.+radmap, -3*beta/2.)
@@ -42,13 +67,16 @@ def make_psf_template(path, field, band, nx=1024, pad=30, nwide=20, nbin=0, mult
     else:
         psf_template
 
-def make_radius_map(dimx, dimy, cenx, ceny, rc=1.):
+def make_radius_map(dimx, dimy, cenx, ceny, rc=1., sqrt=False):
     ''' This function calculates a map, where the value of each pixel is its distance from the central pixel.
     Useful for making PSF templates and other map making functions'''
     x = np.arange(dimx)
     y = np.arange(dimy)
     xx, yy = np.meshgrid(x, y, sparse=True)
-    return (((cenx - xx)/rc)**2 + ((ceny - yy)/rc)**2)
+    if sqrt:
+        return np.sqrt(((cenx - xx)/rc)**2 + ((ceny - yy)/rc)**2)
+    else:
+        return ((cenx - xx)/rc)**2 + ((ceny - yy)/rc)**2
 
 def make_radius_map_yt(mapin, cenx, ceny):
     '''

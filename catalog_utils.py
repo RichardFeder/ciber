@@ -378,6 +378,12 @@ def crossmatch_IBIS_unWISE_PS(field, df_IBIS_wxy=None, crossmatch_unWISE_PS=None
 
     return crossmatch_unWISE_PS_IBIS
 
+def filter_trilegal_cat(trilegal_cat, m_min=4, m_max=17, I_band_idx=16):
+    
+    filtered_trilegal_cat = np.array([x for x in trilegal_cat if x[I_band_idx]<m_max and x[I_band_idx]>m_min])
+
+    return filtered_trilegal_cat
+
 def panstarrs_preprocess(fieldstr, datadir='/Users/luminatech/Documents/ciber2/ciber/data/cats/', \
                         detect_any=True, detect_y=True, cat_keys=None, apply_flags=True):
 

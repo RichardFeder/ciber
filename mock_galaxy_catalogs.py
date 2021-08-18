@@ -209,7 +209,6 @@ class galaxy_catalog():
         print('dzs:', dzs)
 
         Mapps = np.linspace(m_min, m_max, int(m_max-m_min) + 1)
-
         Mabs = np.linspace(Mabs_min, Mabs_max, Mabs_nbin)
 
         # First, I need to figure out how many sources are within a given redshift bin
