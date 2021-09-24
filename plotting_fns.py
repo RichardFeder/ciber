@@ -298,6 +298,140 @@ def plot_stacked_smoothed_expmap(sum_im_smoothed, lightsrcmask, minpct=1, maxpct
     if return_fig:
         return f
 
+def plot_perfield_dcl(lb, est_true_ratios, ifield_list, n_skip_last=1, titlestr=None, include_text=True, show=True, return_fig=True):
+
+    ciber_field_dict = dict({4:'elat10', 5:'elat30',6:'BootesB', 7:'BootesA', 8:'SWIRE'})
+    
+    f = plt.figure(figsize=(8,6))
+    if titlestr is not None:
+        plt.title(title, fontsize=20)
+    else:
+        plt.title('$C_{\\ell}^{est} = B_{\\ell}^{-1}M_{\\ell \\ell^{\\prime}}^{-1}(C_{\\ell^{\\prime}}^{masked}-N_{\\ell^{\\prime}}^{masked})$', fontsize=20)
+    
+    if include_text:
+        plt.text(200, 25., 'Mock CIB + Trilegal', fontsize=20)
+
+    for i, ifield in enumerate(ifield_list):
+        plt.errorbar(lb[:-n_skip_last], np.mean(est_true_ratios[:,i,:], axis=0)[:-n_skip_last], \
+                     linewidth=2, capthick=2,color='C'+str(i), yerr=np.std(est_true_ratios[:,i,:], axis=0)[:-n_skip_last]/np.sqrt(est_true_ratios.shape[0]),\
+                     label=ciber_field_dict[ifield], capsize=5)
+
+    plt.axhline(1, linestyle='dashed', color='k', alpha=0.5, linewidth=2)
+    plt.ylabel('$\\langle C_{\\ell}^{est}/C_{\\ell}^{true} \\rangle$', fontsize=20)
+    plt.xlabel('Multipole $\\ell$', fontsize=20)
+    plt.tick_params(labelsize=16)
+    plt.xscale('log')
+    plt.ylim(5e-1,4e1)
+#     plt.legend(fontsize=14, loc=1)
+    plt.yscale('log')
+    if show:
+        plt.show()
+    if return_fig:
+        return f
+
+
+def plot_powerspectra_090821(lb, field_averaged_cl, field_averaged_std, recovered_cls_obscorr=None, recovered_dcls_obscorr=None, zemcov_auto=None,\
+                             ifield_list=[4, 5, 6, 7, 8], ylim=[1e-1, 4e3], plot=True, return_fig=True, inst=1, include_text=True, text=None):
+    
+    ciber_field_dict = dict({4:'elat10', 5:'elat30',6:'BootesB', 7:'BootesA', 8:'SWIRE'})
+    
+    prefac = lb*(lb+1)/(2.*np.pi)
+    
+    
+    f = plt.figure(figsize=(10, 8))
+    
+    plt.errorbar(lb, prefac*field_averaged_cl,\
+             yerr=prefac*field_averaged_std, marker='*', capsize=5, zorder=10, linewidth=2, capthick=2, color='b', label='Field average')
+    
+    if zemcov_auto is not None:
+        zemcov_lb = zemcov_auto[:,0]
+        plt.plot(zemcov_lb, zemcov_auto[:,1], label='Zemcov+14', color='k', marker='.')
+
+        plt.fill_between(zemcov_lb, zemcov_auto[:,1]-zemcov_auto[:,2], zemcov_auto[:,1]+zemcov_auto[:,3], color='k', alpha=0.3)
+
+    if recovered_cls_obscorr is not None:
+        for i, ifield in enumerate(ifield_list):
+            plt.errorbar(lb, prefac*recovered_cls_obscorr[i], yerr=prefac*recovered_dcls_obscorr[i], marker='.', capsize=5, color='C'+str(i), label=ciber_field_dict[ifield])
+
+
+    plt.legend(fontsize=14, loc=4)
+
+    plt.yscale('log')
+    plt.xscale('log')
+    plt.ylim(ylim)
+
+    plt.tick_params(labelsize=16)
+    plt.xlabel('Multipole $\\ell$', fontsize=22)
+    plt.ylabel('$\\ell(\\ell+1)C_{\\ell}/2\\pi$ [nW$^2$ m$^{-4}$ sr$^{-2}$]', fontsize=22)
+    if include_text:
+        if text is None:
+            text = 'After flat field bias correction\nTM'+str(inst)
+        plt.text(2e2, 1e3, text, fontsize=24, color='b')
+    plt.tight_layout()
+
+    if plot:
+        plt.show()
+    if return_fig:
+        return f
+
+def plot_indiv_ps_results_fftest_real(lb, list_of_recovered_cls, field_av_cl=None, list_of_recovered_dcls=None, cls_truth=None, n_skip_last = 3,\
+                                      mean_labels=None, return_fig=True, ciblab = 'CIB + DGL ground truth', \
+                                      truthlab='truth field average', ylim=[1e-3, 1e2], plot_zemcov=True, \
+                                     save=False, field_labels=None):
+    prefac = lb*(lb+1)/(2*np.pi)
+    
+    if mean_labels is None:
+        mean_labels = [None for x in range(len(list_of_recovered_cls))]
+        
+    f = plt.figure(figsize=(8,6))
+    
+    for i, recovered_cls in enumerate(list_of_recovered_cls):
+        
+        if field_labels is None:
+            field_labels = [None for x in range(recovered_cls.shape[0])]
+        
+        
+        for j in range(recovered_cls.shape[0]):
+            plt.plot(lb[:-n_skip_last], np.sqrt(prefac*(recovered_cls[j]))[:-n_skip_last], marker='.', color='C'+str(j+2), label=field_labels[j])
+            
+        mean_powerspec = np.zeros_like(recovered_cls[0])
+        for k in range(recovered_cls.shape[1]):
+            all_cls = recovered_cls[:,k]
+            av_nonneg = np.mean(all_cls[all_cls > 0])
+            mean_powerspec[k] = av_nonneg
+        plt.scatter(lb[:-n_skip_last], np.sqrt(prefac*mean_powerspec)[:-n_skip_last], marker='*', s=50, label=mean_labels[i], color='k', linewidth=3)
+
+    if plot_zemcov:
+        zemcov_1p1_auto = np.loadtxt('/Users/luminatech/Documents/zemcovetal_1.6x1.6.txt', skiprows=8)
+        zemcov_1p1_auto = np.loadtxt('/Users/luminatech/Documents/zemcovetal_1.1x1.1.txt', skiprows=8)
+        zemcov_lb = zemcov_1p1_auto[:,0]
+        plt.plot(zemcov_lb, np.sqrt(zemcov_1p1_auto[:,1]), label='Zemcov+14', color='k', marker='.')
+        plt.fill_between(zemcov_lb, np.sqrt(zemcov_1p1_auto[:,1])-np.sqrt(zemcov_1p1_auto[:,2]), np.sqrt(zemcov_1p1_auto[:,1])+np.sqrt(zemcov_1p1_auto[:,3]), color='k', alpha=0.3)
+
+    if cls_truth is not None:
+        for j in range(cls_truth.shape[0]):
+            label = None
+            if j==0:
+                label = ciblab
+            plt.scatter(lb[:-n_skip_last], np.sqrt(prefac*cls_truth[j])[:-n_skip_last], color='k', alpha=0.3, linewidth=1, linestyle='dashed', marker='.', label=label)
+
+        plt.scatter(lb[:-n_skip_last], np.sqrt(prefac*np.mean(cls_truth, axis=0))[:-n_skip_last], color='k', linewidth=3, label=truthlab)
+       
+    plt.legend(fontsize=14)
+    plt.xscale('log')
+    plt.yscale('log')
+    plt.ylim(ylim)
+    plt.xlabel('Multipole $\\ell$', fontsize=20)
+    plt.ylabel('$\\left(\\frac{\\ell(\\ell+1)}{2\\pi}C_{\\ell}\\right)^{1/2}$ [nW m$^{-2}$ sr$^{-1}$]', fontsize=20)
+    plt.tick_params(labelsize=16)
+    if save:
+        plt.savefig('/Users/luminatech/Downloads/ciber_meeting_071521/ciber_updated_4thflight_powerspectra.png', bbox_inches='tight')
+    plt.show()
+    
+    if return_fig:
+        return f
+    
+
 
 def plot_g1_hist(g1facs, mask=None, return_fig=True, show=True, title=None):
     if mask is not None:
@@ -656,7 +790,7 @@ def plot_dm_powerspec(show=True):
 
 def plot_map(image, figsize=(8,8), title=None, titlefontsize=16, xlabel='x [pix]', ylabel='y [pix]',\
              x0=None, x1=None, y0=None, y1=None, lopct=5, hipct=99,\
-             return_fig=True, show=True, xkcd=False, nanpct=True, cmap='viridis'):
+             return_fig=False, show=True, xkcd=False, nanpct=True, cmap='viridis', noxticks=False, noyticks=False):
     f = plt.figure(figsize=figsize)
     if title is not None:
     
@@ -673,7 +807,12 @@ def plot_map(image, figsize=(8,8), title=None, titlefontsize=16, xlabel='x [pix]
         
     plt.xlabel(xlabel, fontsize=16)
     plt.ylabel(ylabel, fontsize=16)
-    
+
+    if noxticks:
+        plt.xticks([], [])
+    if noyticks:
+        plt.yticks([], [])
+        
     plt.tick_params(labelsize=14)
 
     if show:

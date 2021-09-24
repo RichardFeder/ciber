@@ -2,6 +2,8 @@ import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 from ciber_data_helpers import make_radius_map
+from ciber_source_mask_construction_pipeline import find_alpha_beta
+
 ''' TO DO : CAMB does not compile with Python 3 at the moment -- need to update Fortran compiler '''
 import sys
 
@@ -101,6 +103,7 @@ def mask_from_df_cat(xs=None, ys=None, mags=None, cat_df=None, dimx=1024, dimy=1
     if mag_lim is not None:
 
         if cat_df is not None:
+            # print(cat_df[magstr])
             mag_lim_mask = np.where((cat_df[magstr] < mag_lim)&(cat_df[magstr] > mag_lim_min))[0]
             cat_df = cat_df.iloc[mag_lim_mask]
             xs = np.array(cat_df['x'+str(inst)])
@@ -114,19 +117,18 @@ def mask_from_df_cat(xs=None, ys=None, mags=None, cat_df=None, dimx=1024, dimy=1
 
     mask = np.ones([dimx,dimy], dtype=int)
 
+    if cat_df is not None:
+        mags = cat_df[magstr]
+
+
     if mode=='Zemcov+14':
-        if cat_df is not None:
-            radii = magnitude_to_radius_linear(cat_df[magstr], alpha_m=alpha_m, beta_m=beta_m) # vega to AB factor?
-        elif mags is not None:
-            radii = magnitude_to_radius_linear(mags, alpha_m=alpha_m, beta_m=beta_m)
+        radii = magnitude_to_radius_linear(mags, alpha_m=alpha_m, beta_m=beta_m)
+
 
     elif mode=='Simon':
         AB_mags = np.array(cat_df[magstr]) + Vega_to_AB
-        if cat_df is not None:
-            radii = radius_vs_mag_gaussian(cat_df[magstr], a1=a1, b1=b1, c1=c1)
-        # radii = a1*np.exp(-((cat_df[magstr]-b1)/c1)**2)
-        elif mags is not None:
-            radii = radius_vs_mag_gaussian(mags, a1=a1, b1=b1, c1=c1)
+        radii = radius_vs_mag_gaussian(mags, a1=a1, b1=b1, c1=c1)
+
 
     for i, r in enumerate(radii):
         radmap = make_radius_map(dimx=dimx, dimy=dimy, cenx=xs[i], ceny=ys[i], rc=1., sqrt=True)
@@ -134,22 +136,32 @@ def mask_from_df_cat(xs=None, ys=None, mags=None, cat_df=None, dimx=1024, dimy=1
             
     return mask, radii
 
-def get_masks(star_cat_df, mask_fn_param_combo, intercept_mag_AB, mag_lim_AB, instrument_mask=None, minrad=14., dm=3, dimx=1024, dimy=1024, verbose=True):
+def get_masks(star_cat_df, mask_fn_param_combo, intercept_mag_AB, mag_lim_AB, inst=1, instrument_mask=None, minrad=14., dm=3, dimx=1024, dimy=1024, verbose=True, Vega_to_AB=0., magstr='j_m'):
     
+    '''
+    Computes astronomical source mask for catalog
+
+
+    '''
+
+
     intercept = radius_vs_mag_gaussian(intercept_mag_AB, a1=mask_fn_param_combo[0], b1=mask_fn_param_combo[1],\
                                        c1=mask_fn_param_combo[2])
     
     alpha_m, beta_m = find_alpha_beta(intercept, minrad=minrad, dm=dm, pivot=intercept_mag_AB)
     
     if verbose:
-        print('alpha, beta are ', alpha_m, beta_m)
+        print('param_combo is ', mask_fn_param_combo)
         print('making bright star mask..')
         
-    mask_stars_simon, radii_stars_simon = mask_from_df_cat(cat_df = star_cat_df, mag_lim_min=0,\
-                                                                    mag_lim=intercept_mag_AB, mode='Simon', a1=mask_fn_param_combo[0], b1=mask_fn_param_combo[1], c1=mask_fn_param_combo[2], magstr='j_m', Vega_to_AB=0., dimx=dimx, dimy=dimy)
+    mask_stars_simon, radii_stars_simon = mask_from_df_cat(cat_df = star_cat_df, mag_lim_min=0, inst=inst,\
+                                                                    mag_lim=intercept_mag_AB, mode='Simon', a1=mask_fn_param_combo[0], b1=mask_fn_param_combo[1], c1=mask_fn_param_combo[2], magstr=magstr, Vega_to_AB=Vega_to_AB, dimx=dimx, dimy=dimy)
 
 
-    mask_stars_Z14, radii_stars_Z14 = mask_from_df_cat(cat_df = star_cat_df, mag_lim_min=intercept_mag_AB, mag_lim=mag_lim_AB, mode='Zemcov+14', alpha_m=alpha_m, beta_m=beta_m, magstr='j_m', Vega_to_AB=0., dimx=dimx, dimy=dimy)
+    if verbose:
+        print('alpha, beta are ', alpha_m, beta_m)
+        print('making faint source mask..')
+    mask_stars_Z14, radii_stars_Z14 = mask_from_df_cat(cat_df = star_cat_df, inst=inst, mag_lim_min=intercept_mag_AB, mag_lim=mag_lim_AB, mode='Zemcov+14', alpha_m=alpha_m, beta_m=beta_m, magstr=magstr, Vega_to_AB=Vega_to_AB, dimx=dimx, dimy=dimy)
 
     joint_mask = mask_stars_simon*mask_stars_Z14
     

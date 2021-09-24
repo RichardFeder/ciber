@@ -10,8 +10,7 @@ def counts_from_density_2d(overdensity_fields, Ntot = 200000):
     ''' This function takes in a collection of number density fields and
     for each generates a poisson realization to get galaxy counts in each cell of the field.
     When a Poisson realization is taken and a specific number of galaxies is desired, a small 
-    correction is needed to either remove or add sources. Sources are added/removed with probabilities
-    weighted by the counts map.
+    correction is needed to either remove or add sources. Sources are added/removed with uniform probabilities.
 
     Inputs:
         overdensity_fields (np.array): array of overdensity fields, which are usually obtained with gaussian_random_field_2d() and then exponentiated.
@@ -177,7 +176,7 @@ def generate_count_map_2d(n_samples, ell_min=90., size=128, Ntot=2000000, cl=Non
 
     '''
 
-    realgrf, amp, k = gaussian_random_field_2d(n_samples, size=size, cl=cl, ell_sampled=ell_sampled, ell_min=ell_min/fac,fac=fac)
+    realgrf, amp, k = gaussian_random_field_2d(n_samples, size=size, cl=cl, ell_sampled=ell_sampled, ell_min=ell_min/fac, fac=fac)
     
     cropped_grf = realgrf[:, int(0.5*(realgrf.shape[1]-size)):int(0.5*(realgrf.shape[1]+size)), int(0.5*(realgrf.shape[2]-size)):int(0.5*(realgrf.shape[2]+size))]
     # realgrf = realgrf[:,int(0.5*size):int(1.5*size),int(0.5*size):int(1.5*size)]

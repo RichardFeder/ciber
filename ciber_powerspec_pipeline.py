@@ -17,6 +17,8 @@ import os
 from cross_spectrum_analysis import *
 from mkk_parallel import *
 from flat_field_est import *
+from masking_utils import *
+from powerspec_utils import *
 
 ''' 
 
@@ -40,23 +42,6 @@ def verbprint(verbose, text):
 	if verbose:
 		print(text)
 
-def compute_knox_errors(lbins, C_ell, N_ell, delta_ell, fsky=None, B_ell=None, snr=False):
-    
-    knox_errors = np.sqrt(2./((2*lbins+1)*delta_ell))
-    if fsky is not None:
-        knox_errors /= np.sqrt(fsky)
-
-    beam_fac = 1.
-    if B_ell is not None:
-        beam_fac = 1./B_ell**2
-        
-    knox_errors *= (C_ell + N_ell*beam_fac)
-
-    if snr:
-        snr = C_ell / knox_errors
-        return snr
-
-    return knox_errors
 
 class CIBER_PS_pipeline():
     
@@ -75,8 +60,21 @@ class CIBER_PS_pipeline():
         self.Mkk_obj = Mkk_bare(dimx=dimx, dimy=dimy, ell_min=180.*(1024./dimx), nbins=n_ps_bin)
         self.Mkk_obj.precompute_mkk_quantities(precompute_all=True)
         self.B_ell = None
-        self.cal_facs = dict({1:-170.3608, 2:-57.2057}) # multiplying by cal_facs converts from ADU/fr to nW m^-2 sr^-1
-        self.g1_facs = dict({1:-1.5459, 2:-1.3181}) # multiplying by g1 converts from ADU/fr to e-/s
+        
+        # self.cal_facs = dict({1:-311.35, 2:-121.09}) # ytc values
+        # self.cal_facs = dict({1:-170.3608, 2:-57.2057}) # multiplying by cal_facs converts from ADU/fr to nW m^-2 sr^-1
+        # TODO update these G1 values 
+        # self.g2_facs = dict({1: 251.6, 2: 251.6}) # need to update TM2 value
+
+
+        # these are the latest and greatest calibration factors as of 9/20/2021
+        self.g2_facs = dict({1:110., 2:44.2})
+        self.g1_facs = dict({1:-2.67, 2:-3.04}) # these are updated values derived from flight data, similar to those esimated with focus data
+        self.cal_facs = dict({1:self.g1_facs[1]*self.g2_facs[1], 2:self.g1_facs[2]*self.g2_facs[2]}) # updated 
+
+        self.inst_to_band = dict({1:'J', 2:'H'})
+
+        # self.g1_facs = dict({1:-1.5459, 2:-1.3181}) # multiplying by g1 converts from ADU/fr to e-/s NOTE: these values are old?
         self.dimx, self.dimy = dimx, dimy
         self.n_ps_bin = n_ps_bin
         self.pixsize = 7. # arcseconds
@@ -85,12 +83,14 @@ class CIBER_PS_pipeline():
         self.photFactor = np.sqrt(1.2)
         self.Mkk_obj.delta_ell = self.Mkk_obj.binl[1:]-self.Mkk_obj.binl[:-1]
         self.fsky = self.dimx*self.dimy*self.Mkk_obj.arcsec_pp_to_radian**2 / (4*np.pi)
-        self.field_nfrs = dict({4:24, 5:9, 6:29, 7:28, 8:25})
+        self.field_nfrs = dict({4:24, 5:10, 6:29, 7:28, 8:25}) # unique to fourth flight CIBER dataset, elat30 previously noted as 9 frames but Chi says it is 10 (9/17/21)
         self.ciber_field_dict = dict({4:'elat10', 5:'elat30',6:'BootesB', 7:'BootesA', 8:'SWIRE'})
         self.field_exposure = 50. # seconds
         self.frame_period = 1.78 # seconds
         self.nfr = int(self.field_exposure/self.frame_period)
         self.frame_rate = 1./self.frame_period
+        self.powerspec_dat_path = self.base_path+'data/powerspec_dat/'
+
       
     '''
         Repeated arguments
@@ -141,6 +141,8 @@ class CIBER_PS_pipeline():
         snmaps = None
         
         if read_noise:
+
+            print('min/max of readnoise model in noise_model_realization ', np.min(noise_model), np.max(noise_model))
             if chisq:
                 chi2_realiz = (np.random.chisquare(2., size=maplist_split_shape)/div_fac)**2
 
@@ -176,8 +178,9 @@ class CIBER_PS_pipeline():
             if len(maplist_split_shape)==3:
                 nsims = maplist_split_shape[0]
             
-            snmaps = self.compute_shot_noise_maps(inst, image, nsims, shot_sigma_sb=shot_sigma_sb, nfr=nfr, frame_rate=frame_rate)
+            snmaps = self.compute_shot_noise_maps(inst, image, nsims, shot_sigma_sb=shot_sigma_sb) # if not providing shot_sigma_sb, need  to provide nfr/frame_rate
 
+        print('rn maps at this point has min/maxof ', np.min(rnmaps), np.max(rnmaps)) # debug
         if adu_to_sb and read_noise:
             rnmaps *= self.cal_facs[inst]/self.arcsec_pp_to_radian
 
@@ -188,7 +191,7 @@ class CIBER_PS_pipeline():
         return rnmaps, snmaps
     
     
-    def compute_FW_from_noise_sim(self, ifield=None, inst=None, mask=None, apply_mask=True, noise_model=None, noise_model_fpath=None, verbose=False, inplace=True, \
+    def compute_FW_from_noise_sim(self, ifield=None, field_nfr=None, inst=None, mask=None, apply_mask=True, noise_model=None, noise_model_fpath=None, verbose=False, inplace=True, \
                                  use_pyfftw = True, nsims = 50, n_split=5, show=False, read_noise=True, photon_noise=True, shot_sigma_sb=None, image=None, stdpower=1, ff_estimate=None):
         
         verbprint(verbose, 'Computing fourier weight image from noise sims for TM'+str(inst)+', field '+str(ifield)+'..')
@@ -197,10 +200,13 @@ class CIBER_PS_pipeline():
         if image is None:
             image = self.image
 
-        if self.field_nfrs is not None and ifield is not None:
-            field_nfr = self.field_nfrs[ifield]
-        else:
-            field_nfr = self.nfr
+        if field_nfr is None:
+            if self.field_nfrs is not None and ifield is not None:
+                field_nfr = self.field_nfrs[ifield]
+            else:
+                field_nfr = self.nfr
+
+        verbprint(verbose, 'Field nfr used here for ifield '+str(ifield)+', inst '+str(inst)+' is '+str(field_nfr))
 
         if noise_model is None:
             if noise_model_fpath is None:
@@ -218,6 +224,7 @@ class CIBER_PS_pipeline():
 
             mask = self.strmask*self.maskInst_clean
 
+        # compute the pixel-wise shot noise estimate given the image (which gets converted to e-/s) and the number of frames used in the integration
         if photon_noise and shot_sigma_sb is None:
             print('photon noise set to True but no shot noise sigma map provided')
             if image is not None:
@@ -237,6 +244,9 @@ class CIBER_PS_pipeline():
             plt.show()
         
         cl2d_all = np.zeros((nsims, self.dimx, self.dimy))
+
+        if ff_estimate is None:
+            ff_estimate = np.ones((self.dimx, self.dimy))
         
         if use_pyfftw:
             
@@ -278,19 +288,14 @@ class CIBER_PS_pipeline():
 
                     # apply flat field
                     if ff_estimate is not None:
-                        if j==0:
-                            print('applying flat field to sim noise map')
-                            print('mean and variance of ff estimate are ', np.mean(ff_estimate), np.std(ff_estimate))
-                            plot_map(simmap, title='simmap')
-                            plot_map(simmap - (simmap/ff_estimate), title='difference')
+                        # should this be a multiplication? should this actually be for only photon noise? TODO
                         simmap /= ff_estimate
-
                     # multiply simulated noise map by mask
                     if apply_mask and mask is not None:
                         simmap *= mask
                                                 
                     l2d, cl2drn = get_power_spectrum_2d(simmap-np.mean(simmap))
-                    cl2d_all[i*nsims//n_split + j, :,:] = cl2drn/self.cal_facs[inst]**2
+                    cl2d_all[i*nsims//n_split + j, :,:] = cl2drn/self.cal_facs[inst]**2 # puts masked noise power spectrum in units of (ADU/fr)^2
                 
         
         fw_std = np.std(cl2d_all, axis=0) # returns std within each 2d fourier mode
@@ -369,7 +374,13 @@ class CIBER_PS_pipeline():
             
         if transpose:
             noise_Cl2D = noise_Cl2D.transpose()
-        
+
+        # remove any NaNs/infs from power spectrum
+        noise_Cl2D[np.isnan(noise_Cl2D)] = 0.
+        noise_Cl2D[np.isinf(noise_Cl2D)] = 0.
+        # set negative elements to zero
+        noise_Cl2D[noise_Cl2D < 0] = 0.
+
         if inplace:
             if mode=='unmasked':
                 self.unmasked_noise_Cl2D = noise_Cl2D
@@ -562,7 +573,7 @@ class CIBER_PS_pipeline():
         else:
             return mkkfile['Mkk'], mkkfile['inv_Mkk']
         
-    def load_mask(self, ifield, inst, masktype, mask_fpath=None, verbose=False, inplace=True):
+    def load_mask(self, ifield, inst, masktype=None, mask_fpath=None, verbose=False, inplace=True):
         ''' Loads mask from data release '''
         
         verbprint(verbose, 'Loading mask image from TM'+str(inst)+', field '+str(ifield))
@@ -610,10 +621,35 @@ class CIBER_PS_pipeline():
             self.psf_template = psf_template
         else:
             return psf_template
+
+
+    def load_bl(self, ifield, inst, inplace=True, verbose=False):
+
+        verbprint(verbose, 'Loading Bl estimates for TM'+str(inst)+', field '+str(ifield)+'..')
+
+        B_ell_path = self.powerspec_dat_path+'B_ells/beam_correction_ifield'+str(ifield)+'_inst'+str(inst)+'.npz'
+        
+        beamdat = np.load(B_ell_path)
+
+        # make sure multipole bins in saved file match those desired
+        if not all(self.Mkk_obj.midbin_ell==beamdat['lb']):
+            print('loaded multipole bin centers do not match bins required')
+            print(beamdat['lb'])
+            print(self.Mkk_obj.midbin_ell)
+            if not inplace:
+                return None
+        else:
+            B_ell = beamdat['mean_bl']
+        
+            if inplace:
+                self.B_ell = B_ell
+                print('self B_ell is ', self.B_ell)
+            else:
+                return B_ell
         
     def load_data_products(self, ifield, inst, load_all=True, flight_image=False, dark_current=False, psf=False, \
-                           maskInst_clean=False, strmask=False, \
-                           FW_image=False, FF_image=False, noise_Cl2D=False, verbose=True, ifield_psf=None):
+                           maskInst_clean=False, strmask=False, mkk_mats=False, mkk_fpath=None, \
+                           FW_image=False, FF_image=False, noise_Cl2D=False, beam_correction=False, verbose=True, ifield_psf=None):
         
         if flight_image or load_all:
             self.load_flight_image(ifield, inst, verbose=verbose)
@@ -622,11 +658,16 @@ class CIBER_PS_pipeline():
         if noise_Cl2D or load_all:
             self.load_noise_Cl2D(ifield, inst, verbose=verbose)
         
+        if beam_correction or load_all:
+            self.load_bl(ifield, inst, verbose=verbose)
+
+        if mkk_mats or load_all:
+            self.load_mkk_mats(ifield, inst, mkk_fpath=mkk_fpath)
+
         if psf or load_all:
             if ifield_psf is None:
                 ifield_psf = ifield
-            self.load_psf(ifield_psf, inst, verbose=verbose)
-
+            self.beta, self.rc, self.norm = load_psf_params_dict(inst, ifield=ifield, verbose=verbose)
         if maskInst_clean or load_all:
             self.load_mask(ifield, inst, 'maskInst_clean', verbose=verbose)
         if strmask or load_all:
@@ -660,9 +701,9 @@ class CIBER_PS_pipeline():
             frame_rate = self.frame_rate
         if verbose:
             print('nfr, frame_rate:', nfr, frame_rate)
+        
         flight_signal = image*self.g1_facs[inst]/self.cal_facs[inst]
         shot_sigma = np.sqrt((np.abs(flight_signal)/(nfr/frame_rate))*((nfr**2+1.)/(nfr**2 - 1.)))
-
         shot_sigma_sb = shot_sigma*self.cal_facs[inst]/self.g1_facs[inst]
 
         return shot_sigma_sb
@@ -692,6 +733,74 @@ class CIBER_PS_pipeline():
             return Cl_noise
         
         
+    def compute_beam_correction_posts(self, ifield, inst, nbins=25, n_fine_bin=10, \
+                                         psf_postage_stamps=None, beta=None, rc=None, norm=None,\
+                                        tail_path='data/psf_model_dict_updated_081121_ciber.npz', \
+                                        ndim=1):
+    
+        ''' Computes an average beam correction <B_ell> as an average over PSF templates uniformly sampled across the pixel function.
+
+        Inputs
+        ------
+        
+        ifield : type 'int'. CIBER field index (4, 5, 6, 7, 8 for science fields)
+        band : type 'int'. CIBER band index (inst variable = band + 1)
+        nbins (optional): type 'int'. Number of bins in power spectrum. Default = 25. 
+        psf_postage_stamps (optional) : 'np.array' of floats with size (fac_upsample, fac_upsample, postage_stamp_dimx, postage_stamp_dimy).
+                                        Grid of precomputed PSF templates.
+
+        beta, rc, norm (optional): type 'float'. Parameters of PSF beta model. Default is None for all three.
+
+        tail_path (optional): file path pointing to PSF beta model parameter dictionary file. 
+                            Default is 'data/psf_model_dict_updated_081121_ciber.npz'.
+
+        ndim (optional, default=1): type 'int'. Specifies dimension of power spectrum returned (1- or 2-d). Sometimes the 2D Bl is useful 
+
+
+        Returns
+        -------
+
+        lb : 'np.array' of type 'float'. Multipole bins of power spectrum
+        mean_bl : 'np.array' of size 'nbins'. Beam correction averaged over all PSF postage stamps.
+        bls : 'np.array' of size (fac_upsample**2, nbins). List of beam corrections corresponding to individual PSF postage stamps.
+
+        '''
+        if psf_postage_stamps is None:
+            if beta is None:
+                beta, rc, norm = load_psf_params_dict(inst, ifield=ifield, tail_path=self.base_path+tail_path)
+            psf_postage_stamps, subpixel_dists = generate_psf_template_bank(beta, rc, norm, n_fine_bin=n_fine_bin)
+        
+        bls = []
+        if ndim==2:
+            sum_bl2d = np.zeros((self.dimx, self.dimy))
+
+        psf_stamp_dim = psf_postage_stamps[0,0].shape[0]
+        
+        psf_large = np.zeros((self.dimx, self.dimy))
+
+        for p in range(psf_postage_stamps.shape[0]):
+            for q in range(psf_postage_stamps.shape[1]):
+     
+                # place postage stamp in middle of image
+                psf_large[self.dimx//2-psf_stamp_dim:self.dimx//2, self.dimy//2-psf_stamp_dim:self.dimy//2] = psf_postage_stamps[p,q]
+
+                if ndim==2:
+                    
+                    l2d, bl2d = get_power_spectrum_2d(psf_large, pixsize=self.Mkk_obj.pixsize)
+                    sum_bl2d += bl2d
+
+                lb, clb, clberr = get_power_spec(psf_large - np.mean(psf_large), lbinedges=self.Mkk_obj.binl, lbins=self.Mkk_obj.midbin_ell)    
+                bls.append(np.sqrt(clb/np.max(clb)))
+
+        mean_bl = np.mean(bls, axis=0)
+        bls = np.array(bls)
+
+        if ndim==2:
+            mean_bl2d = sum_bl2d/n_fine_bin**2
+            return lb, mean_bl, bls, mean_bl2d
+            
+        return lb, mean_bl, bls
+
     def compute_beam_correction(self, psf=None, verbose=False, inplace=True):
         
         verbprint(verbose, 'Computing beam correction..')
@@ -884,7 +993,7 @@ def monte_carlo_test_vs_Jlim(ifield, inst, dimx, dimy, Jmags, model_image, mkk_f
     all_cl_proc_vs_Jlim, fourier_weight_list, mean_cl2ds, masked_N_ells = [], [], [], []
     
     noise_model = np.load(noise_fpath)['noise_model']
-    clnoise = cbps.compute_noise_power_spectrum(noise_model, inplace=False, apply_FW=False)
+    clnoise = cbps.compute_noise_power_spectrum(inst, noise_model, inplace=False, apply_FW=False)
 
     for jidx, Jmax in enumerate(Jmags):
         
@@ -906,7 +1015,7 @@ def monte_carlo_test_vs_Jlim(ifield, inst, dimx, dimy, Jmags, model_image, mkk_f
         fourier_weight_list.append(fourier_weights)
         mean_cl2ds.append(mean_cl2d)
 
-        cbps.compute_noise_power_spectrum(mean_cl2d, inplace=True, apply_FW=apply_FW, weights=fourier_weights)
+        cbps.compute_noise_power_spectrum(inst, mean_cl2d, inplace=True, apply_FW=apply_FW, weights=fourier_weights)
 
         masked_N_ells.append(cbps.N_ell)
         
@@ -956,7 +1065,7 @@ def monte_carlo_test_vs_mask_params(ifield, inst, dimx, dimy, param_combo_list, 
     all_cl_proc_vs_a1, fourier_weight_list, mean_cl2ds, masked_N_ells = [], [], [], []
     
     noise_model = np.load(noise_fpath)['noise_model']
-    clnoise = cbps.compute_noise_power_spectrum(noise_model, inplace=False, apply_FW=False)
+    clnoise = cbps.compute_noise_power_spectrum(inst, noise_model, inplace=False, apply_FW=False)
 
     for p, param_combo in enumerate(param_combo_list):
         
@@ -994,7 +1103,7 @@ def monte_carlo_test_vs_mask_params(ifield, inst, dimx, dimy, param_combo_list, 
         fourier_weight_list.append(fourier_weights)
         mean_cl2ds.append(mean_cl2d)
 
-        cbps.compute_noise_power_spectrum(mean_cl2d, inplace=True, apply_FW=apply_FW, weights=fourier_weights)
+        cbps.compute_noise_power_spectrum(inst, mean_cl2d, inplace=True, apply_FW=apply_FW, weights=fourier_weights)
 
         masked_N_ells.append(cbps.N_ell)
         
@@ -1031,9 +1140,9 @@ def monte_carlo_test_vs_mask_params(ifield, inst, dimx, dimy, param_combo_list, 
 def generate_synthetic_mock_test_set(test_set_fpath, trilegal_sim_idx=1, inst=1, cmock=None, pcat_model_eval=False, cbps=None, n_ps_bin=25, ciberdir='/Users/luminatech/Documents/ciber2/ciber/',\
                                      dimx=1024, dimy=1024, ifield_list=None, include_diffuse_comp=True, diffuse_realizations=None, power_law_idx=-4.5, scale_fac=2e-1, bkg_val=250.,\
                                      apply_flat_field = True, include_inst_noise=True, include_photon_noise=True, ff_truth=None, ff_truth_fpath='dr40030_TM2_200613_p2.pkl',\
-                                     apply_masking=True, mask_galaxies=False, mask_stars=True, intercept_mag=16.0, a1=220., b1=3.632, c1=8.52, Vega_to_AB=0.91, mag_lim_Vega = 18.0, \
+                                     apply_masking=True, mask_galaxies=False, mask_stars=True, intercept_mag=16.0, a1=220., b1=3.632, c1=8.52, param_combo=None, Vega_to_AB=0.91, mag_lim_Vega = 18.0, \
                                      n_split_mkk=1, verbose=False, \
-                                    show_plots=True, ifield_psf=None, use_field_nfrs=True, mock_trilegal_path=None, use_trilegal_bl=False, B_ells=None):
+                                    show_plots=True, ifield_psf=None, use_field_nfrs=True, mock_trilegal_path=None, load_bls=True, compute_bls=False, B_ells=None, dx_mcat=0., dy_mcat=0.):
 
     if cmock is None:
         cmock = ciber_mock(ciberdir='/Users/luminatech/Documents/ciber2/ciber/', pcat_model_eval=pcat_model_eval)
@@ -1043,17 +1152,33 @@ def generate_synthetic_mock_test_set(test_set_fpath, trilegal_sim_idx=1, inst=1,
         if not use_field_nfrs:
             cbps.field_nfrs = None
 
-
-    mock_cib_ims = np.load(test_set_fpath)['full_maps']
-
-    midxdict = dict({'x':0, 'y':1, 'redshift':2, 'm_app':3, 'M_abs':4, 'Mh':5, 'Rvir':6})
-    
     if ifield_list is None:
         ifield_list = [4, 5, 6, 7, 8]
     nfields = len(ifield_list)
+
+
+    if 'fits' in test_set_fpath:
+        mock_cib_file = fits.open(test_set_fpath)
+        mock_cib_ims = np.array([mock_cib_file['map'+str(ifield)].data for ifield in ifield_list])
+    elif 'npz' in test_set_fpath:
+        mock_cib_ims = np.load(test_set_fpath)['full_maps']
+    else:
+        print('unrecognized file type for '+str(test_set_fpath))
+        return None
+
+    midxdict = dict({'x':0, 'y':1, 'redshift':2, 'm_app':3, 'M_abs':4, 'Mh':5, 'Rvir':6})
     
-    if not type(bkg_val)==list:
+
+    # if no mean levels provided, use ZL mean levels from file in kelsall folder
+    if bkg_val is None:
+        bkg_val_dict = np.load(cbps.data_path+'kelsall/mean_zl_level_kelsall.npz', allow_pickle=True)['mean_zl_level'][inst]
+        bkg_val = [bkg_val_dict[cmock.ciber_field_dict[ifield]] for ifield in ifield_list]
+    elif not type(bkg_val)==list:
         bkg_val = [bkg_val for x in range(len(ifield_list))]
+
+    print('bkg vals are ', bkg_val)
+
+
     
     observed_ims, total_signals, \
         noise_models, shot_sigma_sb_maps, rnmaps, joint_masks, diff_realizations = instantiate_dat_arrays_fftest(cbps.dimx, cbps.dimy, nfields)
@@ -1080,33 +1205,40 @@ def generate_synthetic_mock_test_set(test_set_fpath, trilegal_sim_idx=1, inst=1,
         
         if ifield_psf is None:
             ifield_psf = ifield
+        
         cbps.load_data_products(ifield, inst, verbose=verbose, ifield_psf=ifield_psf)
         cmock.get_psf(ifield=ifield_psf)
-
-        if B_ells is None:
-            if use_trilegal_bl:
-                # use trilegal mock image to estimate Bl
-                print('computing Bl from trilegal')
-            else:
-                print('no beam correction provided, computing from cmock.psf_full..')
-                B_ell, B_ell_std = cbps.compute_beam_correction(psf=cmock.psf_full, inplace=False)
+    
+        if compute_bls:
+            lb, B_ell, B_ell_list = cbps.compute_beam_correction_posts(ifield, inst, nbins=cbps.n_ps_bin, n_fine_bin=10, tail_path='data/psf_model_dict_updated_081121_ciber.npz')
             print('B_ell is ', B_ell)
+            print('B_ell_list has length', len(B_ell_list))
             B_ells_new[imidx] = B_ell
-        else:
+        elif B_ells is not None:
             B_ell = B_ells[imidx]
+        else:
+            B_ell = cbps.B_ell
         
         newnoisefpath = 'data/fluctuation_data/dr20210120/TM'+str(inst)+'/readCl2D/field'+str(ifield)+'_readCl2D.fits'
         if include_photon_noise or include_inst_noise:
             noise_model = cbps.load_noise_Cl2D(ifield, inst, noise_fpath=newnoisefpath, inplace=False, transpose=False)
+            print('min/max of noise model are ', np.min(noise_model), np.max(noise_model))
             noise_models[imidx] = noise_model
         instrument_mask = cbps.maskInst_clean
         
         if mock_trilegal_path is None:
-            mock_trilegal_path = 'data/mock_trilegal_realizations_051321/'+field_name_trilegal+'/mock_trilegal_'+field_name_trilegal+'_idx'+str(trilegal_sim_idx)+'_051321.npz'
-        mock_trilegal = np.load(mock_trilegal_path)
-        mock_trilegal_im = mock_trilegal['srcmaps'][inst-1,:,:]
-        print('mock_trilegal_im has shape ', mock_trilegal_im.shape)
-        mock_trilegal_cat = mock_trilegal['cat']
+            mock_trilegal_path = 'data/mock_trilegal_realizations_081621/'+field_name_trilegal+'/mock_trilegal_'+field_name_trilegal+'_idx'+str(trilegal_sim_idx+1)+'_081621.npz'
+            # mock_trilegal_path = 'data/mock_trilegal_realizations_051321/'+field_name_trilegal+'/mock_trilegal_'+field_name_trilegal+'_idx'+str(trilegal_sim_idx)+'_051321.npz'
+
+        if '.npz' in mock_trilegal_path:
+            mock_trilegal = np.load(mock_trilegal_path)
+            mock_trilegal_im = mock_trilegal['srcmaps'][inst-1,:,:]
+            print('mock_trilegal_im has shape ', mock_trilegal_im.shape)
+            mock_trilegal_cat = mock_trilegal['cat']
+        elif '.fits' in mock_trilegal_path:
+            print('loading trilegal fits file..')
+            mock_trilegal = fits.open(mock_trilegal_path)
+            mock_trilegal_im = mock_trilegal['trilegal_'+str(cbps.inst_to_band[inst])+'_'+str(ifield)].data.transpose()
         
         #  ------------- CIB realizations ----------------
 
@@ -1114,7 +1246,7 @@ def generate_synthetic_mock_test_set(test_set_fpath, trilegal_sim_idx=1, inst=1,
         cls_cib[imidx] = cl_cib/B_ell**2
     
     
-        # ------------- diffuse zodi realization -----------------------
+        # ------------- diffuse dgl realization -----------------------
         
         if include_diffuse_comp:
             if diffuse_realizations is not None:
@@ -1123,9 +1255,6 @@ def generate_synthetic_mock_test_set(test_set_fpath, trilegal_sim_idx=1, inst=1,
                 cl_dgl_iras = np.load('data/fluctuation_data/TM'+str(inst)+'/dgl_sim/dgl_from_iris_model_TM'+str(inst)+'_'+field_name_trilegal+'.npz')['cl']
                 cl_pivot_fac = cl_dgl_iras[0]*cbps.dimx*cbps.dimy 
                 _, _, diff_realization = generate_diffuse_realization_new(cbps.dimx, cbps.dimy, power_law_idx=-3.0, scale_fac=cl_pivot_fac)
-
-                # TO DO convolve diffuse realization by PSF..
-                # _, _, diff_realization = generate_diffuse_realization(cbps.dimx, cbps.dimy, power_law_idx=-4.5, scale_fac=2e-1)
         
             # new bare_bones
             lbins, cl_diffuse, _ = cbps.compute_processed_power_spectrum(inst, image=diff_realization, bare_bones=True, convert_adufr_sb=False, verbose=verbose)
@@ -1145,7 +1274,6 @@ def generate_synthetic_mock_test_set(test_set_fpath, trilegal_sim_idx=1, inst=1,
 
         gt_sig = mock_cib_ims[imidx]+diff_realizations[imidx]
         lbins, cl_gt, _ = cbps.compute_processed_power_spectrum(inst, image=gt_sig-np.mean(gt_sig), bare_bones=True, convert_adufr_sb=False, verbose=False)
-        
         cls_gt[imidx] = cl_gt/B_ell**2
         
         #  ----------------- generate read and shot noise realizations -------------------
@@ -1157,7 +1285,7 @@ def generate_synthetic_mock_test_set(test_set_fpath, trilegal_sim_idx=1, inst=1,
             
         if include_photon_noise or include_inst_noise:
             rnmap, snmap = cbps.noise_model_realization(inst, (cbps.dimx, cbps.dimy), noise_models[imidx], read_noise=include_inst_noise, shot_sigma_sb=shot_sigma_sb, image=total_signal)
-
+            
         # ------------------- add noise to signal and multiply by the flat field to get "observed" images -----------------------
 
         if apply_flat_field:
@@ -1184,8 +1312,6 @@ def generate_synthetic_mock_test_set(test_set_fpath, trilegal_sim_idx=1, inst=1,
         if include_inst_noise:
             rnmaps[imidx] = rnmap
 
-        # post_ff_image = sum_mock_noise
-
         observed_ims[imidx] = sum_mock_noise
         
         if show_plots:
@@ -1210,7 +1336,10 @@ def generate_synthetic_mock_test_set(test_set_fpath, trilegal_sim_idx=1, inst=1,
 
         if apply_masking:
 
-            dx_mcat, dy_mcat = 2.5, 1.0 # 0.0, 0.0
+            if param_combo is None:
+                param_combo = [a1, b1, c1]
+
+            # dx_mcat, dy_mcat = 2.5, 1.0 # 0.0, 0.0
             
             if mask_galaxies:
                 gal_cat = {'j_m': mock_cat[:,midxdict['m_app']],'x'+str(inst): mock_cat[:,midxdict['x']]+dx_mcat, 'y'+str(inst): mock_cat[:,midxdict['y']]+dy_mcat}
@@ -1223,26 +1352,38 @@ def generate_synthetic_mock_test_set(test_set_fpath, trilegal_sim_idx=1, inst=1,
 
             # --------------- mask construction --------------------
 
-            joint_mask, radii_stars_simon, radii_stars_Z14 = get_masks(star_cat_df, param_combo, intercept_mag_AB, mag_lim_AB, instrument_mask=instrument_mask, dimx=cbps.dimx, dimy=cbps.dimy, verbose=True)
+            joint_mask, radii_stars_simon, radii_stars_Z14 = get_masks(star_cat_df, param_combo, intercept_mag_AB, mag_lim_AB, inst=inst, instrument_mask=instrument_mask, dimx=cbps.dimx, dimy=cbps.dimy, verbose=True)
             joint_masks[imidx] = joint_mask 
 
             if show_plots:
-                plot_map(post_ff_image*joint_mask, title='postff observed image with full mask')
-                plot_srcmap_mask(joint_mask, 'joint mask', len(radii_stars_simon)+len(radii_stars_Z14))
+                plot_srcmap_mask(joint_masks[imidx], 'joint mask', len(radii_stars_simon)+len(radii_stars_Z14))
+                plot_map(observed_ims[imidx]*joint_masks[imidx], title='postff observed image with full mask')
 
-    if B_ells is None:
+    if B_ells is None and compute_bls:
         B_ells = B_ells_new
 
-    return joint_masks, observed_ims, total_signals, rnmaps, shot_sigma_sb_maps, noise_models, cls_gt, cls_diffuse, cls_cib, cls_postff, B_ells, ff_truth, diff_realizations
+    return joint_masks, observed_ims, total_signals, rnmaps, shot_sigma_sb_maps, noise_models, cls_gt, cls_diffuse, cls_cib, cls_postff, B_ells, ff_truth, diff_realizations, ifield_list
         
     
     
     
-def calculate_powerspec_quantities(cbps, observed_ims, joint_masks, shot_sigma_sb_maps, noise_models, include_inst_noise=False, include_photon_noise=True, inst=1, ff_truth=None, use_true_ff=False, inv_var_weight=True, infill_smooth_scale=3.,\
-                                  ff_stack_min=2, ff_min=0.2, apply_masking=True, inverse_Mkks=None, n_mkk_sims=100, n_split_mkk=2, \
-                                           apply_FW = True, noise_debias=True, mkk_correct=True, beam_correct=True, n_FW_sims = 500, n_FW_split = 10, B_ells=None, show_plots=True, verbose=False, convert_adufr_sb=False):
+def calculate_powerspec_quantities(cbps, observed_ims, joint_masks, shot_sigma_sb_maps, noise_models, ifield_list, include_inst_noise=False, include_photon_noise=True, inst=1, ff_estimates=None, ff_truth=None, use_true_ff=False, inv_var_weight=True, infill_smooth_scale=3.,\
+                                  ff_stack_min=2, ff_min=0.2, apply_masking=True, inverse_Mkks=None, mkk_fpath=None, n_mkk_sims=100, n_split_mkk=2, \
+                                           apply_FW = True, noise_debias=True, mkk_correct=True, beam_correct=True, load_bl=False, n_FW_sims = 500, n_FW_split = 10, B_ells=None, show_plots=True, verbose=False, convert_adufr_sb=False, \
+                                           stdpower=1):
     
-    ff_estimates = np.zeros_like(joint_masks)
+    compute_ff = False
+    if ff_estimates is None:
+        print('No ff estimates provided, will compute here using stacking estimator')
+        ff_estimates = np.zeros_like(joint_masks)
+        compute_ff = True
+
+
+    ff_mask = None
+
+
+    print('compute ff is ', compute_ff)
+    # ff_estimates = np.zeros_like(joint_masks)
 
     nfields = len(observed_ims)
     
@@ -1256,18 +1397,15 @@ def calculate_powerspec_quantities(cbps, observed_ims, joint_masks, shot_sigma_s
     masked_Nls_noff = np.zeros((nfields, cbps.n_ps_bin))
     masked_images = np.zeros((nfields, cbps.dimx, cbps.dimy))
     cls_intermediate = []
-           
-    if B_ells is None and beam_correct:
-        print('need B_ell or need beam_correct=False, cant have it both ways!')
-        return
-    
-    if B_ells is None:
-        B_ells = np.ones((nfields, cbps.n_ps_bin))
+
+    print('cbps g1 facs are ', cbps.g1_facs)
+    print('cbps g2 facs are ', cbps.g2_facs)
     
     for imidx, obs in enumerate(observed_ims):
-        
-        if not use_true_ff:
-            
+
+        if use_true_ff:
+            ff_estimates[imidx] = ff_truth
+        elif compute_ff:
             stack_obs = list(observed_ims.copy())
             stack_mask = list(joint_masks.copy().astype(np.bool))
 
@@ -1295,30 +1433,35 @@ def calculate_powerspec_quantities(cbps, observed_ims, joint_masks, shot_sigma_s
                 ff_truth_masked[joint_masks[imidx]==0] = 1.0
                 ff_truth_masked[ff_mask==0] = 1.0
             
-        else:
-            ff_estimates[imidx] = ff_truth
+        # else:
+        #     ff_estimates[imidx] = ff_truth
             
-        if show_plots and not use_true_ff and ff_truth is not None:
-            ff_f = plot_map(ff_estimate, title='FF estimate', nanpct=True)
+        if show_plots:
+            ff_f = plot_map(ff_estimates[imidx], title='FF estimate', nanpct=True)
             if ff_truth is not None:
                 ff_resid = plot_map(ff_truth_masked, title='FF true', nanpct=True)
                 kernel = Gaussian2DKernel(infill_smooth_scale)
-                ff_resid = plot_map(convolve(ff_truth_masked-ff_estimate, kernel), title='FF true - FF estimate', nanpct=True, cmap='bwr')
+                ff_resid = plot_map(convolve(ff_truth_masked-ff_estimates[imidx], kernel), title='FF true - FF estimate', nanpct=True, cmap='bwr')
 
         if apply_masking:
                         
             if show_plots:
                 plot_srcmap_mask(joint_masks[imidx], 'joint mask', 0.)
-                plot_srcmap_mask(np.array(ff_mask).astype(np.int), 'ff_mask', 0.)
-                        
-            joint_mask_with_ff = joint_masks[imidx]
+                if ff_mask is not None:
+                    plot_srcmap_mask(np.array(ff_mask).astype(np.int), 'ff_mask', 0.)
+                    plot_srcmap_mask(joint_masks[imidx]*np.array(ff_mask).astype(np.int), 'joint mask x ff_mask', 0.)
+
+            joint_mask_with_ff = joint_masks[imidx].copy()
             
-            if not use_true_ff:
+            print('before, joint mask frac is ', float(np.sum(joint_masks[imidx]))/float(cbps.dimx*cbps.dimy))
+
+            if not use_true_ff and ff_mask is not None:
+                print('multiplying joint mask by ff mask')
                 joint_mask_with_ff *= ff_mask
                 
-            print('before, joint mask frac is ', float(np.sum(joint_masks[imidx]))/float(cbps.dimx*cbps.dimy))
             print('after ff_mask and ff_inf_mask, joint mask frac is ', float(np.sum(joint_mask_with_ff))/float(cbps.dimx*cbps.dimy))
             print('computing Mkk matrices..')
+
             if compute_mkk:
                 av_Mkk = cbps.Mkk_obj.get_mkk_sim(joint_mask_with_ff, n_mkk_sims, n_split=n_split_mkk, store_Mkks=False)
 
@@ -1327,7 +1470,14 @@ def calculate_powerspec_quantities(cbps, observed_ims, joint_masks, shot_sigma_s
 
                 plot_mkk_matrix(inverse_Mkk, inverse=True, symlogscale=True)
         
-        
+            else:
+                if inverse_Mkks is not None:
+                    inv_Mkk = inverse_Mkks[imidx]
+                else:
+                    cbps.load_data_products(ifield_list[imidx], inst, load_all=False, load_mkk_mats=True, mkk_fpath=mkk_fpath)
+                    inv_Mkk = cbps.inv_Mkk
+
+
         # --------------- fourier weights with full mask and noise sims ------------------------------
         
 
@@ -1336,36 +1486,37 @@ def calculate_powerspec_quantities(cbps, observed_ims, joint_masks, shot_sigma_s
             fourier_weights, mean_cl2d = cbps.compute_FW_from_noise_sim(nsims=n_FW_sims, n_split=n_FW_split, apply_mask=apply_masking, \
                                            mask=joint_mask_with_ff, noise_model=noise_models[imidx], inst=inst, show=False,\
                                             read_noise=include_inst_noise, photon_noise=include_photon_noise, shot_sigma_sb=shot_sigma_sb_maps[imidx], inplace=False, \
-                                            ff_estimate=ff_estimates[imidx])
-
-            fourier_weights_noff, mean_cl2d_noff = cbps.compute_FW_from_noise_sim(nsims=n_FW_sims, n_split=n_FW_split, apply_mask=apply_masking, \
-                                           mask=joint_mask_with_ff, noise_model=noise_models[imidx], inst=inst, show=False,\
-                                            read_noise=include_inst_noise, photon_noise=include_photon_noise, shot_sigma_sb=shot_sigma_sb_maps[imidx], inplace=False, \
-                                            ff_estimate=None)
+                                            ff_estimate=ff_estimates[imidx], stdpower=stdpower)
 
             cbps.FW_image = fourier_weights
 
             # want the power spectrum bias due to read + photon noise, passed through 
             cbps.compute_noise_power_spectrum(inst, noise_Cl2D=mean_cl2d, inplace=True, apply_FW=True, weights=fourier_weights)
-            N_ell_noff = cbps.compute_noise_power_spectrum(inst, noise_Cl2D=mean_cl2d_noff, inplace=False, apply_FW=True, weights=fourier_weights_noff)
 
             masked_Nls[imidx] = cbps.N_ell
-            masked_Nls_noff[imidx] = N_ell_noff
         
         
         if not include_inst_noise and not include_photon_noise:
             noise_debias = False
             apply_FW = False
 
+
+        # if applying beam correction, use input B_ells or load from file if not present
+        if beam_correct:
+            if B_ells is not None:
+                B_ell = B_ells[imidx]
+            else:
+                cbps.load_data_products(ifield_list[imidx], inst, load_all=False, beam_correction=True)
+                B_ell = cbps.B_ell
+
         lb, cl_proc, masked_image = cbps.compute_processed_power_spectrum(inst, mask=joint_mask_with_ff, apply_mask=apply_masking, \
                                                                  image=obs, convert_adufr_sb=convert_adufr_sb, \
-                                                                mkk_correct=mkk_correct, beam_correct=beam_correct, B_ell=B_ells[imidx], \
+                                                                mkk_correct=mkk_correct, beam_correct=beam_correct, B_ell=B_ell, \
                                                                 apply_FW=apply_FW, verbose=verbose, noise_debias=noise_debias, \
                                                              FF_correct=True, FF_image=ff_estimates[imidx], inv_Mkk=inverse_Mkks[imidx], save_intermediate_cls=True)
 
         cls_intermediate.append([cbps.masked_Cl_pre_Nl_correct, cbps.masked_Cl_post_Nl_correct, cbps.cl_post_mkk_pre_Bl])
         
-
 
         print('recovered cl is ', cl_proc)
         recovered_cls[imidx] = cl_proc
@@ -1376,113 +1527,10 @@ def calculate_powerspec_quantities(cbps, observed_ims, joint_masks, shot_sigma_s
     return ff_estimates, inverse_Mkks, lb, recovered_cls, masked_images, masked_Nls, masked_Nls_noff, cls_intermediate
 
 
-def grab_recovered_cl_dat(fpath, mean_or_median='mean', inter_idx=None, per_field=True):
-    
-    ff_test_dat = np.load(fpath, allow_pickle=True)
-    
-    lb = ff_test_dat['lb']
-    
-    if inter_idx is not None:
-        recovered_cls = [ff_test_dat['cls_intermediate'][j][inter_idx] for j in range(len(ff_test_dat['cls_intermediate']))]
-        if recovered_cls[0] is None:
-            recovered_cls = [ff_test_dat['cls_intermediate'][j][inter_idx-1] for j in range(len(ff_test_dat['cls_intermediate']))]
-
-    else:
-        recovered_cls = ff_test_dat['recovered_cls']
-            
-    true_cls = ff_test_dat['true_cls']
-    
-    if recovered_cls is None:
-        mean_recovered_cls, mean_true_cls, est_true_ratio = None, None, None                
-    else:
-        if per_field:
-            est_true_ratio = np.array([recovered_cls[field_idx]/true_cls[field_idx] for field_idx in range(recovered_cls.shape[0])])
-            mean_recovered_cls, mean_recovered_cls, mean_true_cls = None, None, None
-        else:
-        
-            if mean_or_median=='median':
-                mean_recovered_cls = np.median(recovered_cls, axis=0)
-                mean_true_cls = np.median(true_cls, axis=0)
-            else:
-                mean_recovered_cls = np.mean(recovered_cls, axis=0)
-                mean_true_cls = np.mean(true_cls, axis=0)
-
-            est_true_ratio = mean_recovered_cls/mean_true_cls
-        
-
-    return lb, recovered_cls, true_cls, mean_recovered_cls, mean_true_cls, est_true_ratio
 
 
-def grab_all_simidx_dat(fpaths, mean_or_median='mean', inter_idx=None, per_field=True):
-    est_true_ratios, all_mean_true_cls, all_recovered_cls = [], [], []
-    
-    for fpath in fpaths:
-        lb, recovered_cls, true_cls, mean_recovered_cls, mean_true_cl, est_true_ratio = grab_recovered_cl_dat(fpath, mean_or_median=mean_or_median, inter_idx=inter_idx, \
-                                                                                                              per_field=per_field)
-        est_true_ratios.append(est_true_ratio)
-            
-        all_recovered_cls.append(mean_recovered_cls)
-        all_mean_true_cls.append(mean_true_cl)
-
-    est_true_ratios = np.array(est_true_ratios)
-    all_mean_true_cls = np.array(all_mean_true_cls)
-    all_recovered_cls = np.array(all_recovered_cls)
-    
-    return lb, est_true_ratios, all_mean_true_cls, all_recovered_cls
 
 
-def instantiate_dat_arrays_fftest(dimx, dimy, nfields):
-    
-    observed_ims = np.zeros((nfields, dimx, dimy))
-    total_signals = np.zeros((nfields, dimx, dimy))
-    noise_models = np.zeros((nfields, dimx, dimy))
-    diff_realizations = np.zeros((nfields, dimx, dimy))
-    shot_sigma_sb_maps = np.zeros((nfields, dimx, dimy))
-    rn_maps = np.zeros((nfields, dimx, dimy))
-    joint_masks = np.zeros((nfields, dimx, dimy))
-    
-    return observed_ims, total_signals, noise_models, shot_sigma_sb_maps, rn_maps, joint_masks, diff_realizations
-    
-    
-def instantiate_cl_arrays_fftest(nfields, n_ps_bin):
-    cls_gt = np.zeros((nfields, n_ps_bin))
-    cls_diffuse = np.zeros((nfields, n_ps_bin))
-    cls_cib = np.zeros((nfields, n_ps_bin))
-    cls_postff = np.zeros((nfields, n_ps_bin))
-    B_ells = np.zeros((nfields, n_ps_bin))
-    
-    return cls_gt, cls_diffuse, cls_cib, cls_postff, B_ells
-
-def lin_interp_powerspec(lb_orig, lb_interp, powerspec_orig):
-    
-    powerspec_interp = np.zeros_like(lb_interp)
-    for l, lb_int in enumerate(lb_interp):
-        # find nearest bins
-        lb_diff = np.abs(lb_orig - lb_int)
-        arglb_nearest = np.argmin(lb_diff)
-        lb_nearest = lb_orig[arglb_nearest]
-        
-        if lb_nearest > lb_int:
-            lb_upper = lb_nearest
-            lb_lower = lb_orig[arglb_nearest-1]
-            
-            cl_lower = powerspec_orig[arglb_nearest-1]
-            cl_upper = powerspec_orig[arglb_nearest]
-
-        else:
-            lb_lower = lb_nearest
-            if arglb_nearest == len(lb_orig)-1:
-                continue
-            else:
-                lb_upper = lb_orig[arglb_nearest+1]
-            cl_lower = powerspec_orig[arglb_nearest]
-            cl_upper = powerspec_orig[arglb_nearest+1]
-            
-        slope = (cl_upper-cl_lower)/(lb_upper-lb_lower)
-
-        powerspec_interp[l] = cl_lower + slope*(lb_int-lb_lower)
-
-    return powerspec_interp
 
 
 

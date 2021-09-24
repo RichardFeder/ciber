@@ -23,9 +23,31 @@ def load_flat_from_mat(mat=None, matpath=None, flatidx=6):
 	
 	return flat
 
+def compute_ff_mask(joint_masks, ff_stack_min=1):
+    
+    ff_joint_masks = []
+    for j, joint_mask in enumerate(joint_masks):
+        
+        stack_mask = list(np.array(joint_masks).copy().astype(np.bool))
+        
+        del(stack_mask[j])
+        
+        sum_stack_mask = np.sum(stack_mask, axis=0)
+        
+        ff_joint_mask = (sum_stack_mask > ff_stack_min)
+        
+        ff_joint_masks.append(ff_joint_mask*joint_mask)
+        
+    return np.array(ff_joint_masks)
+
+
 def compute_stack_ff_estimate(images, masks=None, target_image=None, target_mask=None, weights=None, means=None, inv_var_weight=True, nanpct=True, \
-							 lopct=5, hipct=95, show_plots=False, infill=True, infill_smooth_scale=3., ff_stack_min=1, ff_min=0.2):
+							 lopct=5, hipct=95, show_plots=False, infill=True, infill_smooth_scale=3., ff_stack_min=1, ff_min=0.2, field_nfrs=None):
 	
+	if field_nfrs is None:
+		field_nfrs = np.array([1. for x in range(len(images))])
+
+
 	if masks is not None:
 		masked_images = [np.ma.array(images[i], mask=~masks[i]) for i in range(len(images))]
 		
@@ -50,7 +72,7 @@ def compute_stack_ff_estimate(images, masks=None, target_image=None, target_mask
 
 	if weights is None:
 		if inv_var_weight:
-			weights = np.array([1./image_mean for image_mean in means])
+			weights = np.array([1./(image_mean*field_nfrs[x]) for x, image_mean in enumerate(means)])
 			weights /= np.sum(weights)        
 		else:
 			weights = np.ones((len(images),))

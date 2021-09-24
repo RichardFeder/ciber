@@ -37,6 +37,44 @@ def chop_up_masks(sigmap, nside=5, ravel=False, show=False, verbose=True):
     
     return masks
 
+def compute_exp_difference(inst, cal_facs=None, pathA=None, pathB=None, data_path=None,idxA=None, idxB=None, mask=None, mode='flight', \
+                          plot_diff_hist=False):
+    
+    ''' Compute exposure differences and return mean values of (masked) images '''
+    if pathA is None:
+        pathA = data_path+'/'+mode+'Map_'+str(idxA)+'.FITS'
+        
+    if pathB is None:
+        pathB = data_path+'/'+mode+'Map_'+str(idxB)+'.FITS'
+        
+    expA = fits.open(pathA)[0].data
+    expB = fits.open(pathB)[0].data
+    
+    
+    if cal_facs is not None:
+        expA *= cal_facs[inst]
+        expB *= cal_facs[inst]
+        
+    meanA = np.median(expA[mask==1])
+    meanB = np.median(expB[mask==1])
+        
+    if plot_diff_hist:
+        plt.figure()
+        _, bins, _ = plt.hist(expA.ravel()[mask.ravel()==1], bins=30, histtype='step')
+        plt.hist(expB.ravel()[mask.ravel()==1], bins=bins, histtype='step')
+        plt.axvline(meanA, label='meanA')
+        plt.axvline(meanB, label='meanB')
+
+        plt.yscale('log')
+        plt.show()
+            
+    if mask is None:
+        mask = np.ones_like(expA)
+    
+    exp_diff = mask*(expA-expB)
+    
+    return exp_diff, meanA, meanB
+
 def extract_datetime_strings_mat(basepath, timestr, inst=1, verbose=True):
     fpath = basepath+timestr+'/TM'+str(inst)+'/'
         
