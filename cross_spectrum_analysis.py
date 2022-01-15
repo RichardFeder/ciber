@@ -13,8 +13,6 @@ from numpy.fft import ifftshift as ifftshift
 from numpy.fft import fft2 as fft2
 from numpy.fft import ifft2 as ifft2
 
-
-
 def azimuthalAverage(image, ell_min=90, center=None, logbins=True, nbins=60, sterad_term=None):
     """
     Calculate the azimuthally averaged radial profile.
@@ -70,7 +68,7 @@ def azimuthalAverage(image, ell_min=90, center=None, logbins=True, nbins=60, ste
     return av_rbins, np.array(rad_avg), np.array(rad_std)
 
 
-def azim_average_cl2d(ps2d, l2d, nbins=29, lbinedges=None, lbins=None, weights=None, logbin=False):
+def azim_average_cl2d(ps2d, l2d, nbins=29, lbinedges=None, lbins=None, weights=None, logbin=False, verbose=False):
     
     if lbinedges is None:
         lmin = np.min(l2d[l2d!=0])
@@ -90,16 +88,34 @@ def azim_average_cl2d(ps2d, l2d, nbins=29, lbinedges=None, lbins=None, weights=N
     Cl = np.zeros(len(lbins))
     Clerr = np.zeros(len(lbins))
     Nmodes = np.zeros(len(lbins),dtype=int)
+    Neffs = np.zeros(len(lbins))
+
     for i,(lmin, lmax) in enumerate(zip(lbinedges[:-1], lbinedges[1:])):
         sp = np.where((l2d>=lmin) & (l2d<lmax))
         p = ps2d[sp]
         w = weights[sp]
+
+        Neff = compute_Neff(w)
+
         Cl[i] = np.sum(p*w) / np.sum(w)
+
+        if verbose:
+            print('sum weights:', np.sum(w))
         Clerr[i] = np.std(p) / np.sqrt(len(p))
         Nmodes[i] = len(p)
+        Neffs[i] = Neff
+
+    # print('Neffs: ', Neffs)
+    # print('Nmodes', Nmodes)
+
+    # print('Neff/Nmodes:', Neffs/Nmodes)
         
     return lbins, Cl, Clerr
 
+def compute_Neff(weights):
+    N_eff = np.sum(weights)**2/np.sum(weights**2)
+
+    return N_eff
 
 def compute_beam_correction_Mkk(psf, Mkk_obj):
     ''' This function computes the power spectrum of a beam as provided through a PSF template. The beam power spectrum
@@ -133,7 +149,7 @@ def compute_cross_spectrum(map_a, map_b, n_deg_across=2.0, sterad_a=True, sterad
     
     return np.fft.fftshift(xspectrum)
 
-def compute_mkk_bl_corrected_powerspectra(srcmap, mask, Mkk_obj, inv_Mkk, threshcut=None, verbose=False):
+def compute_mkk_bl_corrected_powerspectra(srcmap, mask, Mkk_obj, inv_Mkk, B_ell, threshcut=None, verbose=False):
     lbins, cl_unmasked, cl_std_unmasked = get_power_spec(srcmap - np.mean(srcmap), lbinedges=Mkk_obj.binl, lbins=Mkk_obj.midbin_ell, return_Dl=False)
     unmasked_pix_mean = np.mean(srcmap[mask==1])
     masked_srcmap = srcmap*mask
@@ -146,6 +162,9 @@ def compute_mkk_bl_corrected_powerspectra(srcmap, mask, Mkk_obj, inv_Mkk, thresh
     
     lbins, cl_masked, cl_std_unmasked = get_power_spec(masked_srcmap, lbinedges=Mkk_obj.binl, lbins=Mkk_obj.midbin_ell, return_Dl=False)
     rectified_cl = np.dot(inv_Mkk.transpose(), cl_masked)
+
+    rectified_cl /= B_ell**2
+
     
     return lbins, rectified_cl, masked_srcmap
 
@@ -268,7 +287,7 @@ def compute_cl(map_a, map_b=None, ell_min=90., nbins=60, sterad_term=None, stera
     return rbins, radprof, radstd
 
 
-def get_power_spectrum_2d(map_a, map_b=None, pixsize=7.):
+def get_power_spectrum_2d(map_a, map_b=None, pixsize=7., verbose=False):
     '''
     calculate 2d cross power spectrum Cl
     
@@ -313,7 +332,7 @@ def get_l2d(dimx, dimy, pixsize):
 
 def get_power_spec(map_a, map_b=None, mask=None, pixsize=7., 
                    lbinedges=None, lbins=None, nbins=29, 
-                   logbin=True, weights=None, return_full=False, return_Dl=False):
+                   logbin=True, weights=None, return_full=False, return_Dl=False, verbose=False):
     '''
     calculate 1d cross power spectrum Cl
     
@@ -354,7 +373,7 @@ def get_power_spec(map_a, map_b=None, mask=None, pixsize=7.,
         
     l2d, ps2d = get_power_spectrum_2d(map_a, map_b=map_b, pixsize=pixsize)
             
-    lbins, Cl, Clerr = azim_average_cl2d(ps2d, l2d, nbins=nbins, lbinedges=lbinedges, lbins=lbins, weights=weights, logbin=logbin)
+    lbins, Cl, Clerr = azim_average_cl2d(ps2d, l2d, nbins=nbins, lbinedges=lbinedges, lbins=lbins, weights=weights, logbin=logbin, verbose=verbose)
     
     if return_Dl:
         Cl = Cl * lbins * (lbins+1) / 2 / np.pi
@@ -641,6 +660,71 @@ def knox_spectra(radprofs_auto, radprofs_cross=None, radprofs_gal=None, \
 
         return snr_sq_cross_list, dCl_sq, ells, list_of_crossterms
 
+
+
+def update_meanvar(count, mean, M2, newValues, plot=False):
+    ''' 
+    Uses Welfords online algorithm to update ensemble mean and variance. 
+    This is written to handle batches of new samples at a time. 
+    
+    Slightly modified from:
+    https://stackoverflow.com/questions/56402955/whats-the-formula-for-welfords-algorithm-for-variance-std-with-batch-updates
+    
+    Parameters
+    ----------
+    
+    count : 'int'. Running number of samples, which gets increased by size of input batch.
+    mean : 'np.array'. Running mean
+    M2 : 'np.array'. Running sum of squares of deviations from sample mean.
+    newValues : 'np.array'. New data samples.
+    plot (optional, default=False) : 'bool'.
+    
+    Returns
+    -------
+    
+    count, mean, M2. Same definitions as above but updated to include contribution from newValues.
+    
+    '''
+    
+    count += len(newValues) # (nsim/nsplit, dimx, dimy)
+    delta = np.subtract(newValues, [mean for x in range(len(newValues))])
+    mean += np.sum(delta / count, axis=0)
+    
+    delta2 = np.subtract(newValues, [mean for x in range(len(newValues))])
+    M2 += np.sum(delta*delta2, axis=0)
+        
+    if plot:
+        plot_map(M2, title='M2')
+        plot_map(delta[0], title='delta')
+        plot_map(mean, title='mean')
+        
+    return count, mean, M2
+
+    
+def finalize_meanvar(count, mean, M2):
+    ''' 
+    Returns final mean, variance, and sample variance. 
+    
+    Parameters
+    ----------
+      
+    count : 'int'. Running number of samples, which gets increased by size of input batch.
+    mean : 'np.array'. Ensemble mean
+    M2 : 'np.array'. Running sum of squares of deviations from sample mean.
+    
+    Returns
+    -------
+    
+    mean : 'np.array'. Final ensemble mean.
+    variance : 'np.array'. Estimated variance.
+    sampleVariance : 'np.array'. Same as variance but with population correction (count-1).
+    
+    '''
+    mean, variance, sampleVariance = mean, M2/count, M2/(count - 1)
+    if count < 2:
+        return float('nan')
+    else:
+        return mean, variance, sampleVariance
 
 
 ''' The bottom two functions in principle can be used to calculate effect of IHL/completeness on observable cross power spectrum, but

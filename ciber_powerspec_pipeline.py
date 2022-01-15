@@ -4,14 +4,12 @@ import numpy as np
 from astropy.io import fits
 import matplotlib.pyplot as plt
 import pandas as pd
-
 import astropy.wcs as wcs
 from astropy import units as u
 from astropy.coordinates import SkyCoord
 from astropy.coordinates import match_coordinates_sky
 from scipy.ndimage import gaussian_filter
 from sklearn import tree
-
 import os
 
 from cross_spectrum_analysis import *
@@ -19,6 +17,8 @@ from mkk_parallel import *
 from flat_field_est import *
 from masking_utils import *
 from powerspec_utils import *
+# from ciber_noise_data_utils import iter_sigma_clip_mask, sigma_clip_maskonly
+
 
 ''' 
 
@@ -42,6 +42,22 @@ def verbprint(verbose, text):
 	if verbose:
 		print(text)
 
+def compute_fourier_weights(cl2d_all, stdpower=2):
+    
+    fw_std = np.std(cl2d_all, axis=0)
+    fw_std[fw_std==0] = np.inf
+    fourier_weights = 1./(fw_std**stdpower)
+    print('max of fourier weights is ', np.max(fourier_weights))
+    fourier_weights /= np.max(fourier_weights)
+    
+    mean_cl2d = np.mean(cl2d_all, axis=0)
+
+    # median_cl2d = np.median(cl2d_all, axis=0)
+
+
+    
+    return mean_cl2d, fourier_weights
+    
 
 class CIBER_PS_pipeline():
     
@@ -65,7 +81,6 @@ class CIBER_PS_pipeline():
         # self.cal_facs = dict({1:-170.3608, 2:-57.2057}) # multiplying by cal_facs converts from ADU/fr to nW m^-2 sr^-1
         # TODO update these G1 values 
         # self.g2_facs = dict({1: 251.6, 2: 251.6}) # need to update TM2 value
-
 
         # these are the latest and greatest calibration factors as of 9/20/2021
         self.g2_facs = dict({1:110., 2:44.2})
@@ -93,26 +108,46 @@ class CIBER_PS_pipeline():
 
       
     '''
-        Repeated arguments
-        ------------------
-        verbose : boolean, optional
-            If True, functions output with many print statements describing what steps are occurring.
-            Default is 'False'.
-        
-        inplace : boolean, optional
-            If True, output variable stored in CIBER_PS_pipeline class object. 
-            Default is 'True'.
-                   
-        ifield : integer
-            Index of science field. Currently required as a parameter but may want to make optional.
-        
-        inst : integer
-            Indicates which instrument data to use (1 == J band, 2 == H band)
+    Repeated arguments
+    ------------------
+    verbose : boolean, optional
+        If True, functions output with many print statements describing what steps are occurring.
+        Default is 'False'.
+    
+    inplace : boolean, optional
+        If True, output variable stored in CIBER_PS_pipeline class object. 
+        Default is 'True'.
+               
+    ifield : integer
+        Index of science field. Currently required as a parameter but may want to make optional.
+    
+    inst : integer
+        Indicates which instrument data to use (1 == J band, 2 == H band)
     
     '''
     
     def compute_mkk_matrix(self, mask, nsims=100, n_split=2, inplace=True):
-        ''' Computes Mkk matrix and its inverse for a given mask '''
+        ''' 
+        Computes Mkk matrix and its inverse for a given mask.
+
+        Parameters
+        ----------
+
+        mask : `~np.array~` of type `float` or `int`, shape (cbps.n_ps_bins, cbps.n_ps_bins).
+        nsims : `int`.
+            Default is 100.
+        n_split : `int`.
+            Default is 2. 
+        inplace : `bool`. 
+            Default is True.
+
+        Returns
+        -------
+
+        Mkk_matrix : `~np.array~` of type `float`, shape (cbps.n_ps_bins, cbps.n_ps_bins).
+        inv_Mkk : `~np.array~` of type `float`, shape (cbps.n_ps_bins, cbps.n_ps_bins).
+
+        '''
         Mkk_matrix = self.Mkk_obj.get_mkk_sim(mask, nsims, n_split=n_split)
         inv_Mkk = compute_inverse_mkk(Mkk_matrix)
         
@@ -135,6 +170,16 @@ class CIBER_PS_pipeline():
     def noise_model_realization(self, inst, maplist_split_shape, noise_model=None, fft_obj=None, adu_to_sb=True, chisq=True, div_fac=2.83, \
                                read_noise=True, photon_noise=True, shot_sigma_sb=None, image=None, nfr=None, frame_rate=None):
         
+        '''
+        Generate noise model realization given some noise model.
+
+        Parameters
+        ----------
+
+        inst : `int`. 1 for 1.1 um band, 2 for 1.8 um band.
+        
+
+        '''
         self.noise = np.random.normal(0, 1, size=maplist_split_shape)+ 1j*np.random.normal(0, 1, size=maplist_split_shape)
 
         rnmaps = None
@@ -142,7 +187,7 @@ class CIBER_PS_pipeline():
         
         if read_noise:
 
-            print('min/max of readnoise model in noise_model_realization ', np.min(noise_model), np.max(noise_model))
+            # print('min/max of readnoise model in noise_model_realization ', np.min(noise_model), np.max(noise_model))
             if chisq:
                 chi2_realiz = (np.random.chisquare(2., size=maplist_split_shape)/div_fac)**2
 
@@ -172,15 +217,19 @@ class CIBER_PS_pipeline():
                         rnmaps = np.sqrt(self.dimx*self.dimy)*ifft2(self.noise*ifftshift(np.sqrt(noise_model)))
 
             rnmaps = np.array(rnmaps).real
+
+            # print('rn maps at this point has min/maxof ', np.min(rnmaps), np.max(rnmaps)) # debug
+
         
         if photon_noise:
             nsims = 1
             if len(maplist_split_shape)==3:
                 nsims = maplist_split_shape[0]
             
-            snmaps = self.compute_shot_noise_maps(inst, image, nsims, shot_sigma_sb=shot_sigma_sb) # if not providing shot_sigma_sb, need  to provide nfr/frame_rate
+            snmaps = self.compute_shot_noise_maps(inst, image, nsims, shot_sigma_map=shot_sigma_sb, nfr=nfr) # if not providing shot_sigma_sb, need  to provide nfr/frame_rate
+            # print('sn maps at this point has min/maxof ', np.min(snmaps), np.max(snmaps)) # debug
+            # print('sn maps has shape', snmaps.shape)
 
-        print('rn maps at this point has min/maxof ', np.min(rnmaps), np.max(rnmaps)) # debug
         if adu_to_sb and read_noise:
             rnmaps *= self.cal_facs[inst]/self.arcsec_pp_to_radian
 
@@ -189,39 +238,71 @@ class CIBER_PS_pipeline():
                 snmaps = snmaps[0]
 
         return rnmaps, snmaps
-    
-    
-    def compute_FW_from_noise_sim(self, ifield=None, field_nfr=None, inst=None, mask=None, apply_mask=True, noise_model=None, noise_model_fpath=None, verbose=False, inplace=True, \
-                                 use_pyfftw = True, nsims = 50, n_split=5, show=False, read_noise=True, photon_noise=True, shot_sigma_sb=None, image=None, stdpower=1, ff_estimate=None):
-        
+
+
+    def estimate_noise_power_spectrum(self, inst=None, ifield=None, field_nfr=None,  mask=None, apply_mask=True, noise_model=None, noise_model_fpath=None, verbose=False, inplace=True, \
+                                 nsims = 50, n_split=5, simmap_dc = None, show=False, read_noise=True, photon_noise=True, shot_sigma_sb=None, image=None,\
+                                  ff_estimate=None, transpose_noise=False):
+
+        ''' 
+        This function generates realizations of the CIBER read + photon noise model and applies the relevant observational effects that are needed to 
+        obtain a minimum variance estimator of the noise power spectrum. 
+
+        This is an updated version of the function self.compute_FW_from_noise_sim(), and makes default the pyfftw package for efficient power spectrum computation. 
+
+            
+        Parameters
+        ----------
+
+        ifield : `int`. Index of CIBER field.
+            Default is None.
+        inst (optional): `int`. 1 for 1.1 um band, 2 for 1.8 um band.
+        field_nfr (optional, default=None) : 'int'.
+        mask (optional, default=None) : `np.array' of type 'float' or 'int' and shape (self.dimx, self.dimy).
+        apply_mask (default=True) : 'bool'.
+        noise_model (optional, default=None) : `np.array' of type 'float'.
+        noise_model_fpath (optional, default=None) : 'str'. 
+        verbose (default=False) : 'bool'.
+
+
+        Returns
+        -------
+
+        mean_nl2d : 
+        fourier_weights : 
+
+        '''
+
         verbprint(verbose, 'Computing fourier weight image from noise sims for TM'+str(inst)+', field '+str(ifield)+'..')
-        verbprint(verbose, 'WARNING : This operation can take a lot of memory if caution is thrown to the wind')
-        
-        if image is None:
+        # verbprint(verbose, 'WARNING : This operation can take a lot of memory if caution is thrown to the wind')
+    
+
+        if image is None and photon_noise and shot_sigma_sb is None:
+            print('Photon noise is set to True, but no shot noise map provided. Setting image to self.image for use in estimating shot_sigma_sb..')
             image = self.image
 
         if field_nfr is None:
             if self.field_nfrs is not None and ifield is not None:
+                print('Using field nfr, ifield='+str(ifield))
                 field_nfr = self.field_nfrs[ifield]
             else:
+                print('Setting field_nfr = self.nfr = '+str(self.nfr))
                 field_nfr = self.nfr
 
         verbprint(verbose, 'Field nfr used here for ifield '+str(ifield)+', inst '+str(inst)+' is '+str(field_nfr))
 
-        if noise_model is None:
+        if noise_model is None and read_noise:
             if noise_model_fpath is None:
                 if ifield is not None and inst is not None:
                     noise_model_fpath = self.data_path + 'TM' + str(inst) + '/noise_model/noise_model_Cl2D'+str(ifield)+'.fits'
                 else:
                     print('Noise model not provided, noise_model_fpath not provided, and ifield/inst not provided, need more information..')
                     return
-                
-            noise_model = self.load_noise_Cl2D(ifield=ifield, inst=inst, noise_fpath=noise_model_fpath, inplace=False, transpose=False)
 
-            
+            noise_model = self.load_noise_Cl2D(noise_fpath='data/fluctuation_data/TM'+str(inst)+'/noiseCl2D/field'+str(ifield)+'_noiseCl2D_110421.fits', inplace=False, transpose=transpose_noise)
+
         if mask is None and apply_mask:
             verbprint(verbose, 'No mask provided but apply_mask=True, using union of self.strmask and self.maskInst_clean..')
-
             mask = self.strmask*self.maskInst_clean
 
         # compute the pixel-wise shot noise estimate given the image (which gets converted to e-/s) and the number of frames used in the integration
@@ -231,80 +312,86 @@ class CIBER_PS_pipeline():
                 print('getting sigma map from input image')
                 shot_sigma_sb = self.compute_shot_sigma_map(inst, image=image, nfr=field_nfr)
             
-        if show:
-            plt.figure(figsize=(10, 5))
-            plt.subplot(1,2,1)
-            plt.imshow(noise_model, norm=matplotlib.colors.LogNorm())
-            plt.colorbar()
-            plt.subplot(1,2,2)
-            plt.title('Mask')
-            plt.imshow(mask)
-            plt.colorbar()
-            plt.tight_layout()
-            plt.show()
-        
-        cl2d_all = np.zeros((nsims, self.dimx, self.dimy))
 
-        if ff_estimate is None:
-            ff_estimate = np.ones((self.dimx, self.dimy))
-        
-        if use_pyfftw:
-            
-            maplist_split_shape = (nsims//n_split, self.dimx, self.dimy)
-            empty_aligned_objs, fft_objs = construct_pyfftw_objs(2, maplist_split_shape)
-            
-            for i in range(n_split):
-                print('Split '+str(i+1)+' of '+str(n_split)+'..')
+        # allocate memory for Welfords online algorithm computing mean and variance
 
-                rnmaps, snmaps = self.noise_model_realization(inst, maplist_split_shape, noise_model, fft_obj=fft_objs[0],\
-                                                      read_noise=read_noise, photon_noise=photon_noise, shot_sigma_sb=shot_sigma_sb)
-        
+        # now we want to allocate the FFT objects in memory so that we can quickly compute the Fourier transforms for many sims at once.
+        # first direction (fft_objs[0]->fft_objs[1]) is inverse DFT, second (fft_objs[1]->fft_objs[2]) is regular DFT
+        maplist_split_shape = (nsims//n_split, self.dimx, self.dimy)
+        empty_aligned_objs, fft_objs = construct_pyfftw_objs(3, maplist_split_shape)
+        simmaps = np.zeros(maplist_split_shape)
 
-                for j in range(nsims // n_split):
-            
-                    if j==0:
-                        if show:
-                            plt.figure()
-                            plt.subplot(1,2,1)
-                            plt.title('read noise')
-                            if read_noise:
-                                plt.imshow(rnmaps[j], vmax=np.percentile(rnmaps[j], 95), vmin=np.percentile(rnmaps[j], 5))
-                                plt.colorbar()
-                            plt.subplot(1,2,2)
-                            plt.title('photon noise') 
-                            if photon_noise:
-                                plt.imshow(self.photFactor*snmaps[j], vmax=np.percentile(self.photFactor*snmaps[j], 95), vmin=np.percentile(self.photFactor*snmaps[j], 5))
-                                plt.colorbar()
-                            plt.show()
-                            
-                    if read_noise:
-                        simmap = rnmaps[j].copy()
-                        if photon_noise:
-                            simmap += snmaps[j]
+        sterad_per_pix = (self.pixsize/3600/180*np.pi)**2
+        V = self.dimx*self.dimy*sterad_per_pix
+        count = 0
 
-                    else:
-                        if photon_noise:
-                            simmap = snmaps[j].copy()
+        mean_nl2d = np.zeros((self.dimx, self.dimy))
+        M2_nl2d = np.zeros((self.dimx, self.dimy))
 
-                    # apply flat field
-                    if ff_estimate is not None:
-                        # should this be a multiplication? should this actually be for only photon noise? TODO
-                        simmap /= ff_estimate
-                    # multiply simulated noise map by mask
-                    if apply_mask and mask is not None:
-                        simmap *= mask
-                                                
-                    l2d, cl2drn = get_power_spectrum_2d(simmap-np.mean(simmap))
-                    cl2d_all[i*nsims//n_split + j, :,:] = cl2drn/self.cal_facs[inst]**2 # puts masked noise power spectrum in units of (ADU/fr)^2
+        for i in range(n_split):
+            print('Split '+str(i+1)+' of '+str(n_split)+'..')
+
+            rnmaps, snmaps = self.noise_model_realization(inst, maplist_split_shape, noise_model, fft_obj=fft_objs[0],\
+                                                  read_noise=read_noise, photon_noise=photon_noise, shot_sigma_sb=shot_sigma_sb)
+
+
+            if read_noise:
+                simmaps = rnmaps
+                if photon_noise:
+                    simmaps += snmaps
+
+            elif photon_noise:
+                simmaps = snmaps
+
+            if simmap_dc is not None:
+                if i==0:
+                    print('simmaps have mean', np.mean(simmaps))
+                    print('adding constant '+str(simmap_dc))
+                simmaps += simmap_dc
+
+                if i==0:
+                    print('now they have mean ', np.mean(simmaps))
+
+
+            if ff_estimate is not None:
+
+                if i==0:
+                    print('std on simmaps before ff estimate is ', np.std(simmaps))
+                simmaps /= ff_estimate
+
+                if i==0:
+                    print('std on simmaps after ff estimate is ', np.std(simmaps))
+
+            if apply_mask and mask is not None:
+                simmaps *= mask
+
+
+                unmasked_means = [np.mean(simmap[mask==1]) for simmap in simmaps]
+
+                simmaps -= np.array([mask*unmasked_mean for unmasked_mean in unmasked_means])
                 
-        
-        fw_std = np.std(cl2d_all, axis=0) # returns std within each 2d fourier mode
-        
-        fourier_weights = 1./fw_std**stdpower
+                # print('simmaps have means : ', [np.mean(simmap) for simmap in simmaps])
 
-        fourier_weights /= np.max(fourier_weights)
-        
-        mean_cl2d = np.mean(cl2d_all, axis=0)
+            else:
+                simmaps -= np.array([np.full((self.dimx, self.dimy), np.mean(simmap)) for simmap in simmaps])
+                # print('simmaps have means : ', [np.mean(simmap) for simmap in simmaps])
+
+
+            fft_objs[1](simmaps*sterad_per_pix)
+
+            cl2ds = np.array([fftshift(dentry*np.conj(dentry)).real for dentry in empty_aligned_objs[2]])
+
+            count, mean_nl2d, M2_nl2d = update_meanvar(count, mean_nl2d, M2_nl2d, cl2ds/V/self.cal_facs[inst]**2)
+
+        mean_nl2d, var_nl2d, svar_nl2d = finalize_meanvar(count, mean_nl2d, M2_nl2d)
+
+        if show:
+            plot_map(mean_nl2d, title='mean Nl2d')
+            plot_map(1./var_nl2d, title='inverse variance of Nl2d')
+            plot_map(mean_nl2d/var_nl2d, title='Fourier-weighted Nl2d')
+
+
+        fourier_weights = 1./var_nl2d
         
         if show:
             plt.figure(figsize=(8,8))
@@ -317,12 +404,180 @@ class CIBER_PS_pipeline():
         
         if inplace:
             self.FW_image = fourier_weights
-            return mean_cl2d
+            return mean_nl2d
         else:
-            return fourier_weights, mean_cl2d
+            return fourier_weights, mean_nl2d
+
+
+
+    # def compute_FW_from_noise_sim(self, ifield=None, field_nfr=None, inst=None, mask=None, apply_mask=True, noise_model=None, noise_model_fpath=None, verbose=False, inplace=True, \
+    #                              use_pyfftw = True, nsims = 50, n_split=5, simmap_dc = None, show=False, read_noise=True, photon_noise=True, shot_sigma_sb=None, image=None, stdpower=2, ff_estimate=None, transpose_noise=False):
+        
+    #     verbprint(verbose, 'Computing fourier weight image from noise sims for TM'+str(inst)+', field '+str(ifield)+'..')
+    #     verbprint(verbose, 'WARNING : This operation can take a lot of memory if caution is thrown to the wind')
+        
+    #     if image is None and photon_noise and shot_sigma_sb is None:
+    #         image = self.image
+
+    #     if field_nfr is None:
+    #         if self.field_nfrs is not None and ifield is not None:
+    #             field_nfr = self.field_nfrs[ifield]
+    #         else:
+    #             field_nfr = self.nfr
+
+    #     verbprint(verbose, 'Field nfr used here for ifield '+str(ifield)+', inst '+str(inst)+' is '+str(field_nfr))
+
+    #     if noise_model is None and read_noise:
+    #         if noise_model_fpath is None:
+    #             if ifield is not None and inst is not None:
+    #                 noise_model_fpath = self.data_path + 'TM' + str(inst) + '/noise_model/noise_model_Cl2D'+str(ifield)+'.fits'
+    #             else:
+    #                 print('Noise model not provided, noise_model_fpath not provided, and ifield/inst not provided, need more information..')
+    #                 return
+                
+    #         # noise_model = self.load_noise_Cl2D(noise_fpath='data/fluctuation_data/TM'+str(inst)+'/noiseCl2D/dr20211007_rmf/field'+str(ifield)+'_noiseCl2D_rmf_highellmask.fits', inplace=False, transpose=transpose_noise)
+
+    #         noise_model = self.load_noise_Cl2D(noise_fpath='data/fluctuation_data/TM'+str(inst)+'/noiseCl2D/field'+str(ifield)+'_noiseCl2D_110421.fits', inplace=False, transpose=transpose_noise)
+    #         # noise_model = self.load_noise_Cl2D(ifield=ifield, inst=inst, noise_fpath=noise_model_fpath, inplace=False, transpose=False)
+
+            
+    #     if mask is None and apply_mask:
+    #         verbprint(verbose, 'No mask provided but apply_mask=True, using union of self.strmask and self.maskInst_clean..')
+
+    #         mask = self.strmask*self.maskInst_clean
+
+    #     # compute the pixel-wise shot noise estimate given the image (which gets converted to e-/s) and the number of frames used in the integration
+    #     if photon_noise and shot_sigma_sb is None:
+    #         print('photon noise set to True but no shot noise sigma map provided')
+    #         if image is not None:
+    #             print('getting sigma map from input image')
+    #             shot_sigma_sb = self.compute_shot_sigma_map(inst, image=image, nfr=field_nfr)
+            
+    #     if show:
+    #         plt.figure(figsize=(10, 5))
+    #         plt.subplot(1,2,1)
+    #         plt.imshow(noise_model, norm=matplotlib.colors.LogNorm())
+    #         plt.colorbar()
+    #         plt.subplot(1,2,2)
+    #         plt.title('Mask')
+    #         plt.imshow(mask)
+    #         plt.colorbar()
+    #         plt.tight_layout()
+    #         plt.show()
+        
+    #     cl2d_all = np.zeros((nsims, self.dimx, self.dimy))
+
+    #     # if ff_estimate is None:
+    #         # ff_estimate = np.ones((self.dimx, self.dimy))
+        
+    #     if use_pyfftw:
+            
+    #         maplist_split_shape = (nsims//n_split, self.dimx, self.dimy)
+    #         empty_aligned_objs, fft_objs = construct_pyfftw_objs(2, maplist_split_shape)
+            
+    #         for i in range(n_split):
+    #             print('Split '+str(i+1)+' of '+str(n_split)+'..')
+
+    #             rnmaps, snmaps = self.noise_model_realization(inst, maplist_split_shape, noise_model, fft_obj=fft_objs[0],\
+    #                                                   read_noise=read_noise, photon_noise=photon_noise, shot_sigma_sb=shot_sigma_sb)
+        
+    #             for j in range(nsims // n_split):
+            
+    #                 if j==0:
+
+    #                     if read_noise:
+    #                         print('np.std rnmaps is ', np.std(rnmaps))
+    #                     if show:
+    #                         plt.figure()
+    #                         plt.subplot(1,2,1)
+    #                         plt.title('read noise')
+    #                         if read_noise:
+    #                             plt.imshow(rnmaps[j], vmax=np.percentile(rnmaps[j], 95), vmin=np.percentile(rnmaps[j], 5))
+    #                             plt.colorbar()
+    #                         plt.subplot(1,2,2)
+    #                         plt.title('photon noise') 
+    #                         if photon_noise:
+    #                             plt.imshow(snmaps[j], vmax=np.percentile(snmaps[j], 95), vmin=np.percentile(snmaps[j], 5))
+    #                             plt.colorbar()
+    #                         plt.show()
+                            
+    #                 if read_noise:
+    #                     simmap = rnmaps[j].copy()
+
+    #                     if photon_noise:
+    #                         # simmap += self.photFactor*snmaps[j]
+    #                         simmap += snmaps[j]
+
+    #                 else:
+    #                     if photon_noise:
+    #                         # simmap = self.photFactor*snmaps[j].copy()
+    #                         simmap = snmaps[j].copy()
+
+    #                 if simmap_dc is not None:
+    #                     simmap += simmap_dc
+
+    #                 # apply flat field
+    #                 if ff_estimate is not None:
+    #                     if j==0:
+    #                         print('simmap 0 at first has std', np.std(simmap))
+
+
+    #                         print('applying flat field to noise map, mean is ', np.mean(ff_estimate), ' and std is ', np.std(ff_estimate))
+    #                     # should this be a multiplication? should this actually be for only photon noise? TODO
+    #                     simmap /= ff_estimate
+
+    #                     if j==0:
+    #                         print('simmap 0 now has std', np.std(simmap))
+
+    #                 # multiply simulated noise map by mask
+    #                 if apply_mask and mask is not None:
+    #                     # print('applying mask..')
+    #                     simmap *= mask
+    #                     unmasked_mean = np.mean(simmap[mask==1])
+    #                     # masked_image[mask==1] -= unmasked_mean
+    #                     simmap[mask==1] -= unmasked_mean
+
+    #                     # simmap -= np.mean(simmap)
+    #                     # simmap *= mask
+    #                     # simmap = mean_sub_masked_image(simmap, mask) # apply mask and mean subtract unmasked pixels
+                    
+    #                 else:
+    #                     simmap -= np.mean(simmap)
+    #                 if j==0:
+    #                     print('simmap 0 has mean', np.mean(simmap))
+                                                
+    #                 l2d, cl2drn = get_power_spectrum_2d(simmap)
+    #                 cl2d_all[i*nsims//n_split + j, :,:] = cl2drn/self.cal_facs[inst]**2 # puts masked noise power spectrum in units of (ADU/fr)^2
+                
+        
+        
+    #     mean_cl2d, fourier_weights = compute_fourier_weights(cl2d_all, stdpower=stdpower)
+        
+    #     if show:
+    #         plt.figure(figsize=(8,8))
+    #         plt.title('Fourier weights')
+    #         plt.imshow(fourier_weights, origin='lower', cmap='Greys', norm=matplotlib.colors.LogNorm())
+    #         plt.xticks([], [])
+    #         plt.yticks([], [])
+    #         plt.colorbar()
+    #         plt.show()
+        
+    #     if inplace:
+    #         self.FW_image = fourier_weights
+    #         return mean_cl2d
+    #     else:
+    #         return fourier_weights, mean_cl2d
         
     def load_flight_image(self, ifield, inst, flight_fpath=None, verbose=False, inplace=True):
-        ''' Loads flight image from data release '''
+        ''' 
+        Loads flight image from data release.
+
+        Parameters
+        ----------
+        ifield : `int`. Index of CIBER field.
+        inst : `int`. 1 for 1.1 um band, 2 for 1.8 um band.
+
+        '''
         verbprint(verbose, 'Loading flight image from TM'+str(inst)+', field '+str(ifield)+'..')
 
         if flight_fpath is None:
@@ -334,23 +589,22 @@ class CIBER_PS_pipeline():
             return fits.open(flight_fpath)[0].data
 
         
-    def load_noise_Cl2D(self, ifield=None, inst=None, noise_model=None, noise_fpath=None, verbose=False, inplace=True, transpose=True, mode=None):
+    def load_noise_Cl2D(self, ifield=None, inst=None, noise_model=None, noise_fpath=None, verbose=False, inplace=True, transpose=True, mode=None, use_abs=True):
         
         ''' Loads 2D noise power spectrum from data release
         
-        Parameters (unique)
+        Parameters
         ----------
 
+        ifield : `int`. Index of CIBER field.
+        inst : `int`. 1 for 1.1 um band, 2 for 1.8 um band.
         noise_fpath : str, optional
-        
             Default is 'None'.
         
         transpose : boolean, optional
-            
             Default is 'True'.
         
         mode : str, optional 
-        
             Default is 'None'.
         
         Returns
@@ -365,21 +619,37 @@ class CIBER_PS_pipeline():
             if noise_fpath is None:
                 if ifield is not None and inst is not None:
                     verbprint(verbose, 'Loading 2D noise power spectrum from TM'+str(inst)+', field '+str(ifield)+'..')            
-                    noise_fpath = self.data_path + 'TM'+str(inst)+'/noiseCl2D/field'+str(ifield)+'_noiseCl2D.fits'
+                    # noise_fpath = self.data_path + 'TM'+str(inst)+'/noiseCl2D/field'+str(ifield)+'_noiseCl2D.fits'
+                    noise_fpath = self.data_path+'/TM'+str(inst)+'/noiseCl2D/field'+str(ifield)+'_noiseCl2D_110421.fits'
+                    
+                    # noise_fpath = self.data_path+'/TM'+str(inst)+'/noiseCl2D/dr20211007_rmf/field'+str(ifield)+'_noiseCl2D_rmf_highellmask.fits'
+                    # noise_fpath = self.data_path + 'TM'+str(inst)+'/readCl_input_dr20210611/field'+str(ifield)+'_readCl2d_input.fits'
                 else:
                     print('Out of luck, need more information. Returning None')
                     return None
                 
-            noise_Cl2D = fits.open(noise_fpath)[0].data
-            
-        if transpose:
-            noise_Cl2D = noise_Cl2D.transpose()
+
+            noise_Cl2D = fits.open(noise_fpath)['noise_model_'+str(ifield)].data
+            # noise_Cl2D = fits.open(noise_fpath)[0].data
+
+            if transpose:
+                # print('using the transpose here!')
+                # plot_map(noise_Cl2D, title='noise cl2d about to use transpose')
+
+                noise_Cl2D = noise_Cl2D.transpose()
+
+                # plot_map(noise_Cl2D, title='noise cl2d right here')
 
         # remove any NaNs/infs from power spectrum
         noise_Cl2D[np.isnan(noise_Cl2D)] = 0.
         noise_Cl2D[np.isinf(noise_Cl2D)] = 0.
+
         # set negative elements to zero
-        noise_Cl2D[noise_Cl2D < 0] = 0.
+        # noise_Cl2D[noise_Cl2D < 0] = 0.
+
+        if use_abs:
+            # print('computing the absolute value of the read noise model here')
+            noise_Cl2D = np.abs(noise_Cl2D) # neither this nor the above correction are correct
 
         if inplace:
             if mode=='unmasked':
@@ -393,12 +663,15 @@ class CIBER_PS_pipeline():
         
         
     def load_FF_image(self, ifield, inst, ff_fpath=None, verbose=False, inplace=True):
-        ''' Loads flat field estimate from data release 
+        ''' 
+        Loads flat field estimate from data release 
         
-        Parameters (unique):
-        
+        Parameters
+        ----------
+
+        ifield : `int`. Index of CIBER field.
+        inst : `int`. 1 for 1.1 um band, 2 for 1.8 um band.
         ff_fpath : str, optional
-        
             Default is 'None'.
         
         '''
@@ -414,7 +687,16 @@ class CIBER_PS_pipeline():
 
         
     def load_FW_image(self, ifield, inst, fw_fpath=None, verbose=False, inplace=True):
-        ''' Loads fourier weight image estimate from data release '''
+        ''' 
+        Loads fourier weight image estimate from data release.
+
+        Parameters
+        ----------
+        ifield : `int`. Index of CIBER field.
+        inst : `int`. 1 for 1.1 um band, 2 for 1.8 um band. 
+
+
+        '''
         verbprint(verbose, 'Loading fourier weight image estimate from TM'+str(inst)+', field '+str(ifield)+'..')
 
         if fw_fpath is None:
@@ -426,141 +708,149 @@ class CIBER_PS_pipeline():
             return fits.open(fw_fpath)[0].data
         
         
-    def monte_carlo_power_spectrum_sim(self, ifield, inst, image=None, mask=None, apply_mask=True, noise_model=None, masked_noise_model=None, noise_model_fpath=None,\
-                                       FW_image=None, apply_FW=True, n_FW_sims=100, n_FW_split=5, verbose=False, use_pyfftw = True, \
-                                       nsims = 100, n_split=5, show=False, mkk_fpath=None, mkk_correct=True, inv_Mkk=None, beam_correct=True, noise_debias=True, \
-                                      FF_correct=False, add_noise=True, chisq=True, read_noise=True, photon_noise=True, nfr=None, frame_rate=None):
+    # def monte_carlo_power_spectrum_sim(self, ifield, inst, image=None, mask=None, apply_mask=True, noise_model=None, masked_noise_model=None, noise_model_fpath=None,\
+    #                                    FW_image=None, apply_FW=True, n_FW_sims=100, n_FW_split=5, verbose=False, use_pyfftw = True, \
+    #                                    nsims = 100, n_split=5, show=False, mkk_fpath=None, mkk_correct=True, inv_Mkk=None, beam_correct=True, noise_debias=True, \
+    #                                   FF_correct=False, add_noise=True, chisq=True, read_noise=True, photon_noise=True, nfr=None, frame_rate=None):
         
-        if image is not None:
-            self.image = image
+    #     if image is not None:
+    #         self.image = image
             
-        # load noise model
-        if noise_model is None:
+    #     # load noise model
+    #     if noise_model is None:
             
-            if noise_model_fpath is None:
-                noise_model_fpath = self.data_path + 'TM' + str(inst) + '/noise_model/noise_model_Cl2D'+str(ifield)+'.fits'
-            verbprint(verbose, 'No noise model provided, loading from '+str(noise_model_fpath)+'..')
+    #         if noise_model_fpath is None:
+    #             noise_model_fpath = self.data_path + 'TM' + str(inst) + '/noise_model/noise_model_Cl2D'+str(ifield)+'.fits'
+    #         verbprint(verbose, 'No noise model provided, loading from '+str(noise_model_fpath)+'..')
   
-            noise_model = self.load_noise_Cl2D(ifield, inst, noise_fpath=noise_model_fpath, inplace=False, transpose=False)
+    #         noise_model = self.load_noise_Cl2D(ifield, inst, noise_fpath=noise_model_fpath, inplace=False, transpose=False)
 
-        if mask is None and apply_mask:
+    #     if mask is None and apply_mask:
             
-            verbprint(verbose, 'No mask provided but apply_mask=True, using union of self.strmask and self.maskInst_clean..')
-            mask = self.strmask*self.maskInst_clean
+    #         verbprint(verbose, 'No mask provided but apply_mask=True, using union of self.strmask and self.maskInst_clean..')
+    #         mask = self.strmask*self.maskInst_clean
         
-        if show:
-            plt.figure()
-            plt.title('Noise model [nW$^2$ m$^{-4}$ sr$^{-2}$]')
-            plt.imshow(noise_model*self.cal_facs[inst]**2, norm=matplotlib.colors.LogNorm(), vmax=np.percentile(noise_model*self.cal_facs[inst]**2, 95), vmin=np.percentile(noise_model*self.cal_facs[inst]**2, 5))
-            plt.colorbar()
-            plt.show()
+    #     if show:
+    #         plt.figure()
+    #         plt.title('Noise model [nW$^2$ m$^{-4}$ sr$^{-2}$]')
+    #         plt.imshow(noise_model*self.cal_facs[inst]**2, norm=matplotlib.colors.LogNorm(), vmax=np.percentile(noise_model*self.cal_facs[inst]**2, 95), vmin=np.percentile(noise_model*self.cal_facs[inst]**2, 5))
+    #         plt.colorbar()
+    #         plt.show()
                
-        if mkk_correct:
-            if inv_Mkk is None and mkk_fpath is not None:   
-                verbprint(verbose, 'Loading Mkk matrices from '+mkk_fpath+'..')
+    #     if mkk_correct:
+    #         if inv_Mkk is None and mkk_fpath is not None:   
+    #             verbprint(verbose, 'Loading Mkk matrices from '+mkk_fpath+'..')
 
-                mkk, inv_Mkk = self.load_mkk_mats(ifield, inst, mkk_fpath=mkk_fpath, verbose=verbose, inplace=False)
+    #             mkk, inv_Mkk = self.load_mkk_mats(ifield, inst, mkk_fpath=mkk_fpath, verbose=verbose, inplace=False)
 
-        # compute noise bias and fourier weight estimates (if not included already)
+    #     # compute noise bias and fourier weight estimates (if not included already)
         
-        shot_sigma_sb = None
-        if add_noise and photon_noise:
-            # we will need the "sigma" map for the image several times
-            shot_sigma_sb = self.compute_shot_sigma_map(inst, self.image, nfr=nfr, frame_rate=frame_rate)
+    #     shot_sigma_sb = None
+    #     if add_noise and photon_noise:
+    #         # we will need the "sigma" map for the image several times
+    #         shot_sigma_sb = self.compute_shot_sigma_map(inst, self.image, nfr=nfr, frame_rate=frame_rate)
         
-        if apply_FW:
-            if FW_image is None:
-                verbprint(verbose, 'No Fourier weight image provided but apply_FW=True. Estimating Fourier weights from noise model..')
+    #     if apply_FW:
+    #         if FW_image is None:
+    #             verbprint(verbose, 'No Fourier weight image provided but apply_FW=True. Estimating Fourier weights from noise model..')
 
-                FW_image, masked_noisecl2d = self.compute_FW_from_noise_sim(ifield, inst, mask=mask, apply_mask=apply_mask, noise_model=noise_model,\
-                                               verbose=verbose, inplace=False, use_pyfftw = True,\
-                                               nsims = n_FW_sims, n_split=n_FW_split, show=show, shot_sigma_sb=shot_sigma_sb)
+    #             FW_image, masked_noisecl2d = self.compute_FW_from_noise_sim(ifield=ifield, inst=inst, mask=mask, apply_mask=apply_mask, noise_model=noise_model,\
+    #                                            verbose=verbose, inplace=False, use_pyfftw = True,\
+    #                                            nsims = n_FW_sims, n_split=n_FW_split, show=show, shot_sigma_sb=shot_sigma_sb)
 
-                self.FW_image = FW_image
-                if masked_noise_model is None:
-                    masked_noise_model = masked_noisecl2d
-            else:
-                self.FW_image = FW_image
-        verbprint(verbose, 'Computing noise power spectrum..')
+    #             self.FW_image = FW_image
+    #             if masked_noise_model is None:
+    #                 masked_noise_model = masked_noisecl2d
+    #         else:
+    #             self.FW_image = FW_image
+    #     verbprint(verbose, 'Computing noise power spectrum..')
 
         
-        if noise_debias:
+    #     if noise_debias:
             
-            self.compute_noise_power_spectrum(noise_Cl2D=masked_noise_model, apply_FW=apply_FW, weights=self.FW_image, verbose=False, inplace=True)
-            print('N_l from masked noise model: ', self.N_ell)
+    #         self.compute_noise_power_spectrum(noise_Cl2D=masked_noise_model, apply_FW=apply_FW, weights=self.FW_image, verbose=False, inplace=True)
+    #         print('N_l from masked noise model: ', self.N_ell)
         
-        # for a number of splits, we want to:
-        # 1) generate noise realizations
-        # 2) add mock image to noise realizations
-        # 3) compute Bl/Mkk/Nl-corrected power spectra 
+    #     # for a number of splits, we want to:
+    #     # 1) generate noise realizations
+    #     # 2) add mock image to noise realizations
+    #     # 3) compute Bl/Mkk/Nl-corrected power spectra 
         
-        maplist_split_shape = (nsims//n_split, self.dimx, self.dimy)
+    #     maplist_split_shape = (nsims//n_split, self.dimx, self.dimy)
 
-        empty_aligned_objs, fft_objs = construct_pyfftw_objs(3, maplist_split_shape)
+    #     empty_aligned_objs, fft_objs = construct_pyfftw_objs(3, maplist_split_shape)
         
-        all_cl_proc = np.zeros((nsims, self.n_ps_bin))
+    #     all_cl_proc = np.zeros((nsims, self.n_ps_bin))
             
-        verbprint(verbose, 'Computing processed power spectra..')
+    #     verbprint(verbose, 'Computing processed power spectra..')
              
-        for i in range(n_split):
-            print('Split '+str(i+1)+' of '+str(n_split)+'..')
+    #     for i in range(n_split):
+    #         print('Split '+str(i+1)+' of '+str(n_split)+'..')
                         
-            if add_noise:
-                rnmaps, snmaps = self.noise_model_realization(inst, maplist_split_shape, noise_model, fft_obj=fft_objs[0],\
-                                                      chisq=chisq, read_noise=read_noise, photon_noise=photon_noise, shot_sigma_sb=shot_sigma_sb)
+    #         if add_noise:
+    #             rnmaps, snmaps = self.noise_model_realization(inst, maplist_split_shape, noise_model, fft_obj=fft_objs[0],\
+    #                                                   chisq=chisq, read_noise=read_noise, photon_noise=photon_noise, shot_sigma_sb=shot_sigma_sb)
 
-            for j in range(nsims // n_split):
+    #         for j in range(nsims // n_split):
                 
-                simmap = self.image.copy()
+    #             simmap = self.image.copy()
                 
-                if add_noise:
-                    if read_noise:
-                        verbprint(verbose, 'Adding read noise..')
+    #             if add_noise:
+    #                 if read_noise:
+    #                     verbprint(verbose, 'Adding read noise..')
 
-                        simmap += rnmaps[j]
-                    if photon_noise:
-                        verbprint(verbose, 'Adding photon noise..')
+    #                     simmap += rnmaps[j]
+    #                 if photon_noise:
+    #                     verbprint(verbose, 'Adding photon noise..')
 
-                        simmap += snmaps[j]
+    #                     simmap += snmaps[j]
 
-                #multiply simulated noise map by mask
-                if apply_mask and mask is not None:
+    #             #multiply simulated noise map by mask
+    #             if apply_mask and mask is not None:
     
-                    verbprint(verbose, 'Applying mask..')
+    #                 verbprint(verbose, 'Applying mask..')
                         
-                    simmap *= mask
+    #                 simmap *= mask
 
-                if j == 0 and show:
-                    plt.figure()
-                    plt.title('sim map')
-                    plt.imshow(simmap, cmap='Greys')
-                    plt.colorbar()
-                    plt.show()
+    #             if j == 0 and show:
+    #                 plt.figure()
+    #                 plt.title('sim map')
+    #                 plt.imshow(simmap, cmap='Greys')
+    #                 plt.colorbar()
+    #                 plt.show()
                     
-                    if apply_mask:
-                        plt.figure()
-                        plt.title('mask')
-                        plt.imshow(mask, cmap='Greys')
-                        plt.colorbar()
-                        plt.show()
+    #                 if apply_mask:
+    #                     plt.figure()
+    #                     plt.title('mask')
+    #                     plt.imshow(mask, cmap='Greys')
+    #                     plt.colorbar()
+    #                     plt.show()
                 
-                lbins, cl_proc, _ = self.compute_processed_power_spectrum(inst, mask=mask, apply_mask=apply_mask, \
-                                                                             image=simmap, convert_adufr_sb=False, \
-                                                                            mkk_correct=mkk_correct, beam_correct=beam_correct, \
-                                                                            apply_FW=apply_FW, verbose=verbose, noise_debias=noise_debias, \
-                                                                         FF_correct=FF_correct, inv_Mkk=inv_Mkk)
+    #             lbins, cl_proc, cl_proc_err, _ = self.compute_processed_power_spectrum(inst, mask=mask, apply_mask=apply_mask, \
+    #                                                                          image=simmap, convert_adufr_sb=False, \
+    #                                                                         mkk_correct=mkk_correct, beam_correct=beam_correct, \
+    #                                                                         apply_FW=apply_FW, verbose=verbose, noise_debias=noise_debias, \
+    #                                                                      FF_correct=FF_correct, inv_Mkk=inv_Mkk)
                 
-                all_cl_proc[int(i*(nsims // n_split) + j), :] = cl_proc
+    #             all_cl_proc[int(i*(nsims // n_split) + j), :] = cl_proc
                 
                 
-        return_N_ell = None
+    #     return_N_ell = None
        
-        return all_cl_proc, lbins, return_N_ell
+    #     return all_cl_proc, lbins, return_N_ell
 
         
             
     def load_mkk_mats(self, ifield, inst, mkk_fpath=None, verbose=False, inplace=True):
-        ''' Loads Mkk and inverse Mkk matrices '''
+        ''' 
+        Loads Mkk and inverse Mkk matrices.
+
+        Parameters
+        ----------
+        ifield : `int`. Index of CIBER field.
+        inst : `int`. 1 for 1.1 um band, 2 for 1.8 um band.
+
+        '''
         verbprint(verbose, 'Loading Mkk and inverse Mkk matrix estimates from TM'+str(inst)+', field '+str(ifield)+'..')
          
         if mkk_fpath is None:
@@ -574,7 +864,15 @@ class CIBER_PS_pipeline():
             return mkkfile['Mkk'], mkkfile['inv_Mkk']
         
     def load_mask(self, ifield, inst, masktype=None, mask_fpath=None, verbose=False, inplace=True):
-        ''' Loads mask from data release '''
+        ''' 
+        Loads mask from data release.
+
+        Parameters
+        ----------
+        ifield : `int`. Index of CIBER field.
+        inst : `int`. 1 for 1.1 um band, 2 for 1.8 um band.
+
+        '''
         
         verbprint(verbose, 'Loading mask image from TM'+str(inst)+', field '+str(ifield))
 
@@ -593,7 +891,15 @@ class CIBER_PS_pipeline():
     
         
     def load_dark_current_template(self, ifield, inst, dc_fpath=None, verbose=False, inplace=True):
-        ''' Loads dark current template from data release '''
+        ''' 
+        Loads dark current template from data release.
+        
+        Parameters
+        ----------
+        ifield : `int`. Index of CIBER field.
+        inst : `int`. 1 for 1.1 um band, 2 for 1.8 um band.
+        
+        '''
         
         verbprint(verbose, 'Loading dark current template from TM'+str(inst)+'..')
 
@@ -605,7 +911,15 @@ class CIBER_PS_pipeline():
             return fits.open(dc_fpath)[0].data
         
     def load_psf(self, ifield, inst, psf_fpath=None, verbose=False, inplace=True):
-        ''' Loads PSF estimate from data release '''
+        ''' 
+        Loads PSF estimate from data release.
+
+        Parameters
+        ----------
+        ifield : `int`. Index of CIBER field.
+        inst : `int`. 1 for 1.1 um band, 2 for 1.8 um band.
+
+        '''
         
         verbprint(verbose, 'Loading PSF template from TM'+str(inst)+', field '+str(ifield)+'..')
 
@@ -625,6 +939,16 @@ class CIBER_PS_pipeline():
 
     def load_bl(self, ifield, inst, inplace=True, verbose=False):
 
+        ''' 
+        Loads beam transfer function. 
+
+        Parameters
+        ----------
+        ifield : `int`. Index of CIBER field.
+        inst : `int`. 1 for 1.1 um band, 2 for 1.8 um band.
+
+        '''
+
         verbprint(verbose, 'Loading Bl estimates for TM'+str(inst)+', field '+str(ifield)+'..')
 
         B_ell_path = self.powerspec_dat_path+'B_ells/beam_correction_ifield'+str(ifield)+'_inst'+str(inst)+'.npz'
@@ -643,27 +967,32 @@ class CIBER_PS_pipeline():
         
             if inplace:
                 self.B_ell = B_ell
-                print('self B_ell is ', self.B_ell)
+                # print('self B_ell is ', self.B_ell)
             else:
                 return B_ell
         
     def load_data_products(self, ifield, inst, load_all=True, flight_image=False, dark_current=False, psf=False, \
                            maskInst_clean=False, strmask=False, mkk_mats=False, mkk_fpath=None, \
-                           FW_image=False, FF_image=False, noise_Cl2D=False, beam_correction=False, verbose=True, ifield_psf=None):
+                           FW_image=False, FF_image=False, noise_Cl2D=False, beam_correction=False, verbose=True, ifield_psf=None, transpose=True):
         
+        '''
+        Parameters
+        ----------
+        ifield : `int`. Index of CIBER field.
+        inst : `int`. 1 for 1.1 um band, 2 for 1.8 um band.
+
+        '''
+
         if flight_image or load_all:
             self.load_flight_image(ifield, inst, verbose=verbose)
         if dark_current or load_all:
             self.load_dark_current_template(ifield, inst, verbose=verbose)
         if noise_Cl2D or load_all:
-            self.load_noise_Cl2D(ifield, inst, verbose=verbose)
-        
+            self.load_noise_Cl2D(ifield, inst, verbose=verbose, transpose=transpose)
         if beam_correction or load_all:
             self.load_bl(ifield, inst, verbose=verbose)
-
         if mkk_mats or load_all:
             self.load_mkk_mats(ifield, inst, mkk_fpath=mkk_fpath)
-
         if psf or load_all:
             if ifield_psf is None:
                 ifield_psf = ifield
@@ -677,24 +1006,68 @@ class CIBER_PS_pipeline():
         if FF_image or load_all:
             self.load_FF_image(ifield, inst, verbose=verbose)
             
-    def compute_shot_noise_maps(self, inst, image, nsims, shot_sigma_sb=None, nfr=None, frame_rate=None):
+    def compute_shot_noise_maps(self, inst, image, nsims, shot_sigma_map=None, nfr=None, frame_rate=None, ifield=None, g2_correct=True):
 
+        ''' 
+        If no shot_sigma_map provided, uses image to generate estimate of shot noise and subsequent photon noise realizations.
+
+        Parameters
+        ----------
+        inst : `int`. 1 for 1.1 um band, 2 for 1.8 um band.
+
+
+
+        Returns
+        -------
+
+
+
+
+
+        '''
         if nsims*self.dimx*self.dimy > 1e8:
             print('WARNING -- using a lot of memory at once')
         if nsims*self.dimx*self.dimy > 1e9:
             print('probably too much memory, exiting')
             return None
 
-        if shot_sigma_sb is None:
+        if nfr is None:
+            if ifield is not None:
+                nfr = self.field_nfrs[ifield]
 
-            shot_sigma_sb = self.compute_shot_sigma_map(inst, image, nfr=nfr, frame_rate=frame_rate)
+        if shot_sigma_map is None:
+            print('computing shot sigma map from within compute_shot_noise_maps')
+            shot_sigma_map = self.compute_shot_sigma_map(inst, image, nfr=nfr, frame_rate=frame_rate, g2_correct=g2_correct)
 
         unit_noise = np.random.normal(0, 1, size=(nsims, self.dimx, self.dimy))
 
-        return unit_noise*shot_sigma_sb
+        return unit_noise*shot_sigma_map
 
-    def compute_shot_sigma_map(self, inst, image, nfr=None, frame_rate=None, verbose=True):
-        # assume image is in surface brightness units, returns shot noise map in surface brightness units
+    def compute_shot_sigma_map(self, inst, image, nfr=None, frame_rate=None, verbose=False, g2_correct=True):
+
+        ''' 
+        Assume image is in surface brightness units, returns shot noise map in surface brightness units. 
+
+        Parameters
+        ----------
+        
+        inst : `int`. 1 for 1.1 um band, 2 for 1.8 um band.
+        image : `~np.array~` of type `float` and shape (dimx, dimy).
+        nfr : `int`. Number of frames in exposure.
+            Default is None.
+        frame_rate : Number of frames per second.
+            Default is None.
+        verbose : `bool`. 
+            Default is False.
+        g2_correct : `bool`. If True, convert map from units of surface brightness to units of photocurrent ini e-/s.
+            Default is True. 
+        
+        Returns
+        -------
+        shot_sigma_map : `~np.array~` of type `float` and shape (dimx, dimy).
+
+        '''
+
         if nfr is None:
             nfr = self.nfr
         if frame_rate is None:
@@ -702,14 +1075,46 @@ class CIBER_PS_pipeline():
         if verbose:
             print('nfr, frame_rate:', nfr, frame_rate)
         
-        flight_signal = image*self.g1_facs[inst]/self.cal_facs[inst]
-        shot_sigma = np.sqrt((np.abs(flight_signal)/(nfr/frame_rate))*((nfr**2+1.)/(nfr**2 - 1.)))
-        shot_sigma_sb = shot_sigma*self.cal_facs[inst]/self.g1_facs[inst]
+        flight_signal = image.copy()
+        if g2_correct:
+            flight_signal /= self.g2_facs[inst]
 
-        return shot_sigma_sb
+        shot_sigma = np.sqrt((np.abs(flight_signal)/(nfr/frame_rate))*((nfr**2+1.)/(nfr**2 - 1.)))
+
+        shot_sigma_map = shot_sigma.copy()
+        if g2_correct:
+            shot_sigma_map *= self.g2_facs[inst]
+
+        return shot_sigma_map
         
     def compute_noise_power_spectrum(self, inst, noise_Cl2D=None, apply_FW=True, weights=None, verbose=False, inplace=True):
         
+        ''' 
+        For Fourier weighting, need apply_FW to be True, and then you need to specify the weights otherwise it grabs
+        self.FW_image.
+        
+        Parameters
+        ----------
+
+        inst : `int`. 1 for 1.1 um band, 2 for 1.8 um band.
+        noise_Cl2D : 
+            Default is None.
+        apply_FW : `bool`. 
+            Default is True.
+        weights : 
+            Default is None.
+        verbose : `bool`. 
+            Default is False.
+        inplace : `bool`. If True, saves noise power spectrum to class object
+            Default is True.
+
+        Returns
+        -------
+
+        Cl_noise : `np.array` of type 'float'. If not inplace, function returns 1-D noise power spectrum.
+
+        '''
+
         verbprint(verbose, 'Computing 1D noise power spectrum from 2D power spectrum..')
         
         if noise_Cl2D is None:
@@ -719,16 +1124,22 @@ class CIBER_PS_pipeline():
             
         if apply_FW and weights is None:
             weights = self.FW_image
+        elif not apply_FW:
+            print('weights provided but apply_FW = False, setting weights to None')
+            weights = None
         
         l2d = get_l2d(self.dimx, self.dimy, self.pixsize)
+
+        lbins, Cl_noise, Clerr = azim_average_cl2d(noise_Cl2D*self.cal_facs[inst]**2, l2d, weights=weights, lbinedges=self.Mkk_obj.binl, lbins=self.Mkk_obj.midbin_ell, verbose=verbose)
         
-        lbins, Cl_noise, Clerr = azim_average_cl2d(noise_Cl2D*self.cal_facs[inst]**2, l2d, weights=weights, lbinedges=self.Mkk_obj.binl, lbins=self.Mkk_obj.midbin_ell)
+        # lbins, Cl_noise, Clerr = azim_average_cl2d(noise_Cl2D*self.cal_facs[inst]**2, l2d, weights=weights, lbinedges=self.Mkk_obj.binl, lbins=self.Mkk_obj.midbin_ell)
         # Cl_noise has units of sb squared
         if inplace:
             self.N_ell = Cl_noise
             
-            print("self.N_ell is ", self.N_ell)
-            print('ell^2 N_ell = ', lbins**2*self.N_ell)
+            # verbprint(verbose, "self.N_ell is "self.N_ell)
+            if verbose:
+                print('ell^2 N_ell / 2pi = ', lbins**2*self.N_ell/(2*np.pi))
         else:
             return Cl_noise
         
@@ -824,7 +1235,7 @@ class CIBER_PS_pipeline():
   
     def compute_processed_power_spectrum(self, inst, bare_bones=False, mask=None, apply_mask=True, N_ell=None, B_ell=None, inv_Mkk=None,\
                                          image=None, mkk_correct=True, beam_correct=True,\
-                                         FF_correct=True, FF_image=None, apply_FW=True, noise_debias=True, verbose=True, \
+                                         FF_correct=True, FF_image=None, apply_FW=True, noise_debias=True, verbose=False, \
                                         convert_adufr_sb=True, save_intermediate_cls=True):
         
 
@@ -844,16 +1255,17 @@ class CIBER_PS_pipeline():
             image *= self.cal_facs[inst] # convert from ADU/fr to nW m^-2 sr^-1
         
         if FF_correct and not bare_bones:
-
-            verbprint(verbose, 'Applying flat field correction..')
+            verbprint(True, 'Applying flat field correction..')
 
             if FF_image is not None:
                 self.FF_image = FF_image
             
+            verbprint(verbose, 'Mean of self.FF_image is '+str(np.mean(self.FF_image))+' with standard deviation '+str(np.std(self.FF_image)))
             image /= self.FF_image # divide image by the flat field estimate
             
-            # correct for weird case where some pixels go negative after flat field correction
+            # correct for case where some pixels go negative after flat field correction
             if np.min(image) < 0:
+                image[image < 0] = 0.0
                 verbprint(verbose, 'We have negative pixels, minimum is '+str(np.min(image)))
 
 
@@ -863,10 +1275,10 @@ class CIBER_PS_pipeline():
         
         if apply_mask and not bare_bones:
 
-            verbprint(verbose, 'Applying mask..')
+            verbprint(True, 'Applying mask..')
             masked_image = mean_sub_masked_image(image, mask) # apply mask and mean subtract unmasked pixels
         else:
-            verbprint(verbose, 'No masking, subtracting image by its mean..')
+            verbprint(True, 'No masking, subtracting image by its mean..')
 
             masked_image = image - np.mean(image)
             mask = None
@@ -875,7 +1287,7 @@ class CIBER_PS_pipeline():
          
         weights=None
         if apply_FW and not bare_bones:
-            verbprint(verbose, 'Using Fourier weights..')
+            verbprint(True, 'Using Fourier weights..')
             
             weights = self.FW_image # this feeds Fourier weights into get_power_spec, which uses them with Cl2D
             
@@ -888,7 +1300,7 @@ class CIBER_PS_pipeline():
         verbprint(verbose, cl_proc)
             
         if noise_debias and not bare_bones: # subtract noise bias
-            verbprint(verbose, 'Applying noise bias..')
+            verbprint(True, 'Applying noise bias..')
 
             if N_ell is None:
                 cl_proc -= self.N_ell
@@ -903,30 +1315,40 @@ class CIBER_PS_pipeline():
 
   
         if mkk_correct and not bare_bones: # apply inverse mode coupling matrix to masked power spectrum
-            verbprint(verbose, 'Applying Mkk correction..')
+            verbprint(True, 'Applying Mkk correction..')
 
             if inv_Mkk is None:
                 cl_proc = np.dot(self.inv_Mkk.transpose(), cl_proc)
+                cl_proc_err= np.dot(np.abs(self.inv_Mkk.transpose()), cl_proc_err)
             else:
                 cl_proc = np.dot(inv_Mkk.transpose(), cl_proc)
+                cl_proc_err= np.sqrt(np.dot(np.abs(inv_Mkk.transpose()), cl_proc_err**2))
+
             verbprint(verbose, 'After Mkk correction, cl_proc is ')
             verbprint(verbose, cl_proc)
+            verbprint(verbose, 'After Mkk correction, cl_proc_err is ')
+            verbprint(verbose, cl_proc_err)
 
             if save_intermediate_cls:
                 self.cl_post_mkk_pre_Bl = cl_proc.copy()
                             
         if beam_correct and not bare_bones: # undo the effects of the PSF by dividing power spectrum by B_ell
-            verbprint(verbose, 'Applying beam correction..')
+            verbprint(True, 'Applying beam correction..')
 
             if B_ell is None:
                 B_ell = self.B_ell
             assert len(B_ell)==len(cl_proc)
             cl_proc /= B_ell**2
+            cl_proc_err /= B_ell**2
 
-        verbprint(verbose, 'Processed angular power spectrum is ')
-        verbprint(verbose, cl_proc)
-            
-        return lbins, cl_proc, masked_image
+        verbprint(True, 'Processed angular power spectrum is ')
+        verbprint(True, cl_proc)
+        verbprint(verbose, 'Processed angular power spectrum error is ')
+        verbprint(verbose, cl_proc_err)
+
+
+
+        return lbins, cl_proc, cl_proc_err, masked_image
             
 
 
@@ -973,7 +1395,6 @@ def small_Nl2D_from_larger(dimx_small, dimy_small, n_ps_bin,ifield, noise_model=
 
 	av_cl2d = np.mean(cl2d_all_small, axis=0)
 
-
 	return av_cl2d, clprocs, clprocs_large_chi2, cbps_small
 
 
@@ -1004,14 +1425,15 @@ def monte_carlo_test_vs_Jlim(ifield, inst, dimx, dimy, Jmags, model_image, mkk_f
         
         shot_sigma_sb = cbps.compute_shot_sigma_map(inst, image=model_image)
         
-        
 
-        fourier_weights, mean_cl2d = cbps.compute_FW_from_noise_sim(nsims=n_FW_sims, n_split=n_FW_split, apply_mask=apply_mask, inst=inst,\
+        fourier_weights, mean_cl2d = cbps.compute_FW_from_noise_sim(ifield=ifield, nsims=n_FW_sims, n_split=n_FW_split, apply_mask=apply_mask, inst=inst,\
                                                        inplace=False, noise_model=noise_model, show=False,\
                                                        mask=joint_mask, use_pyfftw=True, shot_sigma_sb=shot_sigma_sb, \
                                                                stdpower=stdpower)
         
         
+
+
         fourier_weight_list.append(fourier_weights)
         mean_cl2ds.append(mean_cl2d)
 
@@ -1094,7 +1516,7 @@ def monte_carlo_test_vs_mask_params(ifield, inst, dimx, dimy, param_combo_list, 
         shot_sigma_sb = cbps.compute_shot_sigma_map(inst, image=model_image)
         
         
-        fourier_weights, mean_cl2d = cbps.compute_FW_from_noise_sim(nsims=n_FW_sims, n_split=n_FW_split, apply_mask=apply_mask, inst=inst,\
+        fourier_weights, mean_cl2d = cbps.compute_FW_from_noise_sim(ifield=ifield, nsims=n_FW_sims, n_split=n_FW_split, apply_mask=apply_mask, inst=inst,\
                                                        inplace=False, noise_model=noise_model, show=False,\
                                                        mask=joint_mask, use_pyfftw=True, shot_sigma_sb=shot_sigma_sb, \
                                                                stdpower=stdpower)
@@ -1138,11 +1560,12 @@ def monte_carlo_test_vs_mask_params(ifield, inst, dimx, dimy, param_combo_list, 
 
 
 def generate_synthetic_mock_test_set(test_set_fpath, trilegal_sim_idx=1, inst=1, cmock=None, pcat_model_eval=False, cbps=None, n_ps_bin=25, ciberdir='/Users/luminatech/Documents/ciber2/ciber/',\
-                                     dimx=1024, dimy=1024, ifield_list=None, include_diffuse_comp=True, diffuse_realizations=None, power_law_idx=-4.5, scale_fac=2e-1, bkg_val=250.,\
-                                     apply_flat_field = True, include_inst_noise=True, include_photon_noise=True, ff_truth=None, ff_truth_fpath='dr40030_TM2_200613_p2.pkl',\
-                                     apply_masking=True, mask_galaxies=False, mask_stars=True, intercept_mag=16.0, a1=220., b1=3.632, c1=8.52, param_combo=None, Vega_to_AB=0.91, mag_lim_Vega = 18.0, \
+                                     dimx=1024, dimy=1024, ifield_list=None, generate_diffuse_realization=False, diffuse_realizations=None, power_law_idx=-4.5, scale_fac=2e-1, bkg_val=250.,\
+                                     apply_flat_field = False, include_inst_noise=True, include_photon_noise=True, ff_truth=None, ff_truth_fpath='dr40030_TM2_200613_p2.pkl',\
+                                     generate_masks=False, mask_galaxies=False, mask_stars=True, intercept_mag=16.0, a1=220., b1=3.632, c1=8.52, param_combo=None, Vega_to_AB=0.91, mag_lim_Vega = 18.0, \
                                      n_split_mkk=1, verbose=False, \
-                                    show_plots=True, ifield_psf=None, use_field_nfrs=True, mock_trilegal_path=None, load_bls=True, compute_bls=False, B_ells=None, dx_mcat=0., dy_mcat=0.):
+                                    show_plots=True, ifield_psf=None, use_field_nfrs=True, mock_trilegal_path=None, load_bls=True, compute_bls=False, B_ells=None, dx_mcat=0., dy_mcat=0., \
+                                    transpose_noise=False):
 
     if cmock is None:
         cmock = ciber_mock(ciberdir='/Users/luminatech/Documents/ciber2/ciber/', pcat_model_eval=pcat_model_eval)
@@ -1155,8 +1578,7 @@ def generate_synthetic_mock_test_set(test_set_fpath, trilegal_sim_idx=1, inst=1,
     if ifield_list is None:
         ifield_list = [4, 5, 6, 7, 8]
     nfields = len(ifield_list)
-
-
+    
     if 'fits' in test_set_fpath:
         mock_cib_file = fits.open(test_set_fpath)
         mock_cib_ims = np.array([mock_cib_file['map'+str(ifield)].data for ifield in ifield_list])
@@ -1176,7 +1598,8 @@ def generate_synthetic_mock_test_set(test_set_fpath, trilegal_sim_idx=1, inst=1,
     elif not type(bkg_val)==list:
         bkg_val = [bkg_val for x in range(len(ifield_list))]
 
-    print('bkg vals are ', bkg_val)
+    if verbose:
+        print('bkg vals are ', bkg_val)
 
 
     
@@ -1211,69 +1634,88 @@ def generate_synthetic_mock_test_set(test_set_fpath, trilegal_sim_idx=1, inst=1,
     
         if compute_bls:
             lb, B_ell, B_ell_list = cbps.compute_beam_correction_posts(ifield, inst, nbins=cbps.n_ps_bin, n_fine_bin=10, tail_path='data/psf_model_dict_updated_081121_ciber.npz')
-            print('B_ell is ', B_ell)
-            print('B_ell_list has length', len(B_ell_list))
+            if verbose:
+                print('B_ell is ', B_ell)
+                print('B_ell_list has length', len(B_ell_list))
             B_ells_new[imidx] = B_ell
         elif B_ells is not None:
             B_ell = B_ells[imidx]
         else:
             B_ell = cbps.B_ell
         
-        newnoisefpath = 'data/fluctuation_data/dr20210120/TM'+str(inst)+'/readCl2D/field'+str(ifield)+'_readCl2D.fits'
+
+        # newnoisefpath = 'data/fluctuation_data/dr20210120/TM'+str(inst)+'/readCl2D/field'+str(ifield)+'_readCl2D.fits'
         if include_photon_noise or include_inst_noise:
-            noise_model = cbps.load_noise_Cl2D(ifield, inst, noise_fpath=newnoisefpath, inplace=False, transpose=False)
-            print('min/max of noise model are ', np.min(noise_model), np.max(noise_model))
+            # noise_model = cbps.load_noise_Cl2D(ifield, inst, noise_fpath='data/fluctuation_data/TM'+str(inst)+'/noiseCl2D/dr20211007_rmf/field'+str(ifield)+'_noiseCl2D_rmf_highellmask.fits', inplace=False, transpose=transpose_noise
+            noise_model = cbps.load_noise_Cl2D(ifield, inst, noise_fpath='data/fluctuation_data/TM'+str(inst)+'/noiseCl2D/field'+str(ifield)+'_noiseCl2D_110421.fits', inplace=False, transpose=transpose_noise)
+            # noise_model = cbps.load_noise_Cl2D(noise_fpath='data/fluctuation_data/TM'+str(inst)+'/readCl_input_dr20210611/field'+str(ifield)+'_readCl2d_input.fits', inplace=False, transpose=True)
+            # noise_model = cbps.load_noise_Cl2D(ifield, inst, noise_fpath=newnoisefpath, inplace=False, transpose=True)
+
+            if verbose:
+                print('min/max of noise model are ', np.min(noise_model), np.max(noise_model))
             noise_models[imidx] = noise_model
         instrument_mask = cbps.maskInst_clean
         
-        if mock_trilegal_path is None:
-            mock_trilegal_path = 'data/mock_trilegal_realizations_081621/'+field_name_trilegal+'/mock_trilegal_'+field_name_trilegal+'_idx'+str(trilegal_sim_idx+1)+'_081621.npz'
-            # mock_trilegal_path = 'data/mock_trilegal_realizations_051321/'+field_name_trilegal+'/mock_trilegal_'+field_name_trilegal+'_idx'+str(trilegal_sim_idx)+'_051321.npz'
 
-        if '.npz' in mock_trilegal_path:
-            mock_trilegal = np.load(mock_trilegal_path)
-            mock_trilegal_im = mock_trilegal['srcmaps'][inst-1,:,:]
-            print('mock_trilegal_im has shape ', mock_trilegal_im.shape)
-            mock_trilegal_cat = mock_trilegal['cat']
-        elif '.fits' in mock_trilegal_path:
-            print('loading trilegal fits file..')
-            mock_trilegal = fits.open(mock_trilegal_path)
-            mock_trilegal_im = mock_trilegal['trilegal_'+str(cbps.inst_to_band[inst])+'_'+str(ifield)].data.transpose()
+        # if mock_trilegal_path is None:
+            # mock_trilegal_path = 'data/mock_trilegal_realizations_081621/'+field_name_trilegal+'/mock_trilegal_'+field_name_trilegal+'_idx'+str(trilegal_sim_idx+1)+'_081621.npz'
+            # mock_trilegal_path = 'data/mock_trilegal_realizations_051321/'+field_name_trilegal+'/mock_trilegal_'+field_name_trilegal+'_idx'+str(trilegal_sim_idx)+'_051321.npz'
+        if mock_trilegal_path is not None:
+            if '.npz' in mock_trilegal_path:
+                mock_trilegal = np.load(mock_trilegal_path)
+                mock_trilegal_im = mock_trilegal['srcmaps'][inst-1,:,:]
+
+                if verbose:
+                    print('mock_trilegal_im has shape ', mock_trilegal_im.shape)
+
+                mock_trilegal_cat = mock_trilegal['cat']
+            elif '.fits' in mock_trilegal_path:
+                print('loading trilegal fits file..')
+                mock_trilegal = fits.open(mock_trilegal_path)
+                mock_trilegal_im = mock_trilegal['trilegal_'+str(cbps.inst_to_band[inst])+'_'+str(ifield)].data.transpose()
         
         #  ------------- CIB realizations ----------------
 
-        lbins, cl_cib, _ = cbps.compute_processed_power_spectrum(inst, image=mock_cib_ims[imidx]-np.mean(mock_cib_ims[imidx]), bare_bones=True, convert_adufr_sb=False, verbose=verbose)
+        lbins, cl_cib, cl_cib_err, _ = cbps.compute_processed_power_spectrum(inst, image=mock_cib_ims[imidx]-np.mean(mock_cib_ims[imidx]), bare_bones=True, convert_adufr_sb=False, verbose=verbose)
         cls_cib[imidx] = cl_cib/B_ell**2
     
     
         # ------------- diffuse dgl realization -----------------------
         
-        if include_diffuse_comp:
-            if diffuse_realizations is not None:
-                diff_realization = diffuse_realizations[imidx]
-            else:
-                cl_dgl_iras = np.load('data/fluctuation_data/TM'+str(inst)+'/dgl_sim/dgl_from_iris_model_TM'+str(inst)+'_'+field_name_trilegal+'.npz')['cl']
-                cl_pivot_fac = cl_dgl_iras[0]*cbps.dimx*cbps.dimy 
-                _, _, diff_realization = generate_diffuse_realization_new(cbps.dimx, cbps.dimy, power_law_idx=-3.0, scale_fac=cl_pivot_fac)
-        
-            # new bare_bones
-            lbins, cl_diffuse, _ = cbps.compute_processed_power_spectrum(inst, image=diff_realization, bare_bones=True, convert_adufr_sb=False, verbose=verbose)
+        if diffuse_realizations is not None:
+            diff_realization = diffuse_realizations[imidx]
+        elif generate_diffuse_realization:
+            cl_dgl_iras = np.load('data/fluctuation_data/TM'+str(inst)+'/dgl_sim/dgl_from_iris_model_TM'+str(inst)+'_'+field_name_trilegal+'.npz')['cl']
+            cl_pivot_fac = cl_dgl_iras[0]*cbps.dimx*cbps.dimy 
+            _, _, diff_realization = generate_diffuse_realization_new(cbps.dimx, cbps.dimy, power_law_idx=-3.0, scale_fac=cl_pivot_fac)
+        else:
+            diff_realization = None 
+
+        if diff_realization is not None:
+            lbins, cl_diffuse,cl_diffuse_err,  _ = cbps.compute_processed_power_spectrum(inst, image=diff_realization, bare_bones=True, convert_adufr_sb=False, verbose=verbose)
             cls_diffuse[imidx] = cl_diffuse/B_ell**2
             diff_realizations[imidx] = diff_realization
 
         # ------------- combine individual components into total_signal --------------------
 
-        total_signal = mock_cib_ims[imidx] + mock_trilegal_im
-        if include_diffuse_comp:
+        total_signal = mock_cib_ims[imidx].copy()
+
+        if mock_trilegal_path is not None:
+            total_signal += mock_trilegal_im
+
+        # if include_diffuse_comp:
+        if diff_realization is not None:
             total_signal += diff_realization
         
         total_signal += bkg_val[imidx]
             
-        lbins, cl_tot, _ = cbps.compute_processed_power_spectrum(inst, image=total_signal-np.mean(total_signal), bare_bones=True, convert_adufr_sb=False, verbose=False)
-        print('cl_tot is ', cl_tot)
+        lbins, cl_tot, cl_tot_err, _ = cbps.compute_processed_power_spectrum(inst, image=total_signal-np.mean(total_signal), bare_bones=True, convert_adufr_sb=False, verbose=False)
+        
+        if verbose:
+            print('cl_tot is ', cl_tot)
 
         gt_sig = mock_cib_ims[imidx]+diff_realizations[imidx]
-        lbins, cl_gt, _ = cbps.compute_processed_power_spectrum(inst, image=gt_sig-np.mean(gt_sig), bare_bones=True, convert_adufr_sb=False, verbose=False)
+        lbins, cl_gt, cl_gt_err, _ = cbps.compute_processed_power_spectrum(inst, image=gt_sig-np.mean(gt_sig), bare_bones=True, convert_adufr_sb=False, verbose=False)
         cls_gt[imidx] = cl_gt/B_ell**2
         
         #  ----------------- generate read and shot noise realizations -------------------
@@ -1322,8 +1764,10 @@ def generate_synthetic_mock_test_set(test_set_fpath, trilegal_sim_idx=1, inst=1,
             
             fm = plot_map(gaussian_filter(mock_cib_ims[imidx], sigma=20), title='CIB (smoothed)', x0=x0, x1=x1, y0=y0, y1=y1)
             fm = plot_map(mock_cib_ims[imidx], title='CIB', x0=x0, x1=x1, y0=y0, y1=y1)
-            f = plot_map(mock_trilegal_im, title='trilegal', x0=x0, x1=x1, y0=y0, y1=y1)
-            if include_diffuse_comp:
+
+            if mock_trilegal_path is not None:
+                f = plot_map(mock_trilegal_im, title='trilegal', x0=x0, x1=x1, y0=y0, y1=y1)
+            if diff_realization is not None:
                 f = plot_map(diff_realization, title='diff realization', x0=x0, x1=x1, y0=y0, y1=y1)
             if include_photon_noise:
                 f = plot_map(snmap, title='shot noise', x0=x0, x1=x1, y0=y0, y1=y1)
@@ -1334,7 +1778,7 @@ def generate_synthetic_mock_test_set(test_set_fpath, trilegal_sim_idx=1, inst=1,
             f = plot_map(observed_ims[imidx], title='post ff image', x0=x0, x1=x1, y0=y0, y1=y1)
 
 
-        if apply_masking:
+        if generate_masks:
 
             if param_combo is None:
                 param_combo = [a1, b1, c1]
@@ -1368,22 +1812,32 @@ def generate_synthetic_mock_test_set(test_set_fpath, trilegal_sim_idx=1, inst=1,
     
     
 def calculate_powerspec_quantities(cbps, observed_ims, joint_masks, shot_sigma_sb_maps, noise_models, ifield_list, include_inst_noise=False, include_photon_noise=True, inst=1, ff_estimates=None, ff_truth=None, use_true_ff=False, inv_var_weight=True, infill_smooth_scale=3.,\
-                                  ff_stack_min=2, ff_min=0.2, apply_masking=True, inverse_Mkks=None, mkk_fpath=None, n_mkk_sims=100, n_split_mkk=2, \
-                                           apply_FW = True, noise_debias=True, mkk_correct=True, beam_correct=True, load_bl=False, n_FW_sims = 500, n_FW_split = 10, B_ells=None, show_plots=True, verbose=False, convert_adufr_sb=False, \
+                                  ff_stack_min=1, ff_min=0.2, apply_masking=True, apply_fourier_mask=False, inverse_Mkks=None, mkk_fpath=None, n_mkk_sims=100, n_split_mkk=2, \
+                                           apply_FW = True, fourier_masks=None, noise_debias=True, mkk_correct=True, beam_correct=True, n_FW_sims = 500, n_FW_split = 10, B_ells=None, show_plots=False, verbose=False, convert_adufr_sb=False, \
                                            stdpower=1):
     
+    ''' 
+    This is the (monster) function which processes the relevant data products to calculate the underlying sky power spectrum 
+
+    Parameters
+    ----------
+
+
+    Returns
+    -------
+
+
+
+    '''
+
     compute_ff = False
     if ff_estimates is None:
-        print('No ff estimates provided, will compute here using stacking estimator')
-        ff_estimates = np.zeros_like(joint_masks)
-        compute_ff = True
+        ff_estimates = np.zeros((len(ifield_list), cbps.dimx, cbps.dimy))
 
-
+        if not use_true_ff:
+            print('No ff estimates provided, will compute here using stacking estimator')
+            compute_ff = True
     ff_mask = None
-
-
-    print('compute ff is ', compute_ff)
-    # ff_estimates = np.zeros_like(joint_masks)
 
     nfields = len(observed_ims)
     
@@ -1393,15 +1847,21 @@ def calculate_powerspec_quantities(cbps, observed_ims, joint_masks, shot_sigma_s
         compute_mkk = True
         
     recovered_cls = np.zeros((nfields, cbps.n_ps_bin))
+    recovered_dcls = np.zeros((nfields, cbps.n_ps_bin))
     masked_Nls = np.zeros((nfields, cbps.n_ps_bin))
     masked_Nls_noff = np.zeros((nfields, cbps.n_ps_bin))
-    masked_images = np.zeros((nfields, cbps.dimx, cbps.dimy))
     cls_intermediate = []
 
-    print('cbps g1 facs are ', cbps.g1_facs)
-    print('cbps g2 facs are ', cbps.g2_facs)
+    masked_images = np.zeros((nfields, cbps.dimx, cbps.dimy))
+
+
+    if verbose:
+        print('cbps g1 facs are ', cbps.g1_facs)
+        print('cbps g2 facs are ', cbps.g2_facs)
     
     for imidx, obs in enumerate(observed_ims):
+
+        plot_map(obs*joint_masks[imidx], title='obs*mask')
 
         if use_true_ff:
             ff_estimates[imidx] = ff_truth
@@ -1418,6 +1878,12 @@ def calculate_powerspec_quantities(cbps, observed_ims, joint_masks, shot_sigma_s
             del(stack_obs[imidx])
             del(stack_mask[imidx])
 
+            for i in range(len(observed_ims)-1):
+                plot_map(stack_obs[i]*stack_mask[i], title='check i = '+str(i))
+
+            plot_map(obs*joint_masks[imidx], title='obs*mask before stack ff')
+
+
             ff_estimate, ff_mask, ff_weights = compute_stack_ff_estimate(stack_obs, target_mask=joint_masks[imidx], masks=stack_mask, means=None, inv_var_weight=inv_var_weight, ff_stack_min=ff_stack_min, \
                                                                         field_nfrs=field_nfrs)
             ff_estimates[imidx] = ff_estimate
@@ -1425,26 +1891,26 @@ def calculate_powerspec_quantities(cbps, observed_ims, joint_masks, shot_sigma_s
             sum_stack_mask = np.sum(stack_mask, axis=0)
 
             if show_plots:
-                plot_map(ff_estimate)
+                plot_map(obs*joint_masks[imidx]*ff_mask, title='obs*mask after stack ff')
+
+                plot_map(ff_estimate*joint_masks[imidx]*ff_mask, title='ff estimate * joint masks[imidx]')
                 sumstackfig = plot_map(sum_stack_mask, title='sum stack mask')
 
-            if ff_truth is not None:
-                ff_truth_masked = ff_truth.copy()
-                ff_truth_masked[joint_masks[imidx]==0] = 1.0
-                ff_truth_masked[ff_mask==0] = 1.0
+        if ff_truth is not None:
+            ff_truth_masked = ff_truth.copy()
+            ff_truth_masked[joint_masks[imidx]==0] = 1.0
+            ff_truth_masked[ff_mask==0] = 1.0
             
-        # else:
-        #     ff_estimates[imidx] = ff_truth
-            
-        if show_plots:
+
+        if show_plots and compute_ff:
             ff_f = plot_map(ff_estimates[imidx], title='FF estimate', nanpct=True)
             if ff_truth is not None:
                 ff_resid = plot_map(ff_truth_masked, title='FF true', nanpct=True)
                 kernel = Gaussian2DKernel(infill_smooth_scale)
                 ff_resid = plot_map(convolve(ff_truth_masked-ff_estimates[imidx], kernel), title='FF true - FF estimate', nanpct=True, cmap='bwr')
 
+        joint_mask_with_ff = None
         if apply_masking:
-                        
             if show_plots:
                 plot_srcmap_mask(joint_masks[imidx], 'joint mask', 0.)
                 if ff_mask is not None:
@@ -1453,21 +1919,19 @@ def calculate_powerspec_quantities(cbps, observed_ims, joint_masks, shot_sigma_s
 
             joint_mask_with_ff = joint_masks[imidx].copy()
             
-            print('before, joint mask frac is ', float(np.sum(joint_masks[imidx]))/float(cbps.dimx*cbps.dimy))
+            # print('before, joint mask frac is ', float(np.sum(joint_masks[imidx]))/float(cbps.dimx*cbps.dimy))
 
             if not use_true_ff and ff_mask is not None:
                 print('multiplying joint mask by ff mask')
                 joint_mask_with_ff *= ff_mask
                 
-            print('after ff_mask and ff_inf_mask, joint mask frac is ', float(np.sum(joint_mask_with_ff))/float(cbps.dimx*cbps.dimy))
-            print('computing Mkk matrices..')
+            # print('after ff_mask and ff_inf_mask, joint mask frac is ', float(np.sum(joint_mask_with_ff))/float(cbps.dimx*cbps.dimy))
+            # print('computing Mkk matrices..')
 
             if compute_mkk:
                 av_Mkk = cbps.Mkk_obj.get_mkk_sim(joint_mask_with_ff, n_mkk_sims, n_split=n_split_mkk, store_Mkks=False)
-
                 inverse_Mkk = compute_inverse_mkk(av_Mkk)
                 inverse_Mkks[imidx] = inverse_Mkk
-
                 plot_mkk_matrix(inverse_Mkk, inverse=True, symlogscale=True)
         
             else:
@@ -1483,23 +1947,64 @@ def calculate_powerspec_quantities(cbps, observed_ims, joint_masks, shot_sigma_s
 
         if include_photon_noise or include_inst_noise:
         
-            fourier_weights, mean_cl2d = cbps.compute_FW_from_noise_sim(nsims=n_FW_sims, n_split=n_FW_split, apply_mask=apply_masking, \
-                                           mask=joint_mask_with_ff, noise_model=noise_models[imidx], inst=inst, show=False,\
-                                            read_noise=include_inst_noise, photon_noise=include_photon_noise, shot_sigma_sb=shot_sigma_sb_maps[imidx], inplace=False, \
-                                            ff_estimate=ff_estimates[imidx], stdpower=stdpower)
 
-            cbps.FW_image = fourier_weights
+            # fourier_weights, mean_cl2d = cbps.compute_FW_from_noise_sim(nsims=n_FW_sims, n_split=n_FW_split, apply_mask=apply_masking, \
+            #                                mask=joint_mask_with_ff, noise_model=noise_models[imidx], inst=inst, show=False,\
+            #                                 read_noise=include_inst_noise, photon_noise=include_photon_noise, shot_sigma_sb=shot_sigma_sb_maps[imidx], inplace=False, \
+            #                                 ff_estimate=ff_estimates[imidx], stdpower=stdpower)
+
+            # fourier_weights, mean_cl2d = cbps.compute_FW_from_noise_sim(nsims=n_FW_sims, n_split=n_FW_split, apply_mask=apply_masking, \
+            #                                mask=joint_mask_with_ff, noise_model=noise_models[imidx], inst=inst, show=False,\
+            #                                 read_noise=include_inst_noise, photon_noise=include_photon_noise, shot_sigma_sb=shot_sigma_sb_maps[imidx], inplace=False, \
+            #                                 ff_estimate=None, stdpower=stdpower)
+
+            if not use_true_ff:
+                unmasked_mean_level = np.mean(obs[joint_mask_with_ff==1])
+                print('unmasked mean level is ', unmasked_mean_level)
+            else:
+                unmasked_mean_level = None
+
+            fourier_weights, mean_cl2d = cbps.estimate_noise_power_spectrum(ifield=ifield_list[imidx], nsims=n_FW_sims, n_split=n_FW_split, apply_mask=apply_masking, \
+               mask = joint_mask_with_ff, noise_model=noise_models[imidx], inst=inst, show=False, read_noise=include_inst_noise, \
+                photon_noise=include_photon_noise, ff_estimate=ff_estimates[imidx], shot_sigma_sb=shot_sigma_sb_maps[imidx], inplace=False, \
+                simmap_dc = unmasked_mean_level)
+            
+
+
+            if apply_fourier_mask:
+
+                if fourier_masks is not None:
+                    fourier_weights *= fourier_masks[imidx]
+                else:
+                    ybandtop = cbps.dimy//2 + 100
+                    ybandbottom = cbps.dimy//2 - 100
+                    noband_noise = np.zeros_like(fourier_weights)
+                    noband_noise[ybandtop:,:] = mean_cl2d[ybandtop:,:]
+                    noband_noise[:ybandbottom,:] = mean_cl2d[:ybandbottom,:]
+                    itermask = iter_sigma_clip_mask(noband_noise, sig=5, nitermax=10, initial_mask=np.ones_like(noband_noise.astype(np.int)))
+                    itermask[ybandbottom:ybandtop,:] = 1
+                    plot_map(mean_cl2d, title='mean cl2d')
+                    plot_map(itermask, title='itermask')
+                    fourier_weights *= itermask
+            
+            if apply_FW:
+                print('setting cbps.FW_image to fourier_weights..')
+                cbps.FW_image = fourier_weights
+
+                if fourier_masks is not None:
+                    print('fourier_masks is not None, multiplying fourier weights by mask..')
+                    cbps.FW_image *= fourier_masks[imidx]
 
             # want the power spectrum bias due to read + photon noise, passed through 
-            cbps.compute_noise_power_spectrum(inst, noise_Cl2D=mean_cl2d, inplace=True, apply_FW=True, weights=fourier_weights)
+            cbps.compute_noise_power_spectrum(inst, noise_Cl2D=mean_cl2d, inplace=True, apply_FW=apply_FW, weights=fourier_weights)
 
             masked_Nls[imidx] = cbps.N_ell
         
         
         if not include_inst_noise and not include_photon_noise:
+            print('Neither instrument noise nor photon noise provided, so setting noise_debias to False and apply_FW to False..')
             noise_debias = False
             apply_FW = False
-
 
         # if applying beam correction, use input B_ells or load from file if not present
         if beam_correct:
@@ -1509,7 +2014,12 @@ def calculate_powerspec_quantities(cbps, observed_ims, joint_masks, shot_sigma_s
                 cbps.load_data_products(ifield_list[imidx], inst, load_all=False, beam_correction=True)
                 B_ell = cbps.B_ell
 
-        lb, cl_proc, masked_image = cbps.compute_processed_power_spectrum(inst, mask=joint_mask_with_ff, apply_mask=apply_masking, \
+        if show_plots and joint_mask_with_ff is not None:
+            plot_map(obs*joint_mask_with_ff, title='obs x joint mask')
+
+
+
+        lb, cl_proc, cl_proc_err, masked_image = cbps.compute_processed_power_spectrum(inst, mask=joint_mask_with_ff, apply_mask=apply_masking, \
                                                                  image=obs, convert_adufr_sb=convert_adufr_sb, \
                                                                 mkk_correct=mkk_correct, beam_correct=beam_correct, B_ell=B_ell, \
                                                                 apply_FW=apply_FW, verbose=verbose, noise_debias=noise_debias, \
@@ -1520,17 +2030,156 @@ def calculate_powerspec_quantities(cbps, observed_ims, joint_masks, shot_sigma_s
 
         print('recovered cl is ', cl_proc)
         recovered_cls[imidx] = cl_proc
+        recovered_dcls[imidx] = cl_proc_err
         masked_images[imidx] = masked_image
 
 
         
-    return ff_estimates, inverse_Mkks, lb, recovered_cls, masked_images, masked_Nls, masked_Nls_noff, cls_intermediate
+    return ff_estimates, inverse_Mkks, lb, recovered_cls, recovered_dcls, masked_images, masked_Nls, masked_Nls_noff, cls_intermediate
 
 
+def compute_powerspectra_realdat(inst, n_ps_bin=25, J_mag_lim=17.5, ifield_list=[4, 5, 6, 7, 8], \
+                                n_mkk_sims=50, n_split_mkk=1, n_FW_sims=50, n_FW_split=1, mask_fpaths=None, fourier_masks=None, ff_stack_min=1, \
+                                show_plots=False, g1_fac_dict=None, g2_fac_dict=None, inverse_Mkks=None, \
+                                base_fluc_path='/Volumes/Seagate Backup Plus Drive/Toolkit/Mirror/Richard/ciber_fluctuation_data/', \
+                                use_ff_est=True, ff_estimates=None, apply_fourier_mask=False, transpose_noise=False, verbose=False):
+    nfields = len(ifield_list)
+    B_ells = np.zeros((nfields, n_ps_bin))
+    readnoise_cls = np.zeros((nfields, n_ps_bin))
+    observed_ims, _, noise_models, shot_sigma_sb_maps, _, joint_masks, _ = instantiate_dat_arrays_fftest(1024, 1024, 5)
+
+    cbps = CIBER_PS_pipeline(n_ps_bin=n_ps_bin)
+    
+
+    if g1_fac_dict is not None:
+        cbps.g1_facs = g1_fac_dict
+   
+    if g2_fac_dict is not None:
+        cbps.g2_facs = g2_fac_dict
+        cbps.cal_facs = dict({1:cbps.g1_facs[1]*cbps.g2_facs[1], 2:cbps.g1_facs[2]*cbps.g2_facs[2]}) # updated 
+
+    print('cbps cal facs are ', cbps.cal_facs)
+    print('cbps cal facs are ', cbps.g1_facs)
+
+    for i, ifield in enumerate(ifield_list):
+        
+
+        cbps.load_data_products(ifield, inst, verbose=True)
+
+        print('cbps.B_ell is ', cbps.B_ell)
+        cbps.load_noise_Cl2D(ifield, inst, noise_fpath='data/fluctuation_data/TM'+str(inst)+'/noiseCl2D/field'+str(ifield)+'_noiseCl2D_110421.fits', inplace=True, transpose=transpose_noise)
+        
+        # cbps.load_noise_Cl2D(ifield, inst, noise_fpath='data/fluctuation_data/TM'+str(inst)+'/noiseCl2D/dr20211007_rmf/field'+str(ifield)+'_noiseCl2D_rmf_highellmask.fits', inplace=True, transpose=transpose_noise)
+        # cbps.load_noise_Cl2D(noise_fpath='data/fluctuation_data/TM'+str(inst)+'/readCl_input_dr20210611/field'+str(ifield)+'_readCl2d_input.fits', transpose=True)
+        observed_ims[i] = cbps.image*cbps.cal_facs[inst]
+
+        if show_plots:
+            plot_map(cbps.noise_Cl2D, title='loaded Noise CL2d (transpose is '+str(transpose_noise)+')')
+            plot_map(observed_ims[i], title='obsreved ims i='+str(i))
+        
+        noise_models[i] = cbps.noise_Cl2D
+
+        shot_sigma_sb_maps[i] = cbps.compute_shot_sigma_map(inst, image=observed_ims[i], nfr=cbps.field_nfrs[ifield])
+        # shot_sigma_sb_maps[i] = np.median(shot_sigma_sb_maps[i])*np.ones_like(observed_ims[i])
+        
+        # if show_plots:
+        #     plt.figure(figsize=(6, 5))
+        #     plt.title(cbps.ciber_field_dict[ifield], fontsize=18)
+        #     plt.hist(shot_sigma_sb_maps[i].ravel(), bins=30)
+        #     plt.yscale('log')
+        #     plt.show()
+
+#         mask_fpathprev = cbps.data_path+'/TM'+str(inst)+'/mask/field'+str(ifield)+'_TM'+str(inst)+'_strmask_Jlim='+str(J_mag_lim)+'_040521.fits'
+#         instm = cbps.load_mask(ifield, inst, mask_fpath=mask_fpathprev, masktype='strmask', inplace=False)
+#         jm = np.array(cbps.maskInst_clean*instm)
+#         joint_masks[i] = np.array(cbps.maskInst_clean*cbps.strmask)
+        
+        if mask_fpaths is None:
+            mask_fpath = base_fluc_path+'/TM'+str(inst)+'/masks/joint_mask_with_ffmask_ifield'+str(ifield)+'_inst'+str(inst)+'_abc110821.fits'
+            # mask_fpath = base_fluc_path+'/TM'+str(inst)+'/masks/joint_mask_with_ffmask_ifield'+str(ifield)+'_inst'+str(inst)+'.fits'
+        else:
+            mask_fpath = mask_fpaths[i]
+        joint_masks[i] = fits.open(mask_fpath)['joint_mask_'+str(ifield)].data
+        
+        # if ff_estimates is None:
+        #     ff_fpath = base_fluc_path+'/TM'+str(inst)+'/stackFF/ff_estimate_ifield'+str(ifield)+'_inst'+str(inst)+'_Jlim.fits'
+        #     ff_estimates[i] = fits.open(ff_fpath)['ff_'+str(ifield)].data
+        
+        if show_plots:
+            plot_map(joint_masks[i]*observed_ims[i], title='joint masks with ff')
+
+            if ff_estimates is not None:
+                plot_map(ff_estimates[i], title='ff estimate')
+            
+
+        B_ells[i] = cbps.B_ell
+    
+    if show_plots:
+        plt.figure()
+        for i, ifield in enumerate(ifield_list):
+            plt.plot(cbps.Mkk_obj.midbin_ell, B_ells[i], label=cbps.ciber_field_dict[ifield], color='C'+str(i))
+        plt.legend()
+        plt.xscale('log')
+        plt.yscale('log')
+        plt.show()
+    
+    if not use_ff_est:
+        ff_estimates = None
+
+    ff_estimates, inverse_Mkks, lb, \
+        recovered_cls,recovered_dcls, masked_images,\
+         masked_nls, masked_nls_noff, cls_intermediate = calculate_powerspec_quantities(cbps, observed_ims, joint_masks,\
+                                                                                        shot_sigma_sb_maps, noise_models, ifield_list,\
+                                                                                        include_inst_noise=True, include_photon_noise=True,\
+                                                                                        inst=inst, inverse_Mkks=inverse_Mkks, \
+                                                                                        n_mkk_sims=n_mkk_sims, n_split_mkk=n_split_mkk,\
+                                                                                        n_FW_sims=n_FW_sims, n_FW_split=n_FW_split,\
+                                                                                        ff_estimates=ff_estimates, use_true_ff=False, ff_stack_min=2, \
+                                                                                        apply_masking=True, mkk_correct=True, \
+                                                                                        beam_correct=True, B_ells=B_ells, show_plots=show_plots)
 
 
+    return ff_estimates, inverse_Mkks, lb, recovered_cls, recovered_dcls, masked_images, masked_nls, masked_nls_noff, cls_intermediate, lb
+    
+   
 
 
+def iter_sigma_clip_mask(image, sig=5, nitermax=10, initial_mask=None):
+    # image assumed to be 2d
+    iteridx = 0
+    
+    summask = image.shape[0]*image.shape[1]
+    running_mask = (image != 0).astype(np.int)
+    if initial_mask is not None:
+        running_mask *= initial_mask
+        
+    while iteridx < nitermax:
+        
+        new_mask = sigma_clip_maskonly(image, previous_mask=running_mask, sig=sig)
+        
+        if np.sum(running_mask*new_mask) < summask:
+            running_mask *= new_mask
+            summask = np.sum(running_mask)
+        else:
+            return running_mask
+
+        iteridx += 1
+        
+    return running_mask
+
+def sigma_clip_maskonly(vals, previous_mask=None, sig=5):
+    
+    valcopy = vals.copy()
+    if previous_mask is not None:
+        valcopy[previous_mask==0] = np.nan
+        sigma_val = np.nanstd(valcopy)
+    else:
+        sigma_val = np.nanstd(valcopy)
+    
+    abs_dev = np.abs(vals-np.nanmedian(valcopy))
+    mask = (abs_dev < sig*sigma_val).astype(np.int)
+
+    return mask
 
 
 
