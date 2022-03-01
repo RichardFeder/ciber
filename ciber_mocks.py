@@ -39,8 +39,60 @@ def compute_star_gal_mask(stellar_cat, galaxy_cat, star_mag_idx=2, gal_mag_idx=3
     
     return joined_mask
 
+def get_ciber_dgl_powerspec(dgl_fpath, inst, iras_color_facs=None, mapkey='iris_map', pixsize=7., dgl_bins=10):
+    
+    '''
+    
+    Parameterss
+    ----------
+    
+    iras_color_facs: dictionary of scalar conversion factors between mean surface brightness at 100 micron vs. CIBER bands
+    
+    Returns
+    -------
+    
+    lb: multipoles used
+    cl: angular 1d power spectrum
+    dgl_map: dgl map obtained from dgl_fpath
+    
+    
+    '''
+    if iras_color_facs is None:
+#         iras_color_facs = dict({1:15., 2:8.}) # nW m^-2 sr^-1 (MJy sr^-1)^-1
+        iras_color_facs = dict({1:6.4, 2:2.6}) # from MIRIS observations, Onishi++2018
+        
+    dgl = np.load(dgl_fpath)[mapkey]
+    dgl_map = dgl*iras_color_facs[inst]
+    dgl_map -= np.mean(dgl_map)
+    
+    lb, cl, cl_err = get_power_spec(dgl_map, pixsize=pixsize, nbins=dgl_bins)
+    
+    return lb, cl, dgl_map
 
-def generate_diffuse_realization_new(N, M, power_law_idx=-3.0, scale_fac=1.):
+
+def generate_diffuse_realization(N, M, power_law_idx=-3.0, scale_fac=1., B_ell_2d=None):
+
+    ''' 
+    This function takes a power law index and an amplitude and generates a Gaussian random field with power law PS. 
+    Additionally, it (should) apply a beam correction in Fourier space to get a beam-convolved realization of the diffuse emission.
+
+    Inputs
+    ------
+    
+    N, M : `ints`. Dimension of image in pixels.
+    power_law_idx : `float`. Power law index of diffuse component power spectrum.
+        Default is -3.0 (DGL).
+    scale_fac : `float`, optional. Scales amplitude of input power spectrum.
+        Default is 1. 
+
+    Returns
+    -------
+
+    ell_map : `np.array` of type `float`, shape (N, M).
+    ps : `np.array` of type `float`, shape (N, M).
+    diffuse_realiz : `np.array` of type `float`, shape (N, M).
+
+    '''
 
     freq_x = fftshift(np.fft.fftfreq(N, d=1.0))
     freq_y = fftshift(np.fft.fftfreq(M, d=1.0))
@@ -54,27 +106,30 @@ def generate_diffuse_realization_new(N, M, power_law_idx=-3.0, scale_fac=1.):
     ps = ell_map**power_law_idx
     ps[0,0] = 0.
 
-    diffuse_realiz = ifft2(np.sqrt(scale_fac*ps)*(np.random.normal(0, 1, size=(N, M)) + 1j*np.random.normal(0, 1, size=(N, M))))
+    if B_ell_2d is None:
+        B_ell_2d = np.ones_like(ps)
 
-    return ell_map, ps, diffuse_realiz.real
+    diffuse_realiz = ifft2(np.sqrt(scale_fac*ps*B_ell_2d**2)*(np.random.normal(0, 1, size=(N, M)) + 1j*np.random.normal(0, 1, size=(N, M)))).real
 
-def generate_diffuse_realization(N, M, power_law_idx=-3.7, scale_fac=1.):
+    return ell_map, ps, diffuse_realiz
 
-    freq_x = fftshift(np.fft.fftfreq(N, d=1.0))
-    freq_y = fftshift(np.fft.fftfreq(M, d=1.0))
+# def generate_diffuse_realization(N, M, power_law_idx=-3.7, scale_fac=1.):
 
-    ell_x,ell_y = np.meshgrid(freq_x,freq_y)
-    ell_x = ifftshift(ell_x)
-    ell_y = ifftshift(ell_y)
+#     freq_x = fftshift(np.fft.fftfreq(N, d=1.0))
+#     freq_y = fftshift(np.fft.fftfreq(M, d=1.0))
 
-    ell_map = np.sqrt(ell_x**2 + ell_y**2)
+#     ell_x,ell_y = np.meshgrid(freq_x,freq_y)
+#     ell_x = ifftshift(ell_x)
+#     ell_y = ifftshift(ell_y)
 
-    ps = ell_map**power_law_idx
-    ps[0,0] = 0.
+#     ell_map = np.sqrt(ell_x**2 + ell_y**2)
 
-    diffuse_realiz = ifft2(np.sqrt(ps)*(np.random.normal(0, 1, size=(N, M)) + 1j*np.random.normal(0, 1, size=(N, M))))
+#     ps = ell_map**power_law_idx
+#     ps[0,0] = 0.
 
-    return ell_map, ps, scale_fac*diffuse_realiz.real
+#     diffuse_realiz = ifft2(np.sqrt(ps)*(np.random.normal(0, 1, size=(N, M)) + 1j*np.random.normal(0, 1, size=(N, M))))
+
+#     return ell_map, ps, scale_fac*diffuse_realiz.real
     
 
 def generate_psf_template_bank(beta, rc, norm, n_fine_bin=10, nwide=17, pix_to_arcsec=7.):
@@ -262,11 +317,12 @@ class ciber_mock():
     lam_effs = np.array([1.05, 1.79])*1e-6*u.m # effective wavelength for bands
     sky_brightness = np.array([300., 370.])*sb_intensity_unit
     instrument_noise = np.array([33.1, 17.5])*sb_intensity_unit
+
     helgason_to_ciber_rough = dict({1:'J', 2:'H'})
 
     fac_upsample = 10 # upsampling factor for PSF interpolation
 
-    def __init__(self, pcat_model_eval=True, ciberdir='/Users/richardfeder/Documents/caltech/ciber2/ciber/', \
+    def __init__(self, pcat_model_eval=False, ciberdir='/Users/richardfeder/Documents/caltech/ciber2/ciber/', \
                 nx=1024, ny=1024, psf_template=None, psf_temp_bank=None):
 
         for attr, valu in locals().items():
@@ -305,7 +361,8 @@ class ciber_mock():
         m_arr = cat[2,:]
         return x_arr, y_arr, m_arr
         
-    def get_psf(self, ifield=4, band=0, multfac=7.0, nbin=0., fac_upsample=10, make_ds_temp_bank=False, poly_fit=True, nwide=17, tail_path='data/psfparams.txt'):
+    def get_psf(self, ifield=4, band=0, multfac=7.0, nbin=0., fac_upsample=10, make_ds_temp_bank=False, poly_fit=True, nwide=17, tail_path='data/psf_model_dict_updated_081121_ciber.npz', \
+                verbose=False):
         
         ''' Function loads the relevant quantities for the CIBER point spread function 
 
@@ -337,7 +394,7 @@ class ciber_mock():
 
         # beta, rc, norm = find_psf_params(self.ciberdir+tail_path, tm=band+1, field=self.ciber_field_dict[ifield])
         # new psf test
-        beta, rc, norm = load_psf_params_dict(band+1, ifield=ifield, tail_path=self.ciberdir+tail_path)
+        beta, rc, norm = load_psf_params_dict(band+1, ifield=ifield, tail_path=self.ciberdir+tail_path, verbose=verbose)
         Nlarge = self.nx+30+30 
 
         if make_ds_temp_bank:
@@ -353,7 +410,8 @@ class ciber_mock():
         self.psf_template = self.psf_full[Nlarge-nwide:Nlarge+nwide+1, Nlarge-nwide:Nlarge+nwide+1]
         # self.psf_template = self.psf_full[Nlarge-nwide:Nlarge+nwide, Nlarge-nwide:Nlarge+nwide]
         
-        print('imap center has shape', self.psf_template.shape)
+        if verbose:
+            print('imap center has shape', self.psf_template.shape)
 
         if poly_fit:
 
@@ -373,7 +431,7 @@ class ciber_mock():
         return self.darktime_name_dict[flight][field-1]
 
     def mag_2_jansky(self, mags):
-        ''' unit conversion from magnitudes to Jansky ''' 
+        ''' unit conversion from monochromatic AB magnitudes to units of Jansky. In the presence of a continuous bandpass this needs to change ''' 
         return 3631*u.Jansky*10**(-0.4*mags)
 
     def mag_2_nu_Inu(self, mags, band):
@@ -382,11 +440,11 @@ class ciber_mock():
         return jansky_arr.to(u.nW*u.s/u.m**2)*const.c/(self.pix_sr*self.lam_effs[band])
 
     def make_srcmap_temp_bank(self, ifield, inst, cat,\
-                             flux_idx=-1, n_fine_bin=10, nwide=17, beta=None, rc=None, norm=None, \
-                             tail_path='data/psf_model_dict_updated_081121_ciber.npz'):
+                             flux_idx=-1, n_fine_bin=10, nwide=17,  beta=None, rc=None, norm=None, \
+                             tail_path='data/psf_model_dict_updated_081121_ciber.npz', verbose=False):
 
         if beta is None:
-            beta, rc, norm = load_psf_params_dict(inst, ifield=ifield, tail_path=self.ciberdir+tail_path)
+            beta, rc, norm = load_psf_params_dict(inst, ifield=ifield, tail_path=self.ciberdir+tail_path, verbose=verbose)
 
 
         if self.psf_temp_bank is None:
@@ -397,7 +455,8 @@ class ciber_mock():
         
         for n in range(len(cat)):
             
-            # find subpixel corresponding to source
+            # find subpixel corresponding to source. Note indices are swapped for iy_sub/ix_sub w.r.t. rest of function, but I think this is due to the template bank
+            # convention being flipped and this 'undoes' that
             iy_sub = int(((n_fine_bin//2) + np.floor(n_fine_bin*(cat[n, 0]-np.floor(cat[n, 0]))))%n_fine_bin)
             ix_sub = int(((n_fine_bin//2) + np.floor(n_fine_bin*(cat[n, 1]-np.floor(cat[n, 1]))))%n_fine_bin)
                         
@@ -409,7 +468,6 @@ class ciber_mock():
             
         # downscale map
         return srcmap[self.nx//2:3*self.nx//2, self.ny//2:3*self.ny//2]
-
 
 
     def make_srcmap(self, ifield, cat, flux_idx=-1, band=0, nbin=0., nwide=17, multfac=7.0, \
@@ -496,9 +554,11 @@ class ciber_mock():
      
 
     def mocks_from_catalogs(self, catalog_list, ncatalog, mock_data_directory=None, m_min=9., m_max=30., m_tracer_max=25., \
-                        ihl_frac=0.0, ifield=4, ifield_list=None, band=0, save=False, extra_name='', pcat_model_eval=False, add_noise=False, cat_return='tracer', \
+                        ihl_frac=0.0, ifield=4, ifield_list=None, band=0, inst=None, save=False, extra_name='', pcat_model_eval=False, add_noise=False, cat_return='tracer', \
                         temp_bank=True, n_fine_bin=10):
     
+        if inst is None:
+            inst = band+1
         srcmaps_full, catalogs, noise_realizations, ihl_maps = [[] for x in range(4)]
         
         print('m_min = ', m_min)
@@ -522,18 +582,16 @@ class ciber_mock():
             cat_full = np.hstack([cat_full, np.expand_dims(I_arr_full.value, axis=1)])
 
             if temp_bank:
-                srcmap_full = self.make_srcmap_temp_bank(ifield_list[c], band+1, cat_full, flux_idx=-1, n_fine_bin=n_fine_bin, nwide=17)
+                srcmap_full = self.make_srcmap_temp_bank(ifield_list[c], inst, cat_full, flux_idx=-1, n_fine_bin=n_fine_bin, nwide=17)
             else:
                 srcmap_full = self.make_srcmap(ifield_list[c], cat_full, band=band, pcat_model_eval=pcat_model_eval, nwide=17)
 
             if add_noise:
-
+                # this functionality is largely deprecated, using more detailed noise model now
                 large_noise = np.random.normal(self.sky_brightness[band].value, self.instrument_noise[band].value, size=(srcmap_full.shape[0]+100, srcmap_full.shape[1]+100))
                 print('large noise has shape ', large_noise.shape)
                 large_conv_noise = scipy.signal.convolve2d(large_noise, self.psf_template, 'same')
-
                 conv_noise = large_conv_noise[50:50+srcmap_full.shape[0], 50:50+srcmap_full.shape[1]]
-
                 print('conv noise has shape ', conv_noise.shape)
                 # noise = np.random.normal(self.sky_brightness[band].value, self.instrument_noise[band].value, size=srcmap_full.shape)
                 # conv_noise = scipy.signal.convolve2d(noise, self.psf_template, 'same')
@@ -571,42 +629,47 @@ class ciber_mock():
     def make_mock_ciber_map(self, ifield, m_min, m_max, ifield_list=None, mock_cat=None, band=0, ihl_frac=0., ng_bins=8,\
                             zmin=0.0, zmax=2.0, pcat_model_eval=True, ncatalog=1, add_noise=False, cat_return='tracer', m_tracer_max=20., \
                             temp_bank=True):
-        ''' This is the parent function that uses other functions in the class to generate a full mock catalog/CIBER image. If there is 
+        """ 
+        This is the parent function that uses other functions in the class to generate a full mock catalog/CIBER image. If there is 
         no mock catalog input, the function draws a galaxy catalog from the Helgason model with the galaxy_catalog() class. With a catalog 
         in hand, the function then imposes any cuts on magnitude, computes mock source intensities and then generates the corresponding 
         source maps/ihl maps/noise realizations that go into the final CIBER mock.
 
-        Inputs:
-            ifield (int): field from which to get PSF parameters
-            m_min/m_max (float): minimum and maximum source fluxes to use from mock catalog in image generation
+        Inputs
+        ------
+        
+        ifield (int): field from which to get PSF parameters
+        m_min/m_max (float): minimum and maximum source fluxes to use from mock catalog in image generation
             
-            ifield_list (list, default=None): this can be used for making sets of CIBER observations from realistic fields, 
+        ifield_list (list, default=None): this can be used for making sets of CIBER observations from realistic fields, 
                                                 e.g., ifield_list = [4, 5, 6, 7, 8] 
-            mock_cat (np.array, default=None): this can be used to specify a catalog to generate beforehand rather than sampling a random one
-            band (int, default=0): CIBER band of mock image, either 0 (band J) or 1 (band H)
-            ihl_frac (float, default=0.0): determines amplitude of IHL around each source as fraction of source flux If ihl_frac=0.2, it means
+        mock_cat (np.array, default=None): this can be used to specify a catalog to generate beforehand rather than sampling a random one
+        band (int, default=0): CIBER band of mock image, either 0 (band J) or 1 (band H)
+        ihl_frac (float, default=0.0): determines amplitude of IHL around each source as fraction of source flux If ihl_frac=0.2, it means
                 you place a source in the map with flux f and then add a template with amplitude 0.2*f. It's an additive feature, not dividing 
                 source flux into 80/20 or anything like that.
 
-            ng_bins (int, default=5): number of redshift bins to use when making mock map/catalog. Each redshift bin has its own generated 
+        ng_bins (int, default=5): number of redshift bins to use when making mock map/catalog. Each redshift bin has its own generated 
                 clustering field drawn with the lognormal technique. 
-            zmin/zmax (float, default=0.01/5.0): form redshift range from which to draw galaxies from Helgason model.
+        zmin/zmax (float, default=0.01/5.0): form redshift range from which to draw galaxies from Helgason model.
 
-            add_noise (boolean, default=False): determines whether to make gaussian noise realization based on sky brightnesses. in most cases
+        add_noise (boolean, default=False): determines whether to make gaussian noise realization based on sky brightnesses. in most cases
                                                 this will be outdated since we use a more detailed read noise/photon noise model
 
-            temp_bank (boolean, default=True): if True, image generation is done using a precomputed template bank of PSFs that are interpolated 
+        temp_bank (boolean, default=True): if True, image generation is done using a precomputed template bank of PSFs that are interpolated 
                                                 and downsampled to CIBER resolution.
 
-        Outputs:
-
-            full_map/srcmap/noise/ihl_map (np.array): individual and combined components of mock CIBER map
-            cat (np.array): galaxy catalog for mock CIBER map
-            psf_template (np.array): psf template used to generate mock CIBER sources
+        Returns
+        -------
+        
+        full_map/srcmap/noise/ihl_map (np.array): individual and combined components of mock CIBER map
+        cat (np.array): galaxy catalog for mock CIBER map
+        psf_template (np.array): psf template used to generate mock CIBER sources
             
-        '''
+        """
 
-        band_helgason = self.helgason_to_ciber_rough[band+1]
+        inst = band+1
+        band_helgason = self.helgason_to_ciber_rough[inst]
         print('helgason band is ', band_helgason)
         if mock_cat is not None:
             m_arr = []

@@ -4,8 +4,8 @@ from scipy import stats
 from helgason import *
 from lognormal_counts import *
 from catalog_utils import *
-
 import sys
+
 
 if sys.version_info[0] == 3:
     from halo_model import *
@@ -13,10 +13,11 @@ if sys.version_info[0] == 3:
     import hmf
     import camb
 
-
     pars = camb.CAMBparams()
     pars.set_cosmology(H0=67.5, ombh2=0.022, omch2=0.122)
     pars.InitPower.set_params(ns=0.965)
+
+
 
 def k_to_ell(k, comoving_dist):
     ''' Convert wavenumber to multipole for fixed redshift '''
@@ -32,7 +33,7 @@ def make_lists_arrays(list_of_lists):
         list_of_arrays.append(np.array(l))
     return list_of_arrays
 
-def positions_from_counts(counts_map, cat_len=None):
+def positions_from_counts(counts_map, cat_len=None, add_subpix_scatter=False):
 
     ''' Given a counts map, generate source catalog positions consistent with those counts. 
     Not doing any subpixel position assignment or anything like that.''' 
@@ -47,6 +48,11 @@ def positions_from_counts(counts_map, cat_len=None):
         idxs = np.random.choice(np.arange(len(thetax)), cat_len)
         thetax = np.array(thetax)[idxs]
         thetay = np.array(thetay)[idxs]
+
+    if add_subpix_scatter:
+        # print('adding subpixel scatter')
+        thetax += np.random.uniform(-0.5, 0.5, len(thetax))
+        thetay += np.random.uniform(-0.5, 0.5, len(thetay))
 
     return np.array(thetax), np.array(thetay)
 
@@ -154,7 +160,7 @@ class galaxy_catalog():
             pdfs.append(pdf)
         return pdfs
 
-    def generate_positions(self, Nsrc, size, nmaps, ell_min=90., random_positions=False, hsc=False, cl=None, ells=None):
+    def generate_positions(self, Nsrc, size, nmaps, ell_min=90., random_positions=False, hsc=False, cl=None, ells=None, add_subpix_scatter=True):
         
         ''' If random_positions is True, this function just draws random source positions, but otherwise a clustering realization is generated and
         positions are sampled from this field. Can also take in a preselected HSC catalog'''
@@ -174,7 +180,7 @@ class galaxy_catalog():
             self.total_counts += counts
 
             for i in range(counts.shape[0]):
-                tx, ty = positions_from_counts(counts[i])
+                tx, ty = positions_from_counts(counts[i], add_subpix_scatter=add_subpix_scatter)
                 #shuffle is used because x positions are ordered and then apparent magnitudes are assigned starting brightest first a few lines down
 
                 randomize = np.arange(len(tx))
@@ -189,7 +195,7 @@ class galaxy_catalog():
 
     def generate_galaxy_catalogs(self, ng_bins=5, zmin=0.01, zmax=5.0, ndeg=4.0, m_min=13, m_max=28, hsc=False, \
                                ell_min=90., Mabs_min=-30.0, Mabs_max=-15., size=1024, random_positions=False, \
-                                Mabs_nbin=100, band='H', cl=None, ells=None, n_catalogs=1, n_bin_Mapp=200):
+                                Mabs_nbin=100, band='J', cl=None, ells=None, n_catalogs=1, n_bin_Mapp=200):
         
         ''' This function puts together other functions in the galaxy_catalog() class as full pipeline to generate galaxy catalog realizations,
         given some angular power spectrum and Helgason model'''
@@ -235,7 +241,7 @@ class galaxy_catalog():
             print('number counts here are:', np.sum(number_counts[i])*n_square_deg, n_square_deg)
             txs, tys = self.generate_positions(np.sum(number_counts[i])*n_square_deg, size, n_catalogs, \
                                               ell_min=ell_min, random_positions=random_positions, hsc=hsc, \
-                                            cl=cl, ells=ells)
+                                            cl=cl, ells=ells, add_subpix_scatter=True)
             
             for cat in range(n_catalogs):
                 thetax_list[cat].extend(txs[cat])
