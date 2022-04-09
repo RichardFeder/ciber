@@ -25,9 +25,51 @@ from powerspec_utils import *
 CIBER_PS_pipeline() is the core module for CIBER power spectrum analysis in Python. 
 It contains data processing routines and the basic steps going from flight images in e-/s to
 estimates of CIBER auto- and cross-power spectra. 
-
-
 '''
+
+def fit_gradient_to_map(image, mask=None):
+    ''' 
+    Fit image with a gradient. If mask provided the normal equation is truncated for all masked values. 
+    
+    Inputs
+    ------
+
+    image : `~np.array~` of shape (dimx, dimy), type `float`.
+    mask (optional) : `~np.array~` of shape (dimx, dimy), type `float`. Optional mask.
+        Default is None.
+
+    Returns
+    -------
+
+    plane : `~np.array~` of shape (dimx, dimy), type `float`. Best-fit plane. 
+
+    '''
+    
+    dimx = image.shape[0]
+    dimy = image.shape[1]
+
+    X1, X2 = np.mgrid[:dimx, :dimy]
+    
+    
+    X = np.hstack(   ( np.reshape(X1, (dimx*dimy, 1)) , np.reshape(X2, (dimx*dimy, 1)) ) )
+    X = np.hstack(   ( np.ones((dimx*dimy, 1)) , X ))
+    
+    YY = np.reshape(image, (dimx*dimy, 1)) # data vector
+    
+    if mask is not None:
+        mask_rav = np.reshape(mask, (dimx*dimy)).astype(np.bool)
+        YY_cut = YY[mask_rav]
+        X_cut = X[mask_rav,:]
+        # print('using mask.. YY_cut has length', YY_cut.shape)
+        theta = np.dot(np.dot( np.linalg.pinv(np.dot(X_cut.transpose(), X_cut)), X_cut.transpose()), YY_cut)
+    else:
+        theta = np.dot(np.dot( np.linalg.pinv(np.dot(X.transpose(), X)), X.transpose()), YY)
+        
+    # print('theta = ', theta)
+    plane = np.reshape(np.dot(X, theta), (dimx, dimy))
+        
+    return theta, plane
+
 
 def mean_sub_masked_image(image, mask):
 	masked_image = image*mask # dividing by the flat field introduces infinities (and maybe NaNs too?)
@@ -238,7 +280,7 @@ class CIBER_PS_pipeline():
 
     def estimate_noise_power_spectrum(self, inst=None, ifield=None, field_nfr=None,  mask=None, apply_mask=True, noise_model=None, noise_model_fpath=None, verbose=False, inplace=True, \
                                  nsims = 50, n_split=5, simmap_dc = None, show=False, read_noise=True, photon_noise=True, shot_sigma_sb=None, image=None,\
-                                  ff_estimate=None, transpose_noise=False, ff_truth=None):
+                                  ff_estimate=None, transpose_noise=False, ff_truth=None, mc_ff_estimates = None):
 
         ''' 
         This function generates realizations of the CIBER read + photon noise model and applies the relevant observational effects that are needed to 
@@ -259,6 +301,7 @@ class CIBER_PS_pipeline():
         noise_model (optional, default=None) : `np.array' of type 'float'.
         noise_model_fpath (optional, default=None) : 'str'. 
         verbose (default=False) : 'bool'.
+
 
 
         Returns
@@ -294,7 +337,7 @@ class CIBER_PS_pipeline():
                 else:
                     print('Noise model not provided, noise_model_fpath not provided, and ifield/inst not provided, need more information..')
                     return
-
+            # WEIRDDDDDDDDD fix this?
             noise_model = self.load_noise_Cl2D(noise_fpath='data/fluctuation_data/TM'+str(inst)+'/noiseCl2D/field'+str(ifield)+'_noiseCl2D_110421.fits', inplace=False, transpose=transpose_noise)
 
         if mask is None and apply_mask:
@@ -351,7 +394,12 @@ class CIBER_PS_pipeline():
                 print('adding read noise..')
                 simmaps += rnmaps
 
-            if ff_estimate is not None:
+            if mc_ff_estimates is not None:
+                print('using MC flat field estimate')
+
+                simmaps /= mc_ff_estimates[i]
+
+            elif ff_estimate is not None:
 
                 if i==0:
                     print('std on simmaps before ff estimate is ', np.std(simmaps))
@@ -429,7 +477,7 @@ class CIBER_PS_pipeline():
             return fits.open(flight_fpath)[0].data
 
         
-    def load_noise_Cl2D(self, ifield=None, inst=None, noise_model=None, noise_fpath=None, verbose=False, inplace=True, transpose=False, mode=None, use_abs=True):
+    def load_noise_Cl2D(self, ifield=None, inst=None, noise_model=None, noise_fpath=None, verbose=False, inplace=True, transpose=False, mode=None, use_abs=False):
         
         ''' Loads 2D noise power spectrum from data release
         
@@ -487,9 +535,9 @@ class CIBER_PS_pipeline():
         # set negative elements to zero
         # noise_Cl2D[noise_Cl2D < 0] = 0.
 
-        if use_abs:
-            # print('computing the absolute value of the read noise model here')
-            noise_Cl2D = np.abs(noise_Cl2D) # neither this nor the above correction are correct
+        # if use_abs:
+        #     # print('computing the absolute value of the read noise model here')
+        #     noise_Cl2D = np.abs(noise_Cl2D) # neither this nor the above correction are correct
 
         if inplace:
             if mode=='unmasked':
@@ -994,7 +1042,7 @@ class CIBER_PS_pipeline():
   
     def compute_processed_power_spectrum(self, inst, bare_bones=False, mask=None, apply_mask=True, N_ell=None, B_ell=None, inv_Mkk=None,\
                                          image=None, mkk_correct=True, beam_correct=True,\
-                                         FF_correct=True, FF_image=None, apply_FW=True, noise_debias=True, verbose=False, \
+                                         FF_correct=True, FF_image=None, gradient_filter=False, apply_FW=True, noise_debias=True, verbose=False, \
                                         convert_adufr_sb=True, save_intermediate_cls=True):
         
 
@@ -1024,7 +1072,15 @@ class CIBER_PS_pipeline():
         if mask is None and apply_mask:
             verbprint(verbose, 'Getting mask from maskinst clean and strmask')
             mask = self.maskInst_clean*self.strmask # load mask
-        
+
+
+        if gradient_filter:
+            verbprint(True, 'Gradient filtering image..')
+            theta, plane = fit_gradient_to_map(image, mask=mask)
+            # plot_map(plane, title='est gradient')
+            image -= plane
+            # plot_map(image, title='gradient subtracted image')
+
         if apply_mask and not bare_bones:
 
             verbprint(True, 'Applying mask..')
@@ -1034,6 +1090,7 @@ class CIBER_PS_pipeline():
 
             masked_image = image - np.mean(image)
             mask = None
+
         
         verbprint(verbose, 'Mean of masked image is '+str(np.mean(masked_image)))
          
@@ -1093,8 +1150,8 @@ class CIBER_PS_pipeline():
             cl_proc /= B_ell**2
             cl_proc_err /= B_ell**2
 
-        verbprint(True, 'Processed angular power spectrum is ')
-        verbprint(True, cl_proc)
+        verbprint(verbose, 'Processed angular power spectrum is ')
+        verbprint(verbose, cl_proc)
         verbprint(verbose, 'Processed angular power spectrum error is ')
         verbprint(verbose, cl_proc_err)
 
