@@ -11,6 +11,43 @@ from astropy.convolution import convolve
 from astropy.convolution import Gaussian2DKernel
 
 
+def compute_ff_bias(mean_normalizations, noise_rms=None, weights=None, mask_fractions=None):
+    
+    ''' Calculates multiplicative bias in power spectrum based on '''
+    ff_biases = []
+    
+    mean_normalizations = np.array(mean_normalizations)
+    weights = np.array(weights)
+    if weights is None:
+        weights = np.ones_like(mean_normalizations)
+        
+        
+    for i, mean_norm in enumerate(mean_normalizations):
+        
+        ff_weights = list(weights.copy())
+        ff_meannorms = list(mean_normalizations.copy())
+        
+        del(ff_weights[i])
+        del(ff_meannorms[i])
+        
+        ff_weights /= np.sum(ff_weights)
+        
+        ff_bias = mean_norm**2*(np.sum(np.array(ff_weights)**2/np.array(ff_meannorms)**2))
+        
+        if mask_fractions is not None:
+            ff_mask_fractions = list(mask_fractions.copy())
+            
+            del(ff_mask_fractions[i])
+            
+            mask_fac = np.sum(ff_mask_fractions)
+            
+            ff_bias *= len(ff_mask_fractions)/mask_fac
+        
+        ff_biases.append(1.+ff_bias)
+    
+    
+    return ff_biases
+
 def load_flat_from_mat(mat=None, matpath=None, flatidx=6):
 	
 	if mat is None:

@@ -8,6 +8,8 @@ import scipy.signal
 from mock_galaxy_catalogs import *
 from helgason import *
 from ciber_data_helpers import *
+from filtering_utils import calculate_plane, fit_gradient_to_map
+
 from PIL import Image
 from image_eval import psf_poly_fit, image_model_eval
 import sys
@@ -70,6 +72,60 @@ def get_ciber_dgl_powerspec(dgl_fpath, inst, iras_color_facs=None, mapkey='iris_
     return lb, cl, dgl_map
 
 
+def zl_grad_generator(theta_mag, nsim, dc=0, dimx=1024, dimy=1024):
+    
+    random_angles = np.random.uniform(0, 2*np.pi, nsim)
+    
+    if type(dc) != list:
+        dc = [dc for x in range(nsim)]
+    
+    thetas = [[dc[r], theta_mag*np.cos(random_angle), theta_mag*np.sin(random_angle)] for r, random_angle in enumerate(random_angles)]
+    planes = np.array([calculate_plane(theta, dimx=dimx, dimy=dimy) for theta in thetas])
+    
+    return planes, thetas
+
+def generate_zl_realization(zl_level, apply_zl_gradient, theta_mag=0.01, dimx=1024, dimy=1024):
+
+    if apply_zl_gradient:
+        zl_realiz, theta_gen = zl_grad_generator(theta_mag, 1, dc=zl_level)
+    else:
+        zl_realiz = zl_level*np.ones((dimx, dimy))
+
+    return zl_realiz
+
+
+def grab_cl_pivot_fac(field_name, inst=1, dimx=1024, dimy=1024):
+    cl_dgl_iras = np.load('data/fluctuation_data/TM'+str(inst)+'/dgl_sim/dgl_from_iris_model_TM'+str(inst)+'_'+field_name+'.npz')['cl']
+    cl_pivot_fac = cl_dgl_iras[0]*dimx*dimy
+    return cl_pivot_fac
+
+def generate_custom_dgl_clustering(cbps, dgl_scale_fac=1, gen_ifield=6, ifield=None):
+    
+    
+    field_name_gen = cbps.ciber_field_dict[gen_ifield]
+    cl_pivot_fac_gen = grab_cl_pivot_fac(field_name_gen, inst=1, dimx=cbps.dimx, dimy=cbps.dimy)
+    
+    diff_realization = np.zeros((cbps.dimx, cbps.dimy))
+    
+    if ifield is not None:
+        
+        cl_pivot_fac_gen *= (dgl_scale_fac - 1)
+        field_name = cbps.ciber_field_dict[ifield]
+        
+        cl_pivot_fac = grab_cl_pivot_fac(field_name, inst=1, dimx=cbps.dimx, dimy=cbps.dimy)
+        
+        _, _, diff_realization_varydgl = generate_diffuse_realization(cbps.dimx, cbps.dimy, power_law_idx=-3.0, scale_fac=cl_pivot_fac)
+        diff_realization += diff_realization_varydgl
+
+    else:
+        cl_pivot_fac_gen *= dgl_scale_fac
+    
+    if cl_pivot_fac_gen > 0:
+        _, _, diff_realization_gen = generate_diffuse_realization(cbps.dimx, cbps.dimy, power_law_idx=-3.0, scale_fac=cl_pivot_fac_gen)
+        diff_realization += diff_realization_gen
+        
+    return diff_realization
+
 def generate_diffuse_realization(N, M, power_law_idx=-3.0, scale_fac=1., B_ell_2d=None):
 
     ''' 
@@ -113,23 +169,6 @@ def generate_diffuse_realization(N, M, power_law_idx=-3.0, scale_fac=1., B_ell_2
 
     return ell_map, ps, diffuse_realiz
 
-# def generate_diffuse_realization(N, M, power_law_idx=-3.7, scale_fac=1.):
-
-#     freq_x = fftshift(np.fft.fftfreq(N, d=1.0))
-#     freq_y = fftshift(np.fft.fftfreq(M, d=1.0))
-
-#     ell_x,ell_y = np.meshgrid(freq_x,freq_y)
-#     ell_x = ifftshift(ell_x)
-#     ell_y = ifftshift(ell_y)
-
-#     ell_map = np.sqrt(ell_x**2 + ell_y**2)
-
-#     ps = ell_map**power_law_idx
-#     ps[0,0] = 0.
-
-#     diffuse_realiz = ifft2(np.sqrt(ps)*(np.random.normal(0, 1, size=(N, M)) + 1j*np.random.normal(0, 1, size=(N, M))))
-
-#     return ell_map, ps, scale_fac*diffuse_realiz.real
     
 
 def generate_psf_template_bank(beta, rc, norm, n_fine_bin=10, nwide=17, pix_to_arcsec=7.):

@@ -1,6 +1,5 @@
 import numpy as np
 import matplotlib 
-import numpy as np
 from astropy.io import fits
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -17,6 +16,7 @@ from mkk_parallel import *
 from flat_field_est import *
 from masking_utils import *
 from powerspec_utils import *
+from filtering_utils import calculate_plane, fit_gradient_to_map
 # from ciber_noise_data_utils import iter_sigma_clip_mask, sigma_clip_maskonly
 
 
@@ -25,50 +25,8 @@ from powerspec_utils import *
 CIBER_PS_pipeline() is the core module for CIBER power spectrum analysis in Python. 
 It contains data processing routines and the basic steps going from flight images in e-/s to
 estimates of CIBER auto- and cross-power spectra. 
+
 '''
-
-def fit_gradient_to_map(image, mask=None):
-    ''' 
-    Fit image with a gradient. If mask provided the normal equation is truncated for all masked values. 
-    
-    Inputs
-    ------
-
-    image : `~np.array~` of shape (dimx, dimy), type `float`.
-    mask (optional) : `~np.array~` of shape (dimx, dimy), type `float`. Optional mask.
-        Default is None.
-
-    Returns
-    -------
-
-    plane : `~np.array~` of shape (dimx, dimy), type `float`. Best-fit plane. 
-
-    '''
-    
-    dimx = image.shape[0]
-    dimy = image.shape[1]
-
-    X1, X2 = np.mgrid[:dimx, :dimy]
-    
-    
-    X = np.hstack(   ( np.reshape(X1, (dimx*dimy, 1)) , np.reshape(X2, (dimx*dimy, 1)) ) )
-    X = np.hstack(   ( np.ones((dimx*dimy, 1)) , X ))
-    
-    YY = np.reshape(image, (dimx*dimy, 1)) # data vector
-    
-    if mask is not None:
-        mask_rav = np.reshape(mask, (dimx*dimy)).astype(np.bool)
-        YY_cut = YY[mask_rav]
-        X_cut = X[mask_rav,:]
-        # print('using mask.. YY_cut has length', YY_cut.shape)
-        theta = np.dot(np.dot( np.linalg.pinv(np.dot(X_cut.transpose(), X_cut)), X_cut.transpose()), YY_cut)
-    else:
-        theta = np.dot(np.dot( np.linalg.pinv(np.dot(X.transpose(), X)), X.transpose()), YY)
-        
-    # print('theta = ', theta)
-    plane = np.reshape(np.dot(X, theta), (dimx, dimy))
-        
-    return theta, plane
 
 
 def mean_sub_masked_image(image, mask):
@@ -95,23 +53,46 @@ def compute_fourier_weights(cl2d_all, stdpower=2):
     mean_cl2d = np.mean(cl2d_all, axis=0)
 
     # median_cl2d = np.median(cl2d_all, axis=0)
-
-
     
     return mean_cl2d, fourier_weights
     
 
 class CIBER_PS_pipeline():
-    
+
+    # fixed quantities for CIBER
+    photFactor = np.sqrt(1.2)
+    pixsize = 7.
+    Npix = 2.03
+    inst_to_band = dict({1:'J', 2:'H'})
+    ciber_field_dict = dict({4:'elat10', 5:'elat30',6:'BootesB', 7:'BootesA', 8:'SWIRE'})
+    field_nfrs = dict({4:24, 5:10, 6:29, 7:28, 8:25}) # unique to fourth flight CIBER dataset, elat30 previously noted as 9 frames but Chi says it is 10 (9/17/21)
+    frame_period = 1.78 # seconds
+
+    zl_levels_ciber_fields = dict({2:dict({'elat10': 199.16884143344222, 'BootesA': 106.53451615117534, 'elat30': 147.02015318942148, 'BootesB': 108.62357310134063, 'SWIRE': 90.86593718752026}), \
+                                  1:dict({'NEP':249., 'Lockman':435., 'elat10':558., 'elat30':402., 'BootesB':301., 'BootesA':295., 'SWIRE':245.})})
+
+
+
+    # self.g1_facs = dict({1:-1.5459, 2:-1.3181}) # multiplying by g1 converts from ADU/fr to e-/s NOTE: these are factory values but not correct
+    # these are the latest and greatest calibration factors as of 9/20/2021
+    # self.cal_facs = dict({1:-311.35, 2:-121.09}) # ytc values
+    # self.cal_facs = dict({1:-170.3608, 2:-57.2057}) # multiplying by cal_facs converts from ADU/fr to nW m^-2 sr^-1
+
     def __init__(self, \
                 base_path='/Users/luminatech/Documents/ciber2/ciber/', \
                 data_path=None, \
                 dimx=1024, \
                 dimy=1024, \
-                n_ps_bin=19):
+                n_ps_bin=25):
         
-        self.base_path = base_path
-        self.data_path = data_path
+        for attr, valu in locals().items():
+            setattr(self, attr, valu)
+
+        # self.base_path = base_path
+        # self.data_path = data_path
+        # self.dimx, self.dimy = dimx, dimy
+        # self.n_ps_bin = n_ps_bin
+
         if data_path is None:
             self.data_path = self.base_path+'data/fluctuation_data/'
             
@@ -119,31 +100,15 @@ class CIBER_PS_pipeline():
         self.Mkk_obj.precompute_mkk_quantities(precompute_all=True)
         self.B_ell = None
         
-        # self.cal_facs = dict({1:-311.35, 2:-121.09}) # ytc values
-        # self.cal_facs = dict({1:-170.3608, 2:-57.2057}) # multiplying by cal_facs converts from ADU/fr to nW m^-2 sr^-1
-        # these are the latest and greatest calibration factors as of 9/20/2021
-
-        self.Npix = 2.03
-
         self.g2_facs = dict({1:110./self.Npix, 2:44.2/self.Npix}) # divide by Npix now for correct convention when comparing mean surface brightness (1/31/22)
         self.g1_facs = dict({1:-2.67, 2:-3.04}) # these are updated values derived from flight data, similar to those esimated with focus data
-        self.cal_facs = dict({1:self.g1_facs[1]*self.g2_facs[1], 2:self.g1_facs[2]*self.g2_facs[2]})
-        self.inst_to_band = dict({1:'J', 2:'H'})
 
-        # self.g1_facs = dict({1:-1.5459, 2:-1.3181}) # multiplying by g1 converts from ADU/fr to e-/s NOTE: these are factory values but not correct
-        self.dimx, self.dimy = dimx, dimy
-        self.n_ps_bin = n_ps_bin
-        self.pixsize = 7. # arcseconds
+        self.cal_facs = dict({1:self.g1_facs[1]*self.g2_facs[1], 2:self.g1_facs[2]*self.g2_facs[2]})
         self.pixlength_in_deg = self.pixsize/3600. # pixel angle measured in degrees
         self.arcsec_pp_to_radian = self.pixlength_in_deg*(np.pi/180.) # conversion from arcsecond per pixel to radian per pixel
-        self.photFactor = np.sqrt(1.2)
         self.Mkk_obj.delta_ell = self.Mkk_obj.binl[1:]-self.Mkk_obj.binl[:-1]
         self.fsky = self.dimx*self.dimy*self.Mkk_obj.arcsec_pp_to_radian**2 / (4*np.pi)
-        self.field_nfrs = dict({4:24, 5:10, 6:29, 7:28, 8:25}) # unique to fourth flight CIBER dataset, elat30 previously noted as 9 frames but Chi says it is 10 (9/17/21)
-        self.ciber_field_dict = dict({4:'elat10', 5:'elat30',6:'BootesB', 7:'BootesA', 8:'SWIRE'})
-        self.field_exposure = 50. # seconds
-        self.frame_period = 1.78 # seconds
-        self.nfr = int(self.field_exposure/self.frame_period)
+
         self.frame_rate = 1./self.frame_period
         self.powerspec_dat_path = self.base_path+'data/powerspec_dat/'
 
@@ -220,6 +185,10 @@ class CIBER_PS_pipeline():
         inst : `int`. 1 for 1.1 um band, 2 for 1.8 um band.
         
 
+        Returns
+        -------
+
+
         '''
         self.noise = np.random.normal(0, 1, size=maplist_split_shape)+ 1j*np.random.normal(0, 1, size=maplist_split_shape)
 
@@ -259,8 +228,6 @@ class CIBER_PS_pipeline():
 
             rnmaps = np.array(rnmaps).real
 
-            # print('rn maps at this point has min/maxof ', np.min(rnmaps), np.max(rnmaps)) # debug
-
         
         if photon_noise:
             nsims = 1
@@ -280,7 +247,7 @@ class CIBER_PS_pipeline():
 
     def estimate_noise_power_spectrum(self, inst=None, ifield=None, field_nfr=None,  mask=None, apply_mask=True, noise_model=None, noise_model_fpath=None, verbose=False, inplace=True, \
                                  nsims = 50, n_split=5, simmap_dc = None, show=False, read_noise=True, photon_noise=True, shot_sigma_sb=None, image=None,\
-                                  ff_estimate=None, transpose_noise=False, ff_truth=None, mc_ff_estimates = None):
+                                  ff_estimate=None, transpose_noise=False, ff_truth=None, mc_ff_estimates = None, gradient_filter=False):
 
         ''' 
         This function generates realizations of the CIBER read + photon noise model and applies the relevant observational effects that are needed to 
@@ -324,9 +291,12 @@ class CIBER_PS_pipeline():
             if self.field_nfrs is not None and ifield is not None:
                 print('Using field nfr, ifield='+str(ifield))
                 field_nfr = self.field_nfrs[ifield]
+
             else:
-                print('Setting field_nfr = self.nfr = '+str(self.nfr))
-                field_nfr = self.nfr
+                print('field nfr = None')
+            # else:
+                # print('Setting field_nfr = self.nfr = '+str(self.nfr))
+                # field_nfr = self.nfr
 
         verbprint(verbose, 'Field nfr used here for ifield '+str(ifield)+', inst '+str(inst)+' is '+str(field_nfr))
 
@@ -370,8 +340,9 @@ class CIBER_PS_pipeline():
         for i in range(n_split):
             print('Split '+str(i+1)+' of '+str(n_split)+'..')
 
-            rnmaps, snmaps = self.noise_model_realization(inst, maplist_split_shape, noise_model, fft_obj=fft_objs[0],\
-                                                  read_noise=read_noise, photon_noise=photon_noise, shot_sigma_sb=shot_sigma_sb)
+            if photon_noise or read_noise:
+                rnmaps, snmaps = self.noise_model_realization(inst, maplist_split_shape, noise_model, fft_obj=fft_objs[0],\
+                                                      read_noise=read_noise, photon_noise=photon_noise, shot_sigma_sb=shot_sigma_sb)
 
 
             simmaps = np.zeros(maplist_split_shape)
@@ -411,17 +382,26 @@ class CIBER_PS_pipeline():
 
             if apply_mask and mask is not None:
                 simmaps *= mask
-
-
                 unmasked_means = [np.mean(simmap[mask==1]) for simmap in simmaps]
-
                 simmaps -= np.array([mask*unmasked_mean for unmasked_mean in unmasked_means])
-                
                 # print('simmaps have means : ', [np.mean(simmap) for simmap in simmaps])
-
             else:
                 simmaps -= np.array([np.full((self.dimx, self.dimy), np.mean(simmap)) for simmap in simmaps])
                 # print('simmaps have means : ', [np.mean(simmap) for simmap in simmaps])
+
+            if gradient_filter:
+                verbprint(True, 'Gradient filtering image in the noiiiise bias..')
+                # print('mask has shape ', mask.shape)
+
+                for s in range(len(simmaps)):
+
+                    theta, plane = fit_gradient_to_map(simmaps[s], mask=mask)
+                    simmaps[s] -= plane
+
+
+                # plane = np.array([fit_gradient_to_map(simmap, mask=mask)[1] for s, simmap in enumerate(simmaps)])
+                # plot_map(plane, title='est gradient')
+                # simmaps -= plane
 
 
             fft_objs[1](simmaps*sterad_per_pix)
@@ -1248,7 +1228,6 @@ def generate_synthetic_mock_test_set(test_set_fpath, trilegal_sim_idx=1, inst=1,
     if verbose:
         print('bkg vals are ', bkg_val)
 
-
     
     observed_ims, total_signals, \
         noise_models, shot_sigma_sb_maps, rnmaps, joint_masks, diff_realizations = instantiate_dat_arrays_fftest(cbps.dimx, cbps.dimy, nfields)
@@ -1472,7 +1451,6 @@ def calculate_powerspec_quantities(cbps, observed_ims, joint_masks, shot_sigma_s
 
     Returns
     -------
-
 
 
     '''
