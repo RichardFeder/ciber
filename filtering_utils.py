@@ -1,4 +1,8 @@
 import numpy as np
+from flat_field_est import *
+# from cross_spectrum_analysis import get_power_spec, get_power_spectrum_2d, azim_average_cl2d
+from plotting_fns import plot_map
+from cross_spectrum_analysis import *
 
 
 def calculate_plane(theta, dimx=1024, dimy=1024, X=None):
@@ -55,3 +59,9 @@ def fit_gradient_to_map(image, mask=None):
     plane = np.reshape(np.dot(X, theta), (dimx, dimy))
         
     return theta, plane
+
+
+
+
+
+

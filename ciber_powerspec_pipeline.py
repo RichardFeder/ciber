@@ -55,6 +55,93 @@ def compute_fourier_weights(cl2d_all, stdpower=2):
     # median_cl2d = np.median(cl2d_all, axis=0)
     
     return mean_cl2d, fourier_weights
+
+
+
+
+def iterative_gradient_ff_solve(orig_images, niter=3, masks=None, compute_ps=True, n_ps_bins=25, inv_Mkks=None, \
+                               weights_ff=None, plot=False):
+    
+    # maps at end of each iteration
+    images = np.array(list(orig_images.copy()))
+    
+    nbands = len(images)
+    
+    all_coeffs = np.zeros((niter, nbands, 3))
+    
+    all_ps, lb = None, None
+    if compute_ps:
+        all_ps = np.zeros((niter, nbands, n_ps_bins))
+    
+    
+    final_planes = np.zeros_like(images)
+
+    for n in range(niter):
+        print('n = ', n)
+        
+        ff_estimates = np.zeros_like(images)
+        # make copy to compute corrected versions of
+        running_images = images.copy()
+        
+        for imidx, image in enumerate(images):
+
+            stack_obs = list(images.copy())
+                
+            del(stack_obs[imidx])
+
+            target_mask = np.ones_like(image)
+            stack_mask = None
+            if masks is not None:
+                stack_mask = list(masks.copy().astype(np.bool))
+                target_mask = masks[imidx]
+                del(stack_mask[imidx])
+                
+            weights_ff_iter = list(weights_ff.copy())
+            
+            del(weights_ff_iter[imidx])
+            
+
+            ff_estimate, _, ff_weights = compute_stack_ff_estimate(stack_obs, target_mask=target_mask, masks=stack_mask, \
+                                                       inv_var_weight=False, ff_stack_min=1, \
+                                                            field_nfrs=None, weights=weights_ff_iter)
+
+            ff_estimates[imidx] = ff_estimate
+            
+            running_images[imidx] /= ff_estimate
+            
+            theta, plane = fit_gradient_to_map(running_images[imidx], mask=target_mask)
+            all_coeffs[n, imidx] = theta[:,0]
+
+            running_images[imidx] -= (plane-np.mean(plane))
+    
+            if plot:
+                plot_map(plane, title='best fit plane imidx = '+str(imidx))
+                plot_map(ff_estimate, title='ff_estimate imidx = '+str(imidx))
+            
+            if compute_ps:
+                
+                masked_image = running_images[imidx].copy()
+                
+                masked_image[target_mask==1] -= np.mean(masked_image[target_mask==1])
+                
+                lb, cl, clerr = get_power_spec(masked_image*target_mask, mask=target_mask, nbins=n_ps_bins+1)
+                
+                if inv_Mkks is not None:
+                    cl_proc = np.dot(inv_Mkks[imidx].transpose(), cl)
+                    all_ps[n, imidx] = cl_proc
+                else:
+                    all_ps[n, imidx] = cl
+    
+            if n<niter-1:
+                running_images[imidx] *= ff_estimate
+                
+            else:
+                final_planes[imidx] = plane
+
+        images = running_images.copy()
+    
+    return images, ff_estimates, final_planes, all_ps, all_coeffs, lb
+
     
 
 class CIBER_PS_pipeline():
@@ -1018,10 +1105,60 @@ class CIBER_PS_pipeline():
         weights /= np.sum(weights)
 
         return weights
-        
+
+
+
+    def calculate_transfer_function(self, inst, nsims, load_ptsrc_cib=False, niter_grad_ff=1, dgl_scale_fac=5., indiv_ifield=6, apply_FF=False, FF_image=None, FF_fpath=None, plot=False):
+
+        cls_orig = np.zeros((nsims, self.n_ps_bin))
+        cls_filt = np.zeros((nsims, self.n_ps_bin))
+        t_ells = np.zeros((nsims, self.n_ps_bin))
+
+
+        if apply_FF:
+            if FF_image is None:
+                if FF_fpath is not None:
+                    FF_image = fits.open(FF_fpath)[0].data 
+                else:
+                    print('need to either provide file path to FF or FF image..')
+
+            processed_ims, ff_estimates, final_planes, _, coeffs_vs_niter, _ = iterative_gradient_ff_solve(input_signals, niter=niter)
+        else:
+
+            for i in range(nsims):
+
+                diff_realization = generate_custom_dgl_clustering(self, dgl_scale_fac=dgl_scale_fac, gen_ifield=indiv_ifield)
+                if not load_ptsrc_cib:        
+                    _, _, shotcomp = generate_diffuse_realization(self.dimx, self.dimy, power_law_idx=0.0, scale_fac=3e8)
+                else:
+                    print('need to load CIB here')
+
+                diff_realization += shotcomp 
+
+                if plot:
+                    plot_map(diff_realization, title='diff realization '+str(i))
+
+                lb, cl_orig, clerr_orig = get_power_spec(diff_realization - np.mean(diff_realization), lbinedges=self.Mkk_obj.binl, lbins=self.Mkk_obj.midbin_ell)
+
+
+                theta, plane = fit_gradient_to_map(diff_realization)
+                diff_realization -= plane
+
+                lb, cl_filt, clerr_filt = get_power_spec(diff_realization - np.mean(diff_realization), lbinedges=self.Mkk_obj.binl, lbins=self.Mkk_obj.midbin_ell)
+
+                t_ell_indiv = cl_filt/cl_orig 
+
+                t_ells[i] = t_ell_indiv
+
+        t_ell_av = np.mean(t_ells, axis=0)
+        t_ell_stderr = np.std(t_ells, axis=0)/np.sqrt(t_ells.shape[0])
+
+
+        return lb, t_ell_av, t_ell_stderr
+
   
     def compute_processed_power_spectrum(self, inst, bare_bones=False, mask=None, apply_mask=True, N_ell=None, B_ell=None, inv_Mkk=None,\
-                                         image=None, mkk_correct=True, beam_correct=True,\
+                                         image=None, mkk_correct=True, beam_correct=True, ff_bias_correct=None, transfer_function_correct=False, t_ell = None, \
                                          FF_correct=True, FF_image=None, gradient_filter=False, apply_FW=True, noise_debias=True, verbose=False, \
                                         convert_adufr_sb=True, save_intermediate_cls=True):
         
@@ -1186,7 +1323,7 @@ def small_Nl2D_from_larger(dimx_small, dimy_small, n_ps_bin,ifield, noise_model=
 	return av_cl2d, clprocs, clprocs_large_chi2, cbps_small
 
 
-def generate_synthetic_mock_test_set(test_set_fpath, trilegal_sim_idx=1, inst=1, cmock=None, pcat_model_eval=False, cbps=None, n_ps_bin=25, ciberdir='/Users/luminatech/Documents/ciber2/ciber/',\
+def generate_synthetic_mock_test_set(test_set_fpath, trilegal_sim_idx=1, inst=1, cmock=None, cbps=None, n_ps_bin=25, ciberdir='/Users/luminatech/Documents/ciber2/ciber/',\
                                      dimx=1024, dimy=1024, ifield_list=None, generate_diffuse_realization=False, diffuse_realizations=None, power_law_idx=-4.5, scale_fac=2e-1, bkg_val=250.,\
                                      apply_flat_field = False, include_inst_noise=True, include_photon_noise=True, ff_truth=None, ff_truth_fpath='dr40030_TM2_200613_p2.pkl',\
                                      generate_masks=False, mask_galaxies=False, mask_stars=True, intercept_mag=16.0, a1=220., b1=3.632, c1=8.52, param_combo=None, Vega_to_AB=0.91, mag_lim_Vega = 18.0, \
@@ -1195,7 +1332,7 @@ def generate_synthetic_mock_test_set(test_set_fpath, trilegal_sim_idx=1, inst=1,
                                     transpose_noise=False):
 
     if cmock is None:
-        cmock = ciber_mock(ciberdir='/Users/luminatech/Documents/ciber2/ciber/', pcat_model_eval=pcat_model_eval)
+        cmock = ciber_mock(ciberdir='/Users/luminatech/Documents/ciber2/ciber/')
         
     if cbps is None:
         cbps = CIBER_PS_pipeline(n_ps_bin=n_ps_bin, dimx=dimx, dimy=dimy)
