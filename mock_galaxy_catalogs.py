@@ -222,7 +222,6 @@ class galaxy_catalog():
         dMapp = Mapps[1]-Mapps[0]
         number_counts = np.array(self.lf.number_counts(zrange_grf, Mapps, band, dzs=dzs)[1]).astype(np.int)
         print('number counts has shape ', number_counts.shape, 'while Mapps has nbins=', len(Mapps))
-        # number_counts = np.array(self.lf.number_counts(midzs, dzs, Mapps, band)[1]).astype(np.int)
         # this should be a 2d array with len(Mapps) rows and len(midzs) columns
 
         thetax, thetay, gal_app_mags, gal_abs_mags, gal_zs, all_finezs, all_counts_array = [[] for x in range(7)]
@@ -256,11 +255,14 @@ class galaxy_catalog():
 
             # draw apparent magnitudes based on Helgason number counts N(m)
             mapp_pdf = number_counts[i].astype(np.float32)/float(np.sum(number_counts[i]))
-            n = int(np.sum(number_counts[i])*n_deg_across**2)
-            if n > 0:
-                for cat in range(n_catalogs):
-                    mag_draw = np.random.choice(Mapps, size=n, p=mapp_pdf)
 
+            n = int(np.sum(number_counts[i])*n_deg_across**2)
+            if len(txs[0]) > 0:
+            # if n > 0:
+                for cat in range(n_catalogs):
+                    # mag_draw = np.random.choice(Mapps, size=n, p=mapp_pdf)
+
+                    mag_draw = np.random.choice(Mapps, size=len(txs[cat]), p=mapp_pdf)
                     mags_list[cat].extend(mag_draw)
             
         cosmo_dist_mods = cosmo.distmod(all_finezs)
@@ -270,12 +272,16 @@ class galaxy_catalog():
         array_list = []
         self.catalogs = []
         for cat in range(n_catalogs):
+
+            dist_mods = distmod_spline(gal_zs_list[cat])
+            print('distmods/mags_lsit/gal_zs_list have length:', len(dist_mods), len(mags_list[cat]), len(gal_zs_list[cat]))
+            print('thetax_list[cat] has length:', len(thetax_list[cat]))
             if len(mags_list[cat]) > len(thetax_list[cat]):
                 idx_choice = np.sort(np.random.choice(np.arange(len(mags_list[cat])), len(thetax_list[cat]), replace=False))
                 mags_list[cat] = np.array(mags_list[cat])[idx_choice]
+                dist_mods = np.array(dist_mods)[idx_choice]
                 
-            dist_mods = distmod_spline(gal_zs_list[cat])
-            print('distmods has length:', len(dist_mods))
+            print('distmods/mags_lsit/gal_zs_list have length:', len(dist_mods), len(mags_list[cat]), len(gal_zs_list[cat]))
             gal_abs_mags = np.array(mags_list[cat]) - dist_mods - 2.5*np.log10(1.0+np.array(gal_zs_list[cat]))
             array = np.array([thetax_list[cat], thetay_list[cat], gal_zs_list[cat], mags_list[cat], gal_abs_mags]).transpose()
             partial_cat = array[np.argsort(array[:,4])]

@@ -96,9 +96,13 @@ def iterative_gradient_ff_solve(orig_images, niter=3, masks=None, compute_ps=Tru
                 target_mask = masks[imidx]
                 del(stack_mask[imidx])
                 
-            weights_ff_iter = list(weights_ff.copy())
-            
-            del(weights_ff_iter[imidx])
+
+            if weights_ff is not None:
+                weights_ff_iter = list(weights_ff.copy())
+                
+                del(weights_ff_iter[imidx])
+            else:
+                weights_ff_iter = None
             
 
             ff_estimate, _, ff_weights = compute_stack_ff_estimate(stack_obs, target_mask=target_mask, masks=stack_mask, \

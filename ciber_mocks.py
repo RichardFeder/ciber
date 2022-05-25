@@ -4,6 +4,7 @@ import ctypes
 from ctypes import c_int, c_double
 import astropy.units as u
 from astropy import constants as const
+from astropy.io import fits
 import scipy.signal
 from mock_galaxy_catalogs import *
 from helgason import *
@@ -323,6 +324,52 @@ def save_mock_items_to_npz(filepath, catalog=None, srcmap_full=None, srcmap_nb=N
                         ihl_map=ihl_map, m_lim=m_lim, m_min=m_min, m_min_nb=m_min_nb)
 
 
+def save_mock_to_fits(full_maps, cats, tail_name, full_maps_band2=None, m_tracer_max=None, m_min=None, m_max=None, inst=None, \
+                     data_path='/Users/luminatech/Documents/ciber2/ciber/data/mock_cib_fftest/082321/', \
+                     ifield_list=None, map_names=None, names=['x', 'y', 'redshift', 'm_app', 'M_abs', 'Mh', 'Rvir']):
+    ''' This function is dedicated to converting mocks from ciber_mock.make_mock_ciber_map() to a fits file where they can be accessed.'''
+    hdul = []
+    hdr = fits.Header()
+
+    if m_tracer_max is not None:
+        hdr['m_tracer_max'] = m_tracer_max
+    if m_min is not None:
+        hdr['m_min'] = m_min
+    if m_max is not None:
+        hdr['m_max'] = m_max
+    if inst is not None:
+        hdr['inst'] = inst
+        
+    primary_hdu = fits.PrimaryHDU(header=hdr)
+    hdul.append(primary_hdu)
+
+    for c, cat in enumerate(cats):
+        print('cat shape here is ', cat.shape)
+        tab = Table([cat[:,i] for i in range(len(names))], names=names)
+        cib_idx = c
+        if ifield_list is not None:
+            cib_idx = ifield_list[c]
+            
+        if map_names is not None:
+            map_name = map_names[0]
+            map_name2 = map_names[1]
+        else:
+            map_name = 'map'
+            map_name2 = 'map2'
+            
+        hdu = fits.BinTableHDU(tab, name='tracer_cat_'+str(cib_idx))
+        hdul.append(hdu)
+
+        im_hdu = fits.ImageHDU(full_maps[c], name=map_name+'_'+str(cib_idx))
+        hdul.append(im_hdu)
+        
+        if full_maps_band2 is not None:
+            im_hdu2 = fits.ImageHDU(full_maps_band2[c], name=map_name2+'_'+str(cib_idx))
+            hdul.append(im_hdu2)
+
+    hdulist = fits.HDUList(hdul)
+            
+    hdulist.writeto(data_path+tail_name+'.fits', overwrite=True)
 
 
 def virial_radius_2_reff(r_vir, zs, theta_fov_deg=2.0, npix_sidelength=1024.):
@@ -625,17 +672,6 @@ class ciber_mock():
             else:
                 srcmap_full = self.make_srcmap(ifield_list[c], cat_full, band=band, pcat_model_eval=pcat_model_eval, nwide=17)
 
-            if add_noise:
-                # this functionality is largely deprecated, using more detailed noise model now
-                large_noise = np.random.normal(self.sky_brightness[band].value, self.instrument_noise[band].value, size=(srcmap_full.shape[0]+100, srcmap_full.shape[1]+100))
-                print('large noise has shape ', large_noise.shape)
-                large_conv_noise = scipy.signal.convolve2d(large_noise, self.psf_template, 'same')
-                conv_noise = large_conv_noise[50:50+srcmap_full.shape[0], 50:50+srcmap_full.shape[1]]
-                print('conv noise has shape ', conv_noise.shape)
-                # noise = np.random.normal(self.sky_brightness[band].value, self.instrument_noise[band].value, size=srcmap_full.shape)
-                # conv_noise = scipy.signal.convolve2d(noise, self.psf_template, 'same')
-                noise_realizations.append(conv_noise)
-
             
             if cat_return=='tracer':
                 catalogs.append(tracer_cat)
@@ -666,7 +702,7 @@ class ciber_mock():
             return srcmaps_full, catalogs, noise_realizations
 
     def make_mock_ciber_map(self, ifield, m_min, m_max, ifield_list=None, mock_cat=None, band=0, ihl_frac=0., ng_bins=8,\
-                            zmin=0.0, zmax=2.0, pcat_model_eval=True, ncatalog=1, add_noise=False, cat_return='tracer', m_tracer_max=20., \
+                            zmin=0.0, zmax=2.0, pcat_model_eval=False, ncatalog=1, add_noise=False, cat_return='tracer', m_tracer_max=20., \
                             temp_bank=True):
         """ 
         This is the parent function that uses other functions in the class to generate a full mock catalog/CIBER image. If there is 
@@ -731,8 +767,8 @@ class ciber_mock():
     
         for c in range(ncatalog):
             full_maps[c] = srcmaps[c]
-            if add_noise:
-                full_maps[c] += noise_realizations[c]
+            # if add_noise:
+            #     full_maps[c] += noise_realizations[c]
             if ihl_frac > 0:
                 full_maps[c] += ihl_maps[c]
 

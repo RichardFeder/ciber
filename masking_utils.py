@@ -120,6 +120,7 @@ def mask_from_df_cat(xs=None, ys=None, mags=None, cat_df=None, dimx=1024, dimy=1
     if cat_df is not None:
         mags = cat_df[magstr]
 
+    ''' is there an error in Simon mode? I need to account for all catalog magnitude systems and their conversions. '''
 
     if mode=='Zemcov+14':
         radii = magnitude_to_radius_linear(mags, alpha_m=alpha_m, beta_m=beta_m)
@@ -140,7 +141,6 @@ def get_masks(star_cat_df, mask_fn_param_combo, intercept_mag_AB, mag_lim_AB, in
     
     '''
     Computes astronomical source mask for catalog
-
 
     '''
 
@@ -173,7 +173,7 @@ def get_masks(star_cat_df, mask_fn_param_combo, intercept_mag_AB, mag_lim_AB, in
             print('instrument mask being applied as well')
         joint_mask *= instrument_mask.astype(np.int)
         
-    return joint_mask, radii_stars_simon, radii_stars_Z14
+    return joint_mask, radii_stars_simon, radii_stars_Z14, alpha_m, beta_m
 
 def get_mask_radius_th_rf(m_arr, beta, rc, norm, band=0, Ith=1., fac=0.7, plot=False):
 
@@ -391,6 +391,8 @@ def simon_r_m(mags, a1=252.8, b1=3.632, c1=8.52, Vega_to_AB=0.):
     radii = a1*np.exp(-((mags-b1)/c1)**2)
 
     return radii
+
+    
 
 
 

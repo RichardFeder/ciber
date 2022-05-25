@@ -35,7 +35,6 @@ class Luminosity_Function():
     schechter_units = u.Mpc**(-3)
     cosmo = FlatLambdaCDM(H0=70, Om0=0.28)
 
-    
     omega_m = 0.28
     
     def __init__(self, z0m = 0.8):
@@ -58,7 +57,6 @@ class Luminosity_Function():
         optkey = ''
         mindist = None
         for key in self.band_dicts:
-        # for key, value in self.band_dicts.iteritems():
             value = self.band_dicts[key]
             if mindist is None:
                 mindist = np.abs(lam-value['lambda'])
@@ -137,9 +135,9 @@ class Luminosity_Function():
         
         return phi 
     
-    def specific_flux(self, m_ab, nu):
+    def specific_flux(self, m_ab, nu, zero_point=23.9):
         ''' output has units of microJansky '''
-        val = nu*10**(-0.4*(m_ab-23.9))*u.microJansky
+        val = nu*10**(-0.4*(m_ab-zero_point))*u.microJansky
         return val
         
     def total_bkg_light(self, ms, z, band):

@@ -547,7 +547,7 @@ def write_ff_file(ff_estimate, ifield, inst, sim_idx=None, dat_type=None, mag_li
 
 
 def write_mask_file(joint_mask, ifield, inst, sim_idx=None, generate_galmask=None, generate_starmask=None, use_inst_mask=None, \
-                   dat_type=None, mag_lim_AB=None, with_ff_mask=None, name=None):
+                   dat_type=None, mag_lim_AB=None, with_ff_mask=None, name=None, a1=None, b1=None, c1=None, dm=None, alpha_m=None, beta_m=None):
 
     if name is None:
         name = 'joint_mask_'+str(ifield)
@@ -555,6 +555,7 @@ def write_mask_file(joint_mask, ifield, inst, sim_idx=None, generate_galmask=Non
     hdup = fits.PrimaryHDU()
     hdup.header['ifield'] = ifield
     hdup.header['inst'] = inst
+
     if sim_idx is not None:
         hdup.header['sim_idx'] = sim_idx
     if generate_galmask is not None:
@@ -570,7 +571,20 @@ def write_mask_file(joint_mask, ifield, inst, sim_idx=None, generate_galmask=Non
     if with_ff_mask is not None:
         hdup.header['with_ff_mask'] = with_ff_mask
 
+    if a1 is not None:
+        hdup.header['a1'] = a1
+    if b1 is not None:
+        hdup.header['b1'] = b1
+    if c1 is not None:
+        hdup.header['c1'] = c1
+    if dm is not None:
+        hdup.header['dm'] = dm
 
+    if alpha_m is not None:
+        hdup.header['alpha_m'] = alpha_m
+    if beta_m is not None:
+        hdup.header['beta_m'] = beta_m
+        
     hdul = fits.HDUList([hdup, hdum])
     
     return hdul
@@ -593,8 +607,8 @@ def weighted_avg_and_std(values, weights):
     variance = np.average((values-average)**2, weights=weights)
     return average, np.sqrt(variance)
 
-def compute_sim_corrected_fieldaverage(recovered_ps_by_field, input_ps_by_field, obs_idx=0, compute_field_weights=True, \
-                                      apply_field_weights=True, name=None, plot=False, save_plot=False):
+def compute_sim_corrected_fieldaverage(recovered_ps_by_field, input_ps_by_field, lb, obs_idx=0, compute_field_weights=True, \
+                                      apply_field_weights=True, name=None, plot=True, save_plot=False):
     
     ''' 
     Compute estimated pipeline bias from mocks, or provide, and use one realization
@@ -608,12 +622,14 @@ def compute_sim_corrected_fieldaverage(recovered_ps_by_field, input_ps_by_field,
     nbins = recovered_ps_by_field.shape[2]
     
     print('nsims = ', nsims, ', nbins = ', nbins)
+    print('obs idx is ', obs_idx)
     obs_ps_by_field = recovered_ps_by_field[:, obs_idx]
     
     ratio_ps_by_field = recovered_ps_by_field / input_ps_by_field
     av_psratio_perfield = np.median(ratio_ps_by_field, axis=1)
     
     field_weights = None
+    fig = None
     if compute_field_weights:
         
         all_corr_by_field = np.zeros_like(recovered_ps_by_field)
@@ -627,7 +643,7 @@ def compute_sim_corrected_fieldaverage(recovered_ps_by_field, input_ps_by_field,
             field_weights[:,n] /= np.sum(field_weights[:,n])
         
         if plot:
-            plt.figure()
+            fig = plt.figure()
             for k in range(5):
                 plt.plot(lb, field_weights[k], color='C'+str(k))
             plt.xscale('log')
@@ -651,7 +667,7 @@ def compute_sim_corrected_fieldaverage(recovered_ps_by_field, input_ps_by_field,
         
         for n in range(nbins):
             
-            field_weights[:,n] /= np.sum(field_weights[:,n])
+            field_weights[:,n] /= np.sum(field_weights[:,n])            
             
             neff_indiv = compute_neff(field_weights[:,n])
             psav_indivbin = np.average(obs_ps_corr_by_field[:,n], weights = field_weights[:,n])
@@ -663,10 +679,8 @@ def compute_sim_corrected_fieldaverage(recovered_ps_by_field, input_ps_by_field,
 
             for i in range(nsims):
                 psav_indivbin = np.average(all_corr_by_field[:,i,n], weights = field_weights[:,n])
-
                 psvar_indivbin = np.sum(field_weights[:,n]*(all_corr_by_field[:,i,n] - psav_indivbin)**2)*neff_indiv/(neff_indiv-1.)
                 all_pscorr_fieldstd[i,n] = np.sqrt(psvar_indivbin/neff_indiv)
-
 
         simav_pscorr_fieldstd = np.median(all_pscorr_fieldstd, axis=0)
 
@@ -676,8 +690,7 @@ def compute_sim_corrected_fieldaverage(recovered_ps_by_field, input_ps_by_field,
         pscorr_fieldstd = np.sqrt(np.var(obs_ps_corr_by_field, axis=0)*nfield/(nfield-1))
     
     
-    return pscorr_fieldaverage, pscorr_fieldstd, field_weights, obs_ps_corr_by_field, simav_pscorr_fieldstd
-
+    return pscorr_fieldaverage, pscorr_fieldstd, field_weights, obs_ps_corr_by_field, simav_pscorr_fieldstd, fig
     
 
 
