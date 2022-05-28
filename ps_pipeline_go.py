@@ -45,14 +45,14 @@ def init_mocktest_fpaths(ciber_mock_fpath, run_name):
 
 
 def run_cbps_pipeline(cbps, inst, nsims, run_name, simidx0=0, datestr='100921', data_type='mock', ciber_mock_fpath='/Volumes/Seagate Backup Plus Drive/Toolkit/Mirror/Richard/ciber_mocks/',\
-	sim_test_fpath = 'data/input_recovered_ps/sim_tests_030122/', load_ptsrc_cib=False, load_trilegal=False, masking_maglim=17.5, compute_beam_correction=True, bls_fpath=None,\
-	n_cib_set=20, draw_cib_setidxs=False, aug_rotate=False, ifield_list = None, apply_mask = False,\
+	sim_test_fpath = 'data/input_recovered_ps/sim_tests_030122/', load_ptsrc_cib=False, load_trilegal=False, masking_maglim=17.5, subtract_subthresh_stars=False, compute_beam_correction=True, bls_fpath=None,\
+	n_cib_set=20, draw_cib_setidxs=False, aug_rotate=False, ifield_list = None, apply_mask = False, mask_tail='abc110821', \
 	with_read_noise = True, with_photon_noise=True, apply_FW = True, n_FW_sims=500, n_FW_split=10, \
 	apply_smooth_FF = True, ff_fpath='data/flatfield/TM1_FF/TM1_field4_mag=17.5_FF.fits', smooth_sigma=5,\
 	same_zl_levels = False, zl_levels=None, apply_zl_gradient = True, theta_mag=0.01, gradient_filter = True,\
 	iterate_grad_ff = False, niter=3, transfer_function_correct=False, ff_bias_correct=False, ff_biases=None, \
 	same_int = False, same_dgl = True, dgl_scale_fac = 5, use_ff_weights = True, \
-	plot_ff_error=False, indiv_ifield=6, nfr_same = 25, \
+	plot_ff_error=False, indiv_ifield=6, nfr_same = 25, load_noise_model=False, \
 	save = True, save_ff_ests = True, nmc_ff = 10, verbose=True):
 
 	''' 
@@ -124,6 +124,10 @@ def run_cbps_pipeline(cbps, inst, nsims, run_name, simidx0=0, datestr='100921', 
 		for fieldidx, ifield in enumerate(ifield_noise_list):
 			noise_cl2d = cbps.load_noise_Cl2D(ifield, inst, noise_fpath='data/fluctuation_data/TM'+str(inst)+'/noiseCl2D/field'+str(ifield)+'_noiseCl2D_110421.fits',\
 											  inplace=False, transpose=False)
+
+
+			# if ifield > 4: # test for noise x fluc cross 
+			# 	noise_cl2d *= 2
 			read_noise_models[fieldidx] = noise_cl2d
 
 	B_ells = [None for x in range(len(ifield_list))]
@@ -154,6 +158,7 @@ def run_cbps_pipeline(cbps, inst, nsims, run_name, simidx0=0, datestr='100921', 
 
 		cib_setidxs = []
 		inv_Mkks = []
+		mask_fractions = []
 
 		diff_realizations = np.zeros(field_set_shape)
 
@@ -183,8 +188,11 @@ def run_cbps_pipeline(cbps, inst, nsims, run_name, simidx0=0, datestr='100921', 
 				# cib_realiz = fits.open(test_set_fpath)['map'+str(ifield)].data # earlier versions didnt have underscore
 
 				if apply_mask:
-					joint_maskos[fieldidx] = fits.open(base_path+'TM'+str(inst)+'/masks/ff_joint_masks/joint_mask_with_ffmask_ifield'+str(ifield)+'_inst'+str(inst)+'_simidx'+str(cib_setidx)+'_abc110821.fits')['joint_mask_'+str(ifield)].data
-					inv_Mkks.append(fits.open(base_path+'TM'+str(inst)+'/mkk/ff_joint_masks/mkk_estimate_with_ffmask_ifield'+str(ifield)+'_inst'+str(inst)+'_simidx'+str(cib_setidx)+'_abc110821.fits')['inv_Mkk_'+str(ifield)].data)
+
+					joint_maskos[fieldidx] = fits.open(base_path+'TM'+str(inst)+'/masks/ff_joint_masks/joint_mask_with_ffmask_ifield'+str(ifield)+'_inst'+str(inst)+'_simidx'+str(cib_setidx)+'_'+mask_tail+'.fits')['joint_mask_'+str(ifield)].data
+					inv_Mkks.append(fits.open(base_path+'TM'+str(inst)+'/mkk/ff_joint_masks/mkk_estimate_with_ffmask_ifield'+str(ifield)+'_inst'+str(inst)+'_simidx'+str(cib_setidx)+'_'+mask_tail+'.fits')['inv_Mkk_'+str(ifield)].data)
+
+					mask_fractions.append(float(np.sum(joint_maskos[fieldidx]))/float(cbps.dimx**2))
 
 				if aug_rotate: # augment sims with random rotations (0, 90, 180, 270)
 					nrot = np.random.choice([0, 1, 2, 3])
@@ -215,7 +223,7 @@ def run_cbps_pipeline(cbps, inst, nsims, run_name, simidx0=0, datestr='100921', 
 				mock_trilegal_map = mock_trilegal['trilegal_'+str(cbps.inst_to_band[inst])+'_'+str(ifield)].data
 				clus_realizations[fieldidx] += mock_trilegal_map.transpose() # transpose is because astronomical mask has x, y flipped, same for Helgason galaxies
 
-
+		mask_fractions = np.array(mask_fractions)
 		print('cib set idx:', cib_setidxs)
 
 		# ----------- load masks and mkk matrices ------------
@@ -229,13 +237,6 @@ def run_cbps_pipeline(cbps, inst, nsims, run_name, simidx0=0, datestr='100921', 
 				joint_maskos[fieldidx] = fits.open(base_path+'TM'+str(inst)+'/masks/ff_joint_masks/joint_mask_with_ffmask_ifield'+str(ifield)+'_inst'+str(inst)+'_simidx'+str(maskidx)+'_abc110821.fits')['joint_mask_'+str(ifield)].data
 				inv_Mkks.append(fits.open(base_path+'TM'+str(inst)+'/mkk/ff_joint_masks/mkk_estimate_with_ffmask_ifield'+str(ifield)+'_inst'+str(inst)+'_simidx'+str(maskidx)+'_abc110821.fits')['inv_Mkk_'+str(ifield)].data)
 		
-		# B_ells = [None for x in range(len(ifield_list))]
-
-		# if load_ptsrc_cib:
-		# 	for fieldidx, ifield in enumerate(ifield_list):
-
-		# 		lb, B_ell, B_ell_list = cbps.compute_beam_correction_posts(ifield, inst, nbins=cbps.n_ps_bin, n_fine_bin=10, tail_path='data/psf_model_dict_updated_081121_ciber.npz')
-		# 		B_ells[fieldidx] = B_ell
 
 		# ----------------------- generate noise for ZL/EBL realizations --------------------------------------
 		
@@ -270,8 +271,13 @@ def run_cbps_pipeline(cbps, inst, nsims, run_name, simidx0=0, datestr='100921', 
 
 		observed_ims = zl_perfield + zl_noise + clus_realizations
 
-		obs_levels = np.array([np.mean(obs) for obs in observed_ims])
-		print('OBS LEVELS HERE ARE ', obs_levels)
+		if apply_mask:
+			obs_levels = np.array([np.mean(obs[joint_maskos[o]==1]) for o, obs in enumerate(observed_ims)])
+			print('masked OBS LEVELS HERE ARE ', obs_levels)
+
+		else:
+			obs_levels = np.array([np.mean(obs) for obs in observed_ims])
+			print('unmasked OBS LEVELS HERE ARE ', obs_levels)
 
 
 		# multiply signal by flat field and add read noise on top
@@ -282,6 +288,11 @@ def run_cbps_pipeline(cbps, inst, nsims, run_name, simidx0=0, datestr='100921', 
 		if with_read_noise:
 			print('adding read noise')
 			observed_ims += read_noise
+
+		if ff_bias_correct:
+			if ff_biases is None:
+				ff_biases = compute_ff_bias(obs_levels, weights=weights_photonly, mask_fractions=mask_fractions)
+				print('FF biases are ', ff_biases)
 
 
 		nls_estFF_nofluc = []
@@ -435,7 +446,7 @@ def run_cbps_pipeline(cbps, inst, nsims, run_name, simidx0=0, datestr='100921', 
 
 
 			# if noise model has already been saved just load it
-			if i > 0:
+			if i > 0 or load_noise_model:
 				print('LOADING NOISE MODEL FROM FILE..')
 				noisemodl_file = np.load(ciber_mock_fpath+'030122/noise_models_sim/'+run_name+'/noise_model_fieldidx'+str(fieldidx)+'.npz')
 				fourier_weights_nofluc = noisemodl_file['fourier_weights_nofluc']
@@ -492,6 +503,11 @@ def run_cbps_pipeline(cbps, inst, nsims, run_name, simidx0=0, datestr='100921', 
 										 FF_correct=FF_correct, FF_image=ff_estimates[fieldidx],\
 											 gradient_filter=gradient_filter, save_intermediate_cls=True, N_ell=nl_estFF_nofluc) # ff bias
 
+			if ff_bias_correct:
+				print('before ff bias correct ps is ', processed_ps_nf)
+				print('correcting', fieldidx, ' with ff bias of ', ff_biases[fieldidx])
+				processed_ps_nf /= ff_biases[fieldidx]
+
 
 			if iterate_grad_ff: # .. but we want gradient filtering still for the ground truth signal.
 				gradient_filter = True
@@ -508,7 +524,7 @@ def run_cbps_pipeline(cbps, inst, nsims, run_name, simidx0=0, datestr='100921', 
 												 FF_correct=False, save_intermediate_cls=True, gradient_filter=gradient_filter)
 
 
-				cib_cl_file = fits.open(base_path+'TM'+str(inst)+'/powerspec/cls_cib_vs_maglim_ifield'+str(ifield)+'_inst'+str(inst)+'_simidx'+str(cib_setidxs[fieldidx])+'.fits')
+				cib_cl_file = fits.open(base_path+'TM'+str(inst)+'/powerspec/cls_cib_vs_maglim_ifield'+str(ifield_list[fieldidx])+'_inst'+str(inst)+'_simidx'+str(cib_setidxs[fieldidx])+'.fits')
 
 				unmasked_cib_cl = cib_cl_file['cls_cib'].data['cl_maglim_'+str(masking_maglim)]
 
@@ -526,16 +542,24 @@ def run_cbps_pipeline(cbps, inst, nsims, run_name, simidx0=0, datestr='100921', 
 												 FF_correct=False, save_intermediate_cls=True, gradient_filter=gradient_filter)
 
 
-
-			if ff_bias_correct:
-				if ff_biases is None:
-					print('no ff biases provided...')
-				else:
-					print('corrected by factor ', ff_biases[fieldidx])
-					processed_ps_nf /= ff_biases[fieldidx]
-
 			if transfer_function_correct:
 				processed_ps_nf /= t_ell
+
+
+			if subtract_subthresh_stars:
+				# maybe load precomputed power spectra and assume we have it nailed down
+				print('before trilegal star correct correct ps is ', processed_ps_nf)
+
+				print('subtracting sub-threshold stars!!!!')
+
+
+				trilegal_cl_fpath = base_path+'TM'+str(inst)+'/powerspec/mean_cls_trilegal_vs_maglim_ifield'+str(ifield_list[fieldidx])+'_inst'+str(inst)+'.fits'
+				# trilegal_cl_fpath = base_path+'TM'+str(inst)+'/powerspec/cls_trilegal_vs_maglim_ifield'+str(ifield_list[fieldidx])+'_inst'+str(inst)+'_simidx'+str(cib_setidxs[fieldidx])+'.fits'
+				
+				trilegal_cl = fits.open(trilegal_cl_fpath)['cls_trilegal'].data['cl_maglim_'+str(masking_maglim)]
+
+				print(trilegal_cl)
+				processed_ps_nf -= trilegal_cl
 
 
 			signal_power_spectra[i, fieldidx, :] = ebl_ps

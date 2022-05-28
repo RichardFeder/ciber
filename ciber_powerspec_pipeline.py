@@ -1149,16 +1149,17 @@ class CIBER_PS_pipeline():
                 diff_realization -= plane
 
                 lb, cl_filt, clerr_filt = get_power_spec(diff_realization - np.mean(diff_realization), lbinedges=self.Mkk_obj.binl, lbins=self.Mkk_obj.midbin_ell)
-
+                cls_orig[i] = cl_orig
+                cls_filt[i] = cl_filt
                 t_ell_indiv = cl_filt/cl_orig 
 
                 t_ells[i] = t_ell_indiv
 
-        t_ell_av = np.mean(t_ells, axis=0)
+        t_ell_av = np.median(t_ells, axis=0)
         t_ell_stderr = np.std(t_ells, axis=0)/np.sqrt(t_ells.shape[0])
 
 
-        return lb, t_ell_av, t_ell_stderr
+        return lb, t_ell_av, t_ell_stderr, t_ells, cls_orig, cls_filt
 
   
     def compute_processed_power_spectrum(self, inst, bare_bones=False, mask=None, apply_mask=True, N_ell=None, B_ell=None, inv_Mkk=None,\
