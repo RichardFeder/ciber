@@ -60,7 +60,7 @@ def compute_fourier_weights(cl2d_all, stdpower=2):
 
 
 def iterative_gradient_ff_solve(orig_images, niter=3, masks=None, compute_ps=True, n_ps_bins=25, inv_Mkks=None, \
-                               weights_ff=None, plot=False):
+                               weights_ff=None, plot=False, ff_stack_min=1):
     
     # maps at end of each iteration
     images = np.array(list(orig_images.copy()))
@@ -106,7 +106,7 @@ def iterative_gradient_ff_solve(orig_images, niter=3, masks=None, compute_ps=Tru
             
 
             ff_estimate, _, ff_weights = compute_stack_ff_estimate(stack_obs, target_mask=target_mask, masks=stack_mask, \
-                                                       inv_var_weight=False, ff_stack_min=1, \
+                                                       inv_var_weight=False, ff_stack_min=ff_stack_min, \
                                                             field_nfrs=None, weights=weights_ff_iter)
 
             ff_estimates[imidx] = ff_estimate
@@ -159,9 +159,10 @@ class CIBER_PS_pipeline():
     field_nfrs = dict({4:24, 5:10, 6:29, 7:28, 8:25}) # unique to fourth flight CIBER dataset, elat30 previously noted as 9 frames but Chi says it is 10 (9/17/21)
     frame_period = 1.78 # seconds
 
+    # zl_levels_ciber_fields = dict({2:dict({'elat10': 199.16884143344222, 'BootesA': 106.53451615117534, 'elat30': 147.02015318942148, 'BootesB': 108.62357310134063, 'SWIRE': 90.86593718752026}), \
+    #                               1:dict({'NEP':249., 'Lockman':435., 'elat10':558., 'elat30':402., 'BootesB':301., 'BootesA':295., 'SWIRE':245.})})
     zl_levels_ciber_fields = dict({2:dict({'elat10': 199.16884143344222, 'BootesA': 106.53451615117534, 'elat30': 147.02015318942148, 'BootesB': 108.62357310134063, 'SWIRE': 90.86593718752026}), \
-                                  1:dict({'NEP':249., 'Lockman':435., 'elat10':558., 'elat30':402., 'BootesB':301., 'BootesA':295., 'SWIRE':245.})})
-
+                                  1:dict({'NEP':249., 'Lockman':435., 'elat10':515.7, 'elat30':381.4, 'BootesB':328.2, 'BootesA':318.15, 'SWIRE':281.4})})
 
 
     # self.g1_facs = dict({1:-1.5459, 2:-1.3181}) # multiplying by g1 converts from ADU/fr to e-/s NOTE: these are factory values but not correct
@@ -179,10 +180,6 @@ class CIBER_PS_pipeline():
         for attr, valu in locals().items():
             setattr(self, attr, valu)
 
-        # self.base_path = base_path
-        # self.data_path = data_path
-        # self.dimx, self.dimy = dimx, dimy
-        # self.n_ps_bin = n_ps_bin
 
         if data_path is None:
             self.data_path = self.base_path+'data/fluctuation_data/'
@@ -471,14 +468,6 @@ class CIBER_PS_pipeline():
                 if i==0:
                     print('std on simmaps after ff estimate is ', np.std(simmaps))
 
-            if apply_mask and mask is not None:
-                simmaps *= mask
-                unmasked_means = [np.mean(simmap[mask==1]) for simmap in simmaps]
-                simmaps -= np.array([mask*unmasked_mean for unmasked_mean in unmasked_means])
-                # print('simmaps have means : ', [np.mean(simmap) for simmap in simmaps])
-            else:
-                simmaps -= np.array([np.full((self.dimx, self.dimy), np.mean(simmap)) for simmap in simmaps])
-                # print('simmaps have means : ', [np.mean(simmap) for simmap in simmaps])
 
             if gradient_filter:
                 verbprint(True, 'Gradient filtering image in the noiiiise bias..')
@@ -489,11 +478,16 @@ class CIBER_PS_pipeline():
                     theta, plane = fit_gradient_to_map(simmaps[s], mask=mask)
                     simmaps[s] -= plane
 
+                print([np.mean(simmap) for simmap in simmaps])
 
-                # plane = np.array([fit_gradient_to_map(simmap, mask=mask)[1] for s, simmap in enumerate(simmaps)])
-                # plot_map(plane, title='est gradient')
-                # simmaps -= plane
-
+            if apply_mask and mask is not None:
+                simmaps *= mask
+                unmasked_means = [np.mean(simmap[mask==1]) for simmap in simmaps]
+                simmaps -= np.array([mask*unmasked_mean for unmasked_mean in unmasked_means])
+                print('simmaps have means : ', [np.mean(simmap) for simmap in simmaps])
+            else:
+                simmaps -= np.array([np.full((self.dimx, self.dimy), np.mean(simmap)) for simmap in simmaps])
+                # print('simmaps have means : ', [np.mean(simmap) for simmap in simmaps])
 
             fft_objs[1](simmaps*sterad_per_pix)
 
@@ -578,37 +572,21 @@ class CIBER_PS_pipeline():
             if noise_fpath is None:
                 if ifield is not None and inst is not None:
                     verbprint(verbose, 'Loading 2D noise power spectrum from TM'+str(inst)+', field '+str(ifield)+'..')            
-                    # noise_fpath = self.data_path + 'TM'+str(inst)+'/noiseCl2D/field'+str(ifield)+'_noiseCl2D.fits'
-                    noise_fpath = self.data_path+'/TM'+str(inst)+'/noiseCl2D/field'+str(ifield)+'_noiseCl2D_110421.fits'
-                    
-                    # noise_fpath = self.data_path+'/TM'+str(inst)+'/noiseCl2D/dr20211007_rmf/field'+str(ifield)+'_noiseCl2D_rmf_highellmask.fits'
-                    # noise_fpath = self.data_path + 'TM'+str(inst)+'/readCl_input_dr20210611/field'+str(ifield)+'_readCl2d_input.fits'
+                    noise_fpath = self.data_path+'/TM'+str(inst)+'/noiseCl2D/field'+str(ifield)+'_noiseCl2D_110421.fits'                    
                 else:
                     print('Out of luck, need more information. Returning None')
                     return None
-                
 
             noise_Cl2D = fits.open(noise_fpath)['noise_model_'+str(ifield)].data
-            # noise_Cl2D = fits.open(noise_fpath)[0].data
 
             if transpose:
-                # print('using the transpose here!')
-                # plot_map(noise_Cl2D, title='noise cl2d about to use transpose')
-
+                print('using the transpose here (why)')
                 noise_Cl2D = noise_Cl2D.transpose()
 
-                # plot_map(noise_Cl2D, title='noise cl2d right here')
 
         # remove any NaNs/infs from power spectrum
         noise_Cl2D[np.isnan(noise_Cl2D)] = 0.
         noise_Cl2D[np.isinf(noise_Cl2D)] = 0.
-
-        # set negative elements to zero
-        # noise_Cl2D[noise_Cl2D < 0] = 0.
-
-        # if use_abs:
-        #     # print('computing the absolute value of the read noise model here')
-        #     noise_Cl2D = np.abs(noise_Cl2D) # neither this nor the above correction are correct
 
         if inplace:
             if mode=='unmasked':
@@ -841,14 +819,20 @@ class CIBER_PS_pipeline():
         ----------
         inst : `int`. 1 for 1.1 um band, 2 for 1.8 um band.
 
+        image : 
+        nsims : (int)
+        shot_sigma_map (optional) : 
+        nfr :
+        frame_rate : 
+        ifield : 
+        g2_correct :
 
 
         Returns
         -------
 
-
-
-
+        shot_noise
+        
 
         '''
         if nsims*self.dimx*self.dimy > 1e8:
@@ -865,9 +849,9 @@ class CIBER_PS_pipeline():
             print('computing shot sigma map from within compute_shot_noise_maps')
             shot_sigma_map = self.compute_shot_sigma_map(inst, image, nfr=nfr, frame_rate=frame_rate, g2_correct=g2_correct)
 
-        unit_noise = np.random.normal(0, 1, size=(nsims, self.dimx, self.dimy))
+        shot_noise = np.random.normal(0, 1, size=(nsims, self.dimx, self.dimy))*shot_sigma_map
 
-        return unit_noise*shot_sigma_map
+        return shot_noise
 
     def compute_shot_sigma_map(self, inst, image, nfr=None, frame_rate=None, verbose=False, g2_correct=True):
 
@@ -1199,9 +1183,7 @@ class CIBER_PS_pipeline():
         if gradient_filter:
             verbprint(True, 'Gradient filtering image..')
             theta, plane = fit_gradient_to_map(image, mask=mask)
-            # plot_map(plane, title='est gradient')
             image -= plane
-            # plot_map(image, title='gradient subtracted image')
 
         if apply_mask and not bare_bones:
 
@@ -1209,17 +1191,14 @@ class CIBER_PS_pipeline():
             masked_image = mean_sub_masked_image(image, mask) # apply mask and mean subtract unmasked pixels
         else:
             verbprint(True, 'No masking, subtracting image by its mean..')
-
             masked_image = image - np.mean(image)
             mask = None
 
-        
         verbprint(verbose, 'Mean of masked image is '+str(np.mean(masked_image)))
          
         weights=None
         if apply_FW and not bare_bones:
             verbprint(True, 'Using Fourier weights..')
-            
             weights = self.FW_image # this feeds Fourier weights into get_power_spec, which uses them with Cl2D
             
         lbins, cl_proc, cl_proc_err = get_power_spec(masked_image, mask=None, weights=weights, lbinedges=self.Mkk_obj.binl, lbins=self.Mkk_obj.midbin_ell)
@@ -1326,6 +1305,46 @@ def small_Nl2D_from_larger(dimx_small, dimy_small, n_ps_bin,ifield, noise_model=
 	av_cl2d = np.mean(cl2d_all_small, axis=0)
 
 	return av_cl2d, clprocs, clprocs_large_chi2, cbps_small
+
+
+
+def iter_sigma_clip_mask(image, sig=5, nitermax=10, initial_mask=None):
+    # image assumed to be 2d
+    iteridx = 0
+    
+    summask = image.shape[0]*image.shape[1]
+    running_mask = (image != 0).astype(np.int)
+    if initial_mask is not None:
+        running_mask *= initial_mask
+        
+    while iteridx < nitermax:
+        
+        new_mask = sigma_clip_maskonly(image, previous_mask=running_mask, sig=sig)
+        
+        if np.sum(running_mask*new_mask) < summask:
+            running_mask *= new_mask
+            summask = np.sum(running_mask)
+        else:
+            return running_mask
+
+        iteridx += 1
+        
+    return running_mask
+
+def sigma_clip_maskonly(vals, previous_mask=None, sig=5):
+    
+    valcopy = vals.copy()
+    if previous_mask is not None:
+        valcopy[previous_mask==0] = np.nan
+        sigma_val = np.nanstd(valcopy)
+    else:
+        sigma_val = np.nanstd(valcopy)
+    
+    abs_dev = np.abs(vals-np.nanmedian(valcopy))
+    mask = (abs_dev < sig*sigma_val).astype(np.int)
+
+    return mask
+
 
 
 def generate_synthetic_mock_test_set(test_set_fpath, trilegal_sim_idx=1, inst=1, cmock=None, cbps=None, n_ps_bin=25, ciberdir='/Users/luminatech/Documents/ciber2/ciber/',\
@@ -1916,43 +1935,6 @@ def compute_powerspectra_realdat(inst, n_ps_bin=25, J_mag_lim=17.5, ifield_list=
     
    
 
-
-def iter_sigma_clip_mask(image, sig=5, nitermax=10, initial_mask=None):
-    # image assumed to be 2d
-    iteridx = 0
-    
-    summask = image.shape[0]*image.shape[1]
-    running_mask = (image != 0).astype(np.int)
-    if initial_mask is not None:
-        running_mask *= initial_mask
-        
-    while iteridx < nitermax:
-        
-        new_mask = sigma_clip_maskonly(image, previous_mask=running_mask, sig=sig)
-        
-        if np.sum(running_mask*new_mask) < summask:
-            running_mask *= new_mask
-            summask = np.sum(running_mask)
-        else:
-            return running_mask
-
-        iteridx += 1
-        
-    return running_mask
-
-def sigma_clip_maskonly(vals, previous_mask=None, sig=5):
-    
-    valcopy = vals.copy()
-    if previous_mask is not None:
-        valcopy[previous_mask==0] = np.nan
-        sigma_val = np.nanstd(valcopy)
-    else:
-        sigma_val = np.nanstd(valcopy)
-    
-    abs_dev = np.abs(vals-np.nanmedian(valcopy))
-    mask = (abs_dev < sig*sigma_val).astype(np.int)
-
-    return mask
 
 
 

@@ -44,16 +44,22 @@ def init_mocktest_fpaths(ciber_mock_fpath, run_name):
 
 
 
-def run_cbps_pipeline(cbps, inst, nsims, run_name, simidx0=0, datestr='100921', data_type='mock', ciber_mock_fpath='/Volumes/Seagate Backup Plus Drive/Toolkit/Mirror/Richard/ciber_mocks/',\
-	sim_test_fpath = 'data/input_recovered_ps/sim_tests_030122/', load_ptsrc_cib=False, load_trilegal=False, masking_maglim=17.5, subtract_subthresh_stars=False, compute_beam_correction=True, bls_fpath=None,\
-	n_cib_set=20, draw_cib_setidxs=False, aug_rotate=False, ifield_list = None, apply_mask = False, mask_tail='abc110821', \
+def run_cbps_pipeline(cbps, inst, nsims, run_name, ifield_list = None, \
+	simidx0=0, datestr='100921', data_type='mock',\
+	ciber_mock_fpath='/Volumes/Seagate Backup Plus Drive/Toolkit/Mirror/Richard/ciber_mocks/', sim_test_fpath = 'data/input_recovered_ps/sim_tests_030122/', \
+	base_fluc_path='/Volumes/Seagate Backup Plus Drive/Toolkit/Mirror/Richard/ciber_fluctuation_data/', \
+	load_ptsrc_cib=False, load_trilegal=False, masking_maglim=17.5, subtract_subthresh_stars=False,\
+	compute_beam_correction=True, bls_fpath=None,\
+	n_cib_set=20, draw_cib_setidxs=False, aug_rotate=False, \
+	apply_mask = False, mask_tail='abc110821', \
 	with_read_noise = True, with_photon_noise=True, apply_FW = True, n_FW_sims=500, n_FW_split=10, \
 	apply_smooth_FF = True, ff_fpath='data/flatfield/TM1_FF/TM1_field4_mag=17.5_FF.fits', smooth_sigma=5,\
 	same_zl_levels = False, zl_levels=None, apply_zl_gradient = True, theta_mag=0.01, gradient_filter = True,\
-	iterate_grad_ff = False, niter=3, transfer_function_correct=False, ff_bias_correct=False, ff_biases=None, \
-	same_int = False, same_dgl = True, dgl_scale_fac = 5, use_ff_weights = True, \
-	plot_ff_error=False, indiv_ifield=6, nfr_same = 25, load_noise_model=False, \
-	save = True, save_ff_ests = True, nmc_ff = 10, verbose=True):
+	iterate_grad_ff = False, niter=3, transfer_function_correct=False, \
+	ff_bias_correct=False, ff_biases=None, use_ff_weights = True, save_ff_ests = True, nmc_ff = 10, \
+	same_int = False, same_dgl = True, dgl_scale_fac = 5, \
+	plot_ff_error=False, indiv_ifield=6, nfr_same = 25, ff_stack_min=1, load_noise_model=False, \
+	save = True, verbose=True):
 
 	''' 
 	Wrapper function for CIBER power spectrum pipeline. This is the latest version used for mock data, though I would like to 
@@ -61,15 +67,23 @@ def run_cbps_pipeline(cbps, inst, nsims, run_name, simidx0=0, datestr='100921', 
 
 	'''
 
-	# base_path = '/Volumes/Seagate Backup Plus Drive/Toolkit/Mirror/Richard/ciber_mocks/100921/'
-	# datestr = '100921'
-
 	base_path = ciber_mock_fpath+datestr+'/'
 
 	if ifield_list is None:
 		ifield_list = [4, 5, 6, 7, 8]
 
 	nfield = len(ifield_list)
+
+	if data_type=='observed':
+		print('DATA TYPE IS OBSERVED')
+		simidx0 = 0
+		nsims = 1
+		same_int = False 
+		apply_zl_gradient = False
+		# apply_smooth_FF = False
+		with_read_noise = True
+		load_ptsrc_cib = False
+
 
 	if same_int:
 		nfr_fields = [nfr_same for i in range(nfield)]
@@ -96,13 +110,11 @@ def run_cbps_pipeline(cbps, inst, nsims, run_name, simidx0=0, datestr='100921', 
 
 
 	# instantiate data arrays 
-	field_set_shape = (len(ifield_list), cbps.dimx, cbps.dimy)
-	ps_set_shape = (nsims, len(ifield_list), cbps.n_ps_bin)
+	field_set_shape = (nfield, cbps.dimx, cbps.dimy)
+	ps_set_shape = (nsims, nfield, cbps.n_ps_bin)
 
-	clus_realizations, zl_perfield, ff_estimates = [np.zeros(field_set_shape) for i in range(3)]
-	
+	clus_realizations, zl_perfield, ff_estimates, observed_ims = [np.zeros(field_set_shape) for i in range(4)]
 	inv_Mkks, joint_maskos = None, None
-
 
 	if apply_zl_gradient:
 		zl_gradients = np.zeros(field_set_shape)
@@ -113,11 +125,11 @@ def run_cbps_pipeline(cbps, inst, nsims, run_name, simidx0=0, datestr='100921', 
 
 	smooth_ff = None
 	if apply_smooth_FF:
+		print('loading smooth FF from ', ff_fpath)
 		ff = fits.open(ff_fpath)
 		smooth_ff = gaussian_filter(ff[0].data, sigma=smooth_sigma)
 
 	ff_fpath, noisemod_fpath, input_recov_ps_fpath = init_mocktest_fpaths(ciber_mock_fpath, run_name)
-
 
 	if with_read_noise:
 		read_noise, read_noise_models = [np.zeros(field_set_shape) for i in range(2)]
@@ -127,26 +139,24 @@ def run_cbps_pipeline(cbps, inst, nsims, run_name, simidx0=0, datestr='100921', 
 
 
 			# if ifield > 4: # test for noise x fluc cross 
+			# 	print('DOUBLED THEE NOISE OHHHHHHHH')
 			# 	noise_cl2d *= 2
+
 			read_noise_models[fieldidx] = noise_cl2d
 
-	B_ells = [None for x in range(len(ifield_list))]
+	B_ells = [None for x in range(nfield)]
 
-	if load_ptsrc_cib:
-
-		if compute_beam_correction:
-
-
-			for fieldidx, ifield in enumerate(ifield_list):
-
-				lb, B_ell, B_ell_list = cbps.compute_beam_correction_posts(ifield, inst, nbins=cbps.n_ps_bin, n_fine_bin=10, tail_path='data/psf_model_dict_updated_081121_ciber.npz')
-				B_ells[fieldidx] = B_ell
-
-		else:
+	if compute_beam_correction:
+		for fieldidx, ifield in enumerate(ifield_list):
+			lb, B_ell, B_ell_list = cbps.compute_beam_correction_posts(ifield, inst, nbins=cbps.n_ps_bin, n_fine_bin=10, tail_path='data/psf_model_dict_updated_081121_ciber.npz')
+			B_ells[fieldidx] = B_ell
+	else:
+		if data_type=='mock':
 			B_ells = np.load(bls_fpath)['B_ells']
 
-		if bls_fpath is not None and compute_beam_correction:
-			np.savez(bls_fpath, B_ells=B_ells, ifield_list=ifield_list)
+	if bls_fpath is not None and compute_beam_correction:
+		np.savez(bls_fpath, B_ells=B_ells, ifield_list=ifield_list)
+
 
 	# loop through simulations
 	for i in np.arange(simidx0, nsims):
@@ -154,148 +164,166 @@ def run_cbps_pipeline(cbps, inst, nsims, run_name, simidx0=0, datestr='100921', 
 		if i==0:
 			verbose = True
 
-		print('Simulation set '+str(i)+' of '+str(nsims)+'..')
+		if data_type=='mock':
+			print('Simulation set '+str(i)+' of '+str(nsims)+'..')
+		elif data_type=='observed':
+			print('Running observed data..')
 
-		cib_setidxs = []
-		inv_Mkks = []
-		mask_fractions = []
-
+		cib_setidxs, inv_Mkks, mask_fractions = [], [], []
 		diff_realizations = np.zeros(field_set_shape)
 
 		for fieldidx, ifield in enumerate(ifield_list):
 
 			# ----------------- make DGL ----------------
-
-			if same_dgl:
-				diff_realization = generate_custom_dgl_clustering(cbps, dgl_scale_fac=dgl_scale_fac, gen_ifield=indiv_ifield)
-			else:
-				diff_realization = generate_custom_dgl_clustering(cbps, dgl_scale_fac=dgl_scale_fac, ifield=ifield, gen_ifield=indiv_ifield)
-				
-			if load_ptsrc_cib:  
-
-				diff_realizations[fieldidx] = diff_realization
-
-				if draw_cib_setidxs:
-					cib_setidx = np.random.choice(np.arange(n_cib_set))
-					print('cib set idxs is ', cib_setidxs)
+			if data_type=='mock':
+				if same_dgl:
+					diff_realization = generate_custom_dgl_clustering(cbps, dgl_scale_fac=dgl_scale_fac, gen_ifield=indiv_ifield)
 				else:
-					cib_setidx = i
+					diff_realization = generate_custom_dgl_clustering(cbps, dgl_scale_fac=dgl_scale_fac, ifield=ifield, gen_ifield=indiv_ifield)
+						
+				if load_ptsrc_cib: # false for observed data 
 
-				cib_setidxs.append(cib_setidx)
+					diff_realizations[fieldidx] = diff_realization
 
-				test_set_fpath = base_path+'TM'+str(inst)+'/cib_with_tracer_5field_set'+str(cib_setidx)+'_'+datestr+'_TM'+str(inst)+'.fits'
-				cib_realiz = fits.open(test_set_fpath)['map_'+str(ifield)].data.transpose()
-				# cib_realiz = fits.open(test_set_fpath)['map'+str(ifield)].data # earlier versions didnt have underscore
+					if draw_cib_setidxs:
+						cib_setidx = np.random.choice(np.arange(n_cib_set))
+						print('cib set idxs is ', cib_setidxs)
+					else:
+						cib_setidx = i
 
-				if apply_mask:
+					cib_setidxs.append(cib_setidx)
 
-					joint_maskos[fieldidx] = fits.open(base_path+'TM'+str(inst)+'/masks/ff_joint_masks/joint_mask_with_ffmask_ifield'+str(ifield)+'_inst'+str(inst)+'_simidx'+str(cib_setidx)+'_'+mask_tail+'.fits')['joint_mask_'+str(ifield)].data
-					inv_Mkks.append(fits.open(base_path+'TM'+str(inst)+'/mkk/ff_joint_masks/mkk_estimate_with_ffmask_ifield'+str(ifield)+'_inst'+str(inst)+'_simidx'+str(cib_setidx)+'_'+mask_tail+'.fits')['inv_Mkk_'+str(ifield)].data)
+					test_set_fpath = base_path+'TM'+str(inst)+'/cib_with_tracer_5field_set'+str(cib_setidx)+'_'+datestr+'_TM'+str(inst)+'.fits'
+					cib_realiz = fits.open(test_set_fpath)['map_'+str(ifield)].data.transpose()
+					# cib_realiz = fits.open(test_set_fpath)['map'+str(ifield)].data # earlier versions didnt have underscore
+		
+				else:
+					_, _, shotcomp = generate_diffuse_realization(cbps.dimx, cbps.dimy, power_law_idx=0.0, scale_fac=3e8)
 
-					mask_fractions.append(float(np.sum(joint_maskos[fieldidx]))/float(cbps.dimx**2))
+				clus_realizations[fieldidx] = diff_realization
 
-				if aug_rotate: # augment sims with random rotations (0, 90, 180, 270)
-					nrot = np.random.choice([0, 1, 2, 3])
-					for nr in range(nrot):
-						cib_realiz = np.rot90(cib_realiz)
+				if load_ptsrc_cib:
+					clus_realizations[fieldidx] += cib_realiz
+				else:
+					clus_realizations[fieldidx] += shotcomp
 
-						if apply_mask:
-							joint_maskos[fieldidx] = np.rot90(joint_maskos[fieldidx])
+				# ------------------- make zl ------------------
 
-	
+				zl_perfield[fieldidx] = generate_zl_realization(zl_levels[fieldidx], apply_zl_gradient, theta_mag=theta_mag, dimx=cbps.dimx, dimy=cbps.dimy)
+
+				if load_trilegal:
+					mock_trilegal_path = base_path+'trilegal/mock_trilegal_simidx'+str(cib_setidx)+'_'+datestr+'.fits'
+					mock_trilegal = fits.open(mock_trilegal_path)
+					mock_trilegal_map = mock_trilegal['trilegal_'+str(cbps.inst_to_band[inst])+'_'+str(ifield)].data
+					clus_realizations[fieldidx] += mock_trilegal_map.transpose() # transpose is because astronomical mask has x, y flipped, same for Helgason galaxies
+
 			else:
-				_, _, shotcomp = generate_diffuse_realization(cbps.dimx, cbps.dimy, power_law_idx=0.0, scale_fac=3e8)
+				cbps.load_data_products(ifield, inst, verbose=True)
+				B_ells[fieldidx] = cbps.B_ell
+				print('B_ells here is ', B_ells[fieldidx])
+				observed_ims[fieldidx] = cbps.image*cbps.cal_facs[inst]
 
-			clus_realizations[fieldidx] = diff_realization
+				plot_map(observed_ims[fieldidx], title='obsreved ims ifield = '+str(ifield))
 
-			if load_ptsrc_cib:
-				clus_realizations[fieldidx] += cib_realiz
-			else:
-				clus_realizations[fieldidx] += shotcomp
 
-			# ------------------- make zl ------------------
-
-			zl_perfield[fieldidx] = generate_zl_realization(zl_levels[fieldidx], apply_zl_gradient, theta_mag=theta_mag, dimx=cbps.dimx, dimy=cbps.dimy)
-
-			if load_trilegal:
-				mock_trilegal_path = base_path+'trilegal/mock_trilegal_simidx'+str(cib_setidx)+'_'+datestr+'.fits'
-				mock_trilegal = fits.open(mock_trilegal_path)
-				mock_trilegal_map = mock_trilegal['trilegal_'+str(cbps.inst_to_band[inst])+'_'+str(ifield)].data
-				clus_realizations[fieldidx] += mock_trilegal_map.transpose() # transpose is because astronomical mask has x, y flipped, same for Helgason galaxies
-
-		mask_fractions = np.array(mask_fractions)
-		print('cib set idx:', cib_setidxs)
 
 		# ----------- load masks and mkk matrices ------------
 		
-		if not load_ptsrc_cib and apply_mask: # if applying mask load masks and inverse Mkk matrices
-			inv_Mkks = []
+		if apply_mask: # if applying mask load masks and inverse Mkk matrices
+			
 			for fieldidx, ifield in enumerate(ifield_list):
 
-				maskidx = i%10
-				
-				joint_maskos[fieldidx] = fits.open(base_path+'TM'+str(inst)+'/masks/ff_joint_masks/joint_mask_with_ffmask_ifield'+str(ifield)+'_inst'+str(inst)+'_simidx'+str(maskidx)+'_abc110821.fits')['joint_mask_'+str(ifield)].data
-				inv_Mkks.append(fits.open(base_path+'TM'+str(inst)+'/mkk/ff_joint_masks/mkk_estimate_with_ffmask_ifield'+str(ifield)+'_inst'+str(inst)+'_simidx'+str(maskidx)+'_abc110821.fits')['inv_Mkk_'+str(ifield)].data)
-		
+				if data_type=='observed':
+					mask_fpath = base_fluc_path+'/TM'+str(inst)+'/masks/joint_mask_with_ffmask_ifield'+str(ifield)+'_inst'+str(inst)+'_abc110821.fits'
+					joint_maskos[fieldidx] = fits.open(mask_fpath)['joint_mask_'+str(ifield)].data
+					inv_Mkks.append(fits.open(base_fluc_path+'TM'+str(inst)+'/mkk/mkk_with_ffmask_estimate_ifield'+str(ifield)+'_inst'+str(inst)+'_observed_abc110821.fits')['inv_Mkk_'+str(ifield)].data)
+					
+					# inv_Mkks.append(fits.open(base_path+'TM'+str(inst)+'/mkk/ff_joint_masks/mkk_estimate_with_ffmask_ifield'+str(ifield)+'_inst'+str(inst)+'_simidx'+str(cib_setidx)+'_'+mask_tail+'.fits')['inv_Mkk_'+str(ifield)].data)
+				else:
+					if load_ptsrc_cib:
+						joint_maskos[fieldidx] = fits.open(base_path+'TM'+str(inst)+'/masks/ff_joint_masks/joint_mask_with_ffmask_ifield'+str(ifield)+'_inst'+str(inst)+'_simidx'+str(cib_setidx)+'_'+mask_tail+'.fits')['joint_mask_'+str(ifield)].data
+						inv_Mkks.append(fits.open(base_path+'TM'+str(inst)+'/mkk/ff_joint_masks/mkk_estimate_with_ffmask_ifield'+str(ifield)+'_inst'+str(inst)+'_simidx'+str(cib_setidx)+'_'+mask_tail+'.fits')['inv_Mkk_'+str(ifield)].data)
+					else:
+						maskidx = i%10
+						joint_maskos[fieldidx] = fits.open(base_path+'TM'+str(inst)+'/masks/ff_joint_masks/joint_mask_with_ffmask_ifield'+str(ifield)+'_inst'+str(inst)+'_simidx'+str(maskidx)+'_abc110821.fits')['joint_mask_'+str(ifield)].data
+						inv_Mkks.append(fits.open(base_path+'TM'+str(inst)+'/mkk/ff_joint_masks/mkk_estimate_with_ffmask_ifield'+str(ifield)+'_inst'+str(inst)+'_simidx'+str(maskidx)+'_abc110821.fits')['inv_Mkk_'+str(ifield)].data)
+			
+
+				mask_fractions.append(float(np.sum(joint_maskos[fieldidx]))/float(cbps.dimx**2))
+
+			mask_fractions = np.array(mask_fractions)
+
 
 		# ----------------------- generate noise for ZL/EBL realizations --------------------------------------
 		
-		zl_noise = np.zeros(field_set_shape)
+		if data_type=='mock':
+			zl_noise = np.zeros(field_set_shape)
 
-		if with_photon_noise:
-			# zl_noise = np.zeros(field_set_shape)
+			if with_photon_noise: # set to False observed
 
-			if i==0 and save_ff_ests:
-				zl_noise2 = np.zeros(field_set_shape)
+				print('adding photon noise to mock signals')
+				for fieldidx, ifield in enumerate(ifield_list):
+
+					# shot_sigma_sb_zl_perf = cbps.compute_shot_sigma_map(inst, zl_perfield[fieldidx], nfr=nfr_fields[fieldidx])
+					# zl_noise[fieldidx] = shot_sigma_sb_zl_perf*np.random.normal(0, 1, size=(cbps.dimx, cbps.dimy))
+
+					shot_sigma_sb_sky_perf = cbps.compute_shot_sigma_map(inst, zl_perfield[fieldidx]+clus_realizations[fieldidx], nfr=nfr_fields[fieldidx])
+					zl_noise[fieldidx] = shot_sigma_sb_sky_perf*np.random.normal(0, 1, size=(cbps.dimx, cbps.dimy))
+
+			# ------------------------------------ add read noise ------------------------------------------------
+			if with_read_noise:
+				print('loading read noise realizations to mock observed images..')
+				for fieldidx, ifield in enumerate(ifield_list):
+
+					read_noise_indiv, _ = cbps.noise_model_realization(inst, (cbps.dimx, cbps.dimy), read_noise_models[fieldidx], \
+													read_noise=True, photon_noise=False)
+					read_noise[fieldidx] = read_noise_indiv
+
+			# --------------------- add mock components together to get observed images -------------------------------
+
+			observed_ims = zl_perfield + zl_noise + clus_realizations
 
 
-			for fieldidx, ifield in enumerate(ifield_list):
+		# multiply signal by flat field and add read noise on top
+		
+		if data_type=='mock':
+			if apply_smooth_FF: # false for observed
+				observed_ims *= smooth_ff
+				print('applied smooth flat field to observed ims..')
+			if with_read_noise:
+				print('adding read noise to mock..')
+				observed_ims += read_noise
+		
 
-				# shot_sigma_sb_zl_perf = cbps.compute_shot_sigma_map(inst, zl_perfield[fieldidx], nfr=nfr_fields[fieldidx])
-				# zl_noise[fieldidx] = shot_sigma_sb_zl_perf*np.random.normal(0, 1, size=(cbps.dimx, cbps.dimy))
+		if iterate_grad_ff:
+			weights_ff = None
+			if use_ff_weights:
+				weights_ff = weights_photonly
 
-				shot_sigma_sb_sky_perf = cbps.compute_shot_sigma_map(inst, zl_perfield[fieldidx]+clus_realizations[fieldidx], nfr=nfr_fields[fieldidx])
-				zl_noise[fieldidx] = shot_sigma_sb_sky_perf*np.random.normal(0, 1, size=(cbps.dimx, cbps.dimy))
+			print('RUNNING ITERATE GRAD FF for observed images')
+			print('and weights_ff is ', weights_ff)
+			processed_ims, ff_estimates, final_planes, _, coeffs_vs_niter, _ = iterative_gradient_ff_solve(observed_ims, niter=niter, masks=joint_maskos, \
+																					inv_Mkks=inv_Mkks, compute_ps=False, weights_ff=weights_ff)
+		
 
-		# ------------------------------------ add read noise ------------------------------------------------
-		if with_read_noise:
-			for fieldidx, ifield in enumerate(ifield_list):
+			observed_ims = processed_ims.copy()
 
-				read_noise_indiv, _ = cbps.noise_model_realization(inst, (cbps.dimx, cbps.dimy), read_noise_models[fieldidx], \
-												read_noise=True, photon_noise=False)
-			
-				read_noise[fieldidx] = read_noise_indiv
-
-
-		# --------------------- add components together to get observed images -------------------------------
-
-		observed_ims = zl_perfield + zl_noise + clus_realizations
+			print('observed data ff estimates have scatters', [0.5*(np.percentile(ff_estimate, 84)-np.percentile(ff_estimate, 16)) for ff_estimate in ff_estimates])
 
 		if apply_mask:
 			obs_levels = np.array([np.mean(obs[joint_maskos[o]==1]) for o, obs in enumerate(observed_ims)])
 			print('masked OBS LEVELS HERE ARE ', obs_levels)
-
 		else:
 			obs_levels = np.array([np.mean(obs) for obs in observed_ims])
 			print('unmasked OBS LEVELS HERE ARE ', obs_levels)
-
-
-		# multiply signal by flat field and add read noise on top
-			
-		if apply_smooth_FF:
-			observed_ims *= smooth_ff
-			print('applied smooth flat field to observed ims..')
-		if with_read_noise:
-			print('adding read noise')
-			observed_ims += read_noise
 
 		if ff_bias_correct:
 			if ff_biases is None:
 				ff_biases = compute_ff_bias(obs_levels, weights=weights_photonly, mask_fractions=mask_fractions)
 				print('FF biases are ', ff_biases)
 
-
 		nls_estFF_nofluc = []
+
 
 		# make monte carlo FF realizations that are used for the noise realizations (how many do we ultimately need?)
 		if i==0 and save_ff_ests:
@@ -312,38 +340,51 @@ def run_cbps_pipeline(cbps, inst, nsims, run_name, simidx0=0, datestr='100921', 
 					zl_realiz = generate_zl_realization(zl_levels[fieldidx], False, dimx=cbps.dimx, dimy=cbps.dimy)
 
 					if with_photon_noise:
-
+						print('adding photon noise to FF realization for noise model..')
 						shot_sigma_sb_zl_perf = cbps.compute_shot_sigma_map(inst, zl_perfield[fieldidx], nfr=nfr_fields[fieldidx])
 						zl_realiz += shot_sigma_sb_zl_perf*np.random.normal(0, 1, size=(cbps.dimx, cbps.dimy))
 			
 
 					observed_ims_nofluc[fieldidx] = zl_realiz
 
-				# apply FF and read noise
+
 				if apply_smooth_FF:
+					print('applying smooth FF to FF realization for noise model')
+
 					observed_ims_nofluc *= smooth_ff
 
-				if with_read_noise:
+				# if data_type=='observed':
+				# 	# then multiply realizations by estimated flat field, smoothed by some kernel
 
+				# 	obs_smooth_ff = gaussian_filter(ff_estimates[0], sigma=smooth_sigma) # use elat10 flat field, no reason
+				# 	plot_map(obs_smooth_ff, title='obs smooth ff 0')
+				# 	observed_ims_nofluc *= obs_smooth_ff
+
+				if with_read_noise: # true for observed
+					print('applying read noise to FF realization for noise model..')
 					for fieldidx, ifield in enumerate(ifield_list):
 
 						read_noise_indiv, _ = cbps.noise_model_realization(inst, (cbps.dimx, cbps.dimy), read_noise_models[fieldidx], \
 												read_noise=True, photon_noise=False)
-			
 						observed_ims_nofluc[fieldidx] += read_noise_indiv
 
-
 				if iterate_grad_ff:
-
 					weights_ff_nofluc = None
 					if use_ff_weights:
+						print('weights for ff realization are ', weights_photonly)
 						weights_ff_nofluc = weights_photonly
 
-					print('RUNNING ITERATE GRAD FF')
+					plot_map(observed_ims_nofluc[0], title='observed im nofluc 0')
+
+					print('RUNNING ITERATE GRAD FF on realizations')
 					processed_ims, ff_realization_estimates, final_planes, _, coeffs_vs_niter, _ = iterative_gradient_ff_solve(observed_ims_nofluc, niter=niter, masks=joint_maskos, \
 																							inv_Mkks=inv_Mkks, compute_ps=False, weights_ff=weights_ff_nofluc)
 				
+					for k in range(len(ff_realization_estimates)):
+						print('ff realization estimates have scatter ', 0.5*(np.percentile(ff_realization_estimates[k], 84)-np.percentile(ff_realization_estimates[k], 16)))
+
 				else:
+					print('only doing single iteration (do iterative pls)')
 					for imidx, obs_nf in enumerate(observed_ims_nofluc):
 							
 						if apply_mask:
@@ -365,29 +406,18 @@ def run_cbps_pipeline(cbps, inst, nsims, run_name, simidx0=0, datestr='100921', 
 						else:
 							weights_ff = None
 						
-
 						ff_estimate_nofluc, _, ff_weights_nofluc = compute_stack_ff_estimate(stack_obs_nofluc, target_mask=target_mask, masks=stack_mask, \
-																   inv_var_weight=False, ff_stack_min=1, \
+																   inv_var_weight=False, ff_stack_min=ff_stack_min, \
 																		field_nfrs=nfr_fields, weights=weights_ff)
 						
 
 						ff_realization_estimates[imidx] = ff_estimate_nofluc
+						print('ff realization estimate has scatter', np.std(ff_realization_estimates[imidx]))
 
 				np.savez(ciber_mock_fpath+'030122/ff_realizations/'+run_name+'/ff_realization_estimate_ffidx'+str(ffidx)+'.npz', \
 						ff_realization_estimates = ff_realization_estimates)
 
 
-		if iterate_grad_ff:
-			weights_ff = None
-			if use_ff_weights:
-				weights_ff = weights_photonly
-
-			print('RUNNING ITERATE GRAD FF for observed images')
-			processed_ims, ff_estimates, final_planes, _, coeffs_vs_niter, _ = iterative_gradient_ff_solve(observed_ims, niter=niter, masks=joint_maskos, \
-																					inv_Mkks=inv_Mkks, compute_ps=False, weights_ff=weights_ff)
-		
-
-			observed_ims = processed_ims.copy()
 
 		for fieldidx, obs in enumerate(observed_ims):
 		
@@ -402,7 +432,7 @@ def run_cbps_pipeline(cbps, inst, nsims, run_name, simidx0=0, datestr='100921', 
 				
 
 				
-			if not iterate_grad_ff: # then look at stacks
+			if not iterate_grad_ff: # then look at stacks for observed data
 
 				if apply_mask:
 					stack_mask = list(joint_maskos.copy().astype(np.bool))
@@ -411,23 +441,21 @@ def run_cbps_pipeline(cbps, inst, nsims, run_name, simidx0=0, datestr='100921', 
 				stack_obs = list(observed_ims.copy()) 
 				del(stack_obs[fieldidx])
 
-				print('not using iterative FF here')
+				print('not using iterative FF here on the observed data..')
 				if use_ff_weights:
 					weights_ff = list(weights_photonly.copy())
 					del(weights_ff[fieldidx])
-					print('weights here are ', weights_ff)
+					print('weights here at observed ff estimate are ', weights_ff)
 				else:
 					weights_ff = None
 
 				ff_estimate, _, ff_weights = compute_stack_ff_estimate(stack_obs, target_mask=target_mask, masks=stack_mask, \
-																	   inv_var_weight=False, ff_stack_min=1, \
+																	   inv_var_weight=False, ff_stack_min=ff_stack_min, \
 																			field_nfrs=nfr_fields, weights=weights_ff)
 
 				ff_estimates[fieldidx] = ff_estimate.copy()
 
-
-
-			if plot_ff_error:
+			if plot_ff_error and data_type=='mock':
 				plot_map(ff_estimate, title='ff estimate i='+str(i))
 				if apply_smooth_FF:
 					plot_map(ff_estimate_nofluc, title='ff estimate no fluc')
@@ -447,8 +475,15 @@ def run_cbps_pipeline(cbps, inst, nsims, run_name, simidx0=0, datestr='100921', 
 
 			# if noise model has already been saved just load it
 			if i > 0 or load_noise_model:
-				print('LOADING NOISE MODEL FROM FILE..')
-				noisemodl_file = np.load(ciber_mock_fpath+'030122/noise_models_sim/'+run_name+'/noise_model_fieldidx'+str(fieldidx)+'.npz')
+				if data_type=='mock':
+					noisemodl_fpath = ciber_mock_fpath+'030122/noise_models_sim/'+run_name+'/noise_model_fieldidx'+str(fieldidx)+'.npz'
+				else:
+					noisemodl_fpath = ciber_mock_fpath+'030122/noise_models_sim/'+run_name+'/noise_model_observed_fieldidx'+str(fieldidx)+'.npz'
+
+				print('LOADING NOISE MODEL FROM ', noisemod_fpath)
+
+				noisemodl_file = np.load(noisemodl_fpath)
+				# noisemodl_file = np.load(ciber_mock_fpath+'030122/noise_models_sim/'+run_name+'/noise_model_fieldidx'+str(fieldidx)+'.npz')
 				fourier_weights_nofluc = noisemodl_file['fourier_weights_nofluc']
 				mean_cl2d_nofluc = noisemodl_file['mean_cl2d_nofluc']
 				nl_estFF_nofluc = noisemodl_file['nl_estFF_nofluc']
@@ -461,12 +496,14 @@ def run_cbps_pipeline(cbps, inst, nsims, run_name, simidx0=0, datestr='100921', 
 					all_ff_ests_nofluc.append(ff_file['ff_realization_estimates'][fieldidx])
 					
 					if ffidx==0:
-						plot_map(all_ff_ests_nofluc[0], title='loaded MC ff estimate')
+						plot_map(all_ff_ests_nofluc[0], title='loaded MC ff estimate 0')
 				
 				print('median obs is ', np.median(obs))
+				print('simmap dc is ', simmap_dc)
 		
-				shot_sigma_sb_zl_noisemodl = cbps.compute_shot_sigma_map(inst, zl_perfield[fieldidx], nfr=nfr_fields[fieldidx])
-		
+				# shot_sigma_sb_zl_noisemodl = cbps.compute_shot_sigma_map(inst, zl_perfield[fieldidx], nfr=nfr_fields[fieldidx])
+				shot_sigma_sb_zl_noisemodl = cbps.compute_shot_sigma_map(inst, image=obs, nfr=nfr_fields[fieldidx])
+			
 				fourier_weights_nofluc, mean_cl2d_nofluc = cbps.estimate_noise_power_spectrum(nsims=n_FW_sims, n_split=n_FW_split, apply_mask=apply_mask, \
 				   noise_model=read_noise_models[fieldidx], read_noise=with_read_noise, inst=inst, ifield=ifield_noise_list[fieldidx], show=False, mask=target_mask, \
 					photon_noise=with_photon_noise, ff_estimate=None, shot_sigma_sb=shot_sigma_sb_zl_noisemodl, inplace=False, \
@@ -478,23 +515,36 @@ def run_cbps_pipeline(cbps, inst, nsims, run_name, simidx0=0, datestr='100921', 
 
 				if save:
 					print('SAVING NOISE MODEL FILE..')
-					np.savez('/Volumes/Seagate Backup Plus Drive/Toolkit/Mirror/Richard/ciber_mocks/030122/noise_models_sim/'+run_name+'/noise_model_fieldidx'+str(fieldidx)+'.npz', \
+					if data_type=='mock':
+						noisemodl_fpath = '/Volumes/Seagate Backup Plus Drive/Toolkit/Mirror/Richard/ciber_mocks/030122/noise_models_sim/'+run_name+'/noise_model_fieldidx'+str(fieldidx)+'.npz'
+
+					else:
+						noisemodl_fpath = '/Volumes/Seagate Backup Plus Drive/Toolkit/Mirror/Richard/ciber_mocks/030122/noise_models_sim/'+run_name+'/noise_model_observed_fieldidx'+str(fieldidx)+'.npz'
+
+					np.savez(noisemodl_fpath, \
 							fourier_weights_nofluc=fourier_weights_nofluc, mean_cl2d_nofluc=mean_cl2d_nofluc, nl_estFF_nofluc=nl_estFF_nofluc)
-			
+
 
 			cbps.FW_image=fourier_weights_nofluc.copy()
 			nls_estFF_nofluc.append(nl_estFF_nofluc)
 
-
-			if load_ptsrc_cib:
+			if load_ptsrc_cib or data_type=='observed':
 				beam_correct = True 
 			else:
 				beam_correct = False			
 
-			FF_correct = True
-			if iterate_grad_ff: # set gradient_filter to False here because we've already done gradient filtering
+			FF_correct = True # divides image by estimated flat field, not to be confused with flat field bias correction
+			if iterate_grad_ff: # set gradient_filter, FF_correct to False here because we've already done gradient filtering/FF estimation
 				gradient_filter = False
 				FF_correct = False
+
+			# if data_type=='observed': # this has been tested on recent data and no evidence that it has an impact
+			# 	print('mask goes from ', float(np.sum(target_mask))/float(cbps.dimx**2))
+			# 	sigclip = sigma_clip_maskonly(obs, previous_mask=target_mask, sig=3)
+	  #       	target_mask *= sigclip
+	  #       	print('to ', float(np.sum(target_mask))/float(cbps.dimx**2))
+
+	  		print('obs mean is ', np.mean(obs[target_mask==1]))
 
 			lb, processed_ps_nf, cl_proc_err, _ = cbps.compute_processed_power_spectrum(inst, apply_mask=apply_mask, \
 											 mask=target_mask, image=obs, convert_adufr_sb=False, \
@@ -515,31 +565,32 @@ def run_cbps_pipeline(cbps, inst, nsims, run_name, simidx0=0, datestr='100921', 
 			cl_prenlcorr = cbps.masked_Cl_pre_Nl_correct.copy()
 
 			# if using CIB model, ground truth for CIB is loaded from Helgason J > Jlim and added to ground truth of DGL-like component
-			if load_ptsrc_cib:
+			if data_type=='mock':
+				if load_ptsrc_cib: # false for observed
 
-				lb, diff_cl, cl_proc_err, _ = cbps.compute_processed_power_spectrum(inst, apply_mask=False, \
-													 image=diff_realizations[fieldidx], convert_adufr_sb=False, \
-													mkk_correct=False, beam_correct=True, B_ell=B_ells[fieldidx], \
-													apply_FW=False, verbose=False, noise_debias=False, \
-												 FF_correct=False, save_intermediate_cls=True, gradient_filter=gradient_filter)
-
-
-				cib_cl_file = fits.open(base_path+'TM'+str(inst)+'/powerspec/cls_cib_vs_maglim_ifield'+str(ifield_list[fieldidx])+'_inst'+str(inst)+'_simidx'+str(cib_setidxs[fieldidx])+'.fits')
-
-				unmasked_cib_cl = cib_cl_file['cls_cib'].data['cl_maglim_'+str(masking_maglim)]
-
-				# print('unmasked cib cl', unmasked_cib_cl)
-
-				ebl_ps = unmasked_cib_cl + diff_cl
-
-			else:
+					lb, diff_cl, cl_proc_err, _ = cbps.compute_processed_power_spectrum(inst, apply_mask=False, \
+														 image=diff_realizations[fieldidx], convert_adufr_sb=False, \
+														mkk_correct=False, beam_correct=True, B_ell=B_ells[fieldidx], \
+														apply_FW=False, verbose=False, noise_debias=False, \
+													 FF_correct=False, save_intermediate_cls=True, gradient_filter=gradient_filter)
 
 
-				lb, ebl_ps, cl_proc_err, _ = cbps.compute_processed_power_spectrum(inst, apply_mask=False, \
-													 image=clus_realizations[fieldidx], convert_adufr_sb=False, \
-													mkk_correct=False, beam_correct=True, B_ell=B_ells[fieldidx], \
-													apply_FW=False, verbose=False, noise_debias=False, \
-												 FF_correct=False, save_intermediate_cls=True, gradient_filter=gradient_filter)
+					# cib_cl_file = fits.open(base_path+'TM'+str(inst)+'/powerspec/cls_cib_vs_maglim_ifield'+str(ifield_list[fieldidx])+'_inst'+str(inst)+'_simidx'+str(cib_setidxs[fieldidx])+'.fits')
+					cib_cl_file = fits.open(base_path+'TM'+str(inst)+'/powerspec/cls_cib_vs_maglim_ifield'+str(ifield_list[fieldidx])+'_inst'+str(inst)+'_simidx'+str(cib_setidxs[fieldidx])+'_Vega_magcut.fits')
+					unmasked_cib_cl = cib_cl_file['cls_cib'].data['cl_maglim_'+str(masking_maglim)]
+
+					# print('unmasked cib cl', unmasked_cib_cl)
+
+					ebl_ps = unmasked_cib_cl + diff_cl
+
+				else:
+
+
+					lb, ebl_ps, cl_proc_err, _ = cbps.compute_processed_power_spectrum(inst, apply_mask=False, \
+														 image=clus_realizations[fieldidx], convert_adufr_sb=False, \
+														mkk_correct=False, beam_correct=True, B_ell=B_ells[fieldidx], \
+														apply_FW=False, verbose=False, noise_debias=False, \
+													 FF_correct=False, save_intermediate_cls=True, gradient_filter=gradient_filter)
 
 
 			if transfer_function_correct:
@@ -551,34 +602,32 @@ def run_cbps_pipeline(cbps, inst, nsims, run_name, simidx0=0, datestr='100921', 
 				print('before trilegal star correct correct ps is ', processed_ps_nf)
 
 				print('subtracting sub-threshold stars!!!!')
-
-
-				trilegal_cl_fpath = base_path+'TM'+str(inst)+'/powerspec/mean_cls_trilegal_vs_maglim_ifield'+str(ifield_list[fieldidx])+'_inst'+str(inst)+'.fits'
+				# trilegal_cl_fpath = base_path+'TM'+str(inst)+'/powerspec/mean_cls_trilegal_vs_maglim_ifield'+str(ifield_list[fieldidx])+'_inst'+str(inst)+'_Vega_magcut.fits'
+				# trilegal_cl_fpath = base_path+'TM'+str(inst)+'/powerspec/cls_trilegal_vs_maglim_ifield'+str(ifield_list[fieldidx])+'_inst'+str(inst)+'_simidx'+str(cib_setidxs[fieldidx])+'_Vega_magcut.fits'
 				# trilegal_cl_fpath = base_path+'TM'+str(inst)+'/powerspec/cls_trilegal_vs_maglim_ifield'+str(ifield_list[fieldidx])+'_inst'+str(inst)+'_simidx'+str(cib_setidxs[fieldidx])+'.fits'
-				
-				trilegal_cl = fits.open(trilegal_cl_fpath)['cls_trilegal'].data['cl_maglim_'+str(masking_maglim)]
 
+				trilegal_cl_fpath = base_path+'TM'+str(inst)+'/powerspec/mean_cls_trilegal_vs_maglim_ifield'+str(ifield_list[fieldidx])+'_inst'+str(inst)+'_Vega_magcut.fits'
+				trilegal_cl = fits.open(trilegal_cl_fpath)['cls_trilegal'].data['cl_maglim_'+str(masking_maglim)]
 				print(trilegal_cl)
 				processed_ps_nf -= trilegal_cl
 
+			print('proc:', processed_ps_nf)
 
-			signal_power_spectra[i, fieldidx, :] = ebl_ps
 			recovered_power_spectra[i, fieldidx, :] = processed_ps_nf
 
-			print('proc:', processed_ps_nf)
-			print('ebl ps', ebl_ps)
-			print('proc (nofluc) / ebl = ', processed_ps_nf/ebl_ps)
+			if data_type=='mock':
+				print('ebl ps', ebl_ps)
+				signal_power_spectra[i, fieldidx, :] = ebl_ps
+				print('proc (nofluc) / ebl = ', processed_ps_nf/ebl_ps)
 
-
-		print('mean ps bias is ', np.mean(recovered_power_spectra[i,:,:]/signal_power_spectra[i,:,:], axis=0))
+				print('mean ps bias is ', np.mean(recovered_power_spectra[i,:,:]/signal_power_spectra[i,:,:], axis=0))
 	   
 		nls_estFF_nofluc = np.array(nls_estFF_nofluc)
-		
 		print('mean nl:', np.mean(nls_estFF_nofluc, axis=0))
 
 
 		if save:
-			np.savez(sim_test_fpath+run_name+'/input_recovered_ps_estFF_simidx'+str(i)+'.npz', lb=lb, \
+			np.savez(sim_test_fpath+run_name+'/input_recovered_ps_estFF_simidx'+str(i)+'.npz', lb=lb, data_type=data_type, \
 				signal_ps=signal_power_spectra[i], recovered_ps_est_nofluc=recovered_power_spectra[i],\
 					 dgl_scale_fac=dgl_scale_fac, apply_mask = apply_mask,\
 					 with_read_noise = with_read_noise, apply_FW = apply_FW, apply_smooth_FF = apply_smooth_FF,\
@@ -587,7 +636,7 @@ def run_cbps_pipeline(cbps, inst, nsims, run_name, simidx0=0, datestr='100921', 
 					 same_dgl = same_dgl, use_ff_weights = use_ff_weights, niter=niter, iterate_grad_ff=iterate_grad_ff)
 
 		
-	return lb, signal_power_spectra, recovered_power_spectra
+	return lb, signal_power_spectra, recovered_power_spectra, nls_estFF_nofluc
 
 
 
