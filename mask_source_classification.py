@@ -98,65 +98,63 @@ def compute_tpr_fpr_curves(predictions, labels, vals, nbin=30, minval=13, bounda
 	return np.array(tpr_bin), np.array(fpr_bin), np.array(fnr_bin), val_bins, np.array(tpr_stds), np.array(fpr_stds), np.array(fnr_stds)
 
 
-def train_decision_tree(training_catalog, feature_names, extra_features=None, extra_feature_names=None, outlablstr='j_mag_best', J_mag_lim=18.5, max_depth=5):
+def train_decision_tree(training_catalog, feature_names, \
+                               extra_features=None, extra_feature_names=None,\
+                               outlablstr='j_mag_best', J_mag_lim=18.5, max_depth=5, \
+                              mode='classify', max_predict=None):
 
     classes_train = np.array(training_catalog[outlablstr] < J_mag_lim).astype(np.int)
+    if mode=='regress':
+        vals_train = training_catalog[outlablstr]
+        print('min/max vals train', np.min(vals_train), np.max(vals_train))
+        
     train_features = feature_matrix_from_df(training_catalog, feature_names, filter_nans=True)
-    
-
-    if extra_features is not None:
-        all_features = []
-        print("train features has shape", train_features.shape)
-        for i in range(train_features.shape[1]):
-            all_features.append(list(train_features[:,i]))
-            
-        print('all features has shape ', np.array(all_features).shape)
-        for j in range(np.array(extra_features).transpose().shape[1]):
-            all_features.append(list(np.array(extra_features).transpose()[:,j]))
-            
-        all_features = np.array(all_features).transpose()
-        all_features[np.isinf(all_features)] = 30.
-        all_features[np.isnan(all_features)] = 30.
-        all_features[all_features<0.0] = 30.
-
-        clf = tree.DecisionTreeClassifier(max_depth=max_depth)
-        fig = clf.fit(all_features, classes_train)
-    else:
+        
+    if mode=='classify':
         clf = tree.DecisionTreeClassifier(max_depth=max_depth)
         fig = clf.fit(train_features, classes_train)
 
+    elif mode=='regress':
+        clf = DecisionTreeRegressor(max_depth=max_depth)
+        if max_predict is not None:
+            fig = clf.fit(train_features[vals_train < max_predict], vals_train[vals_train < max_predict])
+        else:
+            fig = clf.fit(train_features, vals_train)
+
     return fig, classes_train, train_features
+
     
 
-def test_prediction(cat, decision_tree, feature_names, extra_features=None, extra_feature_names=None, outlablstr='j_mag_best', maglim=18.5):
+def test_prediction(cat, decision_tree, feature_names, extra_features=None, extra_feature_names=None,\
+                           outlablstr='j_mag_best', maglim=18.5, mode='classify'):
+    
     classes_cat = np.array(cat[outlablstr] < maglim).astype(np.int)
+    if mode=='regress':
+        vals_cat = np.array(cat[outlablstr])
+        
     features_cat = feature_matrix_from_df(cat, feature_names=feature_names)
-    if extra_features is not None:
-        all_features = []
-        for i in range(features_cat.shape[1]):
-            all_features.append(list(features_cat[:,i]))
-        for j in range(np.array(extra_features).transpose().shape[1]):
-            all_features.append(list(np.array(extra_features).transpose()[:,j]))
             
-        all_features = np.array(all_features).transpose()
-
-        
-        all_features[np.isinf(all_features)] = 30.
-        all_features[np.isnan(all_features)] = 30.
-        all_features[all_features<0.0] = 30.
-        
-        predictions_cat = decision_tree.predict(all_features)
-
-    else:
+    if mode=='regress':
         predictions_cat = decision_tree.predict(features_cat)
+        predictions_classify = (predictions_cat < maglim)
+        
+        plt.figure()
+        plt.hist(predictions_cat - vals_cat, bins=30)
+        plt.show()
+        
+    elif mode=='classify':
+        predictions_classify = decision_tree.predict(features_cat)
+
+    tpr, fpr = compute_tpr_fpr(predictions_classify, classes_cat)
     
-    tpr, fpr = compute_tpr_fpr(predictions_cat, classes_cat)
+    if mode=='classify':
+        predictions_cat, vals_cat = None, None
     
-    return tpr, fpr, predictions_cat, classes_cat
+    return tpr, fpr, predictions_classify, classes_cat, predictions_cat, vals_cat  
 
 
 def evaluate_decision_tree_performance(decision_tree, test_catalog, extra_features=None,extra_feature_names=None, feature_names=None, feature_bands=None, J_mag_lim=18.5, \
-                                      outlablstr='j_mag_best'):
+                                      outlablstr='j_mag_best', mode='classify'):
     
     if feature_names is None:
         feature_names = ['rMeanPSFMag', 'iMeanPSFMag', 'gMeanPSFMag', 'zMeanPSFMag', 'yMeanPSFMag', 'mag_W1', 'mag_W2']
@@ -164,15 +162,25 @@ def evaluate_decision_tree_performance(decision_tree, test_catalog, extra_featur
         feature_bands = ['r', 'i', 'g', 'z', 'y', 'W1']
 
     
-    tpr, fpr, predictions, J_mask_bool = test_prediction(test_catalog, decision_tree, feature_names, extra_features=extra_features, extra_feature_names=extra_feature_names, maglim=J_mag_lim, \
-                                                         outlablstr=outlablstr)
+    tpr, fpr, predictions, J_mask_bool_true, predictions_Jmag, J_mag_true = test_prediction(test_catalog, decision_tree, feature_names, extra_features=extra_features, extra_feature_names=extra_feature_names, maglim=J_mag_lim, \
+                                                         outlablstr=outlablstr, mode=mode)
     tpr_curve, fpr_curve, fnr_curve, \
-            mag_bins, tpr_stds, fpr_stds, fnr_stds = compute_tpr_fpr_curves(predictions, J_mask_bool, \
+            mag_bins, tpr_stds, fpr_stds, fnr_stds = compute_tpr_fpr_curves(predictions, J_mask_bool_true, \
                                                                             np.array(test_catalog[outlablstr]), \
                                                                            nbin=25, minval=14, boundary=J_mag_lim)
     
-    return tpr_curve, fpr_curve, mag_bins, predictions, J_mask_bool
+    return tpr_curve, fpr_curve, mag_bins, predictions, J_mask_bool_true, predictions_Jmag, J_mag_true
 	
+
+def parse_extra_features(xmatch_cat):
+    g_r, r_i, i_z, W1_W2 = return_several_colors_df(xmatch_cat,\
+                                                    [['gMeanPSFMag', 'rMeanPSFMag'], ['rMeanPSFMag', 'iMeanPSFMag'], \
+                                                    ['iMeanPSFMag', 'zMeanPSFMag'], ['mag_W1', 'mag_W2']])
+
+    extra_features = [g_r, r_i, i_z, W1_W2]
+    extra_feature_names = ['g-r', 'r-i', 'i-z', 'W1-W2']
+    
+    return g_r, r_i, i_z, W1_W2, extra_features, extra_feature_names
 	
 
 def decision_tree_train_and_test(training_catalog, feature_names, feature_bands=None, test_catalog=None, outlablstr='j_mag_best', J_mag_lim=18.5, max_depth=5, show_tree=False):
@@ -274,7 +282,7 @@ def decision_tree_train_and_test(training_catalog, feature_names, feature_bands=
 
   
 
-def feature_matrix_from_df(df, feature_names, filter_nans=True, verbose=True):
+def feature_matrix_from_df(df, feature_names, filter_nans=True, nan_replace_val = 30., verbose=True):
 
 	'''
 	Helper function for loading catalog values into feature matrix.
@@ -314,24 +322,34 @@ def feature_matrix_from_df(df, feature_names, filter_nans=True, verbose=True):
 
 	if filter_nans:
 
-		feature_matrix[np.isinf(feature_matrix)] = 30.
-		feature_matrix[np.isnan(feature_matrix)] = 30.
-		feature_matrix[feature_matrix<0.0] = 30.
+		feature_matrix[np.isinf(feature_matrix)] = nan_replace_val
+		feature_matrix[np.isnan(feature_matrix)] = nan_replace_val
+		feature_matrix[feature_matrix<0.0] = nan_replace_val
+
 
 	return feature_matrix
 
 
-def filter_mask_cat_dt(input_cat, decision_tree, feature_names):
-	
-	cat_feature_matrix = feature_matrix_from_df(input_cat, feature_names)
-	
-	mask_predict = decision_tree.predict(cat_feature_matrix)
-	
-	mask_src_bool = np.where(mask_predict==1)[0]
-	
-	filt_cat = input_cat.iloc[mask_src_bool].copy()
-	
-	return filt_cat
+def filter_mask_cat_dt(input_cat, decision_tree, feature_names, J_mag_lim=17.5, Jmin=None, mode='classify'):
+
+    cat_feature_matrix = feature_matrix_from_df(input_cat, feature_names)
+
+    mask_predict = decision_tree.predict(cat_feature_matrix)
+
+    if mode=='classify':
+        mask_src_bool = np.where(mask_predict==1)[0]
+    else:
+    	mask_condition = (mask_predict < J_mag_lim)
+    	if Jmin is not None:
+    		mask_condition *= (mask_predict > Jmin)
+
+        mask_src_bool = np.where(mask_condition)[0]
+
+
+    filt_cat = input_cat.iloc[mask_src_bool].copy()
+
+    return filt_cat
+
 
 def magnitude_to_radius_linear(magnitudes, alpha_m=-6.25, beta_m=110.):
 	''' Masking radius function as given by Zemcov+2014. alpha_m has units of arcsec mag^{-1}, while beta_m
@@ -341,6 +359,25 @@ def magnitude_to_radius_linear(magnitudes, alpha_m=-6.25, beta_m=110.):
 
 	return r
 
+def predict_masking_magnitude_z_W1(mask_cat):
+    # we will use the Zemcov+14 masking radius formula based on z-band magnitudes when available, and 
+    # when z band is not available for a source we will use W1 + mean(z - W1) for the effective magnitude
+    zs_mask = np.array(mask_cat['zMeanPSFMag'])
+    W1_mask = np.array(mask_cat['mag_W1'])
+    colormask = ((~np.isinf(zs_mask))&(~np.isinf(W1_mask))&(~np.isnan(zs_mask))&(~np.isnan(W1_mask))&(np.abs(W1_mask) < 50)&(np.abs(zs_mask) < 50))
+    median_z_W1_color = np.median(zs_mask[colormask]-W1_mask[colormask])
+
+    print('median z - W1 is ', median_z_W1_color)
+    # find any non-detections in z band and replace with W1 + mean z-W1 
+    nanzs = ((np.isnan(zs_mask))|(np.abs(zs_mask) > 50)|(np.isinf(zs_mask)))
+    zs_mask[nanzs] = W1_mask[nanzs]+median_z_W1_color
+
+    # anything that is neither detected in z or W1 (~10 sources) set to z=18.5.
+    still_nanz = ((np.isnan(zs_mask))|(np.isinf(zs_mask)))
+    zs_mask[still_nanz] = J_mag_lim
+    mask_cat['zMeanPSFMag_mask'] = zs_mask + 0.5
+    
+    return zs_mask, mask_cat, W1_mask, colormask, median_z_W1_color
 
 def plot_decision_tree(dt, feature_names, line1='Left branches = condition True; Right branches = condition False',\
 					   line2='Orange = J > 18.5; Blue = J < 18.5', class_names=['J>18.5', 'J<18.5'], return_fig=True, show=True, max_depth=4):
@@ -575,8 +612,9 @@ def plot_completeness_fdr_curves_decision_tree(mag_bins, J_mag_lim, tpr_binned, 
 			plt.plot(midbin, tpr_binned, label='Completeness', marker='x')
 			plt.plot(midbin, fpr_binned, label='False positive rate', marker='x')
 
-	plt.legend()
+	plt.legend(fontsize=14)
 	plt.xlabel('J band magnitude', fontsize=16)
+	plt.tick_params(labelsize=14)
 	
 	if show:
 		plt.show()

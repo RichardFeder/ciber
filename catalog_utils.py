@@ -509,9 +509,9 @@ def twomass_srcmap_masking_cat_prep(twomass_df, mean_color_correct, ciber_mock_o
     twomass_df_filt = twomass_df.iloc[twomass_bright_mask].copy()
     twomass_df_filt['zband_mask'] = twomass_df_filt[magstr]+mean_color_correct
     Jband_fluxes_twomass = ciber_mock_obj.mag_2_nu_Inu(np.array(twomass_df_filt[magstr]), inst-1) # 0 for J band, 1 for H band
-    twomass_bright_cat = np.array([np.array(twomass_df_filt['x'+str(inst)]), np.array(twomass_df_filt['y'+str(inst)]), Jband_fluxes_twomass, Jband_fluxes_twomass]).transpose()
-    srcmap_twomass_bright = ciber_mock_obj.make_srcmap(ifield, twomass_bright_cat, flux_idx=2, pcat_model_eval=True, dx=0, dy=0, nx=nx, ny=ny)
-    return twomass_df_filt, srcmap_twomass_bright
+    # twomass_bright_cat = np.array([np.array(twomass_df_filt['x'+str(inst)]), np.array(twomass_df_filt['y'+str(inst)]), Jband_fluxes_twomass, Jband_fluxes_twomass]).transpose()
+    # srcmap_twomass_bright = ciber_mock_obj.make_srcmap(ifield, twomass_bright_cat, flux_idx=2, pcat_model_eval=True, dx=0, dy=0)
+    return twomass_df_filt, None
 
 
 def unWISE_flag_filter(cat, flags_unwise_val=0, flags_info_val=0, primary=True, band_merged_idx=0):
