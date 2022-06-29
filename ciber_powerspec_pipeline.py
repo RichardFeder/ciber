@@ -59,92 +59,88 @@ def compute_fourier_weights(cl2d_all, stdpower=2):
 
 
 
-def iterative_gradient_ff_solve(orig_images, niter=3, masks=None, compute_ps=True, n_ps_bins=25, inv_Mkks=None, \
-                               weights_ff=None, plot=False, ff_stack_min=1):
+def iterative_gradient_ff_solve(orig_images, niter=3, masks=None, means=None, weights_ff=None, plot=False, ff_stack_min=1):
     
     # maps at end of each iteration
     images = np.array(list(orig_images.copy()))
+    nfields = len(images)
     
-    nbands = len(images)
-    
-    all_coeffs = np.zeros((niter, nbands, 3))
-    
-    all_ps, lb = None, None
-    if compute_ps:
-        all_ps = np.zeros((niter, nbands, n_ps_bins))
-    
-    
+    all_coeffs = np.zeros((niter, nfields, 3))    
+
     final_planes = np.zeros_like(images)
 
+    #  --------------- masked images ------------------
+    if masks is not None:
+        print('Using masks to make masked images, FF stack masks with ff_stack_min = '+str(ff_stack_min)+'..')
+        
+        stack_masks = np.zeros_like(images)
+        
+        for imidx, image in enumerate(images):
+            sum_mask = np.sum(masks[(np.arange(len(masks))!=imidx),:], axis=0)
+            stack_masks[imidx] = (sum_mask >= ff_stack_min)
+            masks[imidx] *= stack_masks[imidx]
+            
+#             if plot:
+#                 plot_map(sum_mask, title='sum map imidx = '+str(imidx))
+#                 plot_map(stack_masks[imidx], title='stack masks imidx = '+str(imidx))
+#                 plot_map(stack_masks[imidx]*masks[imidx], title='stack masks x mask imidx = '+str(imidx))
+
+        masked_images = np.array([np.ma.array(images[i], mask=(masks[i]==0)) for i in range(len(images))])
+        
+        
+    if means is None:
+        if masks is not None:
+            means = [np.ma.mean(im) for im in masked_images]
+        else:
+            means = [np.mean(im) for im in images]
+                
+    ff_estimates = np.zeros_like(images)
+
     for n in range(niter):
+        # t0 = time.time()
         print('n = ', n)
         
-        ff_estimates = np.zeros_like(images)
         # make copy to compute corrected versions of
         running_images = images.copy()
         
         for imidx, image in enumerate(images):
 
-            stack_obs = list(images.copy())
-                
+            stack_obs = list(images.copy())                
             del(stack_obs[imidx])
 
-            target_mask = np.ones_like(image)
-            stack_mask = None
-            if masks is not None:
-                stack_mask = list(masks.copy().astype(np.bool))
-                target_mask = masks[imidx]
-                del(stack_mask[imidx])
-                
-
+            weights_ff_iter = None
+        
             if weights_ff is not None:
-                weights_ff_iter = list(weights_ff.copy())
-                
-                del(weights_ff_iter[imidx])
-            else:
-                weights_ff_iter = None
+                weights_ff_iter = weights_ff[(np.arange(len(masks)) != imidx)]
             
-
-            ff_estimate, _, ff_weights = compute_stack_ff_estimate(stack_obs, target_mask=target_mask, masks=stack_mask, \
-                                                       inv_var_weight=False, ff_stack_min=ff_stack_min, \
-                                                            field_nfrs=None, weights=weights_ff_iter)
+            ff_estimate, _, ff_weights = compute_stack_ff_estimate(stack_obs,\
+                                                                   masks=masks[(np.arange(len(masks))!=imidx),:], \
+                                                                   ff_stack_min=ff_stack_min, weights=weights_ff_iter)
 
             ff_estimates[imidx] = ff_estimate
-            
             running_images[imidx] /= ff_estimate
+            theta, plane = fit_gradient_to_map(running_images[imidx], mask=masks[imidx]) # multiply stack mask here?
+            running_images[imidx] -= (plane-np.mean(plane))
             
-            theta, plane = fit_gradient_to_map(running_images[imidx], mask=target_mask)
             all_coeffs[n, imidx] = theta[:,0]
 
-            running_images[imidx] -= (plane-np.mean(plane))
-    
             if plot:
                 plot_map(plane, title='best fit plane imidx = '+str(imidx))
                 plot_map(ff_estimate, title='ff_estimate imidx = '+str(imidx))
-            
-            if compute_ps:
-                
-                masked_image = running_images[imidx].copy()
-                
-                masked_image[target_mask==1] -= np.mean(masked_image[target_mask==1])
-                
-                lb, cl, clerr = get_power_spec(masked_image*target_mask, mask=target_mask, nbins=n_ps_bins+1)
-                
-                if inv_Mkks is not None:
-                    cl_proc = np.dot(inv_Mkks[imidx].transpose(), cl)
-                    all_ps[n, imidx] = cl_proc
-                else:
-                    all_ps[n, imidx] = cl
     
             if n<niter-1:
                 running_images[imidx] *= ff_estimate
-                
             else:
                 final_planes[imidx] = plane
-
+        
+        # print('dt:', time.time()-t0)
         images = running_images.copy()
+
+    images[np.isnan(images)] = 0.
+    ff_estimates[np.isnan(ff_estimates)] = 1.
+    ff_estimates[ff_estimates==0] = 1.
     
-    return images, ff_estimates, final_planes, all_ps, all_coeffs, lb
+    return images, ff_estimates, final_planes, stack_masks, all_coeffs
 
     
 
