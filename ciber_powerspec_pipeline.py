@@ -57,17 +57,16 @@ def compute_fourier_weights(cl2d_all, stdpower=2):
     return mean_cl2d, fourier_weights
 
 
-
-
 def iterative_gradient_ff_solve(orig_images, niter=3, masks=None, means=None, weights_ff=None, plot=False, ff_stack_min=1):
     
     # maps at end of each iteration
     images = np.array(list(orig_images.copy()))
     nfields = len(images)
-    
     all_coeffs = np.zeros((niter, nfields, 3))    
 
     final_planes = np.zeros_like(images)
+
+    add_maskfrac_stack = []
 
     #  --------------- masked images ------------------
     if masks is not None:
@@ -78,8 +77,14 @@ def iterative_gradient_ff_solve(orig_images, niter=3, masks=None, means=None, we
         for imidx, image in enumerate(images):
             sum_mask = np.sum(masks[(np.arange(len(masks))!=imidx),:], axis=0)
             stack_masks[imidx] = (sum_mask >= ff_stack_min)
+            mfrac = float(np.sum(masks[imidx]))/float(masks[imidx].shape[0]**2)
+
+            add_maskfrac_stack.append(mfrac)
             masks[imidx] *= stack_masks[imidx]
-            
+
+            mfrac = float(np.sum(masks[imidx]))/float(masks[imidx].shape[0]**2)
+            add_maskfrac_stack[imidx] -= mfrac
+
 #             if plot:
 #                 plot_map(sum_mask, title='sum map imidx = '+str(imidx))
 #                 plot_map(stack_masks[imidx], title='stack masks imidx = '+str(imidx))
@@ -87,7 +92,7 @@ def iterative_gradient_ff_solve(orig_images, niter=3, masks=None, means=None, we
 
         masked_images = np.array([np.ma.array(images[i], mask=(masks[i]==0)) for i in range(len(images))])
         
-        
+    print('add maskfrac stack is ', add_maskfrac_stack)
     if means is None:
         if masks is not None:
             means = [np.ma.mean(im) for im in masked_images]
@@ -97,7 +102,6 @@ def iterative_gradient_ff_solve(orig_images, niter=3, masks=None, means=None, we
     ff_estimates = np.zeros_like(images)
 
     for n in range(niter):
-        # t0 = time.time()
         print('n = ', n)
         
         # make copy to compute corrected versions of
@@ -113,13 +117,11 @@ def iterative_gradient_ff_solve(orig_images, niter=3, masks=None, means=None, we
             if weights_ff is not None:
                 weights_ff_iter = weights_ff[(np.arange(len(masks)) != imidx)]
             
-            ff_estimate, _, ff_weights = compute_stack_ff_estimate(stack_obs,\
-                                                                   masks=masks[(np.arange(len(masks))!=imidx),:], \
-                                                                   ff_stack_min=ff_stack_min, weights=weights_ff_iter)
+            ff_estimate, _, ff_weights = compute_stack_ff_estimate(stack_obs, masks=masks[(np.arange(len(masks))!=imidx),:], weights=weights_ff_iter)
 
             ff_estimates[imidx] = ff_estimate
             running_images[imidx] /= ff_estimate
-            theta, plane = fit_gradient_to_map(running_images[imidx], mask=masks[imidx]) # multiply stack mask here?
+            theta, plane = fit_gradient_to_map(running_images[imidx], mask=masks[imidx])
             running_images[imidx] -= (plane-np.mean(plane))
             
             all_coeffs[n, imidx] = theta[:,0]
@@ -142,8 +144,8 @@ def iterative_gradient_ff_solve(orig_images, niter=3, masks=None, means=None, we
     
     return images, ff_estimates, final_planes, stack_masks, all_coeffs
 
-    
 
+    
 class CIBER_PS_pipeline():
 
     # fixed quantities for CIBER
@@ -396,7 +398,7 @@ class CIBER_PS_pipeline():
 
         if mask is None and apply_mask:
             verbprint(verbose, 'No mask provided but apply_mask=True, using union of self.strmask and self.maskInst_clean..')
-            mask = self.strmask*self.maskInst_clean
+            mask = self.strmask*self.maskInst
 
         # compute the pixel-wise shot noise estimate given the image (which gets converted to e-/s) and the number of frames used in the integration
         if photon_noise and shot_sigma_sb is None:
@@ -621,7 +623,7 @@ class CIBER_PS_pipeline():
         
     def load_FW_image(self, ifield, inst, fw_fpath=None, verbose=False, inplace=True):
         ''' 
-        Loads fourier weight image estimate from data release.
+        Loads Fourier weight image estimate from data release.
 
         Parameters
         ----------
@@ -665,12 +667,15 @@ class CIBER_PS_pipeline():
         
     def load_mask(self, ifield, inst, masktype=None, mask_fpath=None, verbose=False, inplace=True):
         ''' 
-        Loads mask from data release.
+        Loads mask.
 
         Parameters
         ----------
-        ifield : `int`. Index of CIBER field.
+        ifield : `int`. 
+            Index of CIBER field.
         inst : `int`. 1 for 1.1 um band, 2 for 1.8 um band.
+        masktype : 'str'. 
+            Type of mask to load. 
 
         '''
         
@@ -682,6 +687,8 @@ class CIBER_PS_pipeline():
         if inplace:
             if masktype=='maskInst_clean':
                 self.maskInst_clean = fits.open(mask_fpath)[0].data 
+            elif masktype=='maskInst':
+                self.maskInst = fits.open(mask_fpath)[0].data
             elif masktype=='strmask':
                 self.strmask = fits.open(mask_fpath)[0].data
             elif masktype=='bigmask':
@@ -772,7 +779,7 @@ class CIBER_PS_pipeline():
                 return B_ell
         
     def load_data_products(self, ifield, inst, load_all=True, flight_image=False, dark_current=False, psf=False, \
-                           maskInst_clean=False, strmask=False, mkk_mats=False, mkk_fpath=None, \
+                           maskInst=False, strmask=False, mkk_mats=False, mkk_fpath=None, \
                            FW_image=False, FF_image=False, noise_Cl2D=False, beam_correction=False, verbose=True, ifield_psf=None, transpose=False):
         
         '''
@@ -797,8 +804,8 @@ class CIBER_PS_pipeline():
             if ifield_psf is None:
                 ifield_psf = ifield
             self.beta, self.rc, self.norm = load_psf_params_dict(inst, ifield=ifield, verbose=verbose)
-        if maskInst_clean or load_all:
-            self.load_mask(ifield, inst, 'maskInst_clean', verbose=verbose)
+        if maskInst or load_all:
+            self.load_mask(ifield, inst, 'maskInst', verbose=verbose)
         if strmask or load_all:
             self.load_mask(ifield, inst, 'strmask', verbose=verbose)
         if FW_image or load_all:
@@ -1038,7 +1045,7 @@ class CIBER_PS_pipeline():
         else:
             return B_ell, B_ell_std
 
-    def compute_ff_weights(self, inst, mean_norms, ifield_list, photon_noise=True, read_noise_models=None, nread=5):
+    def compute_ff_weights(self, inst, mean_norms, ifield_list, photon_noise=True, read_noise_models=None, nread=5, additional_rms=None):
         ''' 
         Compute flat field weights based on relative photon noise, read noise and mean normalization across the set of off-fields.
         This weighting is fairly optimal, ignoring the presence of signal fluctuations contributing to flat field error. 
@@ -1052,6 +1059,8 @@ class CIBER_PS_pipeline():
         photon_noise : `bool`. If True, include photon noise in noise estimate.
             Default is True.
         read_noise_models : `list` of `~np.arrays~` of type `float`, shape (self.dimx,self.dimy). Read noise models
+            Default is None.
+        additional_rms : array_like
             Default is None.
     
         Returns
@@ -1068,6 +1077,8 @@ class CIBER_PS_pipeline():
 
         rms_read = np.zeros_like(mean_norms)
         rms_phot = np.zeros_like(mean_norms)
+        if additional_rms is None:
+            additional_rms = np.zeros_like(mean_norms)
 
         if photon_noise:
             for i, ifield in enumerate(ifield_list):
@@ -1083,7 +1094,7 @@ class CIBER_PS_pipeline():
 
                 rms_read[i] = np.std(rnmaps)
 
-        weights = (mean_norms/(np.sqrt(rms_phot**2 + rms_read**2)))**2
+        weights = (mean_norms/(np.sqrt(rms_phot**2 + rms_read**2+additional_rms**2)))**2
         print('ff weights are computed to be ', weights)
 
         weights /= np.sum(weights)
@@ -1172,11 +1183,11 @@ class CIBER_PS_pipeline():
                 image = image / FF_image
 
         if mask is None and apply_mask:
-            verbprint(verbose, 'Getting mask from maskinst clean and strmask')
-            mask = self.maskInst_clean*self.strmask # load mask
+            verbprint(verbose, 'Getting mask from maskinst and strmask')
+            mask = self.maskInst*self.strmask # load mask
 
 
-        if gradient_filter:
+        if gradient_filter: 
             verbprint(True, 'Gradient filtering image..')
             theta, plane = fit_gradient_to_map(image, mask=mask)
             image -= plane
@@ -1437,7 +1448,7 @@ def generate_synthetic_mock_test_set(test_set_fpath, trilegal_sim_idx=1, inst=1,
             if verbose:
                 print('min/max of noise model are ', np.min(noise_model), np.max(noise_model))
             noise_models[imidx] = noise_model
-        instrument_mask = cbps.maskInst_clean
+        instrument_mask = cbps.maskInst
         
 
         # if mock_trilegal_path is None:
@@ -1662,11 +1673,10 @@ def calculate_powerspec_quantities(cbps, observed_ims, joint_masks, shot_sigma_s
 
             # for i in range(len(observed_ims)-1):
                 # plot_map(stack_obs[i]*stack_mask[i], title='check i = '+str(i))
-
             # plot_map(obs*joint_masks[imidx], title='obs*mask before stack ff')
 
 
-            ff_estimate, ff_mask, ff_weights = compute_stack_ff_estimate(stack_obs, target_mask=joint_masks[imidx], masks=stack_mask, inv_var_weight=inv_var_weight, ff_stack_min=ff_stack_min, \
+            ff_estimate, ff_mask, ff_weights = compute_stack_ff_estimate(stack_obs, target_mask=joint_masks[imidx], masks=stack_mask, inv_var_weight=inv_var_weight, \
                                                                         field_nfrs=field_nfrs)
             
             ff_estimates[imidx] = ff_estimate

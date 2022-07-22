@@ -12,10 +12,14 @@ from astropy.coordinates import match_coordinates_sky
 from sklearn import tree
 import sys
 
+from sklearn import tree
+from sklearn.tree import DecisionTreeRegressor
+
 if sys.version_info[0] == 3:
 	from sklearn.tree import plot_tree
 
 from catalog_utils import *
+from masking_utils import *
 
 
 def compute_tpr_fpr(predictions, labels):
@@ -152,6 +156,8 @@ def test_prediction(cat, decision_tree, feature_names, extra_features=None, extr
     
     return tpr, fpr, predictions_classify, classes_cat, predictions_cat, vals_cat  
 
+ 
+
 
 def evaluate_decision_tree_performance(decision_tree, test_catalog, extra_features=None,extra_feature_names=None, feature_names=None, feature_bands=None, J_mag_lim=18.5, \
                                       outlablstr='j_mag_best', mode='classify'):
@@ -162,7 +168,7 @@ def evaluate_decision_tree_performance(decision_tree, test_catalog, extra_featur
         feature_bands = ['r', 'i', 'g', 'z', 'y', 'W1']
 
     
-    tpr, fpr, predictions, J_mask_bool_true, predictions_Jmag, J_mag_true = test_prediction(test_catalog, decision_tree, feature_names, extra_features=extra_features, extra_feature_names=extra_feature_names, maglim=J_mag_lim, \
+    tpr, fpr, predictions, J_mask_bool_true, predictions_Jmag, J_mag_true = test_prediction_062222(test_catalog, decision_tree, feature_names, extra_features=extra_features, extra_feature_names=extra_feature_names, maglim=J_mag_lim, \
                                                          outlablstr=outlablstr, mode=mode)
     tpr_curve, fpr_curve, fnr_curve, \
             mag_bins, tpr_stds, fpr_stds, fnr_stds = compute_tpr_fpr_curves(predictions, J_mask_bool_true, \
@@ -170,7 +176,8 @@ def evaluate_decision_tree_performance(decision_tree, test_catalog, extra_featur
                                                                            nbin=25, minval=14, boundary=J_mag_lim)
     
     return tpr_curve, fpr_curve, mag_bins, predictions, J_mask_bool_true, predictions_Jmag, J_mag_true
-	
+
+
 
 def parse_extra_features(xmatch_cat):
     g_r, r_i, i_z, W1_W2 = return_several_colors_df(xmatch_cat,\
@@ -330,7 +337,7 @@ def feature_matrix_from_df(df, feature_names, filter_nans=True, nan_replace_val 
 	return feature_matrix
 
 
-def filter_mask_cat_dt(input_cat, decision_tree, feature_names, J_mag_lim=17.5, Jmin=None, mode='classify'):
+def filter_mask_cat_dt(input_cat, decision_tree, feature_names, J_mag_lim=17.5, mode='classify'):
 
     cat_feature_matrix = feature_matrix_from_df(input_cat, feature_names)
 
@@ -339,12 +346,7 @@ def filter_mask_cat_dt(input_cat, decision_tree, feature_names, J_mag_lim=17.5, 
     if mode=='classify':
         mask_src_bool = np.where(mask_predict==1)[0]
     else:
-    	mask_condition = (mask_predict < J_mag_lim)
-    	if Jmin is not None:
-    		mask_condition *= (mask_predict > Jmin)
-
-        mask_src_bool = np.where(mask_condition)[0]
-
+        mask_src_bool = np.where(mask_predict < J_mag_lim)[0]
 
     filt_cat = input_cat.iloc[mask_src_bool].copy()
 
@@ -378,6 +380,103 @@ def predict_masking_magnitude_z_W1(mask_cat):
     mask_cat['zMeanPSFMag_mask'] = zs_mask + 0.5
     
     return zs_mask, mask_cat, W1_mask, colormask, median_z_W1_color
+
+
+def source_mask_construct_dt(ifield, inst, cmock, mask_cat_unWISE_PS=None, fieldstr_train = 'UDS',\
+                             J_mag_lim=19.0, feature_names=None, max_depth=8, \
+                            zkey = 'zMeanPSFMag', W1key='mag_W1', mean_z_J_color_all = 1.0925, \
+                             mask_cat_directory='data/cats/masking_cats/', twomass_cat_directory='data/cats/2MASS/filt/', \
+                            nx=1024, ny=1024, pixsize=7., \
+                            # linear fit parameters
+                            beta_m=125., alpha_m=-5.5, \
+                            # Gaussian fit parameters
+                            a1=252.8, b1=3.632, c1=8.52, intercept_mag=16.0, minrad=10.5, deltamag=3, \
+                             mode='regress', plot=False):
+    
+    fieldstr_mask = cmock.ciber_field_dict[ifield]
+    if feature_names is None:
+        feature_names=['rMeanPSFMag', 'iMeanPSFMag', 'gMeanPSFMag', 'zMeanPSFMag', 'yMeanPSFMag', 'mag_W1', 'mag_W2']
+    
+    if mask_cat_unWISE_PS is None:
+
+        if fieldstr_train == 'UDS': # default is to use UDS field as training set
+
+            print('J_mag_lim = ', J_mag_lim)
+            
+            # this catalog is in Vega magnitudes, 
+            nodup_crossmatch_unWISE_PS_uk_UDS = pd.read_csv('data/cats/masking_cats/UDS/unWISE_PanSTARRS_UKIDSS_full_xmatch_merge_UDS.csv')
+            nodup_crossmatch_unWISE_PS_uk_UDS['gMeanPSFMag'] += 0.16
+            Jcondition_uds, unWISE_condition_uds, PanSTARRS_condition_uds = detect_cat_conditions_J_unWISE_PanSTARRS(nodup_crossmatch_unWISE_PS_uk_UDS, \
+                                                                                                                    j_key='j_Vega')
+            unPSuk_mask = np.where(Jcondition_uds&unWISE_condition_uds&PanSTARRS_condition_uds)
+            unWISE_PS_uk_xmatch = nodup_crossmatch_unWISE_PS_uk_UDS.iloc[unPSuk_mask].copy()
+            
+            print('Training decision tree..')
+                        
+            decision_tree, classes_train, train_features = train_decision_tree(unWISE_PS_uk_xmatch, feature_names=feature_names, J_mag_lim=J_mag_lim, \
+                                                                  max_depth=max_depth, outlablstr='j_Vega', \
+                                                                            mode=mode)
+
+
+            
+        full_merged_cat_unWISE_PS = pd.read_csv('data/cats/masking_cats/'+fieldstr_mask+'/unWISE_PanSTARRS_full_xmatch_merge_'+fieldstr_mask+'_121620.csv')
+        full_merged_cat_unWISE_PS['gMeanPSFMag'] += 0.16 # correcting error in processed PS catalog
+
+        # use decision tree to identify sources that need masking
+        features_merged_cat_unWISE_PS = feature_matrix_from_df(full_merged_cat_unWISE_PS, feature_names=feature_names, filter_nans=True)
+        predictions_CIBER_field_unWISE_PS = decision_tree.predict(features_merged_cat_unWISE_PS)
+        if mode=='regress':
+            full_merged_cat_unWISE_PS['J_predict'] = predictions_CIBER_field_unWISE_PS
+
+        mask_cat_unWISE_PS = filter_mask_cat_dt_062222(full_merged_cat_unWISE_PS, decision_tree, feature_names, J_mag_lim=J_mag_lim, mode=mode)
+
+    
+    if mode=='classify':
+        zs_mask, mask_cat, W1_mask, colormask, median_z_W1_color = predict_masking_magnitude_z_W1(mask_cat_unWISE_PS)
+        mask_cat_unWISE_PS[zkey_mask] = zs_mask + 0.5
+        magstr = zkey +'_mask'
+    else:
+        magstr = 'J_predict'
+
+    # find best alpha, beta parameters for a1, b1, c1
+    intercept = radius_vs_mag_gaussian(intercept_mag, a1=a1, b1=b1, c1=c1)
+    alpha_m, beta_m = find_alpha_beta(intercept, minrad=minrad, dm=deltamag, pivot=intercept_mag)
+
+    if plot:
+	    plt.figure()
+	    full_range = np.linspace(12, 20, 100)
+	    plt.plot(full_range, radius_vs_mag_gaussian(full_range, a1=a1, b1=b1, c1=c1))
+	    plt.plot(full_range, magnitude_to_radius_linear(full_range, beta_m=beta_m, alpha_m=alpha_m))
+	    plt.show()
+
+    # using the effective masking magnitudes, compute the source mask
+    print('Masking catalog has length ', len(mask_cat_unWISE_PS))
+    mask_unWISE_PS, radii_mask_cat_unWISE_PS = mask_from_df_cat(cat_df=mask_cat_unWISE_PS, magstr=magstr,\
+                                                                     beta_m=beta_m, a1=a1, b1=b1, c1=c1, mag_lim=J_mag_lim,\
+                                                                alpha_m=alpha_m, pixsize=pixsize, inst=inst, dimx=nx, dimy=ny)
+
+    print('Now creating mask for 2MASS..')
+    twomass = pd.read_csv(twomass_cat_directory+'2MASS_'+fieldstr_mask+'_filtxy.csv') # these are in Vega
+    print('field is ', fieldstr_mask)
+
+    if J_mag_lim <= 16.:
+        twom_Jmax = J_mag_lim
+    else:
+        twom_Jmax = 16.
+        
+    print('2MASS maximum is ', twom_Jmax)
+    if mode=='regress':
+        mean_z_J_color_all = 0.
+    twomass_lt_16, srcmap_twomass_J_lt_16 = twomass_srcmap_masking_cat_prep(twomass, mean_z_J_color_all, cmock, ifield, nx=nx, ny=ny, twomass_Jmax=twom_Jmax)
+    mask_twomass_simon, radii_mask_cat_twomass_simon = mask_from_df_cat(cat_df=twomass_lt_16, mag_lim=J_mag_lim, mode='Simon', magstr='j_m', Vega_to_AB=0., inst=inst, \
+                                                                            a1=a1, b1=b1, c1=c1, dimx=nx, dimy=ny)
+
+    print('2MASS catalog has length ', len(radii_mask_cat_twomass_simon))
+    
+    return mask_unWISE_PS, mask_twomass_simon, mask_cat_unWISE_PS
+
+
+
 
 def plot_decision_tree(dt, feature_names, line1='Left branches = condition True; Right branches = condition False',\
 					   line2='Orange = J > 18.5; Blue = J < 18.5', class_names=['J>18.5', 'J<18.5'], return_fig=True, show=True, max_depth=4):

@@ -1,7 +1,7 @@
 import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
-from ciber_data_helpers import make_radius_map
+from ciber_data_helpers import make_radius_map, compute_radmap_full
 from ciber_source_mask_construction_pipeline import find_alpha_beta
 
 ''' TO DO : CAMB does not compile with Python 3 at the moment -- need to update Fortran compiler '''
@@ -60,48 +60,27 @@ def make_synthetic_trilegal_cat(trilegal_path, I_band_idx=16, H_band_idx=17, imd
     return synthetic_cat
 
 
-def mask_from_cat(catalog, xidx=0, yidx=1, mag_idx=3, dimx=1024, dimy=1024, pixsize=7., mode='Zemcov+14', ciber_mock=None, ifield=None, I_thresh=1., thresh_method='radmap'):
+
+def mask_from_cat(xs=None, ys=None, mags=None, cat_df=None, dimx=1024, dimy=1024, pixsize=7.,\
+                     mode='Zemcov+14', magstr='zMeanPSFMag', alpha_m=-6.25, beta_m=110, a1=252.8, b1=3.632, c1=8.52,\
+                     Vega_to_AB = 0., mag_lim_min=0, mag_lim=None, fixed_radius=None, radii=None, compute_radii=True, inst=1, \
+                    radmap_full=None, rc=1.):
     
-    '''This function should take a catalog of bright sources and output a mask around those sources, 
-    according to some masking criteria. The steps should be
-        - convert magnitudes to radii with predefined function
-        - use radii to construct mask
-    '''
-    
-    print('Minimum source magnitude is ', np.min(catalog[:, mag_idx]))
+    if fixed_radius is not None:
+        compute_radii = False
+        
     mask = np.ones([dimx,dimy], dtype=int)
-
-    if mode=='Zemcov+14':
-        radii = magnitude_to_radius_linear(catalog[:, mag_idx]-0.91) # vega to AB factor generalized for different bands?
-        
-        for i, r in enumerate(radii):
-            radmap = make_radius_map(dimx=dimx, dimy=dimy, cenx=catalog[i,0], ceny=catalog[i,1], rc=1.)
-            mask[radmap<r/pixsize] = 0.
-
-    elif mode=='I_thresh':
-        mask, num, rs, _, _, _ = I_threshold_mask(catalog[:,0], catalog[:,1], catalog[:, mag_idx], \
-                                                    ciber_mock=ciber_mock, ifield=ifield, dimx=dimx, dimy=dimy, I_thresh=I_thresh, method=thresh_method)
-        
-    return mask 
-
-
-def mask_from_df_cat(xs=None, ys=None, mags=None, cat_df=None, dimx=1024, dimy=1024, pixsize=7., mode='Zemcov+14', magstr='zMeanPSFMag', alpha_m=-6.25, beta_m=110, \
-    a1=252.8, b1=3.632, c1=8.52, Vega_to_AB = 0., mag_lim_min=0, mag_lim=None, inst=1):
     
-    # can take mean color between PanSTARRS band and J band as zeroth order approx. ideally would regress, 
-    # but probably doesn't make big difference
-    
-    if mags is None and cat_df is None:
-        print('Need magnitudes one way or another, please specify with mags parameter or cat_df')
-        return
-
-    if cat_df is None:
-        if xs is None or ys is None or mags is None:
-            print('cat_df=None, but no input information for xs, ys, mags')
+    if compute_radii:
+        if mags is None and cat_df is None:
+            print('Need magnitudes one way or another to compute radii, please specify with mags parameter or cat_df..')
             return
+        if cat_df is None:
+            if xs is None or ys is None or mags is None:
+                print('cat_df=None, but no input information for xs, ys, mags..')
+                return
 
     if mag_lim is not None:
-
         if cat_df is not None:
             # print(cat_df[magstr])
             mag_lim_mask = np.where((cat_df[magstr] < mag_lim)&(cat_df[magstr] > mag_lim_min))[0]
@@ -115,27 +94,34 @@ def mask_from_df_cat(xs=None, ys=None, mags=None, cat_df=None, dimx=1024, dimy=1
             xs = xs[mag_lim_mask]
             ys = ys[mag_lim_mask]
 
-    mask = np.ones([dimx,dimy], dtype=int)
+    if radii is None and compute_radii:
+        print('Computing radii based on magnitudes..')
+        if cat_df is not None:
+            mags = cat_df[magstr]
+        if mode=='Zemcov+14':
+            radii = magnitude_to_radius_linear(mags, alpha_m=alpha_m, beta_m=beta_m)
+        elif mode=='Simon':
+            AB_mags = np.array(cat_df[magstr]) + Vega_to_AB
+            radii = radius_vs_mag_gaussian(mags, a1=a1, b1=b1, c1=c1)
 
-    if cat_df is not None:
-        mags = cat_df[magstr]
-
-    ''' is there an error in Simon mode? I need to account for all catalog magnitude systems and their conversions. '''
-
-    if mode=='Zemcov+14':
-        radii = magnitude_to_radius_linear(mags, alpha_m=alpha_m, beta_m=beta_m)
-
-
-    elif mode=='Simon':
-        AB_mags = np.array(cat_df[magstr]) + Vega_to_AB
-        radii = radius_vs_mag_gaussian(mags, a1=a1, b1=b1, c1=c1)
-
-
-    for i, r in enumerate(radii):
-        radmap = make_radius_map(dimx=dimx, dimy=dimy, cenx=xs[i], ceny=ys[i], rc=1., sqrt=True)
-        mask[radmap<r/pixsize] = 0.
+    if radii is not None:
+        for i, r in enumerate(radii):
+            radmap = make_radius_map(dimx=dimx, dimy=dimy, cenx=xs[i], ceny=ys[i], sqrt=False)
+            mask[radmap<r**2/pixsize**2] = 0.
             
-    return mask, radii
+        return mask, radii
+
+    else:
+        if radmap_full is None:
+            xx, yy = compute_meshgrids(dimx, dimy)
+            radmap_full = compute_radmap_full(xs, ys, xx, yy)
+        
+        if fixed_radius is not None:
+            thresh = fixed_radius**2/(pixsize*pixsize)
+            mask[(radmap_full < thresh*rc**2)] = 0.
+ 
+        return mask, radmap_full, thresh
+    
 
 def get_masks(star_cat_df, mask_fn_param_combo, intercept_mag_AB, mag_lim_AB, inst=1, instrument_mask=None, minrad=14., dm=3, dimx=1024, dimy=1024, verbose=True, Vega_to_AB=0., magstr='j_m'):
     

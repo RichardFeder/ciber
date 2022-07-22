@@ -12,56 +12,67 @@ from astropy.convolution import Gaussian2DKernel
 
 
 def compute_ff_bias(mean_normalizations, noise_rms=None, weights=None, mask_fractions=None):
-    
-    ''' Calculates multiplicative bias in power spectrum based on '''
-    ff_biases = []
-    
-    mean_normalizations = np.array(mean_normalizations)
-    weights = np.array(weights)
-    if weights is None:
-        weights = np.ones_like(mean_normalizations)
-        
-        
-    for i, mean_norm in enumerate(mean_normalizations):
-        
-        ff_weights = list(weights.copy())
-        ff_meannorms = list(mean_normalizations.copy())
-        
-        del(ff_weights[i])
-        del(ff_meannorms[i])
-        
-        ff_weights /= np.sum(ff_weights)
-        
-        ff_bias = mean_norm**2*(np.sum(np.array(ff_weights)**2/np.array(ff_meannorms)**2))
-        
-        if mask_fractions is not None:
-            ff_mask_fractions = list(mask_fractions.copy())
-            
-            del(ff_mask_fractions[i])
-            
-            mask_fac = np.sum(ff_mask_fractions)
-            
-            ff_bias *= len(ff_mask_fractions)/mask_fac
-        
-        ff_biases.append(1.+ff_bias)
-    
-    
-    return ff_biases
+	
+	''' Calculates multiplicative bias in power spectrum due to stacked flat field error
+
+
+	Parameters
+	----------
+
+	mean_normalizations : 
+	noise_rms : 
+	weights : 
+	mask_fractions : 
+
+	'''
+	ff_biases = []
+	
+	mean_normalizations = np.array(mean_normalizations)
+	weights = np.array(weights)
+	if weights is None:
+		weights = np.ones_like(mean_normalizations)
+		
+		
+	for i, mean_norm in enumerate(mean_normalizations):
+		
+		ff_weights = list(weights.copy())
+		ff_meannorms = list(mean_normalizations.copy())
+		
+		del(ff_weights[i])
+		del(ff_meannorms[i])
+		
+		ff_weights /= np.sum(ff_weights)
+		
+		ff_bias = mean_norm**2*(np.sum(np.array(ff_weights)**2/np.array(ff_meannorms)**2))
+		
+		if mask_fractions is not None:
+			ff_mask_fractions = list(mask_fractions.copy())
+			
+			del(ff_mask_fractions[i])
+			
+			mask_fac = np.sum(ff_mask_fractions)
+			
+			ff_bias *= len(ff_mask_fractions)/mask_fac
+		
+		ff_biases.append(1.+ff_bias)
+	
+	
+	return ff_biases
 
 
 def infill_ff(sumim, ff_estimate, infill_smooth_scale=3., target_mask=None, stack_mask=None):
-    
-    kernel = Gaussian2DKernel(infill_smooth_scale)
-    astropy_conv = convolve(sumim, kernel)
-    ff_estimate[np.isnan(ff_estimate)] = astropy_conv[np.isnan(ff_estimate)]
-    if target_mask is not None:
-        ff_estimate[target_mask==0] = 1.0
-    ff_mask = (ff_estimate != 0)*(ff_estimate > ff_min)
-    if stack_mask is not None:
-        ff_mask *= stack_mask
-    ff_estimate[ff_mask==0] = 1.0
-    
-    return ff_estimate, ff_mask
+	
+	kernel = Gaussian2DKernel(infill_smooth_scale)
+	astropy_conv = convolve(sumim, kernel)
+	ff_estimate[np.isnan(ff_estimate)] = astropy_conv[np.isnan(ff_estimate)]
+	if target_mask is not None:
+		ff_estimate[target_mask==0] = 1.0
+	ff_mask = (ff_estimate != 0)*(ff_estimate > ff_min)
+	if stack_mask is not None:
+		ff_mask *= stack_mask
+	ff_estimate[ff_mask==0] = 1.0
+	
+	return ff_estimate, ff_mask
 
 def load_flat_from_mat(mat=None, matpath=None, flatidx=6):
 	
@@ -111,17 +122,15 @@ def compute_ff_mask(joint_masks, ff_stack_min=1):
 	return np.array(ff_joint_masks)
 
 
-
 def compute_stack_ff_estimate(images, masked_images=None, masks=None,  target_image=None, target_mask=None, \
-                              weights=None, means=None, inv_var_weight=False,  \
-                             show_plots=False, infill=False, infill_smooth_scale=3., stack_mask=None, \
-                              ff_stack_min=1, ff_min=0.2, field_nfrs=None, verbose=False):
-
-	''' 
+							  weights=None, means=None, inv_var_weight=False,  \
+							 show_plots=False, infill=False, infill_smooth_scale=3., stack_mask=None, \
+							  ff_min=0.2, field_nfrs=None, verbose=False):
+	"""
 	Computes the stacked ff estimate given a collection of images. 
 
-	Inputs
-	------
+	Parameters
+	----------
 
 	images : 
 	masks (optional) : 
@@ -138,51 +147,52 @@ def compute_stack_ff_estimate(images, masked_images=None, masks=None,  target_im
 		Default is False.
 
 
-	'''
+	"""
 
-    if masks is None:
-        print('Masks is None, setting all to ones..')
-        masks = [np.full(images[i].shape, 1) for i in range(len(images))]
-            
-    if masked_images is None:
-        masked_images = [np.ma.array(images[i], mask=(masks[i]==0)) for i in range(len(images))]
-    if means is None:
-        means = [np.ma.mean(im) for im in masked_images]
-        
-    if weights is None:
-        if inv_var_weight:
-            if field_nfrs is None:
-                field_nfrs = np.array([1. for x in range(len(images))])
-            weights = np.array([1./(image_mean*field_nfrs[x]) for x, image_mean in enumerate(means)])
-        else:
-            weights = np.ones((len(masked_images),))
-    weights /= np.sum(weights)        
-    
-    if verbose:
-        print('weights are ', weights)
-        print('means are ', means)
-    
-    weight_ims = np.array([mask.astype(np.float) for mask in masks])
-    ff_indiv = np.zeros_like(masked_images)
+	if masks is None:
+		print('Masks is None, setting all to ones..')
+		masks = [np.full(images[i].shape, 1) for i in range(len(images))]
+			
+	if masked_images is None:
+		masked_images = [np.ma.array(images[i], mask=(masks[i]==0)) for i in range(len(images))]
+	if means is None:
+		means = [np.ma.mean(im) for im in masked_images]
+		
+	if weights is None:
+		if inv_var_weight:
+			if field_nfrs is None:
+				field_nfrs = np.array([1. for x in range(len(images))])
+			weights = np.array([1./(image_mean*field_nfrs[x]) for x, image_mean in enumerate(means)])
+		else:
+			weights = np.ones((len(masked_images),))
+	weights /= np.sum(weights)        
+	
+	if verbose:
+		print('weights are ', weights)
+		print('means are ', means)
+	
+	weight_ims = np.array([mask.astype(np.float) for mask in masks])
+	ff_indiv = np.zeros_like(masked_images)
 
-    for i in range(len(images)):
-        
-        obsmean = np.ma.mean(masked_images[i])
-        ff_indiv[i] = masks[i]*images[i]/obsmean
-        weight_ims[i] *= weights[i]
+	for i in range(len(images)):
+		
+		obsmean = np.ma.mean(masked_images[i])
+		ff_indiv[i] = masks[i]*images[i]/obsmean
+		weight_ims[i] *= weights[i]
 
-    sum_weight_ims = np.sum(weight_ims, axis=0)
-    sumim = np.sum(ff_indiv*weight_ims, axis=0)/sum_weight_ims
-    ff_estimate = sumim.copy()
+	sum_weight_ims = np.sum(weight_ims, axis=0)
+	sumim = np.sum(ff_indiv*weight_ims, axis=0)/sum_weight_ims
+	ff_estimate = sumim.copy()
 
-    if infill:
-        if verbose:
-            print('infilling masked pixels with smoothed version of FF..')
-        ff_estimate, ff_mask = infill_ff(sumim, ff_estimate, infill_smooth_scale=infill_smooth_scale, target_mask=target_mask, stack_mask=stack_mask)
-        return ff_estimate, ff_mask, weights
+	if infill:
+		if verbose:
+			print('infilling masked pixels with smoothed version of FF..')
+		ff_estimate, ff_mask = infill_ff(sumim, ff_estimate, infill_smooth_scale=infill_smooth_scale, target_mask=target_mask, stack_mask=stack_mask)
+		return ff_estimate, ff_mask, weights
 
-    else:
-        return ff_estimate, None, weights
+	else:
+		return ff_estimate, None, weights
+
 
 
 def plot_indiv_ps_results_fftest(lb, list_of_recovered_cls, cls_truth=None, n_skip_last = 3, mean_labels=None, return_fig=True, ciblab = 'CIB + DGL ground truth', truthlab='truth field average', ylim=[1e-3, 1e2]):

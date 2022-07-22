@@ -13,6 +13,13 @@ from masking_utils import *
 from mkk_parallel import *
 
 
+def find_alpha_beta(intercept, minrad=10, dm=3, pivot=16.):
+    
+    alpha_m = -(intercept - minrad)/dm
+    beta_m = intercept - pivot*alpha_m
+    
+    return alpha_m, beta_m
+    
 def srcmask_predict_PanSTARRS_unWISE_UKIDSS(cat_unPSuk_train=None, cat_unPSuk_train_fpath=None, decision_tree=None, \
                                             feature_names=['rMeanPSFMag', 'iMeanPSFMag', 'gMeanPSFMag', 'zMeanPSFMag', 'yMeanPSFMag', 'mag_W1', 'mag_W2'], \
                                             cat_unPS=None, cat_unPS_fpath=None, maskmagstr='zMeanPSFMag_mask', max_depth_dt = 8,  \
@@ -21,7 +28,7 @@ def srcmask_predict_PanSTARRS_unWISE_UKIDSS(cat_unPSuk_train=None, cat_unPSuk_tr
     
     
     '''
-    
+     
     Parameters
     ----------
     
@@ -195,6 +202,219 @@ def source_mask_construct_dt(ifield, inst, cmock, mask_cat_unWISE_PS=None, field
                                                                             a1=a1, b1=b1, c1=c1)
 
     return mask_unWISE_PS, mask_twomass_simon, mask_cat_unWISE_PS
+
+
+def srcmask_binwise_opt(cbps, m_min, m_max, d_mag, ifield=4, inst=1, rad_min=7., rad_max=150., n_rad_bin=None, cat_df=None, cat_xs=None, cat_ys=None, cat_mags=None, cat_nuInu=None, pixsize=7., \
+                       xkey='x', ykey='y', magkey='j_m', cmock=None, n_fine_bin=10, nwide=17, \
+                       use_running_mask=False, running_mask=None, make_bright_mask=False, bright_mask_thresh=16, psthresh=1e-8, plot=False, \
+                       observed_image=None, bright_nong_sub=False, bright_radmin=50., bright_drad=7., nong_mmax=7, nwide_cutout=100, inst_mask=None, \
+                       a1=220., b1=3.632, c1=8.52):
+    ''' 
+    Radii are in units of arcseconds 
+    
+    PSFs are generated on first call of make_srcmap_temp_bank, and then grabbed directly from cmock.psf_temp_bank, 
+    so if you want to generate a new set of PSFs from different field, need to instantiate ciber_mock again. 
+    
+    '''
+    
+    if cmock is None:
+        cmock = ciber_mock(ciberdir='/Users/luminatech/Documents/ciber2/ciber/')
+
+    if use_running_mask and running_mask is None:
+        running_mask = np.ones((cbps.dimx, cbps.dimy))
+        running_slice = np.zeros_like(running_mask)
+        
+    bright_mask = None
+    if make_bright_mask:
+        bright_mask = np.ones((cbps.dimx, cbps.dimy))
+            
+        print('Making bright source mask for anything brighter than '+str(bright_mask_thresh)+'..')
+
+    mag_range = np.linspace(m_max, m_min, (m_max-m_min)*2+1)
+    print('mag range :', mag_range)
+    
+    xx, yy = compute_meshgrids(cbps.dimx, cbps.dimy, compute_dots=False)
+    
+    if n_rad_bin is None:
+        rad_range = np.arange(rad_min, rad_max) # enumerate all radii
+        n_rad_bin = len(rad_range)
+    else:
+        rad_range = np.linspace(rad_min, rad_max, n_rad_bin)
+        
+    if bright_nong_sub:
+        rad_range_bright = np.arange(rad_min, rad_max, bright_drad)
+        rad_range_bright = rad_range_bright[rad_range_bright > bright_radmin]
+        
+    all_ps_permagbin = np.zeros((len(mag_range), len(rad_range), cbps.n_ps_bin))
+    min_rads = np.zeros_like(mag_range[:-1])
+
+    if cat_df is not None:
+        cat_xs = cat_df[xkey]
+        cat_ys = cat_df[ykey]
+        cat_mags = cat_df[magkey]
+        
+    if cat_nuInu is None:
+        cat_nuInu = cmock.mag_2_nu_Inu(cat_mags, inst-1)
+        
+    cat_full = np.array([cat_xs, cat_ys, cat_mags, cat_nuInu]).transpose()
+    cent_mag = 0.5*(mag_range[1:]+mag_range[:-1])
+    all_good_ps = []
+    
+    for m, mag in enumerate(mag_range[:-1]):
+        magmask = (cat_mags < mag)*(cat_mags >= mag_range[m+1])
+        print(mag, mag_range[m+1])
+        # if we have sources in the bin, do the optimization
+        if np.sum(magmask)==0:
+            print('No sources in this mag bin, moving on..')
+        
+        else:
+            mask_cat = cat_full[magmask,:]
+            mask_cat_mag = cat_mags[magmask]
+            
+            # generate source image from slice
+            
+            srcmap_slice = cmock.make_srcmap_temp_bank(ifield, inst, mask_cat, flux_idx=-1, n_fine_bin=10, nwide=17)
+            radmap_slice = compute_radmap_full(cat_ys[magmask], cat_xs[magmask], xx, yy)
+
+            if mag < nong_mmax and len(cat_xs[magmask])>0:
+                
+                if bright_nong_sub and observed_image is not None:
+                    cl_masked = None
+                    print('we are going to look at the bright sources in the observed image..')
+
+                    obs_image_bright = observed_image.copy()
+
+                    if running_mask is not None:
+                        obs_image_bright *= running_mask
+                    if inst_mask is not None:
+                        obs_image_bright *= inst_mask
+
+                    obs_stamps, x0s, y0s = grab_src_stamps(obs_image_bright, cat_xs[magmask], cat_ys[magmask], nwide=nwide_cutout)
+
+                    print('rad range bright:', rad_range_bright)
+
+                    bright_radii = []
+
+                    for o, obs_stamp in enumerate(obs_stamps):   
+                        meansub_levels = []
+                        nmasks = []
+                        count = 0
+                        for r, rad_bright in enumerate(rad_range_bright):
+
+                            mask_bright, _, thresh_bright = mask_from_cat([int(nwide_cutout//2)], [int(nwide_cutout//2)], dimx=nwide_cutout, dimy=nwide_cutout, fixed_radius=rad_bright)
+                            nmask = np.count_nonzero(mask_bright)
+                            nmasks.append(nmask)
+
+                            meansub_im = obs_stamp*mask_bright
+                            meansub_levels.append(np.mean(meansub_im[meansub_im != 0.]))
+                            dms=meansub_levels[r-1]-meansub_levels[r]
+
+                            if r > 0 and nmasks[r] < nmasks[r-1] and dms < 0.3 and dms != 0.:
+                                count += 1
+                                continue
+
+                            if count > 0:
+                                print(meansub_levels)
+                                print(nmasks)
+                                print(meansub_levels[r-1], meansub_levels[r], rad_bright, 'moving on')
+                                bright_radii.append(rad_bright)
+
+                                plot_map(obs_stamp*mask_bright, title='obs stamp '+str(o)+', mean = '+str(np.round(meansub_levels[r], 2)), hipct=99)
+                                break
+
+                    print('bright radii are', bright_radii)
+                    if len(bright_radii)==0:
+                        bright_radii = [rad_max for x in range(len(obs_stamps))]
+
+                else:
+                    bright_radii = radius_vs_mag_gaussian(mask_cat_mag, a1=a1, b1=b1, c1=c1)
+                    
+                mask, _ = mask_from_cat(cat_xs[magmask], cat_ys[magmask], radii=bright_radii, compute_radii=False)
+                rad = np.mean(bright_radii)
+        
+                
+            
+            else:
+                for r, rad in enumerate(rad_range):
+
+                    mask, _, thresh = mask_from_cat(radmap_full=radmap_slice, fixed_radius=rad)
+                    if inst_mask is not None:
+                        mask *= inst_mask
+
+                    masked_im_meansub = srcmap_slice*mask
+
+                    if use_running_mask:
+                        masked_im_meansub *= running_mask
+                        masked_im_meansub[running_mask*mask != 0] -= np.mean(masked_im_meansub[running_mask*mask != 0])
+                    else:
+                        masked_im_meansub[mask != 0] -= np.mean(masked_im_meansub[mask != 0])
+
+                    
+                        
+                    # compute power spectrum
+                    lb, cl_masked, clerr_masked = get_power_spec(masked_im_meansub, lbinedges=cbps.Mkk_obj.binl, lbins=cbps.Mkk_obj.midbin_ell)
+                    mask_frac = np.count_nonzero(mask)/float(cbps.dimx**2)
+                    cl_masked /= mask_frac # correct ps due to mask to first order
+                    all_ps_permagbin[m, r] = cl_masked
+
+                    if mag < 12:
+                        fac = 0.2
+                    else:
+                        fac = 1.
+
+                    if (cl_masked < fac*psthresh).all():
+                        if inst_mask is not None: # then recompute the source mask without inst mask included
+                            mask, _, thresh = mask_from_cat(radmap_full=radmap_slice, fixed_radius=rad)
+
+                        print('all cls are below ps thresh! moving on')
+                        plot_map(srcmap_slice, title='srcmap slic')
+                        
+#                         plot_map(masked_im_meansub, title='masked im meansub')
+                        break
+            
+            all_good_ps.append(cl_masked)
+            
+            min_rads[m] = rad
+            
+
+            if inst_mask is not None and running_mask is not None:
+                mask_frac = np.count_nonzero(mask*running_mask*inst_mask)/float(cbps.dimx**2)
+                print('mask frac (with running mask and instrument mask) is', mask_frac)
+
+            
+            if use_running_mask:
+                running_mask *= mask
+                running_slice += srcmap_slice
+                
+                if make_bright_mask and mag < bright_mask_thresh:
+                    bright_mask *= mask
+
+                if plot:
+                    if inst_mask is not None:
+                        plot_map(running_slice*running_mask*inst_mask, title='running mask x slice x inst mask', hipct=99.)
+                    else:
+                        plot_map(running_slice*running_mask, title='running mask x slice', hipct=99.)
+
+            if plot:
+                prefac = lb*(lb+1)/(2*np.pi)
+                plt.figure(figsize=(6, 5))
+                plt.title(str(mag)+'< J < '+str(mag_range[m+1]), fontsize=18)
+                plt.plot(lb, prefac*all_ps_permagbin[m, r], label='r='+str(np.round(rad, 1)))
+                plt.plot(lb, prefac*psthresh, color='k', linestyle='dashed', label='Point source residual threshold')
+                plt.legend(fontsize=14)
+                plt.tick_params(labelsize=14)
+                plt.xscale('log')
+                plt.yscale('log')
+                plt.xlabel('Multipole $\\ell$', fontsize=18)
+                plt.ylabel('$D_{\\ell}$', fontsize=18)
+                plt.ylim(1e-5, 1e3)
+                plt.show()
+
+        
+    if use_running_mask:
+        return all_ps_permagbin, min_rads, running_mask, running_slice, cent_mag, all_good_ps, bright_mask
+       
+    return all_ps_permagbin, min_rads, cent_mag, all_good_ps, bright_mask
 
 
 def generate_grid_of_masks_dtmethod_2MASS_PanSTARRS_unWISE(twomass_mask_param_combos, train_fpath, unWISE_PS_mask_cat_fpath, twomass_cat_fpath, dimx, dimy, ifield=4, \
