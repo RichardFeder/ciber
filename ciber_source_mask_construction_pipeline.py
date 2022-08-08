@@ -203,7 +203,7 @@ def source_mask_construct_dt(ifield, inst, cmock, mask_cat_unWISE_PS=None, field
 
     return mask_unWISE_PS, mask_twomass_simon, mask_cat_unWISE_PS
 
-
+ 
 def srcmask_binwise_opt(cbps, m_min, m_max, d_mag, ifield=4, inst=1, rad_min=7., rad_max=150., n_rad_bin=None, cat_df=None, cat_xs=None, cat_ys=None, cat_mags=None, cat_nuInu=None, pixsize=7., \
                        xkey='x', ykey='y', magkey='j_m', cmock=None, n_fine_bin=10, nwide=17, \
                        use_running_mask=False, running_mask=None, make_bright_mask=False, bright_mask_thresh=16, psthresh=1e-8, plot=False, \
@@ -296,8 +296,7 @@ def srcmask_binwise_opt(cbps, m_min, m_max, d_mag, ifield=4, inst=1, rad_min=7.,
                     bright_radii = []
 
                     for o, obs_stamp in enumerate(obs_stamps):   
-                        meansub_levels = []
-                        nmasks = []
+                        meansub_levels, nmasks = [], []
                         count = 0
                         for r, rad_bright in enumerate(rad_range_bright):
 
@@ -368,19 +367,14 @@ def srcmask_binwise_opt(cbps, m_min, m_max, d_mag, ifield=4, inst=1, rad_min=7.,
 
                         print('all cls are below ps thresh! moving on')
                         plot_map(srcmap_slice, title='srcmap slic')
-                        
-#                         plot_map(masked_im_meansub, title='masked im meansub')
                         break
             
             all_good_ps.append(cl_masked)
-            
             min_rads[m] = rad
-            
 
             if inst_mask is not None and running_mask is not None:
                 mask_frac = np.count_nonzero(mask*running_mask*inst_mask)/float(cbps.dimx**2)
                 print('mask frac (with running mask and instrument mask) is', mask_frac)
-
             
             if use_running_mask:
                 running_mask *= mask
