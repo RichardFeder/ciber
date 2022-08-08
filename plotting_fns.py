@@ -275,6 +275,78 @@ def multi_panel_mc_power_spectrum_vs_Jlim_plot(lbins, all_cl_proc_vs_Jlim, groun
             return f, knoxes_cl_dcl, mc_cl_dcl
         
         return f
+
+
+def plot_nframe_difference(cl_diffs_flight, cl_diffs_shotnoise, ifield_list, cl_elat30=None, ifield_elat30=5, nframe=10, show=True, return_fig=True, \
+                          titlefontsize=20):
+    
+    labfs = 18
+    legendfs = 12
+    tickfs = 14
+    
+    cl_diffs_flight = np.array(cl_diffs_flight)
+    cl_diffs_shotnoise = np.array(cl_diffs_shotnoise)
+    clav = np.mean(cl_diffs_flight-cl_diffs_shotnoise, axis=0)
+    
+    f = plt.figure(figsize=(12,5))
+    
+    plt.subplot(1,2,1)
+    
+    # show Dl power spectra
+    plt.title(str(nframe)+'-frame differences', fontsize=titlefontsize)
+    plt.errorbar(lb, prefac*np.mean(cl_diffs_flight-cl_diffs_shotnoise, axis=0), yerr=prefac*np.std(cl_diffs_flight-cl_diffs_shotnoise, axis=0),\
+            linewidth=1.5, color='k', linestyle='solid', capsize=3, capthick=2, label='Field average\n(no elat30)')
+    
+    if cl_elat30 is not None:
+        plt.errorbar(lb, prefac*cl_elat30, label='elat30 noise model', linestyle='dashed', color='C1', linewidth=2, zorder=2)
+    
+    plot_colors = ['C0', 'C2', 'C3', 'C4']
+
+    for i, ifield in enumerate(ifield_list):
+        snlab, fsnlab = None, ''
+        if i==0:
+            snlab = str(nframe)+'-frame photon noise'
+            fsnlab = 'Flight diff. - $N_{\\ell}^{phot}$\n'
+
+        fsnlab += cbps.ciber_field_dict[ifield]
+        zorder=0
+    
+        if ifield==5:
+            zorder=10
+            
+        plt.plot(lb, prefac*(cl_diffs_flight[i]-cl_diffs_shotnoise[i]), zorder=zorder, linewidth=2, color=plot_colors[i], linestyle='solid', label=fsnlab)
+
+    plt.yscale('log')
+    plt.xscale('log')
+    plt.legend(fontsize=legendfs, loc=4)
+    plt.xlabel('Multipole $\\ell$', fontsize=labfs)
+    plt.ylabel('$\\ell(\\ell+1)C_{\\ell}/2\\pi$ [nW$^2$ m$^{-4}$ sr$^{-2}$]', fontsize=labfs)
+    plt.tick_params(labelsize=tickfs)
+    
+    # show ratio with respect to non-elat30 fields (nframe=10) or full five-field average (nframe=5)
+
+    plt.subplot(1,2,2)
+    plt.title(str(nframe)+'-frame noise spectra', fontsize=titlefontsize)
+    for i, ifield in enumerate(ifield_list):
+
+        plt.plot(lb, (cl_diffs_flight[i]-cl_diffs_shotnoise[i])/clav, label=cbps.ciber_field_dict[ifield], color=plot_colors[i], linewidth=2)
+    
+    if cl_elat30 is not None:
+        plt.plot(lb, cl_elat30/clav, linewidth=2, label='elat30', linestyle='dashed', color='C1', zorder=2)
+    plt.axhline(1.0, linestyle='dashed', color='k', label='Field average\n(no elat30)')
+        
+    plt.ylabel('$N_{\\ell}^{read}/\\langle N_{\\ell}^{read}\\rangle$', fontsize=labfs)
+    plt.xscale('log')
+    plt.xlabel('Multipole $\\ell$', fontsize=labfs)
+    plt.tick_params(labelsize=tickfs)
+    
+    plt.tight_layout()
+
+    
+    if show:
+        plt.show()
+    if return_fig:
+        return f
         
 
 def plot_stacked_smoothed_expmap(sum_im_smoothed, lightsrcmask, minpct=1, maxpct=99, show=True, return_fig=True):
@@ -293,6 +365,27 @@ def plot_stacked_smoothed_expmap(sum_im_smoothed, lightsrcmask, minpct=1, maxpct
     plt.ylabel('y [pix]', fontsize=16)
     plt.tight_layout()
 
+    if show:
+        plt.show()
+    if return_fig:
+        return f
+
+def plot_cl2d_by_quadrant(cls_2d, show=True, return_fig=True, texthead='TM 2 flight data', cmap='viridis', minpct=5, maxpct=95, fieldstr=None):
+
+    f = plt.figure(figsize=(8, 8))
+    for i in range(4):
+        plt.subplot(2,2,i+1)
+        plt.imshow(cls_2d[i], origin='lower', cmap=cmap, vmin=np.percentile(cls_2d[i], minpct), vmax=np.percentile(cls_2d[i], maxpct))
+        plt.xlabel('$\\ell_x$', fontsize=20)
+        plt.ylabel('$\\ell_y$', fontsize=20)
+        textfull = texthead+'\nQ'+str(i+1)
+        if fieldstr is not None:
+            textfull +=', '+fieldstr
+        plt.text(220, 400, textfull, fontsize=16, color='white')
+        plt.tick_params(labelsize=14)
+        plt.xticks([], [])
+        plt.yticks([], [])
+    plt.tight_layout()
     if show:
         plt.show()
     if return_fig:
@@ -455,6 +548,74 @@ def plot_g1_hist(g1facs, mask=None, return_fig=True, show=True, title=None):
     if return_fig:
         return f
         
+
+
+def plot_noise_modl_val_flightdiff(lb, N_ells_modl, N_ell_flight, shot_noise=None, title=None, ifield=None, inst=None, show=True, return_fig=True):
+    
+    ''' 
+    
+    Parameters
+    ----------
+    
+    lb : 
+    N_ells_modl : 'np.array' of type 'float' and shape (nsims, n_ps_bins). Noise model power spectra
+    N_ell_flight : 'np.array' of type 'float' and shape (n_ps_bins). Flight half difference power spectrum
+    ifield (optional) 'str'.
+        Default is None.
+    inst (optional) : 'str'.
+        Default is None.
+        
+    show (optional) : 'bool'. 
+        Default is True.
+    return_fig (optional) : 'bool'.
+        Default is True.
+    
+    
+    Returns
+    -------
+    
+    f (optional): Matplotlib figure
+    
+    
+    '''
+    ciber_field_dict = dict({4:'elat10', 5:'elat30',6:'BootesB', 7:'BootesA', 8:'SWIRE'})
+
+    # compute the mean and scatter of noise model power spectra realizations
+    
+    mean_N_ell_modl = np.mean(N_ells_modl, axis=0)
+    std_N_ell_modl = np.std(N_ells_modl, axis=0)
+    
+    print('mean Nell shape', mean_N_ell_modl.shape)
+    print('std Nell shape', std_N_ell_modl.shape)
+    print(shot_noise)
+    print(N_ell_flight.shape)
+
+    
+    prefac = lb*(lb+1)/(2*np.pi)
+    
+    f = plt.figure(figsize=(8,6))
+    if title is None:
+        if inst is not None and ifield is not None:
+            title = 'TM'+str(inst)+' , '+ciber_field_dict[ifield]
+            
+    plt.title(title, fontsize=18)
+    
+    plt.plot(lb, prefac*N_ell_flight, label='Flight difference', color='r', linewidth=2, marker='.') 
+    if shot_noise is not None:
+        plt.plot(lb, prefac*shot_noise, label='Photon noise', color='C1', linestyle='dashed')
+    plt.errorbar(lb, prefac*(mean_N_ell_modl), yerr=prefac*std_N_ell_modl, label='Read noise model', color='k', capsize=5, linewidth=2)
+    
+    plt.legend(fontsize=14)
+    plt.xscale('log')
+    plt.yscale('log')
+    plt.tick_params(labelsize=14)
+    
+    if show:
+        plt.show()
+        
+    if return_fig:
+        return f
+
 
 def plot_radavg_xspectrum(rbins, radprofs=[], raderrs=None, labels=[], \
 						  lmin=90., save=False, snspalette=None, pdf_or_png='png', \
@@ -790,7 +951,9 @@ def plot_dm_powerspec(show=True):
 
 def plot_map(image, figsize=(8,8), title=None, titlefontsize=16, xlabel='x [pix]', ylabel='y [pix]',\
              x0=None, x1=None, y0=None, y1=None, lopct=5, hipct=99,\
-             return_fig=False, show=True, xkcd=False, nanpct=True, cmap='viridis', noxticks=False, noyticks=False):
+             return_fig=False, show=True, nanpct=True, cl2d=False, cmap='viridis', noxticks=False, noyticks=False, \
+             cbar_label=None):
+
     f = plt.figure(figsize=figsize)
     if title is not None:
     
@@ -799,14 +962,21 @@ def plot_map(image, figsize=(8,8), title=None, titlefontsize=16, xlabel='x [pix]
         plt.imshow(image, vmin=np.nanpercentile(image, lopct), vmax=np.nanpercentile(image, hipct), cmap=cmap, origin='lower')
         print('min max of image in plot map are ', np.min(image), np.max(image))
     else:
-        plt.imshow(image, cmap=cmap, origin='lower')
-    plt.colorbar(fraction=0.046, pad=0.04)
+        plt.imshow(image, cmap=cmap, origin='lower', interpolation='none')
+    cbar = plt.colorbar(fraction=0.046, pad=0.04)
+    cbar.ax.tick_params(labelsize=14)
+    if cbar_label is not None:
+        cbar.set_label(cbar_label, fontsize=14)
     if x0 is not None and x1 is not None:
         plt.xlim(x0, x1)
         plt.ylim(y0, y1)
         
-    plt.xlabel(xlabel, fontsize=16)
-    plt.ylabel(ylabel, fontsize=16)
+    if cl2d:
+        plt.xlabel('$\\ell_x$', fontsize=16)
+        plt.ylabel('$\\ell_y$', fontsize=16)
+    else:
+        plt.xlabel(xlabel, fontsize=16)
+        plt.ylabel(ylabel, fontsize=16)
 
     if noxticks:
         plt.xticks([], [])

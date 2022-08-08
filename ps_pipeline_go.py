@@ -388,17 +388,6 @@ def run_cbps_pipeline(cbps, inst, nsims, run_name, ifield_list = None, ps_type='
 				inter_labels.append('preffgrad_masked')
 
 
-				# cls_preffgrad = np.zeros(ps_set_shape)
-
-				# for i, ifield in enumerate(ifield_list):
-				# 	obs_masksub = observed_ims[i]*joint_maskos[i]
-				# 	obs_masksub[joint_maskos[i]==1] -= np.mean(obs_masksub[joint_maskos[i]==1])
-
-				# 	lb, cl_preffgrad_solve, clerr_preffgrad_solve = get_power_spec(obs_masksub, lbinedges=self.Mkk_obj.binl, lbins=self.Mkk_obj.midbin_ell)
-				# 	cls_preffgrad[i] = cl_preffgrad_solve
-
-				# cls_inter.append(cls_preffgrad)
-
 
 			# processed_ims, ff_estimates, final_planes, _, coeffs_vs_niter, _ = iterative_gradient_ff_solve(observed_ims, niter=niter, masks=joint_maskos, \
 			# 																		inv_Mkks=inv_Mkks, compute_ps=False, weights_ff=weights_ff)
@@ -438,22 +427,14 @@ def run_cbps_pipeline(cbps, inst, nsims, run_name, ifield_list = None, ps_type='
 				# inv_Mkks[newidx] = np.fill_diagonal(inv_Mkks[newidx], inv_Mkk_diag)
 
 
-			# if save_intermediate_cls:
-			# 	cls_inter.append(grab_ps_set(processed_ims, ifield_list, ps_inter_set_shape, cbps, masks=joint_maskos))
-			# 	inter_labels.append('post_ffsigclipmask')
-
-
 			if ff_min is not None and ff_max is not None:
 				ff_masks = (ff_estimates > ff_min)*(ff_estimates < ff_max)
 				print('sum of ff masks i s', np.sum(ff_masks.astype(np.int)))
 				joint_maskos *= ff_masks
-			# joint_maskos *= stack_masks
 
 
 			mask_fractions = np.array([float(np.sum(joint_masko))/float(cbps.dimx*cbps.dimy) for joint_masko in joint_maskos])
 			print('masking fraction is nooww ', mask_fractions)
-			# mask_fractions.append(float(np.sum(joint_maskos[fieldidx]))/float(cbps.dimx**2))
-
 
 
 			# print('new mask fractions are ', [np.sum(joint_masko)/1024**2 for joint_masko in joint_maskos])
@@ -466,43 +447,6 @@ def run_cbps_pipeline(cbps, inst, nsims, run_name, ifield_list = None, ps_type='
 					plot_map(processed_ims[k]*joint_maskos[k], title='masked im')
 					plot_map(ff_estimates[k], title='ff estimates k')
 
-
-			# # ------- temporary ---------
-			# plt.figure()
-			# histmaskims = []
-			# sbbins = np.linspace(0, 1000, 30)
-			# for k in range(len(ff_estimates)):
-	
-			# 	masked_im = processed_ims[k]*joint_maskos[k]
-			# 	histmaskim = masked_im.ravel()[masked_im.ravel() != 0]
-			# 	print(np.histogram(histmaskim, bins=sbbins)[0])
-			# 	histmaskims.append(np.histogram(histmaskim, bins=sbbins)[0])
-
-			# 	masked_ff = ff_estimates[k]*joint_maskos[k]
-
-			# 	histmaskff = masked_ff.ravel()[masked_ff.ravel() != 0]
-				
-			# 	# masked_im = processed_ims[i]*joint_masks[i]
-				
-			# 	plt.hist(histmaskff, bins=30, color='C'+str(k), histtype='step', label=cbps.ciber_field_dict[k+4], linewidth=1.5)
-			# 	plt.axvline(np.median(histmaskff), color='C'+str(k), linestyle='dashed')
-				
-			# 	plt.axvline(np.nanpercentile(histmaskff, 16), color='C'+str(k), linestyle='dashdot')
-			# 	plt.axvline(np.nanpercentile(histmaskff, 84), color='C'+str(k), linestyle='dashdot')
-			# 	print(np.std(histmaskff))
-
-			# # np.savez('/Users/luminatech/Downloads/histmaskim_'+str(data_type)+'_simidx'+str(i)+'.npz', ifield_list=ifield_list, histmaskims=histmaskims, sbbins=sbbins)
-			# plt.yscale('log')
-			# plt.legend(fontsize=12)
-
-			# plt.tick_params(labelsize=14)
-			# plt.xlabel('Estimated flat field', fontsize=16)
-			# plt.ylabel('$N_{pix}$', fontsize=16)
-			# plt.xlim(0.3, 2)
-			# # plt.savefig('/Users/luminatech/Downloads/ffest_hist_masked_TM1_17p5V.png', bbox_inches='tight')
-			# plt.show()
-
-			# print('observed data ff estimates have scatters', [0.5*(np.percentile(ff_estimate, 84)-np.percentile(ff_estimate, 16)) for ff_estimate in ff_estimates])
 
 		if apply_mask:
 			obs_levels = np.array([np.mean(obs[joint_maskos[o]==1]) for o, obs in enumerate(observed_ims)])
@@ -568,10 +512,6 @@ def run_cbps_pipeline(cbps, inst, nsims, run_name, ifield_list = None, ps_type='
 					processed_ims, ff_realization_estimates, final_planes, _, coeffs_vs_niter = iterative_gradient_ff_solve(observed_ims_nofluc, niter=niter, masks=joint_maskos, weights_ff=weights_ff_nofluc, \
 																															ff_stack_min=ff_stack_min) # masks already accounting for ff_stack_min previously
 				
-					# for k in range(len(ff_realization_estimates)):
-					# 	ff_maskrav = (ff_realization_estimates[k]*joint_maskos[k]).ravel()
-					# 	print('FF realization has (masked) scatter ', np.std(ff_maskrav[ff_maskrav != 0]))
-						# print('ff realization estimates have scatter ', 0.5*(np.percentile(ff_realization_estimates[k], 84)-np.percentile(ff_realization_estimates[k], 16)))
 
 				else:
 					print('only doing single iteration (do iterative pls)')
@@ -599,12 +539,6 @@ def run_cbps_pipeline(cbps, inst, nsims, run_name, ifield_list = None, ps_type='
 				stack_mask, target_mask = None, None
 				target_invMkk = None
 				
-				
-			# if not iterate_grad_ff: # then look at stacks for observed data
-
-			# 	ff_estimate, _, ff_weights = compute_stack_ff_estimate(stack_obs, target_mask=target_mask, masks=stack_mask, \
-			# 														   inv_var_weight=False, ff_stack_min=ff_stack_min, \
-			# 																field_nfrs=nfr_fields, weights=weights_ff)
 
 			if plot_ff_error and data_type=='mock':
 				plot_map(ff_estimate, title='ff estimate i='+str(i))
