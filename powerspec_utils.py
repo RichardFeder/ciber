@@ -405,9 +405,14 @@ def grab_all_simidx_dat(fpaths, mean_or_median='mean', inter_idx=None, per_field
     all_mean_true_cls = np.array(all_mean_true_cls)
     all_recovered_cls = np.array(all_recovered_cls)
     all_true_cls = np.array(all_true_cls)
+
     
     return lb, est_true_ratios, all_mean_true_cls, all_recovered_cls, all_recovered_mean_cls, all_true_cls
 
+def instantiate_dat_arrays(dimx, dimy, nfields, ntype):
+    imarray_shape = (nfields, dimx, dimy)
+    imarrays = [np.zeros(imarray_shape) for x in range(ntype)]
+    return imarrays
 
 def instantiate_dat_arrays_fftest(dimx, dimy, nfields):
 	''' this function initializes the arrays for the mock pipeline test '''

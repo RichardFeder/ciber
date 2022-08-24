@@ -1037,6 +1037,32 @@ def plot_mock_images(full, srcs, ihl=None, fullminp=1., fullmaxp=99.9, \
 	
 	return f
 
+
+def compute_all_intermediate_power_spectra(lb, cls_inter, inter_labels, signal_ps=None, fieldidx=0, show=True, return_fig=True):
+    
+    f = plt.figure(figsize=(8, 6))
+
+    for interidx, inter_label in enumerate(inter_labels):
+        prefac = lb*(lb+1)/(2*np.pi)
+        plt.plot(lb, prefac*cls_inter[interidx][fieldidx], marker='.',  label=inter_labels[interidx], color='C'+str(interidx%10))
+
+    if signal_ps is not None:
+        plt.plot(lb, prefac*signal_ps[fieldidx], marker='*', label='Signal PS', color='k', zorder=2)
+    plt.legend(fontsize=14, bbox_to_anchor=[1.01, 1.3], ncol=3, loc=1)
+    plt.ylabel('$D_{\\ell}$', fontsize=18)
+    plt.xlabel('Multipole $\\ell$', fontsize=18)
+    plt.tick_params(labelsize=16)
+    plt.text(200, 3e3, 'ifield='+str(fieldidx+4)+' (TM2)', color='C2', fontsize=24)
+    plt.xscale('log')
+    plt.yscale('log')
+    plt.grid(alpha=0.5, color='grey')
+    plt.ylim(1e-1, 1e4)
+    # plt.savefig('/Users/luminatech/Downloads/ps_step_by_step_bootesB_tm1_072122.png', bbox_inches='tight')
+    if show:
+        plt.show()
+    if return_fig:
+        return f
+
 def plot_cross_terms_knox(list_of_crossterms, ells, mlim=24, save=False, show=True, title=None, titlesize=18):
 #     colors = ['b', 'C1', 'green']
 	colors = ['b', 'green', 'black']
