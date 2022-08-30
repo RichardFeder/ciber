@@ -126,82 +126,192 @@ def srcmask_predict_PanSTARRS_unWISE_UKIDSS(cat_unPSuk_train=None, cat_unPSuk_tr
 
 
 
-def source_mask_construct_dt(ifield, inst, cmock, mask_cat_unWISE_PS=None, fieldstr_train = 'UDS',\
-                             J_mag_lim=19.0, feature_names=None, max_depth=8, \
-                            zkey = 'zMeanPSFMag', W1key='mag_W1', mean_z_J_color_all = 1.0925, \
-                             mask_cat_directory='data/cats/masking_cats/', twomass_cat_directory='data/cats/2MASS/filt/', \
-                            nx=1024, ny=1024, pixsize=7., \
-                            # linear fit parameters
-                            beta_m=125., alpha_m=-5.5, \
-                            # Gaussian fit parameters
-                            a1=252.8, b1=3.632, c1=8.52):
+# def source_mask_construct_dt(ifield, inst, cmock, mask_cat_unWISE_PS=None, fieldstr_train = 'UDS',\
+#                              J_mag_lim=19.0, feature_names=None, max_depth=8, \
+#                             zkey = 'zMeanPSFMag', W1key='mag_W1', mean_z_J_color_all = 1.0925, \
+#                              mask_cat_directory='data/cats/masking_cats/', twomass_cat_directory='data/cats/2MASS/filt/', \
+#                             nx=1024, ny=1024, pixsize=7., \
+#                             # linear fit parameters
+#                             beta_m=125., alpha_m=-5.5, \
+#                             # Gaussian fit parameters
+#                             a1=252.8, b1=3.632, c1=8.52):
 
 
-    ''' This is used in the CIBER 4th flight data analysis to construct bright source masks '''
+#     ''' This is used in the CIBER 4th flight data analysis to construct bright source masks '''
     
-    fieldstr_mask = cmock.ciber_field_dict[ifield]
+#     fieldstr_mask = cmock.ciber_field_dict[ifield]
     
-    if mask_cat_unWISE_PS is None:
-        if feature_names is None:
-            feature_names=['rMeanPSFMag', 'iMeanPSFMag', 'gMeanPSFMag', 'zMeanPSFMag', 'yMeanPSFMag', 'mag_W1', 'mag_W2']
+#     if mask_cat_unWISE_PS is None:
+#         if feature_names is None:
+#             feature_names=['rMeanPSFMag', 'iMeanPSFMag', 'gMeanPSFMag', 'zMeanPSFMag', 'yMeanPSFMag', 'mag_W1', 'mag_W2']
 
-        if fieldstr_train == 'UDS': # default is to use UDS field as training set
+#         if fieldstr_train == 'UDS': # default is to use UDS field as training set
 
-            print('J_mag_lim heere is ', J_mag_lim)
-            full_merged_cat_unPSuk_train = pd.read_csv(mask_cat_directory+'UDS/unWISE_PanSTARRS_UKIDSS_full_xmatch_merge_UDS.csv')
+#             print('J_mag_lim heere is ', J_mag_lim)
+#             full_merged_cat_unPSuk_train = pd.read_csv(mask_cat_directory+'UDS/unWISE_PanSTARRS_UKIDSS_full_xmatch_merge_UDS.csv')
 
-            decision_tree, classes_train, train_features = train_decision_tree(full_merged_cat_unPSuk_train, feature_names=feature_names, J_mag_lim=J_mag_lim, \
-                                                                          max_depth=max_depth, outlablstr='j_Vega')
+#             decision_tree, classes_train, train_features = train_decision_tree(full_merged_cat_unPSuk_train, feature_names=feature_names, J_mag_lim=J_mag_lim, \
+#                                                                           max_depth=max_depth, outlablstr='j_Vega')
 
-        else: # if not UDS, use the cleaned IBIS catalog with unWISE/PS for the training field
+#         else: # if not UDS, use the cleaned IBIS catalog with unWISE/PS for the training field
 
-            full_merged_cat_unPSIB_train = pd.read_csv(mask_cat_directory+fieldstr_train+'/unWISE_PanSTARRS_IBIS_full_xmatch_merge_'+fieldstr_train+'.csv')
+#             full_merged_cat_unPSIB_train = pd.read_csv(mask_cat_directory+fieldstr_train+'/unWISE_PanSTARRS_IBIS_full_xmatch_merge_'+fieldstr_train+'.csv')
 
-            decision_tree, classes_train, train_features = train_decision_tree(full_merged_cat_unPSIB_train, feature_names=feature_names, J_mag_lim=J_mag_lim, \
-                                                                      max_depth=max_depth)
-
-
-        full_merged_cat_unWISE_PS = pd.read_csv(mask_cat_directory+fieldstr_mask+'/unWISE_PanSTARRS_full_xmatch_merge_'+fieldstr_mask+'_121620.csv')
-        features_merged_cat_unWISE_PS = feature_matrix_from_df(full_merged_cat_unWISE_PS, feature_names=feature_names)
-
-        predictions_CIBER_field_unWISE_PS = decision_tree.predict(features_merged_cat_unWISE_PS)
-        mask_cat_unWISE_PS = filter_mask_cat_dt(full_merged_cat_unWISE_PS, decision_tree, feature_names)
+#             decision_tree, classes_train, train_features = train_decision_tree(full_merged_cat_unPSIB_train, feature_names=feature_names, J_mag_lim=J_mag_lim, \
+#                                                                       max_depth=max_depth)
 
 
-    # we will use the Zemcov+14 masking radius formula based on z-band magnitudes when available, and 
-    # when z band is not available for a source we will use W1 + mean(z - W1) for the effective magnitude
-    zs_mask = np.array(mask_cat_unWISE_PS[zkey])
-    W1_mask = np.array(mask_cat_unWISE_PS[W1key])
-    colormask = ((~np.isinf(zs_mask))&(~np.isinf(W1_mask))&(~np.isnan(zs_mask))&(~np.isnan(W1_mask))&(np.abs(W1_mask) < 50)&(np.abs(zs_mask) < 50))
-    median_z_W1_color = np.median(zs_mask[colormask]-W1_mask[colormask])
+#         full_merged_cat_unWISE_PS = pd.read_csv(mask_cat_directory+fieldstr_mask+'/unWISE_PanSTARRS_full_xmatch_merge_'+fieldstr_mask+'_121620.csv')
+#         features_merged_cat_unWISE_PS = feature_matrix_from_df(full_merged_cat_unWISE_PS, feature_names=feature_names)
 
-    print('median z - W1 is ', median_z_W1_color)
+#         predictions_CIBER_field_unWISE_PS = decision_tree.predict(features_merged_cat_unWISE_PS)
+#         mask_cat_unWISE_PS = filter_mask_cat_dt(full_merged_cat_unWISE_PS, decision_tree, feature_names)
 
-    # find any non-detections in z band and replace with W1 + mean z-W1 
-    nanzs = ((np.isnan(zs_mask))|(np.abs(zs_mask) > 50)|(np.isinf(zs_mask)))
-    zs_mask[nanzs] = W1_mask[nanzs]+median_z_W1_color
 
-    # anything that is neither detected in z or W1 (~10 sources) set to z=18.5.
-    still_nanz = ((np.isnan(zs_mask))|(np.isinf(zs_mask)))
-    zs_mask[still_nanz] = J_mag_lim
-    zkey_mask = zkey+'_mask'
+#     # we will use the Zemcov+14 masking radius formula based on z-band magnitudes when available, and 
+#     # when z band is not available for a source we will use W1 + mean(z - W1) for the effective magnitude
+#     zs_mask = np.array(mask_cat_unWISE_PS[zkey])
+#     W1_mask = np.array(mask_cat_unWISE_PS[W1key])
+#     colormask = ((~np.isinf(zs_mask))&(~np.isinf(W1_mask))&(~np.isnan(zs_mask))&(~np.isnan(W1_mask))&(np.abs(W1_mask) < 50)&(np.abs(zs_mask) < 50))
+#     median_z_W1_color = np.median(zs_mask[colormask]-W1_mask[colormask])
+
+#     print('median z - W1 is ', median_z_W1_color)
+
+#     # find any non-detections in z band and replace with W1 + mean z-W1 
+#     nanzs = ((np.isnan(zs_mask))|(np.abs(zs_mask) > 50)|(np.isinf(zs_mask)))
+#     zs_mask[nanzs] = W1_mask[nanzs]+median_z_W1_color
+
+#     # anything that is neither detected in z or W1 (~10 sources) set to z=18.5.
+#     still_nanz = ((np.isnan(zs_mask))|(np.isinf(zs_mask)))
+#     zs_mask[still_nanz] = J_mag_lim
+#     zkey_mask = zkey+'_mask'
     
-    mask_cat_unWISE_PS[zkey_mask] = zs_mask + 0.5
+#     mask_cat_unWISE_PS[zkey_mask] = zs_mask + 0.5
 
-    # using the effective masking magnitudes, compute the source mask
-    print('masking catalog has length ', len(mask_cat_unWISE_PS))
-    mask_unWISE_PS, radii_mask_cat_unWISE_PS = mask_from_df_cat(mask_cat_unWISE_PS, magstr=zkey_mask,\
-                                                                     beta_m=beta_m, alpha_m=alpha_m, pixsize=pixsize, inst=inst)
+#     # using the effective masking magnitudes, compute the source mask
+#     print('masking catalog has length ', len(mask_cat_unWISE_PS))
+#     mask_unWISE_PS, radii_mask_cat_unWISE_PS = mask_from_df_cat(mask_cat_unWISE_PS, magstr=zkey_mask,\
+#                                                                      beta_m=beta_m, alpha_m=alpha_m, pixsize=pixsize, inst=inst)
 
-    print('now creating mask for 2MASS..')
-    twomass = pd.read_csv(twomass_cat_directory+'2MASS_'+fieldstr_mask+'_filtxy.csv')
-    print('field is ', fieldstr_mask)
+#     print('now creating mask for 2MASS..')
+#     twomass = pd.read_csv(twomass_cat_directory+'2MASS_'+fieldstr_mask+'_filtxy.csv')
+#     print('field is ', fieldstr_mask)
 
-    twomass_lt_16, srcmap_twomass_J_lt_16 = twomass_srcmap_masking_cat_prep(twomass, mean_z_J_color_all, cmock, ifield, nx=nx, ny=ny)
-    mask_twomass_simon, radii_mask_cat_twomass_simon = mask_from_df_cat(twomass_lt_16, mode='Simon', magstr='j_m', Vega_to_AB=0.91, inst=inst, \
-                                                                            a1=a1, b1=b1, c1=c1)
+#     twomass_lt_16, srcmap_twomass_J_lt_16 = twomass_srcmap_masking_cat_prep(twomass, mean_z_J_color_all, cmock, ifield, nx=nx, ny=ny)
+#     mask_twomass_simon, radii_mask_cat_twomass_simon = mask_from_df_cat(twomass_lt_16, mode='Simon', magstr='j_m', Vega_to_AB=0.91, inst=inst, \
+#                                                                             a1=a1, b1=b1, c1=c1)
 
-    return mask_unWISE_PS, mask_twomass_simon, mask_cat_unWISE_PS
+#     return mask_unWISE_PS, mask_twomass_simon, mask_cat_unWISE_PS
+
+def make_maskcats_predict_realdat(inst, ifield_list, mag_lim_list, datestr, max_depth=8, maglim_2MASS=16, save=True, \
+                                 mask_cat_dirpath='data/cats/masking_cats/'):
+    ''' 
+    Use decision tree to predict masks for science fields
+
+    '''
+    
+    
+    cbps = CIBER_PS_pipeline(n_ps_bin=25)
+    cmock = ciber_mock(ciberdir='/Users/luminatech/Documents/ciber2/ciber/')
+    magstr = cbps.inst_to_band[inst]
+    print('magstr is ', magstr)
+
+    for mag_idx, mag_lim in enumerate(mag_lim_list):
+        
+
+        for fieldidx, ifield in enumerate(ifield_list):
+            cbps.load_data_products(ifield, inst, verbose=False)
+            
+            fieldstr_mask = cmock.ciber_field_dict[ifield]
+            print('fieldstr mask is ', fieldstr_mask)
+            
+            mask_cat_unWISE_PS, twomass_lt_16 = mask_cat_predict_rf(ifield, inst, cmock, max_depth=max_depth,\
+                                                                        mag_lim=mag_lim, mode='regress')
+
+            
+            if save:
+                print('saving..')
+                if mag_idx==0:
+                    twomass_lt_16.to_csv(mask_cat_dirpath+fieldstr_mask+'/twomass_lt_16_maskcat_'+fieldstr_mask+'_'+datestr+'.csv')
+                mask_cat_unWISE_PS.to_csv(mask_cat_dirpath+fieldstr_mask+'/unWISE_PanSTARRS_dt_mask_cat_'+fieldstr_mask+'_maxdepth='+str(max_depth)+'_'+magstr+'lim='+str(mag_lim)+'_inst'+str(inst)+'_'+datestr+'.csv')
+
+        print('predicted and 2MASS catalogs have shapes ', np.array(mask_cat_unWISE_PS).shape, np.array(twomass_lt_16).shape)
+
+    
+
+def compute_interp_maskfns_binwise_opt(mag_lims, inst, ifield_list, rad_min=3., rad_max=150., m_min=6, m_max=19, d_mag=0.5, \
+                                      psthresh=1e-8, nong_mmax=14, max_depth=8, a1=160., tailstr='063022', save=True, \
+                                      mask_dirpath = 'data/cats/masking_cats/'):
+    
+    ''' 
+    8/26/22 this function is a wrapper to compute all of the masking radius functions that are applied to the 
+    mock and real catalogs. The masking thresholds are defined in Vega magnitudes, so mock catalog magnitudes need to
+    be converted.
+        
+    '''
+    cbps = CIBER_PS_pipeline(n_ps_bin=25)
+    imarray_shape = (len(ifield_list), cbps.dimx, cbps.dimy)
+    
+    all_min_rads = []
+    for mag_idx, mag_lim in enumerate(mag_lims):
+    
+        tot_masks, bright_masks, tot_obs = [np.zeros(imarray_shape) for x in range(3)]
+
+        for fieldidx, ifield in enumerate(ifield_list):
+            cbps.load_data_products(ifield, inst, verbose=False)
+            fieldstr_mask = cbps.ciber_field_dict[ifield]
+            
+            # load 2MASS bright sources. For real data these are in Vega already
+            twomass_lt_16 = pd.read_csv(mask_dirpath+fieldstr_mask+'/twomass_lt_16_maskcat_'+fieldstr_mask+'_063022.csv')
+            m_min = np.floor(np.minimum(m_min, np.min(twomass_lt_16[cbps.inst_to_trilegal_magstr[inst]])))
+            twomass_x = twomass_lt_16['x'+str(inst)]
+            twomass_y = twomass_lt_16['y'+str(inst)]
+            twomass_mag = twomass_lt_16[cbps.inst_to_trilegal_magstr[inst]]
+            
+            mask_cat_unWISE_PS = pd.read_csv(mask_dirpath+fieldstr_mask+'/unWISE_PanSTARRS_dt_mask_cat_'+fieldstr_mask+'_maxdepth='+str(max_depth)+'_'+cbps.inst_to_band[inst]+'lim='+str(mag_lim)+'_inst'+str(inst)+'_'+tailstr+'.csv')
+            faint_cat_x = mask_cat_unWISE_PS['x'+str(inst)]
+            faint_cat_y = mask_cat_unWISE_PS['y'+str(inst)]
+            faint_cat_mag = mask_cat_unWISE_PS[cbps.inst_to_band[inst]+'_predict']
+            
+            twomass_cat = np.array([twomass_x, twomass_y, twomass_mag]).transpose()
+            faint_cat = np.array([faint_cat_x, faint_cat_y, faint_cat_mag]).transpose()
+            
+            merged_src_cat = np.concatenate((twomass_cat, faint_cat), axis=0)
+            print('merged src cat has shape ', merged_src_cat.shape)
+            
+            all_ps_permagbin, min_rads, running_mask,\
+                    running_slice, cent_mags, all_good_ps, bright_mask = srcmask_binwise_opt(cbps, m_min, m_max, d_mag, ifield=ifield, inst=inst, \
+                               rad_min=rad_min, rad_max=rad_max, n_rad_bin=None,\
+                               cat_xs=merged_src_cat[:,0], cat_ys=merged_src_cat[:,1], cat_mags=merged_src_cat[:,2], \
+                               use_running_mask=True, psthresh=psthresh, \
+                               observed_image=cbps.image*cbps.cal_facs[inst], nong_mmax=nong_mmax, \
+                               inst_mask=cbps.maskInst.astype(np.int), a1=a1, \
+                               make_bright_mask=True, bright_mask_thresh=11)
+            
+            interp_maskfn = scipy.interpolate.interp1d(cent_mags[min_rads!= 0], min_rads[min_rads != 0])
+            minwav, maxwav = np.min(cent_mags[min_rads != 0]), np.max(cent_mags[min_rads != 0])
+            finewav = np.linspace(minwav, maxwav, 1000)
+            minradmask = (min_rads != 0)
+            
+            # this ensures that the interpolated function is defined out to the magnitude threshold, and not to the binned mean magnitude (dmag/2 less)
+            cent_mags = list(cent_mags[minradmask])
+            min_rads = list(min_rads[minradmask])
+            min_rads.append(min_rads[np.argmax(cent_mags)])
+            cent_mags.append(mag_lim)
+            min_rads = np.array(min_rads)
+            cent_mags = np.array(cent_mags)
+        
+            print('min rads:', min_rads)
+            print('central mag bins:', cent_mags)
+            
+            if save:
+                interp_fpath = mask_dirpath+'masking_radii_vs_mag/rad_vs_mag_'+cbps.inst_to_band[inst]+'lim'+str(mag_lim)+'_ifield'+str(ifield)+'_inst'+str(inst)+'.npz'
+                print('saving to ', interp_fpath)
+                np.savez(interp_fpath, cent_mags=cent_mags, radii=min_rads)
+
+            all_min_rads.append(min_rads)
+
+    return cent_mags, all_min_rads
 
  
 def srcmask_binwise_opt(cbps, m_min, m_max, d_mag, ifield=4, inst=1, rad_min=7., rad_max=150., n_rad_bin=None, cat_df=None, cat_xs=None, cat_ys=None, cat_mags=None, cat_nuInu=None, pixsize=7., \
@@ -221,12 +331,12 @@ def srcmask_binwise_opt(cbps, m_min, m_max, d_mag, ifield=4, inst=1, rad_min=7.,
         cmock = ciber_mock(ciberdir='/Users/luminatech/Documents/ciber2/ciber/')
 
     if use_running_mask and running_mask is None:
-        running_mask = np.ones((cbps.dimx, cbps.dimy))
+        running_mask = np.ones(cbps.map_shape)
         running_slice = np.zeros_like(running_mask)
         
     bright_mask = None
     if make_bright_mask:
-        bright_mask = np.ones((cbps.dimx, cbps.dimy))
+        bright_mask = np.ones(cbps.map_shape)
             
         print('Making bright source mask for anything brighter than '+str(bright_mask_thresh)+'..')
 
@@ -326,6 +436,7 @@ def srcmask_binwise_opt(cbps, m_min, m_max, d_mag, ifield=4, inst=1, rad_min=7.,
                         bright_radii = [rad_max for x in range(len(obs_stamps))]
 
                 else:
+                    # this is ultimately what is used since operating on the maps directly is challenging
                     bright_radii = radius_vs_mag_gaussian(mask_cat_mag, a1=a1, b1=b1, c1=c1)
                     
                 mask, _ = mask_from_cat(cat_xs[magmask], cat_ys[magmask], radii=bright_radii, compute_radii=False)

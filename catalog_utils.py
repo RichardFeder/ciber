@@ -500,18 +500,16 @@ def sdss_preprocess(sdss_path, redshift_keyword='redshift', class_cut=False, obj
 
 
 
-def twomass_srcmap_masking_cat_prep(twomass_df, mean_color_correct, ciber_mock_obj, ifield, twomass_Jmax = 16., nx=1024, ny=1024, inst=1):
+def twomass_srcmap_masking_cat_prep(twomass_df, mean_color_correct, ciber_mock_obj, ifield, twomass_max_mag = 16., nx=1024, ny=1024, inst=1):
     twomass_mag_str_dict = dict({1:'j_m', 2:'h_m'})
 
     magstr = twomass_mag_str_dict[inst]
 
-    twomass_bright_mask = np.where(twomass_df[magstr] < twomass_Jmax)[0]
+    twomass_bright_mask = np.where(twomass_df[magstr] < twomass_max_mag)[0]
     twomass_df_filt = twomass_df.iloc[twomass_bright_mask].copy()
     twomass_df_filt['zband_mask'] = twomass_df_filt[magstr]+mean_color_correct
-    Jband_fluxes_twomass = ciber_mock_obj.mag_2_nu_Inu(np.array(twomass_df_filt[magstr]), inst-1) # 0 for J band, 1 for H band
-    # twomass_bright_cat = np.array([np.array(twomass_df_filt['x'+str(inst)]), np.array(twomass_df_filt['y'+str(inst)]), Jband_fluxes_twomass, Jband_fluxes_twomass]).transpose()
-    # srcmap_twomass_bright = ciber_mock_obj.make_srcmap(ifield, twomass_bright_cat, flux_idx=2, pcat_model_eval=True, dx=0, dy=0)
-    return twomass_df_filt, None
+
+    return twomass_df_filt
 
 
 def unWISE_flag_filter(cat, flags_unwise_val=0, flags_info_val=0, primary=True, band_merged_idx=0):

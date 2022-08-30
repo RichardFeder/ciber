@@ -1,7 +1,9 @@
 import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
+import os
 from ciber_data_helpers import make_radius_map, compute_radmap_full
+from plotting_fns import plot_map
 # from ciber_source_mask_construction_pipeline import find_alpha_beta
 
 ''' TO DO : CAMB does not compile with Python 3 at the moment -- need to update Fortran compiler '''
@@ -12,6 +14,15 @@ if sys.version_info[0]==2:
 
 # Yun-Ting's code for masking is here https://github.com/yuntingcheng/python_ciber/blob/master/stack_modelfit/mask.py
 
+
+def make_fpaths(fpaths):
+    for fpath in fpaths:
+        if not os.path.isdir(fpath):
+            print('making directory path for ', fpath)
+            os.makedirs(fpath)
+        else:
+            print(fpath, 'already exists')
+
 def find_alpha_beta(intercept, minrad=10, dm=3, pivot=16.):
     
     alpha_m = -(intercept - minrad)/dm
@@ -19,9 +30,10 @@ def find_alpha_beta(intercept, minrad=10, dm=3, pivot=16.):
     
     return alpha_m, beta_m
 
-def filter_trilegal_cat(trilegal_cat, m_min=4, m_max=17, I_band_idx=16):
+
+def filter_trilegal_cat(trilegal_cat, m_min=4, m_max=17, filter_band_idx=16):
     
-    filtered_trilegal_cat = np.array([x for x in trilegal_cat if x[I_band_idx]<m_max and x[I_band_idx]>m_min])
+    filtered_trilegal_cat = np.array([x for x in trilegal_cat if x[filter_band_idx]<m_max and x[filter_band_idx]>m_min])
 
     return filtered_trilegal_cat
 
@@ -56,11 +68,11 @@ def magnitude_to_radius_linear(magnitudes, alpha_m=-6.25, beta_m=110.):
 
     return r
 
-def make_synthetic_trilegal_cat(trilegal_path, I_band_idx=16, H_band_idx=17, imdim=1024.):
+def make_synthetic_trilegal_cat(trilegal_path, J_band_idx=16, H_band_idx=17, imdim=1024.):
     trilegal = np.loadtxt(trilegal_path)
     nsrc = trilegal.shape[0]
     synthetic_cat = np.random.uniform(0, imdim, size=(nsrc, 2))
-    synthetic_cat = np.array([synthetic_cat[:,0], synthetic_cat[:,1], trilegal[:,I_band_idx], trilegal[:,H_band_idx]]).transpose()
+    synthetic_cat = np.array([synthetic_cat[:,0], synthetic_cat[:,1], trilegal[:,J_band_idx], trilegal[:,H_band_idx]]).transpose()
     
     print('synthetic cat has shape ', synthetic_cat.shape)
     
@@ -71,7 +83,7 @@ def make_synthetic_trilegal_cat(trilegal_path, I_band_idx=16, H_band_idx=17, imd
 def mask_from_cat(xs=None, ys=None, mags=None, cat_df=None, dimx=1024, dimy=1024, pixsize=7.,\
                     interp_maskfn=None, mode='Zemcov+14', magstr='zMeanPSFMag', alpha_m=-6.25, beta_m=110, a1=252.8, b1=3.632, c1=8.52,\
                      Vega_to_AB = 0., mag_lim_min=0, mag_lim=None, fixed_radius=None, radii=None, compute_radii=True, inst=1, \
-                    radmap_full=None, rc=1., plot=True):
+                    radmap_full=None, rc=1., plot=True, interp_max_mag=None, interp_min_mag=None):
     
     if fixed_radius is not None or radii is not None:
         compute_radii = False
@@ -101,9 +113,20 @@ def mask_from_cat(xs=None, ys=None, mags=None, cat_df=None, dimx=1024, dimy=1024
             ys = ys[mag_lim_mask]
 
     if interp_maskfn is not None:
+        # magnitudes need to be in Vega system as this is how interp_maskfn is defined!! 
         print("Using interpolated function to get masking radii..")
         if cat_df is not None:
             mags = cat_df[magstr]
+
+        print('max mag is ', np.max(mags), np.nanmax(mags))
+        print('interp max mag is ', interp_max_mag)
+
+        if interp_max_mag is not None:
+            mags[mags > interp_max_mag] = interp_max_mag
+        if interp_min_mag is not None:
+            mags[mags < interp_min_mag] = interp_min_mag
+
+
         radii = interp_maskfn(np.array(mags))
         if plot:
             plt.figure()
@@ -395,8 +418,6 @@ def simon_r_m(mags, a1=252.8, b1=3.632, c1=8.52, Vega_to_AB=0.):
     radii = a1*np.exp(-((mags-b1)/c1)**2)
 
     return radii
-
-    
 
 
 

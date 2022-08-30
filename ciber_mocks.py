@@ -10,8 +10,12 @@ from mock_galaxy_catalogs import *
 from helgason import *
 from ciber_data_helpers import *
 from cross_spectrum_analysis import *
-from filtering_utils import calculate_plane, fit_gradient_to_map
+from masking_utils import *
+from powerspec_utils import write_mask_file, write_Mkk_fits
+from mkk_parallel import compute_inverse_mkk, plot_mkk_matrix
 
+from filtering_utils import calculate_plane, fit_gradient_to_map
+import os 
 from PIL import Image
 from image_eval import psf_poly_fit, image_model_eval
 import sys
@@ -22,6 +26,13 @@ from numpy.fft import fft2 as fft2
 from numpy.fft import ifft2 as ifft2
 
 
+def make_fpaths(fpaths):
+    for fpath in fpaths:
+        if not os.path.isdir(fpath):
+            print('making directory path for ', fpath)
+            os.makedirs(fpath)
+        else:
+            print(fpath, 'already exists')
 
 def compute_star_gal_mask(stellar_cat, galaxy_cat, star_mag_idx=2, gal_mag_idx=3, m_max=18.4, return_indiv_masks=False):
     
@@ -101,32 +112,6 @@ def grab_cl_pivot_fac(field_name, inst=1, dimx=1024, dimy=1024):
     cl_pivot_fac = cl_dgl_iras[0]*dimx*dimy
     return cl_pivot_fac
 
-def generate_custom_dgl_clustering(cbps, dgl_scale_fac=1, gen_ifield=6, ifield=None):
-    
-    
-    field_name_gen = cbps.ciber_field_dict[gen_ifield]
-    cl_pivot_fac_gen = grab_cl_pivot_fac(field_name_gen, inst=1, dimx=cbps.dimx, dimy=cbps.dimy)
-    
-    diff_realization = np.zeros((cbps.dimx, cbps.dimy))
-    
-    if ifield is not None:
-        
-        cl_pivot_fac_gen *= (dgl_scale_fac - 1)
-        field_name = cbps.ciber_field_dict[ifield]
-        
-        cl_pivot_fac = grab_cl_pivot_fac(field_name, inst=1, dimx=cbps.dimx, dimy=cbps.dimy)
-        
-        _, _, diff_realization_varydgl = generate_diffuse_realization(cbps.dimx, cbps.dimy, power_law_idx=-3.0, scale_fac=cl_pivot_fac)
-        diff_realization += diff_realization_varydgl
-
-    else:
-        cl_pivot_fac_gen *= dgl_scale_fac
-    
-    if cl_pivot_fac_gen > 0:
-        _, _, diff_realization_gen = generate_diffuse_realization(cbps.dimx, cbps.dimy, power_law_idx=-3.0, scale_fac=cl_pivot_fac_gen)
-        diff_realization += diff_realization_gen
-        
-    return diff_realization
 
 def generate_diffuse_realization(N, M, power_law_idx=-3.0, scale_fac=1., B_ell_2d=None):
 
@@ -394,154 +379,6 @@ def virial_radius_2_reff(r_vir, zs, theta_fov_deg=2.0, npix_sidelength=1024.):
     return (r_vir*u.Mpc/d)*npix_sidelength
 
 
-def generate_full_mask_and_mll(cbps, ifield_list, sim_idxs, inst = 1, dat_type='mock', generate_starmask = True, generate_galmask = True,\
-                              use_inst_mask = True, mag_lim_Vega=17.5, save_Mkk = True, save_mask = True, n_mkk_sims = 100,\
-                              datestr = '062322', datestr_trilegal='062422', masktail = 'maglim18p0Vega', convert_AB_to_Vega = True, \
-                             dm = 3., a1=195., b1=3.632, c1=8.0, \
-                             load_preff_joint_mask = False, include_ff_mask = False, interp_mask_fn_fpaths=None):
-    
-    Vega_to_AB = dict({1:0.91 , 2: 1.39}) # add 0.91 to get AB magnitude in J band
-    
-    mag_lim_AB = mag_lim_Vega + Vega_to_AB[inst]
-
-    print('mag_lim_AB is ', mag_lim_AB)
-    
-    param_combo = [a1, b1, c1]
-    magkey_dict = dict({1:'j_m', 2:'h_m'})
-    magkey = magkey_dict[inst]
-    
-    imarray_shape = (len(ifield_list), cbps.dimx, cbps.dimy)
-    
-    base_path = '/Volumes/Seagate Backup Plus Drive/Toolkit/Mirror/Richard/ciber_mocks/'
-
-    mask_fpath = base_path+datestr+'/TM'+str(inst)+'/masks/'
-    ff_joint_mask_fpath = mask_fpath+'ff_joint_masks/'
-    mkk_fpath = base_path+datestr+'/TM'+str(inst)+'/mkk/'
-    mkk_ff_fpath = mkk_fpath+'ff_joint_masks/'
-
-    fpaths = [base_path, mask_fpath, ff_joint_mask_fpath, mkk_fpath, mkk_ff_fpath]
-
-    make_fpaths(fpaths)
-    
-    interp_maskfn = None
-    
-    for s, sim_idx in enumerate(sim_idxs):
-        
-        if s==0:
-            plot = True
-        else:
-            plot = False
-        joint_masks = np.zeros(imarray_shape)
-        for i, ifield in enumerate(ifield_list):
-            
-            field_name = cmock.ciber_field_dict[ifield]
-            print(i, ifield, field_name)
-            
-            if interp_mask_fn_fpaths is not None:
-                print('Loading masking radii from observed catalogs to get interpolated masking function..')
-                interp_mask_file = np.load(interp_mask_fn_fpaths[i])
-                cent_mags, rad_vs_cent_mags = interp_mask_file['cent_mags'], interp_mask_file['radii']
-                max_mag = np.max(cent_mags)
-                interp_maskfn = scipy.interpolate.interp1d(cent_mags[rad_vs_cent_mags!= 0], rad_vs_cent_mags[rad_vs_cent_mags != 0])
-
-                a1, b1, c1, dm, alpha_m, beta_m = [None for x in range(6)]
-
-            # instrument mask
-            if use_inst_mask:
-                cbps.load_mask(ifield, inst, masktype='maskInst_clean')
-                joint_mask = cbps.maskInst_clean
-            else:
-                joint_mask = np.ones((cbps.dimx, cbps.dimy))
-                
-            if generate_starmask: 
-                mock_trilegal_path = base_path+datestr_trilegal+'/trilegal/mock_trilegal_simidx'+str(sim_idx)+'_'+datestr_trilegal+'.fits'
-                mock_trilegal = fits.open(mock_trilegal_path)
-                mock_trilegal_cat = mock_trilegal['tracer_cat_'+str(ifield)].data
-
-                if convert_AB_to_Vega:
-                    print('adding to mock trilegal cat ', Vega_to_AB[inst])
-                    mock_trilegal_cat['j_m'] -= Vega_to_AB[inst]
-
-                mock_trilegal_map = mock_trilegal['trilegal_'+str(cbps.inst_to_band[inst])+'_'+str(ifield)].data
-                print('mock trilegal cat has shape', mock_trilegal_cat.shape)
-                
-                star_cat = {magkey:mock_trilegal_cat[magkey].byteswap().newbyteorder(), 'x'+str(inst):mock_trilegal_cat['x'].byteswap().newbyteorder(), 'y'+str(inst):mock_trilegal_cat['y'].byteswap().newbyteorder()}
-                star_cat_df = pd.DataFrame(star_cat)
-
-                star_cat_df.columns = [magkey, 'x'+str(inst), 'y'+str(inst)]
-                
-                if interp_mask_fn_fpaths is not None:
-
-                    # simulated sources changed to Vega magnitudes with convert_AB_to_Vega, masking function magnitudes in Vega units
-                    starmask, radii_stars = mask_from_cat(cat_df = star_cat_df, mag_lim_min=0, inst=inst,\
-                                                                mag_lim=mag_lim_Vega, interp_maskfn=interp_maskfn,\
-                                                          magstr=magkey, Vega_to_AB=0., dimx=cbps.dimx, dimy=cbps.dimy, plot=False, \
-                                                         interp_max_mag = max_mag)
-                
-                else:
-                    starmask, radii_stars_simon, radii_stars_Z14, alpha_m, beta_m = get_masks(star_cat_df, param_combo, intercept_mag, mag_lim_Vega, dm=dm, magstr=magkey, inst=inst, dimx=cbps.dimx, dimy=cbps.dimy, verbose=True)
-                
-                joint_mask *= starmask
-
-            if generate_galmask:
-                midxdict = dict({'x':0, 'y':1, 'redshift':2, 'm_app':3, 'M_abs':4, 'Mh':5, 'Rvir':6})
-                mock_gal = fits.open(base_path+datestr+'/TM'+str(inst)+'/cib_with_tracer_5field_set'+str(sim_idx)+'_'+datestr+'_TM'+str(inst)+'.fits')
-                mock_gal_cat = mock_gal['tracer_cat_'+str(ifield)].data
-
-                if convert_AB_to_Vega:
-                    mock_gal_cat['m_app'] -= Vega_to_AB[inst]
-
-                gal_cat = {'m_app':mock_gal_cat['m_app'].byteswap().newbyteorder(), 'x'+str(inst):mock_gal_cat['x'].byteswap().newbyteorder(), 'y'+str(inst):mock_gal_cat['y'].byteswap().newbyteorder()}
-                gal_cat_df = pd.DataFrame(gal_cat, columns = ['m_app', 'x'+str(inst), 'y'+str(inst)]) # check magnitude system of Helgason model
-                
-                if interp_mask_fn_fpaths is not None:                    
-                    galmask, radii_gals = mask_from_cat(cat_df = gal_cat_df, mag_lim_min=0, inst=inst,\
-                                            mag_lim=mag_lim_Vega, interp_maskfn=interp_maskfn, magstr='m_app', Vega_to_AB=0., dimx=cbps.dimx, dimy=cbps.dimy, plot=False, \
-                                                       interp_max_mag = max_mag)
-
-                else:
-                    galmask, radii_stars_simon, radii_stars_Z14, alpha_m, beta_m = get_masks(gal_cat_df, param_combo, intercept_mag, mag_lim_Vega, dm=dm, magstr='m_app', inst=inst, dimx=cbps.dimx, dimy=cbps.dimy, verbose=True)
-                    
-                    
-                if len(radii_gals) > 0:
-                    print('len radii gals is ', len(radii_gals))
-                    joint_mask *= galmask
-                  
-
-            print(float(np.sum(joint_mask))/float(1024**2))
-
-            joint_masks[i] = joint_mask.copy()
-            
-#             if plot:
-#                 plot_map(joint_masks[i], title='joint mask i='+str(i))
-            
-        for i, ifield in enumerate(ifield_list):
-
-            if save_mask:
-                if plot and i==0:
-                    plot_map(joint_masks[i], title='joint mask, simidx = '+str(sim_idx))
-                hdul = write_mask_file(np.array(joint_masks[i]), ifield=ifield, inst=inst, sim_idx=sim_idx, generate_galmask=generate_galmask, \
-                                      generate_starmask=generate_starmask, use_inst_mask=use_inst_mask, dat_type=dat_type, mag_lim_AB=mag_lim_AB, \
-                                      a1=a1, b1=b1, c1=c1, dm=dm, alpha_m=alpha_m, beta_m=beta_m)
-
-                hdul.writeto(mask_fpath+'joint_mask_ifield'+str(ifield)+'_inst'+str(inst)+'_simidx'+str(sim_idx)+'_'+masktail+'.fits', overwrite=True)
-
-            if save_Mkk:
-
-                Mkk = cbps.Mkk_obj.get_mkk_sim(joint_masks[i], n_mkk_sims, n_max_persplit=50, store_Mkks=False)
-                inv_Mkk = compute_inverse_mkk(Mkk)
-                if plot:
-                    plot_mkk_matrix(inv_Mkk, inverse=True, symlogscale=True)
-
-                hdul = write_Mkk_fits(Mkk, inv_Mkk, ifield, inst, sim_idx=sim_idx, generate_starmask=generate_starmask, generate_galmask=generate_galmask, \
-                                     use_inst_mask=use_inst_mask, dat_type=dat_type, mag_lim_AB=mag_lim_Vega)
-
-
-                hdul.writeto(mkk_fpath+'mkk_estimate_ifield'+str(ifield)+'_inst'+str(inst)+'_simidx'+str(sim_idx)+'_'+masktail+'.fits', overwrite=True)
-
-
-
-
 class ciber_mock():
     sb_intensity_unit = u.nW/u.m**2/u.steradian # helpful unit to have on hand
 
@@ -558,6 +395,8 @@ class ciber_mock():
     instrument_noise = np.array([33.1, 17.5])*sb_intensity_unit
 
     helgason_to_ciber_rough = dict({1:'J', 2:'H'})
+    Vega_to_AB = dict({1:0.91 , 2: 1.39}) # add these numbers to go from Vega to AB magnitude
+
 
     fac_upsample = 10 # upsampling factor for PSF interpolation
 
@@ -685,6 +524,7 @@ class ciber_mock():
 
 
         if self.psf_temp_bank is None:
+            print('Generating PSF sub-pixel template bank for inst '+str(inst)+'..')
             self.psf_temp_bank, dists = generate_psf_template_bank(beta, rc, norm, n_fine_bin=n_fine_bin, nwide=nwide)
 
         dim_psf_post = nwide*2 + 1
@@ -857,6 +697,7 @@ class ciber_mock():
         else:
             return srcmaps_full, catalogs, noise_realizations
 
+
     def make_mock_ciber_map(self, ifield, m_min, m_max, ifield_list=None, mock_cat=None, band=0, ihl_frac=0., ng_bins=8,\
                             zmin=0.0, zmax=2.0, pcat_model_eval=False, ncatalog=1, add_noise=False, cat_return='tracer', m_tracer_max=20., \
                             temp_bank=True, convert_tracer_to_Vega=False):
@@ -932,6 +773,251 @@ class ciber_mock():
             return full_maps, srcmaps, noise_realizations, ihl_maps, cats
         else:
             return full_maps, srcmaps, noise_realizations, cats
+
+
+    def generate_trilegal_realizations(self, ifield_list, datestr, nsims, convert_Vega_to_AB=True, \
+                                       cmock=None, simidx0=0, m_max=28, m_tracer_max=19.5, save=True, \
+                                     ciber_mock_dirpath = '/Volumes/Seagate Backup Plus Drive/Toolkit/Mirror/Richard/ciber_mocks/'):
+        
+        m_min_perfield = dict({4: 5.69, 5: 4.52, 6: 7.82, 7:7.20, 8:6.63}) # J band
+
+        data_path= ciber_mock_dirpath+datestr
+        trilo_path = data_path+'/trilegal/'
+        
+        number_ct_lims = np.array([17.5, 18.0, 18.5, 19.0])
+        
+        number_counts_array = np.zeros((nsims, len(ifield_list), len(number_ct_lims)))
+
+        if inst==2:
+            number_ct_lims -= 0.5
+        
+        make_fpaths([data_path, trilo_path])
+        
+        for setidx in np.arange(simidx0, nsims):
+            print('on setidx '+str(setidx))
+            full_maps_J, full_maps_H, cats = [], [], [] 
+            
+            for fieldidx, ifield in enumerate(ifield_list):
+                field_name = self.ciber_field_dict[ifield]
+                print('field name is ', field_name)
+                trilegal_path = 'data/mock_trilegal_realizations_051321/trilegal_'+field_name+'.dat'
+
+                x = make_synthetic_trilegal_cat(trilegal_path, J_band_idx=26, H_band_idx=27)
+                filt_x = filter_trilegal_cat(x, filter_band_idx=2, m_min=m_min_perfield[ifield], m_max=m_max)
+
+                star_Iarr_full_J = self.mag_2_nu_Inu(filt_x[:,2], band=0)
+                star_Iarr_full_H = self.mag_2_nu_Inu(filt_x[:,3], band=1)
+                
+                
+                cat_full = np.hstack([filt_x, np.expand_dims(star_Iarr_full_J.value, axis=1), np.expand_dims(star_Iarr_full_H.value, axis=1)])
+                
+                srcmap_stars_J = self.make_srcmap_temp_bank(ifield, 1, cat_full, flux_idx=4, n_fine_bin=10, nwide=17)
+                self.psf_temp_bank = None
+                srcmap_stars_H = self.make_srcmap_temp_bank(ifield, 2, cat_full, flux_idx=5, n_fine_bin=10, nwide=17)
+
+                full_maps_J.append(srcmap_stars_J)
+                full_maps_H.append(srcmap_stars_H)
+                
+                # filter full tracer catalog with respect to J band, but make it deep enough that we can make cuts later on J or H
+        
+                if convert_Vega_to_AB:
+                    if setidx==0:
+                        print("Converting tracer magnitude limit in J band from Vega to AB magnitudes..")
+                    m_tracer_max_cut = m_tracer_max + 0.91
+                else:
+                    if setidx==0:
+                        print('Keeping tracer magnitude limit in Vega magnitudes, beware!')
+                    m_tracer_max_cut = m_tracer_max
+
+                cat_tracer = filter_trilegal_cat(cat_full, filter_band_idx=2, m_max=m_tracer_max_cut)
+
+                for j, Jthresh in enumerate(number_ct_lims):
+                    if convert_Vega_to_AB:
+                        Jthresh += 0.91
+                    cat_thresh = filter_trilegal_cat(cat_full, filter_band_idx=2, m_max=Jthresh)
+                    
+                    print('there are ', cat_thresh.shape, 'sources less than ', Jthresh, ' for ifield ', ifield)
+                    number_counts_array[setidx, fieldidx, j] = cat_thresh.shape[0]
+                
+                cats.append(cat_tracer)
+
+                if setidx == 0:
+                    plot_map(srcmap_stars_J, title='source map J', x0=200, x1=300, y0=200, y1=300, lopct=5, hipct=95, cmap='jet')
+                    plot_map(srcmap_stars_H, title='source map H', x0=200, x1=300, y0=200, y1=300, lopct=5, hipct=95, cmap='jet')
+
+            names = ['x', 'y', 'j_m', 'h_m', 'j_nuInu', 'h_nuInu']
+            tail_name = 'mock_trilegal_simidx'+str(setidx)+'_'+datestr
+
+            if save:
+                print('Saving mock set..')
+                save_mock_to_fits(full_maps_J, cats, tail_name, names=names, full_maps_band2=full_maps_H, data_path=trilo_path, m_tracer_max=m_tracer_max, m_min=m_min_perfield[ifield], m_max=m_max,\
+                                  ifield_list=ifield_list, map_names=['trilegal_J', 'trilegal_H'])
+
+
+        print('Mean number of stars per field:', np.mean(number_counts_array, axis=0))
+        
+        return number_counts_array
+
+
+def generate_full_mask_and_mll(cbps, ifield_list, sim_idxs, masktail, inst = 1, dat_type='mock', generate_starmask = True, generate_galmask = True,\
+                              use_inst_mask = True, mag_lim_Vega=17.5, save_Mkk = True, save_mask = True, n_mkk_sims = 100,\
+                              datestr = '062322', datestr_trilegal='062422', convert_AB_to_Vega = True, \
+                             dm = 3., a1=160., b1=3.632, c1=8.0, \
+                             load_preff_joint_mask = False, include_ff_mask = False, interp_mask_fn_fpaths=None):
+    
+    Vega_to_AB = dict({1:0.91 , 2: 1.39}) # add 0.91 to get AB magnitude in J band
+    mag_lim_AB = mag_lim_Vega + Vega_to_AB[inst]
+    print('mag_lim_AB is ', mag_lim_AB)
+    
+    if interp_mask_fn_fpaths is not None:
+        param_combo = [a1, b1, c1]
+
+    magkey_dict = dict({1:'j_m', 2:'h_m'})
+    magkey = magkey_dict[inst]
+    
+    imarray_shape = (len(ifield_list), cbps.dimx, cbps.dimy)
+    
+    base_path = '/Volumes/Seagate Backup Plus Drive/Toolkit/Mirror/Richard/ciber_mocks/'
+    mask_fpath = base_path+datestr+'/TM'+str(inst)+'/masks/'
+    ff_joint_mask_fpath = mask_fpath+'ff_joint_masks/'
+    mkk_fpath = base_path+datestr+'/TM'+str(inst)+'/mkk/'
+    mkk_ff_fpath = mkk_fpath+'ff_joint_masks/'
+
+    ciber_field_dict = dict({4:'elat10', 5:'elat30',6:'BootesB', 7:'BootesA', 8:'SWIRE'})
+
+
+    fpaths = [base_path, mask_fpath, ff_joint_mask_fpath, mkk_fpath, mkk_ff_fpath]
+
+    make_fpaths(fpaths)
+    
+    interp_maskfn = None
+    plot=True
+    for s, sim_idx in enumerate(sim_idxs):
+        if s>0:
+            plot = False
+
+        joint_masks = np.zeros(imarray_shape)
+        for fieldidx, ifield in enumerate(ifield_list):
+            
+            field_name = ciber_field_dict[ifield]
+            print(fieldidx, ifield, field_name)
+            
+            if interp_mask_fn_fpaths is not None:
+                print('Loading masking radii from observed catalogs to get interpolated masking function..')
+
+                interp_mask_file = np.load(interp_mask_fn_fpaths[fieldidx])
+                cent_mags, rad_vs_cent_mags = interp_mask_file['cent_mags'], interp_mask_file['radii']
+                max_mag = np.max(cent_mags)
+                min_mag = np.min(cent_mags)
+                interp_maskfn = scipy.interpolate.interp1d(cent_mags[rad_vs_cent_mags!= 0], rad_vs_cent_mags[rad_vs_cent_mags != 0])
+                a1, b1, c1, dm, alpha_m, beta_m = [None for x in range(6)]
+
+                if s==0:
+                    plt.figure()
+                    plt.scatter(cent_mags, rad_vs_cent_mags, marker='.', color='k')
+                    cent_mags_fine = np.linspace(np.min(cent_mags), np.max(cent_mags), 1000)
+                    plt.plot(cent_mags_fine, interp_maskfn(cent_mags_fine), color='r')
+                    plt.yscale('log')
+                    plt.ylabel('masking radius [arcsec]')
+                    plt.xlabel('magnitude (Vega)')
+                    plt.show()
+
+            # instrument mask
+            joint_mask = np.ones(cbps.map_shape)
+            if use_inst_mask:
+                cbps.load_mask(ifield, inst, masktype='maskInst_clean')
+                joint_mask *= cbps.maskInst_clean
+                
+            if generate_starmask: 
+
+                if dat_type=='mock':
+                    mock_trilegal_path = base_path+datestr_trilegal+'/trilegal/mock_trilegal_simidx'+str(sim_idx)+'_'+datestr_trilegal+'.fits'
+                    mock_trilegal = fits.open(mock_trilegal_path)
+                    mock_trilegal_cat = mock_trilegal['tracer_cat_'+str(ifield)].data
+                elif dat_type=='real':
+                    trilegal_fpath = ''
+                    mock_trilegal_cat = []
+
+                if convert_AB_to_Vega:
+                    print('Converting AB magnitudes to Vega, subtracting by ', Vega_to_AB[inst])
+                    mock_trilegal_cat[magkey_dict[inst]] -= Vega_to_AB[inst]
+
+                print('mock trilegal cat has shape', mock_trilegal_cat.shape)
+                
+                star_cat = {magkey:mock_trilegal_cat[magkey].byteswap().newbyteorder(), 'x'+str(inst):mock_trilegal_cat['x'].byteswap().newbyteorder(), 'y'+str(inst):mock_trilegal_cat['y'].byteswap().newbyteorder()}
+                star_cat_df = pd.DataFrame(star_cat)
+                star_cat_df.columns = [magkey, 'x'+str(inst), 'y'+str(inst)]
+                
+                if interp_mask_fn_fpaths is not None:
+                    # simulated sources changed to Vega magnitudes with convert_AB_to_Vega, masking function magnitudes in Vega units
+                    # magnitude limit should be in Vega since we already converted magnitudes to Vega
+                    starmask, radii_stars = mask_from_cat(cat_df = star_cat_df, mag_lim_min=0, inst=inst,\
+                                                                mag_lim=mag_lim_Vega, interp_maskfn=interp_maskfn,\
+                                                          magstr=magkey, Vega_to_AB=0., dimx=cbps.dimx, dimy=cbps.dimy, plot=False, \
+                                                         interp_max_mag = max_mag, interp_min_mag=min_mag)
+                
+                else:
+                    starmask, radii_stars_simon, radii_stars_Z14, alpha_m, beta_m = get_masks(star_cat_df, param_combo, intercept_mag, mag_lim_Vega, dm=dm, magstr=magkey, inst=inst, dimx=cbps.dimx, dimy=cbps.dimy, verbose=True)
+                
+                joint_mask *= starmask
+
+            if generate_galmask:
+                midxdict = dict({'x':0, 'y':1, 'redshift':2, 'm_app':3, 'M_abs':4, 'Mh':5, 'Rvir':6})
+                mock_gal = fits.open(base_path+datestr+'/TM'+str(inst)+'/cib_with_tracer_5field_set'+str(sim_idx)+'_'+datestr+'_TM'+str(inst)+'.fits')
+                mock_gal_cat = mock_gal['tracer_cat_'+str(ifield)].data
+
+                if convert_AB_to_Vega:
+                    print('converting galaxy magnitudes to Vega mag with ', Vega_to_AB[inst])
+                    mock_gal_cat['m_app'] -= Vega_to_AB[inst]
+
+                gal_cat = {'m_app':mock_gal_cat['m_app'].byteswap().newbyteorder(), 'x'+str(inst):mock_gal_cat['x'].byteswap().newbyteorder(), 'y'+str(inst):mock_gal_cat['y'].byteswap().newbyteorder()}
+                gal_cat_df = pd.DataFrame(gal_cat, columns = ['m_app', 'x'+str(inst), 'y'+str(inst)]) # check magnitude system of Helgason model
+                
+                if interp_mask_fn_fpaths is not None:                    
+                    galmask, radii_gals = mask_from_cat(cat_df = gal_cat_df, mag_lim_min=0, inst=inst,\
+                                            mag_lim=mag_lim_Vega, interp_maskfn=interp_maskfn, magstr='m_app', Vega_to_AB=0., dimx=cbps.dimx, dimy=cbps.dimy, plot=False, \
+                                                       interp_max_mag = max_mag)
+
+                else:
+                    galmask, radii_stars_simon, radii_stars_Z14, alpha_m, beta_m = get_masks(gal_cat_df, param_combo, intercept_mag, mag_lim_Vega, dm=dm, magstr='m_app', inst=inst, dimx=cbps.dimx, dimy=cbps.dimy, verbose=True)
+                    
+                if len(radii_gals) > 0:
+                    print('len radii gals is ', len(radii_gals))
+                    joint_mask *= galmask
+
+            print(float(np.sum(joint_mask))/float(1024**2))
+
+            joint_masks[fieldidx] = joint_mask.copy()
+            
+            
+        for fieldidx, ifield in enumerate(ifield_list):
+
+            if save_mask:
+                if plot and fieldidx==0:
+                    plot_map(joint_masks[fieldidx], title='joint mask, simidx = '+str(sim_idx))
+                hdul = write_mask_file(np.array(joint_masks[fieldidx]), ifield=ifield, inst=inst, sim_idx=sim_idx, generate_galmask=generate_galmask, \
+                                      generate_starmask=generate_starmask, use_inst_mask=use_inst_mask, dat_type=dat_type, mag_lim_AB=mag_lim_AB, \
+                                      a1=a1, b1=b1, c1=c1, dm=dm, alpha_m=alpha_m, beta_m=beta_m)
+
+                hdul.writeto(mask_fpath+'joint_mask_ifield'+str(ifield)+'_inst'+str(inst)+'_simidx'+str(sim_idx)+'_'+masktail+'.fits', overwrite=True)
+
+            if save_Mkk:
+
+                Mkk = cbps.Mkk_obj.get_mkk_sim(joint_masks[fieldidx], n_mkk_sims, n_max_persplit=50, store_Mkks=False)
+                inv_Mkk = compute_inverse_mkk(Mkk)
+                if plot:
+                    plot_mkk_matrix(inv_Mkk, inverse=True, symlogscale=True)
+
+                hdul = write_Mkk_fits(Mkk, inv_Mkk, ifield, inst, sim_idx=sim_idx, generate_starmask=generate_starmask, generate_galmask=generate_galmask, \
+                                     use_inst_mask=use_inst_mask, dat_type=dat_type, mag_lim_AB=mag_lim_Vega)
+
+
+                hdul.writeto(mkk_fpath+'mkk_estimate_ifield'+str(ifield)+'_inst'+str(inst)+'_simidx'+str(sim_idx)+'_'+masktail+'.fits', overwrite=True)
+
+
+    
+
+
 
 
 
