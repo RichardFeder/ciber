@@ -115,25 +115,26 @@ def mask_from_cat(xs=None, ys=None, mags=None, cat_df=None, dimx=1024, dimy=1024
     if interp_maskfn is not None:
         # magnitudes need to be in Vega system as this is how interp_maskfn is defined!! 
         print("Using interpolated function to get masking radii..")
-        if cat_df is not None:
+        if cat_df is not None and len(cat_df) > 0:
             mags = cat_df[magstr]
 
-        print('max mag is ', np.max(mags), np.nanmax(mags))
-        print('interp max mag is ', interp_max_mag)
+            print('max mag is ', np.max(mags), np.nanmax(mags))
+            print('interp max mag is ', interp_max_mag)
 
-        if interp_max_mag is not None:
-            mags[mags > interp_max_mag] = interp_max_mag
-        if interp_min_mag is not None:
-            mags[mags < interp_min_mag] = interp_min_mag
+            if interp_max_mag is not None:
+                mags[mags > interp_max_mag] = interp_max_mag
+            if interp_min_mag is not None:
+                mags[mags < interp_min_mag] = interp_min_mag
 
-
-        radii = interp_maskfn(np.array(mags))
-        if plot:
-            plt.figure()
-            plt.scatter(mags, radii, s=3, color='k')
-            plt.xlabel('Vega mags')
-            plt.ylabel('radii [arcsec]')
-            plt.show()
+            radii = interp_maskfn(np.array(mags))
+            if plot:
+                plt.figure()
+                plt.scatter(mags, radii, s=3, color='k')
+                plt.xlabel('Vega mags')
+                plt.ylabel('radii [arcsec]')
+                plt.show()
+        else:
+            return None, []
 
     if compute_radii and radii is None:
         print('Computing radii based on magnitudes..')

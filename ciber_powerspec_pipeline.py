@@ -215,7 +215,6 @@ def iterative_gradient_ff_solve(orig_images, niter=3, masks=None, weights_ff=Non
 	return images, ff_estimates, final_planes, stack_masks, all_coeffs
 
 
-
 def compute_residual_source_shot_noise(mag_lim_list, inst, ifield_list, datestr, mode='cib', cmock=None, cbps=None, convert_Vega_to_AB=True, \
                                     simidx0=0, nsims=100, ifield_plot=4, save=True, \
                                       ciber_mock_dirpath='/Volumes/Seagate Backup Plus Drive/Toolkit/Mirror/Richard/ciber_mocks/'):
@@ -277,7 +276,8 @@ def compute_residual_source_shot_noise(mag_lim_list, inst, ifield_list, datestr,
                 if convert_Vega_to_AB:
                     if m==0:
                         print('converting mag limit threshold from Vega to AB to match mock catalog..')
-                    print('AB mag lim for '+bandstr+' is ', mag_lim+cmock.Vega_to_AB[inst])
+                    if setidx==0:
+                    	print('AB mag lim for '+bandstr+' is ', mag_lim+cmock.Vega_to_AB[inst])
                     mag_limit_match = mag_lim + cmock.Vega_to_AB[inst]
                 else:
                     if m==0:
@@ -286,8 +286,12 @@ def compute_residual_source_shot_noise(mag_lim_list, inst, ifield_list, datestr,
                     
                 bright_cut = np.where(full_tracer_cat[2,:] < mag_limit_match)[0]
                 cut_cat = full_tracer_cat[:, bright_cut].transpose()
-                bright_src_map = cmock.make_srcmap_temp_bank(ifield, inst, cut_cat, flux_idx=-1)
-
+                if m==0:
+                	load_precomp_tempbank = True 
+                else:
+                	load_precomp_tempbank = False
+                bright_src_map = cmock.make_srcmap_temp_bank(ifield, inst, cut_cat, flux_idx=-1, load_precomp_tempbank=load_precomp_tempbank)
+                
                 diff_full_bright = full_src_map - bright_src_map
                 diff_full_bright -= np.mean(diff_full_bright)
                 
@@ -320,7 +324,8 @@ def compute_residual_source_shot_noise(mag_lim_list, inst, ifield_list, datestr,
                 prim = fits.PrimaryHDU(header=hdr)
                 hdul = fits.HDUList([prim, hdu_cl])
                 hdul.writeto(cl_save_fpath, overwrite=True)
-
+            
+            cmock.psf_temp_bank = None
                 
             if ifield==ifield_plot:
                 cl_table_test = fits.open(cl_save_fpath)['cls_'+mode].data
@@ -337,8 +342,6 @@ def compute_residual_source_shot_noise(mag_lim_list, inst, ifield_list, datestr,
         return isl_sb_rms
     elif mode=='cib':
         return None
-        
-
 
 	
 class CIBER_PS_pipeline():
@@ -1332,7 +1335,7 @@ class CIBER_PS_pipeline():
 
 
 
-	def calculate_transfer_function(self, inst, nsims, load_ptsrc_cib=False, niter_grad_ff=1, dgl_scale_fac=5., indiv_ifield=6, apply_FF=False, FF_image=None, FF_fpath=None, plot=False):
+	def calculate_transfer_function(self, nsims, load_ptsrc_cib=False, niter_grad_ff=1, dgl_scale_fac=5., indiv_ifield=6, apply_FF=False, FF_image=None, FF_fpath=None, plot=False):
 
 		''' 
 		Estimate the transfer function of gradient filtering by passing through a number of sky realizations and measuring the ratio of input/output power spectra.
@@ -1374,12 +1377,12 @@ class CIBER_PS_pipeline():
 			for i in range(nsims):
 
 				diff_realization = self.generate_custom_sky_clustering(dgl_scale_fac=dgl_scale_fac, gen_ifield=indiv_ifield)
-				if not load_ptsrc_cib:        
-					_, _, shotcomp = generate_diffuse_realization(self.dimx, self.dimy, power_law_idx=0.0, scale_fac=3e8)
-				else:
-					print('need to load CIB here')
-
+				# if not load_ptsrc_cib:        
+				_, _, shotcomp = generate_diffuse_realization(self.dimx, self.dimy, power_law_idx=0.0, scale_fac=3e8)
 				diff_realization += shotcomp 
+
+				# else:
+					# print('need to load CIB here')
 
 				if plot:
 					plot_map(diff_realization, title='diff realization '+str(i))
@@ -1563,10 +1566,10 @@ class CIBER_PS_pipeline():
 
 		return lbins, cl_proc, cl_proc_err, masked_image
 
-	def estimate_b_ell_from_maps(self, inst, ifield_list, ciber_maps, simidx=0, ell_norm=5000, plot=False, save=False, \
+	def estimate_b_ell_from_maps(self, inst, ifield_list, ciber_maps, simidx=0, ell_norm=5000, plot=True, save=False, \
 										niter = 5, ff_stack_min=2, data_type='mock', datestr_mock='062322', datestr_trilegal=None, \
 										ciber_mock_fpath='/Volumes/Seagate Backup Plus Drive/Toolkit/Mirror/Richard/ciber_mocks/', \
-										mask_base_path=None, mask_tail='maglim_17_Vega', bright_mask_tail='maglim_11_Vega'):
+										mask_base_path=None, full_mask_tail='maglim_17_Vega_test', bright_mask_tail='maglim_11_Vega_test'):
 
 		
 		''' 
@@ -1602,6 +1605,8 @@ class CIBER_PS_pipeline():
 		
 		'''
 		
+		print('full mask tail:', full_mask_tail)
+		print('bright mask tail:', bright_mask_tail)
 		ps_set_shape = (len(ifield_list), self.n_ps_bin)
 		imarray_shape = (len(ifield_list),self.dimx, self.dimy)
 		diff_norm_array, cls_masked_tot, cls_masked_tot_bright = [np.zeros(ps_set_shape) for x in range(3)]
@@ -1621,7 +1626,7 @@ class CIBER_PS_pipeline():
 
 
 			if data_type=='mock':
-				joint_mask = fits.open(mask_base_path+'joint_mask_ifield'+str(ifield)+'_inst'+str(inst)+'_simidx'+str(simidx)+'_'+mask_tail+'.fits')['joint_mask_'+str(ifield)].data
+				joint_mask = fits.open(mask_base_path+'joint_mask_ifield'+str(ifield)+'_inst'+str(inst)+'_simidx'+str(simidx)+'_'+full_mask_tail+'.fits')['joint_mask_'+str(ifield)].data
 				bright_mask = fits.open(mask_base_path+'joint_mask_ifield'+str(ifield)+'_inst'+str(inst)+'_simidx'+str(simidx)+'_'+bright_mask_tail+'.fits')['joint_mask_'+str(ifield)].data
 				tot_masks[fieldidx] = joint_mask
 				bright_masks[fieldidx] = bright_mask
@@ -1633,11 +1638,20 @@ class CIBER_PS_pipeline():
 			else:
 				self.load_data_products(ifield, inst, verbose=False)
 
-				joint_mask = fits.open(joint_mask_fpaths[fieldidx])[0].data
-				bright_mask = fits.open(bright_mask_fpaths[fieldidx])[0].data
+				# joint_mask = fits.open(mask_base_path+'joint_mask_ifield'+str(ifield)+'_inst'+str(inst)+'_observed_'+full_mask_tail+'.fits')['joint_mask_'+str(ifield)].data
+				# bright_mask = fits.open(mask_base_path+'joint_mask_ifield'+str(ifield)+'_inst'+str(inst)+'_observed_'+bright_mask_tail+'.fits')['joint_mask_'+str(ifield)].data
+				joint_mask = fits.open(mask_base_path+'joint_mask_ifield'+str(ifield)+'_inst'+str(inst)+'_observed_'+full_mask_tail+'.fits')[1].data
+				bright_mask = fits.open(mask_base_path+'joint_mask_ifield'+str(ifield)+'_inst'+str(inst)+'_observed_'+bright_mask_tail+'.fits')[1].data
+
+				# joint_maskos[fieldidx] = fits.open(mask_fpath)[1].data
+				# joint_mask = fits.open(joint_mask_fpaths[fieldidx])[0].data
+				# bright_mask = fits.open(bright_mask_fpaths[fieldidx])[0].data
 
 				tot_masks[fieldidx] = joint_mask
-				bright_masks[fieldidx] = bright_mask*self.maskInst
+				bright_masks[fieldidx] = bright_mask
+
+				plot_map(tot_masks[fieldidx]*ciber_maps[fieldidx], title='tot mask x ciber maps')
+				plot_map(bright_masks[fieldidx]*ciber_maps[fieldidx], title='bright mask x ciber maps')
 
 
 				
@@ -1887,159 +1901,6 @@ class CIBER_PS_pipeline():
 		return joint_masks, observed_ims, total_signals, rnmaps, shot_sigma_sb_maps, noise_models, ff_truth, diff_realizations, zl_perfield
 	   
 
-
-			
-
-# def estimate_b_ell_from_maps(cbps, inst, ifield_list, ciber_maps, simidx=0, pixsize=7., J_bright_mag=11., J_tot_mag=17.5, ell_norm=10000, plot=False, save=False, \
-#                                     niter = 5, ff_stack_min=2, data_type='mock', datestr_mock='062322', datestr_trilegal=None, \
-#                                     ciber_mock_fpath='/Volumes/Seagate Backup Plus Drive/Toolkit/Mirror/Richard/ciber_mocks/', \
-#                                     mask_base_path=None, mask_tail='maglim_17_Vega', bright_mask_tail='maglim_11_Vega'):
-
-	
-#     ''' 
-#     This function estimates the beam correction function from the maps. This is done by computing the power spectrum 
-#     of the point source dominated maps and then subtracting the power spectrum of masked maps to remove noise bias. The final power
-#     spectrum is then normalized to unity at a pivot ell value. 
-	
-#     Note that there is some numerical weirdness with doing this on individual realizations when normalizing the power spectrum
-#     at lower ell. This is fixed by either assuming the beam transfer function is >0.999 below some multipole, or by averaging over several realizations.
-	
-#     Parameters
-#     ----------
-	
-#     inst : 'int'. Instrument index, 1==J, 2==H
-#     ifield_list : 'list' of 'ints'. 
-#     pixsize : 'float'.
-#         Default is 7.
-#     J_bright_mag : 'float'.
-#     J_tot_mag : 'float'.
-#     nsim : 'int'. Number of realizations.
-#         Default is 1.
-#     ell_norm : 'float'. Multipole used to normalize power spectra for B_ell estimate. 
-#         Default is 10000. 
-#     niter : 'int'. Number of iterations on FF/grad estimation
-#     ff_stack_min : 'int'. Minimum number of off-field measurements for each pixel.
-#     data_type : 'string'. Distinguishes between observed and mock data.
-#         Default is 'mock'.
-	
-#     Returns
-#     -------
-#     lb : 'np.array' of 'floats'. Power spectrum multipole bin centers.
-#     diff_norm : normalized profiles
-	
-#     '''
-	
-#     ps_set_shape = (len(ifield_list), cbps.n_ps_bin)
-#     imarray_shape = (len(ifield_list),cbps.dimx, cbps.dimy)
-#     diff_norm_array, cls_masked_tot, cls_masked_tot_bright = [np.zeros(ps_set_shape) for x in range(3)]
-	
-#     if datestr_trilegal is None:
-#         datestr_trilegal = datestr_mock
-		
-#     if mask_base_path is None:
-#         mask_base_path = base_path+'TM'+str(inst)+'/masks/'
-		
-#     print('simidx is ', simidx)
-
-#     tot_masks, bright_masks, tot_obs = [np.zeros(imarray_shape) for x in range(3)]
-
-#     for fieldidx, ifield in enumerate(ifield_list):
-#         print('ifield = ', ifield)
-
-
-#         if data_type=='mock':
-#             joint_mask = fits.open(mask_base_path+'joint_mask_ifield'+str(ifield)+'_inst'+str(inst)+'_simidx'+str(simidx)+'_'+mask_tail+'.fits')['joint_mask_'+str(ifield)].data
-#             bright_mask = fits.open(mask_base_path+'joint_mask_ifield'+str(ifield)+'_inst'+str(inst)+'_simidx'+str(simidx)+'_'+bright_mask_tail+'.fits')['joint_mask_'+str(ifield)].data
-#             tot_masks[fieldidx] = joint_mask
-#             bright_masks[fieldidx] = bright_mask
-			
-#             if fieldidx==0:
-#                 plot_map(tot_masks[fieldidx]*ciber_maps[fieldidx], title='tot mask x ciber maps')
-#                 plot_map(bright_masks[fieldidx]*ciber_maps[fieldidx], title='bright mask x ciber maps')
-				
-#         else:
-#             cbps.load_data_products(ifield, inst, verbose=False)
-
-#             joint_mask = fits.open(joint_mask_fpaths[fieldidx])[0].data
-#             bright_mask = fits.open(bright_mask_fpaths[fieldidx])[0].data
-
-#             tot_masks[fieldidx] = joint_mask
-#             bright_masks[fieldidx] = bright_mask*cbps.maskInst
-
-
-			
-#     print('Computing gradients/flat fields using bright masks')
-
-#     bright_images, ff_estimates_bright, final_planes,\
-#             stack_masks_bright, all_coeffs = iterative_gradient_ff_solve(ciber_maps, \
-#                                                                   niter=niter, masks=bright_masks, \
-#                                                                  ff_stack_min=ff_stack_min)
-
-#     print('computing for total mask')
-#     tot_images, ff_estimates_tot, final_planes,\
-#             stack_masks_tot, all_coeffs = iterative_gradient_ff_solve(ciber_maps, \
-#                                                                   niter=niter, masks=tot_masks, \
-#                                                                  ff_stack_min=ff_stack_min)
-
-
-#     print('now computing power spectra of maps..')
-#     for fieldidx, ifield in enumerate(ifield_list):
-
-#         print('computing point source dominated power spectrum..')
-#         # compute point source dominated power spectrum
-#         fullmaskbright = stack_masks_bright[fieldidx]*bright_masks[fieldidx]
-#         masked_bright_meansub = ciber_maps[fieldidx]*fullmaskbright
-
-#         masked_bright_meansub[fullmaskbright != 0] -= np.mean(masked_bright_meansub[fullmaskbright != 0])
-#         lb, cl_masked_tot_bright, clerr_masked = get_power_spec(masked_bright_meansub, lbinedges=cbps.Mkk_obj.binl, lbins=cbps.Mkk_obj.midbin_ell)
-
-#         cls_masked_tot_bright[fieldidx] = cl_masked_tot_bright
-		
-#         print('computing masked noise power spectrum..')
-#         # compute masked noise power spectrum
-#         masked_tot_meansub = ciber_maps[fieldidx]*tot_masks[fieldidx]*stack_masks_tot[fieldidx]
-#         masked_tot_meansub[tot_masks[fieldidx]*stack_masks_tot[fieldidx] != 0] -= np.mean(masked_tot_meansub[tot_masks[fieldidx]*stack_masks_tot[fieldidx] != 0])
-#         lb, cl_masked_tot, clerr_masked = get_power_spec(masked_tot_meansub, lbinedges=cbps.Mkk_obj.binl, lbins=cbps.Mkk_obj.midbin_ell)
-
-#         cls_masked_tot[fieldidx] = cl_masked_tot
-
-#         # compute power spectrum difference
-#         bright_faint_diff_cl = cl_masked_tot_bright - cl_masked_tot
-
-#         if plot:
-#             plt.figure(figsize=(8,6))
-#             prefac = lb**2/(2*np.pi)
-#             plt.plot(lb, prefac*cl_masked_tot_bright, label='J < 10 masked')
-#             plt.plot(lb, prefac*cl_masked_tot, label='masked J < 18')
-#             plt.plot(lb, prefac*bright_faint_diff_cl, label='difference')
-#             plt.xscale('log')
-#             plt.legend(fontsize=14)
-#             plt.yscale('log')
-#             plt.tick_params(labelsize=14)
-#             plt.show()
-
-#         print('Normalizing power spectra..')
-
-#         # normalize power spectrum by maximum value for ell > ell_norm
-#         diff_norm = bright_faint_diff_cl / np.max(bright_faint_diff_cl[lb > ell_norm])
-#         # anything for ell < ell_norm that is greater than one set to one
-#         diff_norm[diff_norm > 1] = 1.
-
-#         diff_norm_array[fieldidx, :] = diff_norm 
-
-#         if plot:
-#             plt.figure()
-#             plt.plot(lb, diff_norm, label='flight map differenced')
-# #             plt.plot(lb, B_ells[fieldidx]**2, label='stacking B ell')
-#             plt.ylabel('$B_{\\ell}^2$', fontsize=18)
-#             plt.xlabel('Multipole $\\ell$', fontsize=18)
-#             plt.yscale('log')
-#             plt.xscale('log')
-#             plt.legend()
-#             plt.show()
-
-			
-#     return lb, diff_norm_array, cls_masked_tot, cls_masked_tot_bright
 
 
 
