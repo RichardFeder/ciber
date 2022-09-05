@@ -80,6 +80,55 @@ def update_dicts(list_of_dicts, kwargs):
 	return list_of_dicts 
 
 
+def set_up_filepaths_cbps(fpath_dict, inst, run_name, datestr, datestr_trilegal=None, data_type='mock'):
+
+	base_path = fpath_dict['ciber_mock_fpath']+datestr+'/'
+
+	trilegal_base_path = fpath_dict['ciber_mock_fpath']+datestr_trilegal+'/'
+
+	if fpath_dict['mask_base_path'] is None:
+		if data_type=='mock':
+			fpath_dict['mask_base_path'] = base_path+'TM'+str(inst)+'/masks/'
+		elif data_type=='observed':
+			fpath_dict['mask_base_path'] = fpath_dict['observed_base_path']+'TM'+str(inst)+'/masks/'
+		print('setting mask_base_path to ', fpath_dict['mask_base_path'])
+	
+	if fpath_dict['mkk_base_path'] is None:
+		if data_type=='mock':
+			fpath_dict['mkk_base_path'] = base_path+'TM'+str(inst)+'/mkk/'
+		elif data_type=='observed':
+			fpath_dict['mkk_base_path'] = fpath_dict['observed_base_path']+'TM'+str(inst)+'/mkk/'
+		print('setting mkk_base_path to ', fpath_dict['mkk_base_path'])
+	
+	if fpath_dict['bls_base_path'] is None:
+		if data_type=='mock':
+			fpath_dict['bls_base_path'] = base_path+'TM'+str(inst)+'/beam_correction/'
+		elif data_type=='observed':
+			fpath_dict['bls_base_path'] = fpath_dict['observed_base_path']+'TM'+str(inst)+'/beam_correction/'
+		print('setting bls_base_path to ', fpath_dict['bls_base_path'])
+
+	if fpath_dict['ff_est_dirpath'] is None:
+		fpath_dict['ff_est_dirpath'] = fpath_dict['ciber_mock_fpath']+'030122/ff_realizations/'
+		if fpath_dict['ff_run_name'] is None:
+			fpath_dict['ff_run_name'] = run_name
+		fpath_dict['ff_est_dirpath'] += fpath_dict['ff_run_name']
+		print('ff_est_dirpath is ', fpath_dict['ff_est_dirpath'])
+
+	if fpath_dict['tls_base_path'] is None:
+		fpath_dict['tls_base_path'] = base_path+'transfer_function/'
+		print('tls base path is ', fpath_dict['tls_base_path'])
+
+	list_of_dirpaths = [fpath_dict['mask_base_path'], fpath_dict['mkk_base_path']]
+	if data_type=='mock':
+		list_of_dirpaths.append(fpath_dict['tls_base_path'])
+		list_of_dirpaths.append(fpath_dict['bls_base_path'])
+	print(list_of_dirpaths)
+	make_fpaths(list_of_dirpaths)
+
+
+	return fpath_dict, list_of_dirpaths, base_path, trilegal_base_path
+
+
 def run_cbps_pipeline(cbps, inst, nsims, run_name, ifield_list = None, \
 							datestr='100921', datestr_trilegal=None, data_type='mock',\
 							masking_maglim=17.5, mask_tail='abc110821', mask_tail_ffest=None, \
@@ -104,49 +153,14 @@ def run_cbps_pipeline(cbps, inst, nsims, run_name, ifield_list = None, \
 						'sim_test_fpath':'data/input_recovered_ps/sim_tests_030122/', \
 						'base_fluc_path':'/Volumes/Seagate Backup Plus Drive/Toolkit/Mirror/Richard/ciber_fluctuation_data/', \
 						'ff_smooth_fpath':'data/flatfield/TM1_FF/TM1_field4_mag=17.5_FF.fits', \
-						'observed_base_path':'data/fluctuation_data/', \
+						'observed_base_path':'data/fluctuation_data/', 'ff_est_dirpath':None, \
 						'mask_base_path':None, 'mkk_base_path':None, 'bls_base_path':None, 'isl_rms_fpath':None, 'bls_fpath':None, \
-						't_ell_fpath':None, 'tls_base_path':None})
+						't_ell_fpath':None, 'tls_base_path':None, 'ff_run_name':None, \
+						'noisemodl_basepath':None, 'noisemodl_run_name':None})
 	
 	config_dict, pscb_dict, float_param_dict, fpath_dict = update_dicts([config_dict, pscb_dict, float_param_dict, fpath_dict], kwargs)
 
-	base_path = fpath_dict['ciber_mock_fpath']+datestr+'/'
-
-	
-	trilegal_base_path = fpath_dict['ciber_mock_fpath']+datestr_trilegal+'/'
-
-	if fpath_dict['mask_base_path'] is None:
-		if data_type=='mock':
-			fpath_dict['mask_base_path'] = base_path+'TM'+str(inst)+'/masks/'
-		elif data_type=='observed':
-			fpath_dict['mask_base_path'] = fpath_dict['observed_base_path']+'TM'+str(inst)+'/masks/'
-
-		print('setting mask_base_path to ', fpath_dict['mask_base_path'])
-	if fpath_dict['mkk_base_path'] is None:
-		if data_type=='mock':
-			fpath_dict['mkk_base_path'] = base_path+'TM'+str(inst)+'/mkk/'
-		elif data_type=='observed':
-			fpath_dict['mkk_base_path'] = fpath_dict['observed_base_path']+'TM'+str(inst)+'/mkk/'
-		print('setting mkk_base_path to ', fpath_dict['mkk_base_path'])
-
-
-	if fpath_dict['bls_base_path'] is None:
-		if data_type=='mock':
-			fpath_dict['bls_base_path'] = base_path+'TM'+str(inst)+'/beam_correction/'
-		elif data_type=='observed':
-			fpath_dict['bls_base_path'] = fpath_dict['observed_base_path']+'TM'+str(inst)+'/beam_correction/'
-
-		print('setting bls_base_path to ', fpath_dict['bls_base_path'])
-	if fpath_dict['tls_base_path'] is None:
-		fpath_dict['tls_base_path'] = base_path+'transfer_function/'
-		print('tls base path is ', fpath_dict['tls_base_path'])
-
-	list_of_dirpaths = [fpath_dict['mask_base_path'], fpath_dict['mkk_base_path']]
-	if data_type=='mock':
-		list_of_dirpaths.append(fpath_dict['tls_base_path'])
-		list_of_dirpaths.append(fpath_dict['bls_base_path'])
-	print(list_of_dirpaths)
-	make_fpaths(list_of_dirpaths)
+	fpath_dict, list_of_dirpaths, base_path, trilegal_base_path = set_up_filepaths_cbps(fpath_dict, inst, run_name, datestr, datestr_trilegal=datestr_trilegal, data_type=data_type)
 
 	if ifield_list is None:
 		ifield_list = [4, 5, 6, 7, 8]
@@ -267,7 +281,7 @@ def run_cbps_pipeline(cbps, inst, nsims, run_name, ifield_list = None, \
 	# 		B_ells[fieldidx] = B_ell
 
 	# 	np.savez('data/b_ell_estimates_beam_correction_tm'+str(inst)+'.npz', lb=lb, B_ells=B_ells, ifield_list=ifield_list, inst=inst, n_fine_bin=10)
-	B_ells = np.load('data/fluctuation_data/TM'+str(inst)+'/beam_correction/ptsrc_blest_TM'+str(inst)+'_observed.npz')
+	# B_ells = np.load('data/fluctuation_data/TM'+str(inst)+'/beam_correction/ptsrc_blest_TM'+str(inst)+'_observed.npz')
 	# B_ells = np.load('data/b_ell_estimates_beam_correction_tm'+str(inst)+'.npz')['B_ells']
 	print('B_ells = ', B_ells)
 
@@ -312,37 +326,13 @@ def run_cbps_pipeline(cbps, inst, nsims, run_name, ifield_list = None, \
 
 			# assume same PS for ell^-3 sky clustering signal (indiv_ifield corresponds to one DGL field that is scaled by dgl_scale_fac)
 			
-
-
 			merge_dict = Merge(pscb_dict, float_param_dict) # merge dictionaries
 			joint_masks, observed_ims, total_signals,\
 					rnmaps, shot_sigma_sb_maps, noise_models,\
-					ff_truth, diff_realizations, zl_perfield = cbps.generate_synthetic_mock_test_set(inst, ifield_list,\
+					ff_truth, diff_realizations, zl_perfield, mock_cib_ims = cbps.generate_synthetic_mock_test_set(inst, ifield_list,\
 														test_set_fpath=test_set_fpath, mock_trilegal_path=trilegal_fpath,\
 														 noise_models=read_noise_models, ff_truth=smooth_ff, **merge_dict)
 			
-			
-			
-			# if i==0 and pscb_dict['compute_beam_correction']:
-				
-			# 	if fpath_dict['bls_fpath'] is None:
-			# 		bl_est_path = fpath_dict['bls_base_path']+'ptsrc_blest_TM'+str(inst)+'_simidx'+str(cib_setidx)+'.npz'
-			# 		print('Computing beam correction to be saved to bls_fpath='+bl_est_path+'..')
-			# 	else:
-			# 		bl_est_path = fpath_dict['bls_fpath']
-			# 	# J_bright_Bl=pscb_dict['J_bright_Bl'], J_faint_Bl=float_param_dict['J_faint_Bl'],
-
-			# 	lb, diff_norm_array,\
-			# 			cls_masked_tot, cls_masked_tot_bright = cbps.estimate_b_ell_from_maps(inst, ifield_list, observed_ims, simidx=i, plot=False, save=False, \
-			# 								niter = float_param_dict['niter'], ff_stack_min=float_param_dict['ff_stack_min'], data_type='mock', mask_base_path=fpath_dict['mask_base_path'], ell_norm=float_param_dict['ell_norm_blest'], \
-			# 								full_mask_tail=config_dict['full_mask_tail'], bright_mask_tail=config_dict['bright_mask_tail'])
-					
-			# 	B_ells = np.sqrt(diff_norm_array).copy()
-			# 	print('B_ells is ', B_ells)
-
-			# 	np.savez(bl_est_path, \
-			# 		lb=lb, J_bright_mag=float_param_dict['J_bright_Bl'], J_tot_mag=float_param_dict['J_faint_Bl'],\
-			# 			 cls_masked_tot_bright=cls_masked_tot_bright, cls_masked_tot=cls_masked_tot, B_ells=B_ells)
 			
 		else:
 			for fieldidx, ifield in enumerate(ifield_list):
@@ -372,12 +362,11 @@ def run_cbps_pipeline(cbps, inst, nsims, run_name, ifield_list = None, \
 										full_mask_tail=config_dict['full_mask_tail'], bright_mask_tail=config_dict['bright_mask_tail'])
 				
 			B_ells = np.sqrt(diff_norm_array).copy()
-			print('B_ells is ', B_ells)
+			print('B_ells is nowww ', B_ells)
 
 			np.savez(bl_est_path, \
 				lb=lb, J_bright_mag=float_param_dict['J_bright_Bl'], J_tot_mag=float_param_dict['J_faint_Bl'],\
 					 cls_masked_tot_bright=cls_masked_tot_bright, cls_masked_tot=cls_masked_tot, B_ells=B_ells)
-
 
 
 		# ----------- load masks and mkk matrices ------------
@@ -410,19 +399,29 @@ def run_cbps_pipeline(cbps, inst, nsims, run_name, ifield_list = None, \
 				
 					# inv_Mkks.append(fits.open('data/fluctuation_data/TM'+str(inst)+'/mkk/mkk_estimate_ifield'+str(ifield)+'_inst'+str(inst)+'_observed_JVlim='+str(masking_maglim)+'_Jbright14_maskInst.fits')['inv_Mkk_'+str(ifield)].data)
 				else:
-					if pscb_dict['load_ptsrc_cib']:
-						print('mask path is ', fpath_dict['mask_base_path']+'joint_mask_ifield'+str(ifield)+'_inst'+str(inst)+'_simidx'+str(i)+'_'+mask_tail+'.fits')
-						joint_maskos[fieldidx] = fits.open(fpath_dict['mask_base_path']+'joint_mask_ifield'+str(ifield)+'_inst'+str(inst)+'_simidx'+str(i)+'_'+mask_tail+'.fits')['joint_mask_'+str(ifield)].data
-						inv_Mkks.append(fits.open(fpath_dict['mkk_base_path']+'mkk_estimate_ifield'+str(ifield)+'_inst'+str(inst)+'_simidx'+str(i)+'_'+mask_tail+'.fits')['inv_Mkk_'+str(ifield)].data)
-						
-						if mask_tail_ffest is not None:
-							print('Loading full mask from ', mask_tail_ffest)
-							joint_maskos_ffest[fieldidx] = fits.open(fpath_dict['mask_base_path']+'joint_mask_ifield'+str(ifield)+'_inst'+str(inst)+'_simidx'+str(i)+'_'+mask_tail_ffest+'.fits')['joint_mask_'+str(ifield)].data
 					
-					else:
-						maskidx = i%10
-						joint_maskos[fieldidx] = fits.open(base_path+'TM'+str(inst)+'/masks/ff_joint_masks/joint_mask_with_ffmask_ifield'+str(ifield)+'_inst'+str(inst)+'_simidx'+str(maskidx)+'_abc110821.fits')['joint_mask_'+str(ifield)].data
-						inv_Mkks.append(fits.open(base_path+'TM'+str(inst)+'/mkk/ff_joint_masks/mkk_estimate_with_ffmask_ifield'+str(ifield)+'_inst'+str(inst)+'_simidx'+str(maskidx)+'_abc110821.fits')['inv_Mkk_'+str(ifield)].data)
+					# temporary, lets use the full masks but test without CIB+trilegal
+					print('mask path is ', fpath_dict['mask_base_path']+'joint_mask_ifield'+str(ifield)+'_inst'+str(inst)+'_simidx'+str(i)+'_'+mask_tail+'.fits')
+					joint_maskos[fieldidx] = fits.open(fpath_dict['mask_base_path']+'joint_mask_ifield'+str(ifield)+'_inst'+str(inst)+'_simidx'+str(i)+'_'+mask_tail+'.fits')['joint_mask_'+str(ifield)].data
+					inv_Mkks.append(fits.open(fpath_dict['mkk_base_path']+'mkk_estimate_ifield'+str(ifield)+'_inst'+str(inst)+'_simidx'+str(i)+'_'+mask_tail+'.fits')['inv_Mkk_'+str(ifield)].data)
+					
+					if mask_tail_ffest is not None:
+						print('Loading full mask from ', mask_tail_ffest)
+						joint_maskos_ffest[fieldidx] = fits.open(fpath_dict['mask_base_path']+'joint_mask_ifield'+str(ifield)+'_inst'+str(inst)+'_simidx'+str(i)+'_'+mask_tail_ffest+'.fits')['joint_mask_'+str(ifield)].data
+				
+					# if pscb_dict['load_ptsrc_cib']:
+					# 	print('mask path is ', fpath_dict['mask_base_path']+'joint_mask_ifield'+str(ifield)+'_inst'+str(inst)+'_simidx'+str(i)+'_'+mask_tail+'.fits')
+					# 	joint_maskos[fieldidx] = fits.open(fpath_dict['mask_base_path']+'joint_mask_ifield'+str(ifield)+'_inst'+str(inst)+'_simidx'+str(i)+'_'+mask_tail+'.fits')['joint_mask_'+str(ifield)].data
+					# 	inv_Mkks.append(fits.open(fpath_dict['mkk_base_path']+'mkk_estimate_ifield'+str(ifield)+'_inst'+str(inst)+'_simidx'+str(i)+'_'+mask_tail+'.fits')['inv_Mkk_'+str(ifield)].data)
+						
+					# 	if mask_tail_ffest is not None:
+					# 		print('Loading full mask from ', mask_tail_ffest)
+					# 		joint_maskos_ffest[fieldidx] = fits.open(fpath_dict['mask_base_path']+'joint_mask_ifield'+str(ifield)+'_inst'+str(inst)+'_simidx'+str(i)+'_'+mask_tail_ffest+'.fits')['joint_mask_'+str(ifield)].data
+					
+					# else:
+					# 	maskidx = i%10
+					# 	joint_maskos[fieldidx] = fits.open(base_path+'TM'+str(inst)+'/masks/ff_joint_masks/joint_mask_with_ffmask_ifield'+str(ifield)+'_inst'+str(inst)+'_simidx'+str(maskidx)+'_abc110821.fits')['joint_mask_'+str(ifield)].data
+					# 	inv_Mkks.append(fits.open(base_path+'TM'+str(inst)+'/mkk/ff_joint_masks/mkk_estimate_with_ffmask_ifield'+str(ifield)+'_inst'+str(inst)+'_simidx'+str(maskidx)+'_abc110821.fits')['inv_Mkk_'+str(ifield)].data)
 
 				orig_mask_fractions.append(float(np.sum(joint_maskos[fieldidx]))/float(cbps.dimx**2))
 
@@ -488,7 +487,6 @@ def run_cbps_pipeline(cbps, inst, nsims, run_name, ifield_list = None, \
 					plot_map(processed_ims[k]*joint_maskos[k], title='masked im')
 					plot_map(ff_estimates[k], title='ff estimates k')
 
-
 		if pscb_dict['apply_mask']:
 			obs_levels = np.array([np.mean(obs[joint_maskos[o]==1]) for o, obs in enumerate(observed_ims)])
 			print('masked OBS LEVELS HERE ARE ', obs_levels)
@@ -504,10 +502,8 @@ def run_cbps_pipeline(cbps, inst, nsims, run_name, ifield_list = None, \
 		nls_estFF_nofluc = []
 
 		# for the tests with bright masking thresholds, we can calculate the ff realizations with the bright mask and this should be fine for the noise bias
-		
 		# for the actual flat field estimates of the observations, apply the deeper masks when stacking the off fields. The ff error will be that of the deep masks, 
 		# and so there may be some bias unaccounted for by the analytic multiplicative bias.
-
 		# I think the same holds for the gradients, just use the deeper masks
 
 		# make monte carlo FF realizations that are used for the noise realizations (how many do we ultimately need?)
@@ -553,8 +549,13 @@ def run_cbps_pipeline(cbps, inst, nsims, run_name, ifield_list = None, \
 				else:
 					print('only doing single iteration (do iterative pls)')
 
-				np.savez(fpath_dict['ciber_mock_fpath']+'030122/ff_realizations/'+run_name+'/ff_realization_estimate_ffidx'+str(ffidx)+'.npz', \
+				# fpath_dict['ff_est_dirpath'] = fpath_dict['ciber_mock_fpath']+'030122/ff_realizations/'+run_name
+
+				np.savez(fpath_dict['ff_est_dirpath']+'/ff_realization_estimate_ffidx'+str(ffidx)+'.npz', \
 						ff_realization_estimates = ff_realization_estimates)
+
+				# np.savez(fpath_dict['ciber_mock_fpath']+'030122/ff_realizations/'+run_name+'/ff_realization_estimate_ffidx'+str(ffidx)+'.npz', \
+				# 		ff_realization_estimates = ff_realization_estimates)
 
 		if pscb_dict['save_intermediate_cls']:
 			cls_masked_prenl, cls_postffb_corr, cls_masked_postnl,\
@@ -592,10 +593,17 @@ def run_cbps_pipeline(cbps, inst, nsims, run_name, ifield_list = None, \
 			if i > 0 or pscb_dict['load_noise_bias']:
 
 				# temporary comment out
+				if fpath_dict['noisemodl_basepath'] is None:
+					fpath_dict['noisemodl_basepath'] = fpath_dict['ciber_mock_fpath']+'030122/noise_models_sim/'
+
+				if fpath_dict['noisemodl_run_name'] is None:
+					fpath_dict['noisemodl_run_name'] = run_name 
+
 				if data_type=='mock':
-					noisemodl_fpath = fpath_dict['ciber_mock_fpath']+'030122/noise_models_sim/'+run_name+'/noise_model_fieldidx'+str(fieldidx)+'.npz'
+					noisemodl_tailpath = '/noise_model_fieldidx'+str(fieldidx)+'.npz'
 				else:
-					noisemodl_fpath = fpath_dict['ciber_mock_fpath']+'030122/noise_models_sim/'+run_name+'/noise_model_observed_fieldidx'+str(fieldidx)+'.npz'
+					noisemodl_tailpath = '/noise_model_observed_fieldidx'+str(fieldidx)+'.npz'
+				noisemodl_fpath = fpath_dict['noisemodl_basepath'] + fpath_dict['noisemodl_run_name'] + noisemodl_tailpath
 
 				print('LOADING NOISE MODEL FROM ', noisemod_fpath)
 
@@ -605,14 +613,16 @@ def run_cbps_pipeline(cbps, inst, nsims, run_name, ifield_list = None, \
 				nl_estFF_nofluc = noisemodl_file['nl_estFF_nofluc']
 
 			else:
-				all_ff_ests_nofluc = []
-				for ffidx in range(float_param_dict['nmc_ff']):
+				all_ff_ests_nofluc = None
+				if pscb_dict['iterate_grad_ff']:
+					all_ff_ests_nofluc = []
+					for ffidx in range(float_param_dict['nmc_ff']):
+						ff_file = np.load(fpath_dict['ff_est_dirpath']+'/ff_realization_estimate_ffidx'+str(ffidx)+'.npz')
+						# ff_file = np.load(fpath_dict['ciber_mock_fpath']+'030122/ff_realizations/'+run_name+'/ff_realization_estimate_ffidx'+str(ffidx)+'.npz')
+						all_ff_ests_nofluc.append(ff_file['ff_realization_estimates'][fieldidx])
 
-					ff_file = np.load(fpath_dict['ciber_mock_fpath']+'030122/ff_realizations/'+run_name+'/ff_realization_estimate_ffidx'+str(ffidx)+'.npz')
-					all_ff_ests_nofluc.append(ff_file['ff_realization_estimates'][fieldidx])
-
-					if ffidx==0:
-						plot_map(all_ff_ests_nofluc[0], title='loaded MC ff estimate 0')
+						if ffidx==0:
+							plot_map(all_ff_ests_nofluc[0], title='loaded MC ff estimate 0')
 
 				print('median obs is ', np.median(obs))
 				print('simmap dc is ', simmap_dc)
@@ -644,8 +654,10 @@ def run_cbps_pipeline(cbps, inst, nsims, run_name, ifield_list = None, \
 
 			if pscb_dict['load_ptsrc_cib'] or data_type=='observed':
 				beam_correct = True
+				B_ell_field = B_ells[fieldidx]
 			else:
 				beam_correct = False
+				B_ell_field = None
 
 			FF_correct = True # divides image by estimated flat field, not to be confused with flat field bias correction
 			if pscb_dict['iterate_grad_ff']: # set gradient_filter, FF_correct to False here because we've already done gradient filtering/FF estimation
@@ -660,13 +672,14 @@ def run_cbps_pipeline(cbps, inst, nsims, run_name, ifield_list = None, \
 
 			print('obs mean is ', np.mean(obs[target_mask==1]))
 			print('nl estFF no fluc:', nl_estFF_nofluc)
+
+
 			lb, processed_ps_nf, cl_proc_err, _ = cbps.compute_processed_power_spectrum(inst, apply_mask=pscb_dict['apply_mask'], \
 											 mask=target_mask, image=obs, convert_adufr_sb=False, \
-											mkk_correct=pscb_dict['apply_mask'], inv_Mkk=target_invMkk, beam_correct=beam_correct, B_ell=B_ells[fieldidx], \
+											mkk_correct=pscb_dict['apply_mask'], inv_Mkk=target_invMkk, beam_correct=beam_correct, B_ell=B_ell_field, \
 											apply_FW=pscb_dict['apply_FW'], verbose=pscb_dict['verbose'], noise_debias=True, \
 										 FF_correct=FF_correct, FF_image=ff_estimates[fieldidx],\
 											 gradient_filter=gradient_filter, save_intermediate_cls=pscb_dict['save_intermediate_cls'], N_ell=nl_estFF_nofluc) # ff bias
-
 
 			if pscb_dict['save_intermediate_cls']:
 				cls_masked_prenl[fieldidx,:] = cbps.masked_Cl_pre_Nl_correct
@@ -693,10 +706,9 @@ def run_cbps_pipeline(cbps, inst, nsims, run_name, ifield_list = None, \
 
 					lb, diff_cl, cl_proc_err, _ = cbps.compute_processed_power_spectrum(inst, apply_mask=False, \
 														 image=diff_realizations[fieldidx], convert_adufr_sb=False, \
-														mkk_correct=False, beam_correct=True, B_ell=B_ells[fieldidx], \
+														mkk_correct=False, beam_correct=True, B_ell=B_ell_field, \
 														apply_FW=False, verbose=False, noise_debias=False, \
 													 FF_correct=False, save_intermediate_cls=pscb_dict['save_intermediate_cls'], gradient_filter=False) # gradient is False for now 082222
-
 
 					cib_cl_file = fits.open(base_path+'TM'+str(inst)+'/powerspec/cls_cib_vs_maglim_ifield'+str(ifield_list[fieldidx])+'_inst'+str(inst)+'_simidx'+str(cib_setidx)+'_Vega_magcut_test.fits')
 					unmasked_cib_cl = cib_cl_file['cls_cib'].data['cl_maglim_'+str(masking_maglim)]
@@ -717,10 +729,14 @@ def run_cbps_pipeline(cbps, inst, nsims, run_name, ifield_list = None, \
 						print('and ebl is now ', ebl_ps)
 
 				else:
-
+					# lb, cl_diffreal, clerr_diffreal = get_power_spec(diff_realizations[fieldidx]-np.mean(diff_realizations[fieldidx]))
+					# print('cl_diffreal is ', cl_diffreal)
+					full_realiz = mock_cib_ims[fieldidx]+diff_realizations[fieldidx]
+					full_realiz -= np.mean(full_realiz)
+					# plot_map(full_realiz, title='full realiz fieldidx '+str(fieldidx))
 					lb, ebl_ps, cl_proc_err, _ = cbps.compute_processed_power_spectrum(inst, apply_mask=False, \
-														 image=clus_realizations[fieldidx], convert_adufr_sb=False, \
-														mkk_correct=False, beam_correct=True, B_ell=B_ells[fieldidx], \
+														 image=full_realiz, convert_adufr_sb=False, \
+														mkk_correct=False, beam_correct=beam_correct, B_ell=None, \
 														apply_FW=False, verbose=False, noise_debias=False, \
 													 FF_correct=False, save_intermediate_cls=pscb_dict['save_intermediate_cls'], gradient_filter=pscb_dict['gradient_filter'])
 
@@ -767,10 +783,17 @@ def run_cbps_pipeline(cbps, inst, nsims, run_name, ifield_list = None, \
 			
 		if pscb_dict['save']:
 			
-			
 			np.savez(fpath_dict['sim_test_fpath']+run_name+'/input_recovered_ps_estFF_simidx'+str(i)+'.npz', lb=lb, data_type=data_type, \
 				signal_ps=signal_power_spectra[i], recovered_ps_est_nofluc=recovered_power_spectra[i],\
 					 dgl_scale_fac=float_param_dict['dgl_scale_fac'], niter=float_param_dict['niter'], cls_inter=cls_inter, inter_labels=inter_labels, **pscb_dict)
+
+			if i==0:
+				with open(fpath_dict['sim_test_fpath']+run_name+'/params_read.txt', 'w') as file:
+					for dicto in [fpath_dict, pscb_dict, float_param_dict, config_dict]:
+						for key in dicto:
+							file.write(key+': '+str(dicto[key])+'\n')
+
+
 
 	return lb, signal_power_spectra, recovered_power_spectra, nls_estFF_nofluc, cls_inter, inter_labels
 
