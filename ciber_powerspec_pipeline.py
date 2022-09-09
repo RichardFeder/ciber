@@ -182,17 +182,22 @@ def iterative_gradient_ff_solve(orig_images, niter=3, masks=None, weights_ff=Non
 			
 			if masks_ffest is not None:
 				ff_estimate, _, ff_weights = compute_stack_ff_estimate(stack_obs, masks=masks_ffest[(np.arange(len(masks_ffest))!=imidx),:], weights=weights_ff_iter)
-			else:
+			elif masks is not None:
 				ff_estimate, _, ff_weights = compute_stack_ff_estimate(stack_obs, masks=masks[(np.arange(len(masks))!=imidx),:], weights=weights_ff_iter)
+			else:
+				ff_estimate, _, ff_weights = compute_stack_ff_estimate(stack_obs, masks=None, weights=weights_ff_iter)
 
 			ff_estimates[imidx] = ff_estimate
 			running_images[imidx] /= ff_estimate
 
 			if masks_ffest is not None:
 				theta, plane = fit_gradient_to_map(running_images[imidx], mask=masks_ffest[imidx])
-			else:
+			elif masks is not None:
 				theta, plane = fit_gradient_to_map(running_images[imidx], mask=masks[imidx])
-			
+			else:
+				theta, plane = fit_gradient_to_map(running_images[imidx])
+
+
 			running_images[imidx] -= (plane-np.mean(plane))
 			
 			all_coeffs[n, imidx] = theta[:,0]
@@ -295,7 +300,7 @@ def compute_residual_source_shot_noise(mag_lim_list, inst, ifield_list, datestr,
                 diff_full_bright = full_src_map - bright_src_map
                 diff_full_bright -= np.mean(diff_full_bright)
                 
-                lb, cl_diff_maglim, clerr_maglim = get_power_spec(diff_full_bright, nbins=cbps.n_ps_bin+1)
+                lb, cl_diff_maglim, clerr_maglim = get_power_spec(diff_full_bright, lbinedges=self.Mkk_obj.binl, lbins=self.Mkk_obj.midbin_ell)
                 
                 if mode=='trilegal':
                     isl_sb_rms[setidx, fieldidx, m] = np.std(diff_full_bright)
@@ -303,7 +308,7 @@ def compute_residual_source_shot_noise(mag_lim_list, inst, ifield_list, datestr,
                 cl_diff_maglim /= B_ell**2
 
                 if m==0:
-                    lb, cl_full, clerr_full = get_power_spec(full_src_map-np.mean(full_src_map), nbins=cbps.n_ps_bin+1)
+                    lb, cl_full, clerr_full = get_power_spec(full_src_map-np.mean(full_src_map), lbinedges=self.Mkk_obj.binl, lbins=self.Mkk_obj.midbin_ell)
                     cl_full /= B_ell**2
 
                     cl_table = [lb, cl_full]
@@ -767,6 +772,19 @@ class CIBER_PS_pipeline():
 			self.image = fits.open(flight_fpath)[0].data
 		else:
 			return fits.open(flight_fpath)[0].data
+
+	def grab_noise_model_set(self, ifield_noise_list, inst, field_set_shape=None, verbose=False):
+
+		if field_set_shape is None:
+			field_set_shape = (len(ifield_noise_list), self.dimx, self.dimy)
+
+		read_noise_models = np.zeros(field_set_shape)
+		for fieldidx, ifield in enumerate(ifield_noise_list):
+			noise_cl2d = self.load_noise_Cl2D(ifield, inst, noise_fpath='data/fluctuation_data/TM'+str(inst)+'/noiseCl2D/field'+str(ifield)+'_noiseCl2D_110421.fits',\
+											  inplace=False)
+			read_noise_models[fieldidx] = noise_cl2d
+
+		return read_noise_models
 
 		
 	def load_noise_Cl2D(self, ifield=None, inst=None, noise_model=None, noise_fpath=None, verbose=False, inplace=True, transpose=False, mode=None, use_abs=False):
@@ -1335,10 +1353,20 @@ class CIBER_PS_pipeline():
 
 
 
-	def calculate_transfer_function(self, nsims, load_ptsrc_cib=False, niter_grad_ff=1, dgl_scale_fac=5., indiv_ifield=6, apply_FF=False, FF_image=None, FF_fpath=None, plot=False):
+	def calculate_transfer_function(self, nsims, load_ptsrc_cib=False, \
+						 niter_grad_ff=1, dgl_scale_fac=5., indiv_ifield=6, apply_FF=False,\
+						 grad_sub=True, FF_image=None, FF_fpath=None, plot=False, \
+						 mean_normalizations=None, ifield_list=None, \
+						 masks=None, inv_Mkks=None, niter=5, inst=1, maskidx=0, ff_stack_min=2, \
+						 apply_mask_ffest=True):
 
 		''' 
 		Estimate the transfer function of gradient filtering by passing through a number of sky realizations and measuring the ratio of input/output power spectra.
+
+		I would like to estimate the transfer function that comes from the flat field + gradient corrections. For this I think
+		we can assume the flat field errors from instrument noise fluctuations and that from the underlying signals are independent.
+		So, generate mean normalization + fluctuation signal, add gradient and apply flat field, then estimate flat fields/gradients. 
+		What is the resulting power spectrum of the maps?
 
 		Parameters
 		----------
@@ -1358,20 +1386,167 @@ class CIBER_PS_pipeline():
 		cls_filt : Power spectra of filtered maps.
 		'''
 
-		ps_set_shape = (nsims, self.n_ps_bin)
+		if apply_FF:
+			if ifield_list is None:
+				ifield_list = [4, 5, 6, 7, 8]
+
+			ps_set_shape = (nsims, len(ifield_list), self.n_ps_bin)
+		else:
+			ps_set_shape = (nsims, self.n_ps_bin)
+		
 		cls_orig = np.zeros(ps_set_shape)
 		cls_filt = np.zeros(ps_set_shape)
 		t_ells = np.zeros(ps_set_shape)
 
 
 		if apply_FF:
+
 			if FF_image is None:
 				if FF_fpath is not None:
-					FF_image = fits.open(FF_fpath)[0].data 
+					FF_image = gaussian_filter(fits.open(FF_fpath)[0].data, sigma=5.)
+
 				else:
 					print('need to either provide file path to FF or FF image..')
 
-			processed_ims, ff_estimates, final_planes, _, coeffs_vs_niter, _ = iterative_gradient_ff_solve(input_signals, niter=niter)
+			if plot:
+				plot_map(FF_image, title='FF image')
+
+			# here doing sets of CIBER mocks
+			for setidx in range(nsims):
+				print('set ', setidx, 'of ', nsims)
+
+				mock_sky_ims = []
+				for fieldidx, ifield in enumerate(ifield_list):
+					_, ps, mock_cib_im = generate_diffuse_realization(self.dimx, self.dimy, power_law_idx=0.0, scale_fac=3e8)
+
+					diff_realization = self.generate_custom_sky_clustering(dgl_scale_fac=5., ifield=ifield, gen_ifield=6)
+					sky_realiz = mock_cib_im+diff_realization
+
+					lb, cl_orig, clerr_orig = get_power_spec(sky_realiz-np.mean(sky_realiz), lbinedges=self.Mkk_obj.binl, lbins=self.Mkk_obj.midbin_ell)
+					cls_orig[setidx, fieldidx, :] = cl_orig
+
+					if mean_normalizations is not None:
+						# if setidx==0:
+							# print('adding mean normalization')
+						sky_realiz += mean_normalizations[fieldidx]
+
+					if plot and fieldidx==0:
+						plot_map(sky_realiz, title='Mock sky realization, set '+str(setidx))
+						# plot_map(sky_realiz, title='sky realization')
+
+					sky_realiz *= FF_image 
+
+					if plot and fieldidx==0:
+						if masks is not None:
+							plot_map(sky_realiz*masks[fieldidx], title='Mock sky realization x flat field x mask, ifield='+str(ifield))
+
+					mock_sky_ims.append(sky_realiz)
+
+				mock_sky_ims = np.array(mock_sky_ims)
+
+				if masks is not None:
+					masks, stack_masks = stack_masks_ffest(masks, ff_stack_min)
+					mask_fractions = np.array([float(np.sum(masks[fieldidx]))/float(self.dimx**2) for fieldidx in range(len(ifield_list))])
+					obs_levels = [np.mean(mock_sky_ims[fieldidx][masks[fieldidx] != 0]) for fieldidx in range(len(ifield_list))]
+					
+					print('obs levels are ', obs_levels)
+					print('mask fractions are ', mask_fractions)
+				else:
+					obs_levels = [np.mean(mock_sky_ims[fieldidx]) for fieldidx in range(len(ifield_list))]
+					mask_fractions=None
+				
+				weights_photonly = self.compute_ff_weights(inst, obs_levels, read_noise_models=None, ifield_list=ifield_list)
+				
+				if not grad_sub and not apply_mask_ffest:
+					print('setting mask fractions to None..')
+					mask_fractions = None
+
+				ff_biases = compute_ff_bias(obs_levels, weights=weights_photonly, mask_fractions=mask_fractions)
+				# print('weights are ', weights_photonly)
+				# print('ff_biases are ', ff_biases)
+
+				if apply_FF and grad_sub:
+
+					processed_ims, ff_estimates, final_planes, stack_masks_bright, coeffs_vs_niter = iterative_gradient_ff_solve(mock_sky_ims, niter=niter, masks=masks, ff_stack_min=2)
+					if masks is not None:
+						masks *= stack_masks_bright
+
+					mask_fractions_new = np.array([float(np.sum(masks[fieldidx]))/float(self.dimx**2) for fieldidx in range(len(ifield_list))])
+					obs_levels_new = [np.mean(processed_ims[fieldidx][masks[fieldidx] != 0]) for fieldidx in range(len(ifield_list))]
+					print('obs levels are ', obs_levels_new)
+					print('mask fractions are ', mask_fractions_new)
+					weights_photonly = self.compute_ff_weights(inst, obs_levels_new, read_noise_models=None, ifield_list=ifield_list)
+					ff_biases_new = compute_ff_bias(obs_levels_new, weights=weights_photonly, mask_fractions=mask_fractions_new)
+					print('updated ff biases are ', ff_biases_new)
+
+					if setidx==0:
+						plot_map(final_planes[0]-np.mean(final_planes[0]), title='Final gradient estimate, ifield=4')
+
+
+				elif not grad_sub:
+					processed_ims = mock_sky_ims.copy()
+					for fieldidx, ifield in enumerate(ifield_list):
+						stack_obs = list(mock_sky_ims.copy())                
+						del(stack_obs[fieldidx])
+						weights_ff_test = weights_photonly[(np.arange(len(processed_ims)) != fieldidx)]
+
+						if masks is not None:
+
+							if apply_mask_ffest:
+								ff_estimate, _, ff_weights = compute_stack_ff_estimate(stack_obs, masks=masks[(np.arange(len(masks))!=fieldidx),:], weights=weights_ff_test)
+							else:
+								ff_estimate, _, ff_weights = compute_stack_ff_estimate(stack_obs, masks=None, weights=weights_ff_test)
+
+						else:
+							ff_estimate, _, ff_weights = compute_stack_ff_estimate(stack_obs, masks=None, weights=weights_ff_test)
+						
+						ff_estimate[np.isnan(ff_estimate)] = 1.
+						ff_estimate[ff_estimate==0] = 1.
+						
+						if fieldidx==0 and setidx==0:
+							plot_map(ff_estimate, title='ffestimate stack ff')
+
+						processed_ims[fieldidx] /= ff_estimate
+				
+				# if masks is not None:
+				# 	masks *= stack_masks_bright
+
+
+
+				for fieldidx, ifield in enumerate(ifield_list):	
+
+					if masks is not None:
+						processed_ims[fieldidx][masks[fieldidx] != 0] -= np.mean(processed_ims[fieldidx][masks[fieldidx] != 0])
+
+					# print('mean of processed im is ', np.mean(processed_ims[fieldidx]*masks[fieldidx]))
+
+					if plot:
+						if masks is not None:
+							plot_map(processed_ims[fieldidx]*masks[fieldidx], title='Processed map x mask, ifield = '+str(ifield))
+						else:
+							plot_map(processed_ims[fieldidx], title='Processed map, ifield = '+str(ifield))
+
+					if masks is not None:
+						lb, cl_filt, clerr_filt = get_power_spec(processed_ims[fieldidx]*masks[fieldidx], lbinedges=self.Mkk_obj.binl, lbins=self.Mkk_obj.midbin_ell)
+						
+						# noise bias subtraction 
+
+						if inv_Mkks is not None:
+							cl_filt = np.dot(inv_Mkks[fieldidx].transpose(), cl_filt)
+					else:
+						lb, cl_filt, clerr_filt = get_power_spec(processed_ims[fieldidx], lbinedges=self.Mkk_obj.binl, lbins=self.Mkk_obj.midbin_ell)
+
+
+					cl_filt /= ff_biases[fieldidx]
+
+
+					cls_filt[setidx, fieldidx, :] = cl_filt
+					t_ell_indiv = cl_filt/cls_orig[setidx, fieldidx, :]
+					t_ells[setidx, fieldidx, :] = t_ell_indiv
+
+				if setidx%10==0:
+					print('for setidx = ', setidx, 't_ells = ', t_ells[setidx])
+
 		else:
 
 			for i in range(nsims):
@@ -1385,15 +1560,33 @@ class CIBER_PS_pipeline():
 					# print('need to load CIB here')
 
 				if plot:
-					plot_map(diff_realization, title='diff realization '+str(i))
+					plot_map(diff_realization, title='Mock sky realization, set '+str(i))
 
 				lb, cl_orig, clerr_orig = get_power_spec(diff_realization - np.mean(diff_realization), lbinedges=self.Mkk_obj.binl, lbins=self.Mkk_obj.midbin_ell)
 
+				if masks is not None:
+					theta, plane = fit_gradient_to_map(diff_realization, masks[maskidx])
+				else:
+					theta, plane = fit_gradient_to_map(diff_realization)
 
-				theta, plane = fit_gradient_to_map(diff_realization)
 				diff_realization -= plane
 
-				lb, cl_filt, clerr_filt = get_power_spec(diff_realization - np.mean(diff_realization), lbinedges=self.Mkk_obj.binl, lbins=self.Mkk_obj.midbin_ell)
+				if masks is not None:
+					diff_realization[masks[maskidx] != 0] -= np.mean(diff_realization[masks[maskidx] != 0])
+					diff_realization *= masks[maskidx]
+					# print('mean of processed im is ', np.mean(diff_realization*masks[maskidx]))
+					if i==0:
+						plot_map(diff_realization, title='Masked, gradient subtracted signal')
+				else:
+					diff_realization -= np.mean(diff_realization)
+
+				# lb, cl_filt, clerr_filt = get_power_spec(diff_realization - np.mean(diff_realization), lbinedges=self.Mkk_obj.binl, lbins=self.Mkk_obj.midbin_ell)
+				
+				lb, cl_filt, clerr_filt = get_power_spec(diff_realization, lbinedges=self.Mkk_obj.binl, lbins=self.Mkk_obj.midbin_ell)
+				
+				if inv_Mkks is not None:
+					cl_filt = np.dot(inv_Mkks[maskidx].transpose(), cl_filt)
+
 				cls_orig[i] = cl_orig
 				cls_filt[i] = cl_filt
 				t_ell_indiv = cl_filt/cl_orig 
@@ -1408,7 +1601,7 @@ class CIBER_PS_pipeline():
 
   
 	def compute_processed_power_spectrum(self, inst, bare_bones=False, mask=None, N_ell=None, B_ell=None, inv_Mkk=None,\
-										 image=None, ff_bias_correct=None, FF_image=None, verbose=False, **kwargs):
+										 image=None, cross_image=None, ff_bias_correct=None, FF_image=None, verbose=False, **kwargs):
 		
 		''' 
 		Computes processed power spectrum for input map/mask/etc.
@@ -1492,14 +1685,21 @@ class CIBER_PS_pipeline():
 			theta, plane = fit_gradient_to_map(image, mask=mask)
 			image -= plane
 
+		cross_masked_image = None # only set to something if cross spectrum being calculated and cross map provided
+
 		if pps_dict['apply_mask']:
 
 			verbprint(True, 'Applying mask..')
 			masked_image = mean_sub_masked_image(image, mask) # apply mask and mean subtract unmasked pixels
+			if cross_image is not None:
+				cross_masked_image = mean_sub_masked_image(cross_image, mask)
+
 		else:
 			verbprint(True, 'No masking, subtracting image by its mean..')
 			masked_image = image - np.mean(image)
 			mask = None
+			if cross_image is not None:
+				cross_masked_image = cross_image - np.mean(cross_image)
 
 		verbprint(verbose, 'Mean of masked image is '+str(np.mean(masked_image)))
 		 
@@ -1508,7 +1708,10 @@ class CIBER_PS_pipeline():
 			verbprint(True, 'Using Fourier weights..')
 			weights = self.FW_image # this feeds Fourier weights into get_power_spec, which uses them with Cl2D
 			
-		lbins, cl_proc, cl_proc_err = get_power_spec(masked_image, mask=None, weights=weights, lbinedges=self.Mkk_obj.binl, lbins=self.Mkk_obj.midbin_ell)
+		lbins, cl_proc, cl_proc_err = get_power_spec(masked_image, map_b=cross_masked_image, mask=None, weights=weights, lbinedges=self.Mkk_obj.binl, lbins=self.Mkk_obj.midbin_ell)
+		
+		# lbins, cl_proc, cl_proc_err = get_power_spec(masked_image, mask=None, weights=weights, lbinedges=self.Mkk_obj.binl, lbins=self.Mkk_obj.midbin_ell)
+
 		
 		if pps_dict['save_intermediate_cls']:
 			self.masked_Cl_pre_Nl_correct = cl_proc.copy()
@@ -1566,10 +1769,11 @@ class CIBER_PS_pipeline():
 
 		return lbins, cl_proc, cl_proc_err, masked_image
 
-	def estimate_b_ell_from_maps(self, inst, ifield_list, ciber_maps, simidx=0, ell_norm=5000, plot=True, save=False, \
+	def estimate_b_ell_from_maps(self, inst, ifield_list, ciber_maps, simidx=0, ell_norm=5000, plot=False, save=False, \
 										niter = 5, ff_stack_min=2, data_type='mock', datestr_mock='062322', datestr_trilegal=None, \
 										ciber_mock_fpath='/Volumes/Seagate Backup Plus Drive/Toolkit/Mirror/Richard/ciber_mocks/', \
-										mask_base_path=None, full_mask_tail='maglim_17_Vega_test', bright_mask_tail='maglim_11_Vega_test'):
+										mask_base_path=None, full_mask_tail='maglim_17_Vega_test', bright_mask_tail='maglim_11_Vega_test', \
+										iterate_grad_ff=True, mkk_correct=False, mkk_base_path=None):
 
 		
 		''' 
@@ -1620,16 +1824,23 @@ class CIBER_PS_pipeline():
 		print('simidx is ', simidx)
 
 		tot_masks, bright_masks, tot_obs = [np.zeros(imarray_shape) for x in range(3)]
-
+		inv_Mkks_bright, inv_Mkks_tot = [np.zeros((len(ifield_list), self.n_ps_bin, self.n_ps_bin)) for x in range(2)]
 		for fieldidx, ifield in enumerate(ifield_list):
+			
 			print('ifield = ', ifield)
-
-
 			if data_type=='mock':
 				joint_mask = fits.open(mask_base_path+'joint_mask_ifield'+str(ifield)+'_inst'+str(inst)+'_simidx'+str(simidx)+'_'+full_mask_tail+'.fits')['joint_mask_'+str(ifield)].data
 				bright_mask = fits.open(mask_base_path+'joint_mask_ifield'+str(ifield)+'_inst'+str(inst)+'_simidx'+str(simidx)+'_'+bright_mask_tail+'.fits')['joint_mask_'+str(ifield)].data
 				tot_masks[fieldidx] = joint_mask
 				bright_masks[fieldidx] = bright_mask
+
+				if mkk_correct:
+					bright_inv_Mkk_fpath = mkk_base_path+'mkk_estimate_ifield'+str(ifield)+'_inst'+str(inst)+'_simidx'+str(simidx)+'_'+bright_mask_tail+'.fits'
+					inv_Mkks_bright[fieldidx] = fits.open(bright_inv_Mkk_fpath)['inv_Mkk_'+str(ifield)].data
+
+					tot_inv_Mkk_fpath = mkk_base_path+'mkk_estimate_ifield'+str(ifield)+'_inst'+str(inst)+'_simidx'+str(simidx)+'_'+full_mask_tail+'.fits'
+					inv_Mkks_tot[fieldidx] = fits.open(tot_inv_Mkk_fpath)['inv_Mkk_'+str(ifield)].data
+
 				
 				if fieldidx==0:
 					plot_map(tot_masks[fieldidx]*ciber_maps[fieldidx], title='tot mask x ciber maps')
@@ -1643,9 +1854,13 @@ class CIBER_PS_pipeline():
 				joint_mask = fits.open(mask_base_path+'joint_mask_ifield'+str(ifield)+'_inst'+str(inst)+'_observed_'+full_mask_tail+'.fits')[1].data
 				bright_mask = fits.open(mask_base_path+'joint_mask_ifield'+str(ifield)+'_inst'+str(inst)+'_observed_'+bright_mask_tail+'.fits')[1].data
 
-				# joint_maskos[fieldidx] = fits.open(mask_fpath)[1].data
-				# joint_mask = fits.open(joint_mask_fpaths[fieldidx])[0].data
-				# bright_mask = fits.open(bright_mask_fpaths[fieldidx])[0].data
+				if mkk_correct:
+					bright_inv_Mkk_fpath = mkk_base_path+'mkk_estimate_ifield'+str(ifield)+'_inst'+str(inst)+'_observed_'+bright_mask_tail+'.fits'
+					inv_Mkks_bright[fieldidx] = fits.open(bright_inv_Mkk_fpath)['inv_Mkk_'+str(ifield)].data
+
+					tot_inv_Mkk_fpath = mkk_base_path+'mkk_estimate_ifield'+str(ifield)+'_inst'+str(inst)+'_observed_'+full_mask_tail+'.fits'
+					inv_Mkks_tot[fieldidx] = fits.open(tot_inv_Mkk_fpath)['inv_Mkk_'+str(ifield)].data
+
 
 				tot_masks[fieldidx] = joint_mask
 				bright_masks[fieldidx] = bright_mask
@@ -1653,20 +1868,23 @@ class CIBER_PS_pipeline():
 				plot_map(tot_masks[fieldidx]*ciber_maps[fieldidx], title='tot mask x ciber maps')
 				plot_map(bright_masks[fieldidx]*ciber_maps[fieldidx], title='bright mask x ciber maps')
 
+		if iterate_grad_ff:
+			print('Computing gradients/flat fields using bright masks')
 
-				
-		print('Computing gradients/flat fields using bright masks')
+			bright_images, ff_estimates_bright, final_planes,\
+					stack_masks_bright, all_coeffs = iterative_gradient_ff_solve(ciber_maps, \
+																		  niter=niter, masks=bright_masks, \
+																		 ff_stack_min=ff_stack_min)
 
-		bright_images, ff_estimates_bright, final_planes,\
-				stack_masks_bright, all_coeffs = iterative_gradient_ff_solve(ciber_maps, \
-																	  niter=niter, masks=bright_masks, \
-																	 ff_stack_min=ff_stack_min)
+			print('computing for total mask')
+			tot_images, ff_estimates_tot, final_planes,\
+					stack_masks_tot, all_coeffs = iterative_gradient_ff_solve(ciber_maps, \
+																		  niter=niter, masks=tot_masks, \
+																		 ff_stack_min=ff_stack_min)
+		else:
+			bright_images = ciber_maps*bright_masks
+			tot_images = ciber_maps*tot_masks
 
-		print('computing for total mask')
-		tot_images, ff_estimates_tot, final_planes,\
-				stack_masks_tot, all_coeffs = iterative_gradient_ff_solve(ciber_maps, \
-																	  niter=niter, masks=tot_masks, \
-																	 ff_stack_min=ff_stack_min)
 
 
 		print('now computing power spectra of maps..')
@@ -1674,29 +1892,38 @@ class CIBER_PS_pipeline():
 
 			print('computing point source dominated power spectrum..')
 			# compute point source dominated power spectrum
-			fullmaskbright = stack_masks_bright[fieldidx]*bright_masks[fieldidx]
+			# if iterate_grad_ff:
+			fullmaskbright = bright_masks[fieldidx].copy() 
+			fullmasktot = tot_masks[fieldidx].copy()
+			if iterate_grad_ff:
+				fullmaskbright *= stack_masks_bright[fieldidx]
+				fullmasktot *= stack_masks_tot[fieldidx]
+			
+			# fullmaskbright = stack_masks_bright[fieldidx]*bright_masks[fieldidx]
 			masked_bright_meansub = ciber_maps[fieldidx]*fullmaskbright
-
 			masked_bright_meansub[fullmaskbright != 0] -= np.mean(masked_bright_meansub[fullmaskbright != 0])
-			lb, cl_masked_tot_bright, clerr_masked = get_power_spec(masked_bright_meansub, lbinedges=self.Mkk_obj.binl, lbins=self.Mkk_obj.midbin_ell)
-
-			cls_masked_tot_bright[fieldidx] = cl_masked_tot_bright
+			lb, cl_masked_bright, clerr_masked = get_power_spec(masked_bright_meansub, lbinedges=self.Mkk_obj.binl, lbins=self.Mkk_obj.midbin_ell)
+			
+			if mkk_correct:
+				cl_masked_bright = np.dot(inv_Mkks_bright[fieldidx].transpose(), cl_masked_bright)
+			cls_masked_tot_bright[fieldidx] = cl_masked_bright
 			
 			print('computing masked noise power spectrum..')
 			# compute masked noise power spectrum
-			masked_tot_meansub = ciber_maps[fieldidx]*tot_masks[fieldidx]*stack_masks_tot[fieldidx]
-			masked_tot_meansub[tot_masks[fieldidx]*stack_masks_tot[fieldidx] != 0] -= np.mean(masked_tot_meansub[tot_masks[fieldidx]*stack_masks_tot[fieldidx] != 0])
+			masked_tot_meansub = ciber_maps[fieldidx]*fullmasktot
+			masked_tot_meansub[fullmasktot != 0] -= np.mean(masked_tot_meansub[fullmasktot != 0])
 			lb, cl_masked_tot, clerr_masked = get_power_spec(masked_tot_meansub, lbinedges=self.Mkk_obj.binl, lbins=self.Mkk_obj.midbin_ell)
-
+			if mkk_correct:
+				cl_masked_tot = np.dot(inv_Mkks_tot[fieldidx].transpose(), cl_masked_tot)
 			cls_masked_tot[fieldidx] = cl_masked_tot
 
 			# compute power spectrum difference
-			bright_faint_diff_cl = cl_masked_tot_bright - cl_masked_tot
+			bright_faint_diff_cl = cl_masked_bright - cl_masked_tot
 
 			if plot:
 				plt.figure(figsize=(8,6))
 				prefac = lb**2/(2*np.pi)
-				plt.plot(lb, prefac*cl_masked_tot_bright, label='J < 10 masked')
+				plt.plot(lb, prefac*cl_masked_bright, label='J < 10 masked')
 				plt.plot(lb, prefac*cl_masked_tot, label='masked J < 18')
 				plt.plot(lb, prefac*bright_faint_diff_cl, label='difference')
 				plt.xscale('log')
@@ -1710,7 +1937,8 @@ class CIBER_PS_pipeline():
 			# normalize power spectrum by maximum value for ell > ell_norm
 			diff_norm = bright_faint_diff_cl / np.max(bright_faint_diff_cl[lb > ell_norm])
 			# anything for ell < ell_norm that is greater than one set to one
-			diff_norm[diff_norm > 1] = 1.
+			diff_norm[diff_norm > 1] = 1. 
+			diff_norm[lb < ell_norm] = 1.
 
 			diff_norm_array[fieldidx, :] = diff_norm 
 
@@ -1750,19 +1978,25 @@ class CIBER_PS_pipeline():
 
 		gsmt_dict, float_param_dict = update_dicts([gsmt_dict, float_param_dict], kwargs)
 		
+		nfields = len(ifield_list)
+
 		if gsmt_dict['apply_smooth_FF'] and ff_truth is None:
 			if ff_fpath is None:
 				print('need to provide file path to flat field if not providing ff_truth')
 				print('setting ff_truth to all ones..')
-				ff_truth = np.ones_like(total_signal)
+				# ff_truth = np.ones_like(total_signal)
+				# field_set_shape = (self.dimx, self.dimy)
+				ff_truth = np.ones((self.dimx, self.dimy))
 			else:
 				print('loading smooth FF from ', ff_fpath)
 				ff_truth = gaussian_filter(fits.open(ff_fpath)[0].data, sigma=5)
-				
+			
+		else:
+			ff_truth = np.ones((self.dimx, self.dimy))
+
 		if cmock is None:
 			cmock = ciber_mock(ciberdir=ciberdir)
 			
-		nfields = len(ifield_list)
 		
 		if gsmt_dict['load_ptsrc_cib']:
 			if 'fits' in test_set_fpath:
@@ -1772,12 +2006,24 @@ class CIBER_PS_pipeline():
 				print('unrecognized file type for '+str(test_set_fpath))
 				return None
 		else:
-			mock_cib_ims = [generate_diffuse_realization(self.dimx, self.dimy, power_law_idx=0.0, scale_fac=3e8) for x in range(nfield)]
+			print('Generating from diffuse realization')
+			# mock_cib_ims = np.zeros(imarray_shape)
+			mock_cib_ims = []
+			for fieldidx, ifield in enumerate(ifield_list):
+				_, ps, mock_cib_im = generate_diffuse_realization(self.dimx, self.dimy, power_law_idx=0.0, scale_fac=3e8)
+				lb, cl_mock, clerr_mock = get_power_spec(mock_cib_im - np.mean(mock_cib_im), lbinedges=self.Mkk_obj.binl, lbins=self.Mkk_obj.midbin_ell)
+				print('cl mock is ', cl_mock)
+				mock_cib_ims.append(mock_cib_im)
+
+
+			mock_cib_ims = np.array(mock_cib_ims)
+			# mock_cib_ims = np.array([generate_diffuse_realization(self.dimx, self.dimy, power_law_idx=0.0, scale_fac=3e8)[2] for ifield in ifield_list])
+			# plot_map(mock_cib_ims[0], title='shot noise realization')
 
 		# if no mean levels provided, use ZL mean levels from file in kelsall folder
 		if zl_levels is None:
 			if gsmt_dict['same_zl_levels']:
-				zl_levels = [self.zl_levels_ciber_fields[inst][self.ciber_field_dict[float_param_dict['indiv_ifield']]] for i in range(nfield)]
+				zl_levels = [self.zl_levels_ciber_fields[inst][self.ciber_field_dict[float_param_dict['indiv_ifield']]] for ifield in ifield_list]
 			else:
 				zl_levels = [self.zl_levels_ciber_fields[inst][self.ciber_field_dict[ifield]] for ifield in ifield_list]
 		
@@ -1822,6 +2068,9 @@ class CIBER_PS_pipeline():
 			if gsmt_dict['generate_diffuse_realization']:
 				diff_realization = self.generate_custom_sky_clustering(dgl_scale_fac=float_param_dict['dgl_scale_fac'], ifield=ifield, gen_ifield=float_param_dict['indiv_ifield'])
 				diff_realizations[fieldidx] = diff_realization
+
+				# if not gsmt_dict['load_ptsrc_cib']:
+				# 	diff_realizations[fieldidx] += mock_cib_ims
 				
 			# ------------- combine individual components into total_signal --------------------
 
@@ -1855,13 +2104,20 @@ class CIBER_PS_pipeline():
 					plot_map(rnmap, title='rnmap')
 
 			# ------------------- add noise to signal and multiply sky signal by the flat field to get "observed" images -----------------------
-				
-			sum_mock_noise = ff_truth*total_signal
+			
+			sum_mock_noise = total_signal.copy()
+
+			if gsmt_dict['apply_smooth_FF']:
+
+				sum_mock_noise *= ff_truth
+			# sum_mock_noise = ff_truth*total_signal
 
 			if gsmt_dict['with_photon_noise']:
+				if gsmt_dict['apply_smooth_FF']:
+					snmap *= ff_truth 
 				if gsmt_dict['verbose']:
 					print('Adding photon noise..')
-				sum_mock_noise += ff_truth*snmap
+				sum_mock_noise += snmap
 					
 
 			if gsmt_dict['with_inst_noise']:
@@ -1898,7 +2154,7 @@ class CIBER_PS_pipeline():
 				f = plot_map(observed_ims[fieldidx], title='post ff image', x0=x0, x1=x1, y0=y0, y1=y1)
 
 
-		return joint_masks, observed_ims, total_signals, rnmaps, shot_sigma_sb_maps, noise_models, ff_truth, diff_realizations, zl_perfield
+		return joint_masks, observed_ims, total_signals, rnmaps, shot_sigma_sb_maps, noise_models, ff_truth, diff_realizations, zl_perfield, mock_cib_ims
 	   
 
 

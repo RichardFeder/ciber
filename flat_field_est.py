@@ -7,11 +7,12 @@ from scipy.ndimage import gaussian_filter
 import matplotlib
 import matplotlib.pyplot as plt
 import pickle
-from astropy.convolution import convolve
-from astropy.convolution import Gaussian2DKernel
+# from astropy.convolution import convolve
+# from astropy.convolution import Gaussian2DKernel
 
 
-def compute_ff_bias(mean_normalizations, noise_rms=None, weights=None, mask_fractions=None):
+def compute_ff_bias(mean_normalizations, noise_rms=None, weights=None, mask_fractions=None, \
+					mean_normalizations_cross=None, weights_cross=None):
 	
 	''' Calculates multiplicative bias in power spectrum due to stacked flat field error
 
@@ -33,22 +34,34 @@ def compute_ff_bias(mean_normalizations, noise_rms=None, weights=None, mask_frac
 		weights = np.ones_like(mean_normalizations)
 		
 		
-	for i, mean_norm in enumerate(mean_normalizations):
+	for j, mean_norm in enumerate(mean_normalizations):
 		
 		ff_weights = list(weights.copy())
 		ff_meannorms = list(mean_normalizations.copy())
-		
-		del(ff_weights[i])
-		del(ff_meannorms[i])
-		
+		del(ff_weights[j])
+		del(ff_meannorms[j])
 		ff_weights /= np.sum(ff_weights)
+
+		if weights_cross is not None and mean_normalizations_cross is not None:
+			ff_weights_b = list(weights_cross.copy())
+			ff_meannorms_b = list(mean_normalizations_cross)
+
+			del(ff_weights_b[j])
+			del(ff_meannorms_b[j])
+			ff_weights_b /= np.sum(ff_weights_b)
+
+			onf_meanprod = mean_normalizations[j]*mean_normalizations_cross[j]
+			normratio = onf_meanprod*(ff_weights*ff_weights_b)/(ff_meannorms*ff_meannorms_b)
 		
-		ff_bias = mean_norm**2*(np.sum(np.array(ff_weights)**2/np.array(ff_meannorms)**2))
+			ff_bias = np.sum(normratio**2)
+
+		else:
+			ff_bias = mean_norm**2*(np.sum(np.array(ff_weights)**2/np.array(ff_meannorms)**2))
 		
 		if mask_fractions is not None:
 			ff_mask_fractions = list(mask_fractions.copy())
 			
-			del(ff_mask_fractions[i])
+			del(ff_mask_fractions[j])
 			
 			mask_fac = np.sum(ff_mask_fractions)
 			
@@ -150,7 +163,8 @@ def compute_stack_ff_estimate(images, masked_images=None, masks=None,  target_im
 	"""
 
 	if masks is None:
-		print('Masks is None, setting all to ones..')
+		if verbose:
+			print('Masks is None, setting all to ones..')
 		masks = [np.full(images[i].shape, 1) for i in range(len(images))]
 			
 	if masked_images is None:
