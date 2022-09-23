@@ -30,12 +30,13 @@ estimates of CIBER auto- and cross-power spectra.
 
 
 
-def update_dicts(list_of_dicts, kwargs):
+def update_dicts(list_of_dicts, kwargs, verbose=False):
 
 	for key, value in kwargs.items():
 		for indiv_dict in list_of_dicts:
 			if key in indiv_dict:
-				print('Setting '+key+' to '+str(value))
+				if verbose:
+					print('Setting '+key+' to '+str(value))
 				indiv_dict[key] = value 
 	return list_of_dicts 
 
@@ -1358,7 +1359,7 @@ class CIBER_PS_pipeline():
 						 grad_sub=True, FF_image=None, FF_fpath=None, plot=False, \
 						 mean_normalizations=None, ifield_list=None, \
 						 masks=None, inv_Mkks=None, niter=5, inst=1, maskidx=0, ff_stack_min=2, \
-						 apply_mask_ffest=True):
+						 apply_mask_ffest=True, noise_scalefac=1., off_fac=None):
 
 		''' 
 		Estimate the transfer function of gradient filtering by passing through a number of sky realizations and measuring the ratio of input/output power spectra.
@@ -1445,6 +1446,9 @@ class CIBER_PS_pipeline():
 				mock_sky_ims = np.array(mock_sky_ims)
 
 				if masks is not None:
+					mask_fractions_init = np.array([float(np.sum(masks[fieldidx]))/float(self.dimx**2) for fieldidx in range(len(ifield_list))])
+					print('mask fractions are initially ', mask_fractions_init)
+
 					masks, stack_masks = stack_masks_ffest(masks, ff_stack_min)
 					mask_fractions = np.array([float(np.sum(masks[fieldidx]))/float(self.dimx**2) for fieldidx in range(len(ifield_list))])
 					obs_levels = [np.mean(mock_sky_ims[fieldidx][masks[fieldidx] != 0]) for fieldidx in range(len(ifield_list))]
@@ -1455,11 +1459,12 @@ class CIBER_PS_pipeline():
 					obs_levels = [np.mean(mock_sky_ims[fieldidx]) for fieldidx in range(len(ifield_list))]
 					mask_fractions=None
 				
-				weights_photonly = self.compute_ff_weights(inst, obs_levels, read_noise_models=None, ifield_list=ifield_list)
+				weights_photonly = self.compute_ff_weights(inst, obs_levels, read_noise_models=None, ifield_list=ifield_list, photon_noise=False)
 				
 				if not grad_sub and not apply_mask_ffest:
 					print('setting mask fractions to None..')
 					mask_fractions = None
+
 
 				ff_biases = compute_ff_bias(obs_levels, weights=weights_photonly, mask_fractions=mask_fractions)
 				# print('weights are ', weights_photonly)
@@ -1467,7 +1472,7 @@ class CIBER_PS_pipeline():
 
 				if apply_FF and grad_sub:
 
-					processed_ims, ff_estimates, final_planes, stack_masks_bright, coeffs_vs_niter = iterative_gradient_ff_solve(mock_sky_ims, niter=niter, masks=masks, ff_stack_min=2)
+					processed_ims, ff_estimates, final_planes, stack_masks_bright, coeffs_vs_niter = iterative_gradient_ff_solve(mock_sky_ims, niter=niter, masks=masks, ff_stack_min=ff_stack_min)
 					if masks is not None:
 						masks *= stack_masks_bright
 
@@ -1475,7 +1480,7 @@ class CIBER_PS_pipeline():
 					obs_levels_new = [np.mean(processed_ims[fieldidx][masks[fieldidx] != 0]) for fieldidx in range(len(ifield_list))]
 					print('obs levels are ', obs_levels_new)
 					print('mask fractions are ', mask_fractions_new)
-					weights_photonly = self.compute_ff_weights(inst, obs_levels_new, read_noise_models=None, ifield_list=ifield_list)
+					weights_photonly = self.compute_ff_weights(inst, obs_levels_new, read_noise_models=None, ifield_list=ifield_list, photon_noise=False)
 					ff_biases_new = compute_ff_bias(obs_levels_new, weights=weights_photonly, mask_fractions=mask_fractions_new)
 					print('updated ff biases are ', ff_biases_new)
 
@@ -1484,10 +1489,17 @@ class CIBER_PS_pipeline():
 
 
 				elif not grad_sub:
+
 					processed_ims = mock_sky_ims.copy()
 					for fieldidx, ifield in enumerate(ifield_list):
-						stack_obs = list(mock_sky_ims.copy())                
+						stack_obs = list(mock_sky_ims.copy())      
+
 						del(stack_obs[fieldidx])
+						
+						if off_fac is not None:
+							for s in range(len(stack_obs)):
+								stack_obs[s] += off_fac*mean_normalizations[fieldidx]*FF_image
+
 						weights_ff_test = weights_photonly[(np.arange(len(processed_ims)) != fieldidx)]
 
 						if masks is not None:
@@ -1504,8 +1516,17 @@ class CIBER_PS_pipeline():
 						ff_estimate[ff_estimate==0] = 1.
 						
 						if fieldidx==0 and setidx==0:
-							plot_map(ff_estimate, title='ffestimate stack ff')
+							plot_map(ff_estimate*masks[fieldidx], title='ffestimate stack ff')
+							plot_map((FF_image-ff_estimate)*masks[fieldidx], title='true - estimated FF')
 
+						if fieldidx==0:
+							plt.figure()
+							fferr_nonzrav = (masks[fieldidx]*(FF_image-ff_estimate)).ravel()
+							fferr_nonzrav = fferr_nonzrav[(fferr_nonzrav!=1)*(~np.isnan(fferr_nonzrav))*(fferr_nonzrav!=0)]
+							plt.hist(fferr_nonzrav, bins=20)
+							plt.title(np.round(np.nanstd(fferr_nonzrav), 3), fontsize=18)
+							plt.yscale('log')
+							plt.show()
 						processed_ims[fieldidx] /= ff_estimate
 				
 				# if masks is not None:
@@ -1537,7 +1558,20 @@ class CIBER_PS_pipeline():
 						lb, cl_filt, clerr_filt = get_power_spec(processed_ims[fieldidx], lbinedges=self.Mkk_obj.binl, lbins=self.Mkk_obj.midbin_ell)
 
 
-					cl_filt /= ff_biases[fieldidx]
+					if off_fac is not None:
+						obs_levels_off_fac = np.array(obs_levels).copy()
+						# obs_levels_off_fac = np.array(obs_levels_off_fac)
+
+						for s in range(len(obs_levels_off_fac)):
+							if s != fieldidx:
+								obs_levels_off_fac[s] = off_fac*mean_normalizations[s]
+
+
+						ff_biases_off = compute_ff_bias(obs_levels_off_fac, weights=weights_photonly, mask_fractions=mask_fractions)[fieldidx]
+						print('fieldidx = ', fieldidx, 'ff bias off ', ff_biases_off)
+						cl_filt /= ff_biases_off
+					else:
+						cl_filt /= ff_biases[fieldidx]
 
 
 					cls_filt[setidx, fieldidx, :] = cl_filt
@@ -1970,7 +2004,7 @@ class CIBER_PS_pipeline():
 		
 		gsmt_dict = dict({'same_zl_levels':False, 'apply_zl_gradient':True,\
 						  'apply_smooth_FF':False, 'with_inst_noise':True,\
-						  'with_photon_noise':True, 'load_ptsrc_cib':True, \
+						  'with_photon_noise':True, 'load_ptsrc_cib':True, 'load_trilegal':True, \
 						 'load_noise_model':True, 'show_plots':False, 'verbose':False, 'generate_diffuse_realization':True})
 		
 		float_param_dict = dict({'ff_min':0.5, 'ff_max':1.5, 'clip_sigma':5, 'ff_stack_min':2, 'nmc_ff':10, \
@@ -1998,15 +2032,18 @@ class CIBER_PS_pipeline():
 			cmock = ciber_mock(ciberdir=ciberdir)
 			
 		
+
 		if gsmt_dict['load_ptsrc_cib']:
+			print('Loading point source CIB component..')
 			if 'fits' in test_set_fpath:
 				mock_cib_file = fits.open(test_set_fpath)
 				mock_cib_ims = np.array([mock_cib_file['map_'+str(ifield)].data.transpose() for ifield in ifield_list])
 			else:
 				print('unrecognized file type for '+str(test_set_fpath))
 				return None
-		else:
-			print('Generating from diffuse realization')
+		elif not gsmt_dict['load_trilegal']:
+			print('gsmt_dict[load_trilegal] is False, so make input sky signal from diffuse realization with shot noise..')
+			# print('Generating from diffuse realization')
 			# mock_cib_ims = np.zeros(imarray_shape)
 			mock_cib_ims = []
 			for fieldidx, ifield in enumerate(ifield_list):
@@ -2019,6 +2056,8 @@ class CIBER_PS_pipeline():
 			mock_cib_ims = np.array(mock_cib_ims)
 			# mock_cib_ims = np.array([generate_diffuse_realization(self.dimx, self.dimy, power_law_idx=0.0, scale_fac=3e8)[2] for ifield in ifield_list])
 			# plot_map(mock_cib_ims[0], title='shot noise realization')
+		else:
+			mock_cib_ims = np.zeros((len(ifield_list), self.dimx, self.dimy))
 
 		# if no mean levels provided, use ZL mean levels from file in kelsall folder
 		if zl_levels is None:

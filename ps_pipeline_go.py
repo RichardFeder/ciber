@@ -135,12 +135,12 @@ def run_cbps_pipeline(cbps, inst, nsims, run_name, ifield_list = None, \
 	config_dict = dict({'ps_type':'auto', 'cross_type':'ciber', 'cross_inst':2, 'cross_gal':None, 'simidx0':0, \
 						'full_mask_tail':'maglim_17_Vega_test', 'bright_mask_tail':'maglim_11_Vega_test'})
 
-	pscb_dict = dict({'apply_mask':True, 'with_inst_noise':True, 'with_photon_noise':True, 'apply_FW':True, \
+	pscb_dict = dict({'apply_mask':True, 'with_inst_noise':True, 'with_photon_noise':True, 'apply_FW':True, 'generate_diffuse_realization':True, \
 					'apply_smooth_FF':True, 'compute_beam_correction':True, 'same_zl_levels':False, 'apply_zl_gradient':True, 'gradient_filter':True, \
 					'iterate_grad_ff':True , 'same_int':False, 'same_dgl':True, 'use_ff_weights':True, 'plot_ff_error':False, 'load_ptsrc_cib':True, \
 					'load_trilegal':True , 'subtract_subthresh_stars':True, 'ff_bias_correct':True, 'save_ff_ests':True, 'plot_maps':True, \
 					 'draw_cib_setidxs':False, 'aug_rotate':False, 'load_noise_bias':False, 'transfer_function_correct':False, 'compute_transfer_function':False,\
-					  'save_intermediate_cls':True, 'verbose':True, 'save':True})
+					  'save_intermediate_cls':True, 'verbose':True, 'save':True, 'bl_post':False, 'ff_sigma_clip':False})
 
 	float_param_dict = dict({'ff_min':0.5, 'ff_max':2.0, 'clip_sigma':5, 'ff_stack_min':2, 'nmc_ff':10, \
 					  'theta_mag':0.01, 'niter':10, 'dgl_scale_fac':5, 'smooth_sigma':5, 'indiv_ifield':6,\
@@ -300,7 +300,12 @@ def run_cbps_pipeline(cbps, inst, nsims, run_name, ifield_list = None, \
 
 		if fpath_dict['bls_fpath'] is not None: # cross
 			print('loading B_ells from ', fpath_dict['bls_fpath'])
-			B_ells = np.load(fpath_dict['bls_fpath'])['B_ells']
+
+			try:
+				B_ells = np.load(fpath_dict['bls_fpath'])['B_ells']
+			except:
+				B_ells = np.load(fpath_dict['bls_fpath'])['B_ells_post']
+
 			print('B_ells = ', B_ells)
 		
 		if config_dict['ps_type']=='cross' and fpath_dict['bls_fpath_cross'] is not None:
@@ -418,7 +423,6 @@ def run_cbps_pipeline(cbps, inst, nsims, run_name, ifield_list = None, \
 				
 				else:
 					
-					# temporary, lets use the full masks but test without CIB+trilegal
 					print('mask path is ', fpath_dict['mask_base_path']+'joint_mask_ifield'+str(ifield)+'_inst'+str(inst)+'_simidx'+str(i)+'_'+mask_tail+'.fits')
 					joint_maskos[fieldidx] = fits.open(fpath_dict['mask_base_path']+'joint_mask_ifield'+str(ifield)+'_inst'+str(inst)+'_simidx'+str(i)+'_'+mask_tail+'.fits')['joint_mask_'+str(ifield)].data
 					inv_Mkks.append(fits.open(fpath_dict['mkk_base_path']+'mkk_estimate_ifield'+str(ifield)+'_inst'+str(inst)+'_simidx'+str(i)+'_'+mask_tail+'.fits')['inv_Mkk_'+str(ifield)].data)
@@ -426,22 +430,7 @@ def run_cbps_pipeline(cbps, inst, nsims, run_name, ifield_list = None, \
 					if mask_tail_ffest is not None:
 						print('Loading full mask from ', mask_tail_ffest)
 						joint_maskos_ffest[fieldidx] = fits.open(fpath_dict['mask_base_path']+'joint_mask_ifield'+str(ifield)+'_inst'+str(inst)+'_simidx'+str(i)+'_'+mask_tail_ffest+'.fits')['joint_mask_'+str(ifield)].data
-				
-					# if pscb_dict['load_ptsrc_cib']:
-					# 	print('mask path is ', fpath_dict['mask_base_path']+'joint_mask_ifield'+str(ifield)+'_inst'+str(inst)+'_simidx'+str(i)+'_'+mask_tail+'.fits')
-					# 	joint_maskos[fieldidx] = fits.open(fpath_dict['mask_base_path']+'joint_mask_ifield'+str(ifield)+'_inst'+str(inst)+'_simidx'+str(i)+'_'+mask_tail+'.fits')['joint_mask_'+str(ifield)].data
-					# 	inv_Mkks.append(fits.open(fpath_dict['mkk_base_path']+'mkk_estimate_ifield'+str(ifield)+'_inst'+str(inst)+'_simidx'+str(i)+'_'+mask_tail+'.fits')['inv_Mkk_'+str(ifield)].data)
-						
-					# 	if mask_tail_ffest is not None:
-					# 		print('Loading full mask from ', mask_tail_ffest)
-					# 		joint_maskos_ffest[fieldidx] = fits.open(fpath_dict['mask_base_path']+'joint_mask_ifield'+str(ifield)+'_inst'+str(inst)+'_simidx'+str(i)+'_'+mask_tail_ffest+'.fits')['joint_mask_'+str(ifield)].data
-					
-					# else:
-					# 	maskidx = i%10
-					# 	joint_maskos[fieldidx] = fits.open(base_path+'TM'+str(inst)+'/masks/ff_joint_masks/joint_mask_with_ffmask_ifield'+str(ifield)+'_inst'+str(inst)+'_simidx'+str(maskidx)+'_abc110821.fits')['joint_mask_'+str(ifield)].data
-					# 	inv_Mkks.append(fits.open(base_path+'TM'+str(inst)+'/mkk/ff_joint_masks/mkk_estimate_with_ffmask_ifield'+str(ifield)+'_inst'+str(inst)+'_simidx'+str(maskidx)+'_abc110821.fits')['inv_Mkk_'+str(ifield)].data)
-
-				orig_mask_fractions.append(float(np.sum(joint_maskos[fieldidx]))/float(cbps.dimx**2))
+						orig_mask_fractions.append(float(np.sum(joint_maskos[fieldidx]))/float(cbps.dimx**2))
 
 			orig_mask_fractions = np.array(orig_mask_fractions)
 			print('mask fractions before FF estimation are ', orig_mask_fractions)
@@ -703,7 +692,7 @@ def run_cbps_pipeline(cbps, inst, nsims, run_name, ifield_list = None, \
 			cbps.FW_image=fourier_weights_nofluc.copy() #cross?
 			nls_estFF_nofluc.append(nl_estFF_nofluc)
 
-			if pscb_dict['load_ptsrc_cib'] or data_type=='observed':
+			if pscb_dict['load_ptsrc_cib'] or pscb_dict['load_trilegal'] or data_type=='observed':
 				beam_correct = True
 				B_ell_field = B_ells[fieldidx]
 				if ciber_cross_ciber:
@@ -768,7 +757,7 @@ def run_cbps_pipeline(cbps, inst, nsims, run_name, ifield_list = None, \
 
 					cib_cl_file = fits.open(base_path+'TM'+str(inst)+'/powerspec/cls_cib_vs_maglim_ifield'+str(ifield_list[fieldidx])+'_inst'+str(inst)+'_simidx'+str(cib_setidx)+'_Vega_magcut_test.fits')
 					unmasked_cib_cl = cib_cl_file['cls_cib'].data['cl_maglim_'+str(masking_maglim)]
-					ebl_ps = unmasked_cib_cl + diff_cl
+					true_ps = unmasked_cib_cl + diff_cl
 					# print('diff_cl:', diff_cl)
 					print('unmasked cib cl', unmasked_cib_cl)
 
@@ -780,9 +769,15 @@ def run_cbps_pipeline(cbps, inst, nsims, run_name, ifield_list = None, \
 							pscb_dict['subtract_subthresh_stars'] = False
 						trilegal_cl_fpath = trilegal_base_path+'TM'+str(inst)+'/powerspec/cls_trilegal_vs_maglim_ifield'+str(ifield_list[fieldidx])+'_inst'+str(inst)+'_simidx'+str(cib_setidx)+'_Vega_magcut_test.fits'
 						trilegal_cl = fits.open(trilegal_cl_fpath)['cls_trilegal'].data['cl_maglim_'+str(masking_maglim)]
-						ebl_ps += trilegal_cl 
+						true_ps += trilegal_cl 
 						print('trilegal_cl is ', trilegal_cl)
-						print('and ebl is now ', ebl_ps)
+						print('and true cl is now ', true_ps)
+
+				elif pscb_dict['load_trilegal']:
+					print('Ground truth in this case is the ISL fainter than our masking depth..')
+					trilegal_cl_fpath = trilegal_base_path+'TM'+str(inst)+'/powerspec/cls_trilegal_vs_maglim_ifield'+str(ifield_list[fieldidx])+'_inst'+str(inst)+'_simidx'+str(cib_setidx)+'_Vega_magcut_test.fits'
+					true_ps = fits.open(trilegal_cl_fpath)['cls_trilegal'].data['cl_maglim_'+str(masking_maglim)]
+
 
 				else:
 					# lb, cl_diffreal, clerr_diffreal = get_power_spec(diff_realizations[fieldidx]-np.mean(diff_realizations[fieldidx]))
@@ -790,7 +785,7 @@ def run_cbps_pipeline(cbps, inst, nsims, run_name, ifield_list = None, \
 					full_realiz = mock_cib_ims[fieldidx]+diff_realizations[fieldidx]
 					full_realiz -= np.mean(full_realiz)
 					# plot_map(full_realiz, title='full realiz fieldidx '+str(fieldidx))
-					lb, ebl_ps, cl_proc_err, _ = cbps.compute_processed_power_spectrum(inst, apply_mask=False, \
+					lb, true_ps, cl_proc_err, _ = cbps.compute_processed_power_spectrum(inst, apply_mask=False, \
 														 image=full_realiz, convert_adufr_sb=False, \
 														mkk_correct=False, beam_correct=beam_correct, B_ell=None, \
 														apply_FW=False, verbose=False, noise_debias=False, \
@@ -821,9 +816,9 @@ def run_cbps_pipeline(cbps, inst, nsims, run_name, ifield_list = None, \
 			recovered_power_spectra[i, fieldidx, :] = processed_ps_nf
 
 			if data_type=='mock':
-				print('ebl ps', ebl_ps)
-				signal_power_spectra[i, fieldidx, :] = ebl_ps
-				print('proc (nofluc) / ebl = ', processed_ps_nf/ebl_ps)
+				print('true ps', true_ps)
+				signal_power_spectra[i, fieldidx, :] = true_ps
+				print('proc (nofluc) / ebl = ', processed_ps_nf/true_ps)
 				print('mean ps bias is ', np.mean(recovered_power_spectra[i,:,:]/signal_power_spectra[i,:,:], axis=0))
 
 		nls_estFF_nofluc = np.array(nls_estFF_nofluc)
