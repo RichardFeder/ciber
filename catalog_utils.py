@@ -52,7 +52,7 @@ def catalog_df_add_xy(field, df, datadir='/Users/luminatech/Documents/ciber2/cib
         print('making cut on image bounds')
         inst1_mask = (df['x1'] > 0)&(df['x1'] < 1023)&(df['y1'] > 0)&(df['y1'] < 1023)
         inst2_mask = (df['x2'] > 0)&(df['x2'] < 1023)&(df['y2'] > 0)&(df['y2'] < 1023)
-        imcut_idx = np.where(inst1_mask | inst2_mask)
+        imcut_idx = np.where(inst1_mask | inst2_mask) # keep sources that fall onto at least one imager
         df = df.iloc[imcut_idx].copy()
         df = df.reset_index(drop=True)
         
@@ -143,10 +143,10 @@ def detect_cat_conditions_PanSTARRS(catalog_df, tailmagstr='MeanPSFMag'):
 
     return PanSTARRS_detect_condition
 
-def detect_cat_conditions_J_unWISE_PanSTARRS(catalog_df, j_key='j_mag_best'):
+def detect_cat_conditions_J_unWISE_PanSTARRS(catalog_df, j_key='j_mag_best', W1key='mag_W1', W2key='mag_W2'):
     
     Jcondition = detect_cat_conditions_Jband(catalog_df, j_key=j_key)
-    unWISE_detect_condition = detect_cat_conditions_unWISE(catalog_df)
+    unWISE_detect_condition = detect_cat_conditions_unWISE(catalog_df, W1key=W1key, W2key=W2key)
     PanSTARRS_detect_condition = detect_cat_conditions_PanSTARRS(catalog_df)
     
     return Jcondition, unWISE_detect_condition, PanSTARRS_detect_condition
@@ -222,6 +222,77 @@ def hsc_positions(hsc_cat, nchoose, z, dz=10, ra_min=241.5, ra_max=243.5, dec_mi
     return tx, ty
 
 
+def crossmatch_unWISE_PanSTARRS_112822(unWISE_cat_wxy, PS_cat_wxy,\
+                                base_cat='unWISE', fieldstr_tail_PS='BootesA_DR1_richard_feder', fieldstr='BootesA',\
+                                dpos_max = 1.0, nsig=2, datdir = 'data/catalogs/'):
+    
+    '''
+    Parameters
+    ----------
+    
+    base_cat : 'string', optional
+        specifies which catalog is the reference catalog for cross matching
+        Default is 'unWISE'.
+        
+    
+    '''
+
+    Vega_to_AB = dict({'g':-0.08, 'r':0.16, 'i':0.37, 'z':0.54, 'y':0.634, 'J':0.91, 'H':1.39})
+    PS_bands = ['g', 'r', 'i', 'z', 'y']
+    
+    unWISE_src_coord = SkyCoord(ra=unWISE_cat_wxy['ra']*u.degree, dec=unWISE_cat_wxy['dec']*u.degree, frame='icrs')
+    PS_src_coord = SkyCoord(ra=PS_cat_wxy['ra']*u.degree, dec=PS_cat_wxy['dec']*u.degree, frame='icrs')
+
+    if base_cat=='unWISE':
+        idx, d2d, _ = match_coordinates_sky(unWISE_src_coord, PS_src_coord) # the order of the input catalogs matters!
+        
+        PS_cat_match = PS_cat_wxy.iloc[idx]
+        
+        # Vega magnitudes
+        for PS_band in PS_bands:
+            unWISE_cat_wxy[PS_band+'MeanPSFMag'] = np.array(PS_cat_match[PS_band+'MeanPSFMag']) - Vega_to_AB[PS_band]
+
+        if fieldstr != 'UDS':
+            unWISE_cat_wxy['x1_PS'] = np.array(PS_cat_match['x1'])
+            unWISE_cat_wxy['y1_PS'] = np.array(PS_cat_match['y1'])
+        unWISE_cat_wxy['ra_PS'] = np.array(PS_cat_match['ra'])
+        unWISE_cat_wxy['dec_PS'] = np.array(PS_cat_match['dec'])
+
+        unWISE_cat_wxy['dmatch_arcsec'] = d2d.arcsec
+    
+        unWISE_PS_xmatch_mask = np.where(np.array(unWISE_cat_wxy['dmatch_arcsec']) <= dpos_max)[0]
+        
+        crossmatch_PS_unWISE = unWISE_cat_wxy.iloc[unWISE_PS_xmatch_mask].copy()
+        return crossmatch_PS_unWISE, unWISE_cat_wxy, unWISE_PS_xmatch_mask
+
+    elif base_cat=='PanSTARRS':
+        idx, d2d, _ = match_coordinates_sky(PS_src_coord, unWISE_src_coord) # the order of the input catalogs matters!
+        
+        PS_cat_wxy['primary'] = np.array(unWISE_cat_wxy.iloc[idx].primary)
+        # PS_cat_wxy['flux_W1'] = np.array(unWISE_cat_wxy.iloc[idx].flux_W1)
+        # PS_cat_wxy['flux_W2'] = np.array(unWISE_cat_wxy.iloc[idx].flux_W2)
+        
+        # Vega magnitudes
+        # PS_cat_wxy['mag_W1'] = np.array(22.5 - 2.5*np.log10(PS_cat_wxy['flux_W1']))
+        # PS_cat_wxy['mag_W2'] = np.array(22.5 - 2.5*np.log10(PS_cat_wxy['flux_W2']))
+
+        if fieldstr != 'UDS':
+            PS_cat_wxy['x1_unWISE'] = np.array(unWISE_cat_wxy.iloc[idx]['x1'])
+            PS_cat_wxy['y1_unWISE'] = np.array(unWISE_cat_wxy.iloc[idx]['y1'])
+            PS_cat_wxy['x2_unWISE'] = np.array(unWISE_cat_wxy.iloc[idx]['x2'])
+            PS_cat_wxy['y2_unWISE'] = np.array(unWISE_cat_wxy.iloc[idx]['y2'])
+
+        PS_cat_wxy['ra_unWISE'] = np.array(unWISE_cat_wxy.iloc[idx]['ra'])
+        PS_cat_wxy['dec_unWISE'] = np.array(unWISE_cat_wxy.iloc[idx]['dec'])
+        PS_cat_wxy['dmatch_arcsec'] = d2d.arcsec
+
+        PS_unWISE_xmatch_mask = np.where(np.array(PS_cat_wxy['dmatch_arcsec']) <= dpos_max)[0]
+        
+        crossmatch_PS_unWISE = PS_cat_wxy.iloc[PS_unWISE_xmatch_mask].copy()
+
+        return crossmatch_PS_unWISE, PS_cat_wxy, PS_unWISE_xmatch_mask
+
+
 def crossmatch_unWISE_PanSTARRS(unWISE_cat_wxy=None, PS_cat_wxy=None, base_cat='unWISE', fieldstr_tail_PS='BootesA_DR1_richard_feder', fieldstr='BootesA', nsig=2, \
     datdir = '/Users/luminatech/Documents/ciber2/ciber/data/cats/'):
     
@@ -239,6 +310,8 @@ def crossmatch_unWISE_PanSTARRS(unWISE_cat_wxy=None, PS_cat_wxy=None, base_cat='
         Default is 2.
     
     '''
+
+    Vega_to_AB = dict({'g':-0.08, 'r':0.16, 'i':0.37, 'z':0.54, 'y':0.634, 'J':0.91, 'H':1.39})
     
     if unWISE_cat_wxy is None:
         unWISE_cat_wxy = pd.read_csv('data/cats/unWISE/'+fieldstr+'/unWISE_'+fieldstr+'_filt_xy_dpos.csv')
@@ -274,6 +347,8 @@ def crossmatch_unWISE_PanSTARRS(unWISE_cat_wxy=None, PS_cat_wxy=None, base_cat='
         
         crossmatch_PS_unWISE = unWISE_cat_wxy.iloc[unWISE_PS_xmatch_mask].copy()
 
+        return crossmatch_PS_unWISE, unWISE_cat_wxy, unWISE_PS_xmatch_mask
+
     elif base_cat=='PanSTARRS':
         idx, d2d, _ = match_coordinates_sky(PS_src_coord, unWISE_src_coord) # the order of the input catalogs matters!
         
@@ -293,12 +368,13 @@ def crossmatch_unWISE_PanSTARRS(unWISE_cat_wxy=None, PS_cat_wxy=None, base_cat='
 
         PS_cat_wxy['dmatch_arcsec'] = d2d.arcsec
 
+
         PS_unWISE_xmatch_mask = np.where(np.array(PS_cat_wxy['dmatch_arcsec']) <= nsig*3600*np.array(PS_cat_wxy['dpos']))[0]
         
         crossmatch_PS_unWISE = PS_cat_wxy.iloc[PS_unWISE_xmatch_mask].copy()
 
 
-    return crossmatch_PS_unWISE
+        return crossmatch_PS_unWISE
 
 
 def crossmatch_IBIS_unWISE_PS(field, df_IBIS_wxy=None, crossmatch_unWISE_PS=None, \
@@ -517,20 +593,35 @@ def unWISE_flag_filter(cat, flags_unwise_val=0, flags_info_val=0, primary=True, 
     if primary:
         mask *= (cat['primary']==1)
     if flags_unwise_val is not None:
-        mask *= (cat['flags_unwise'][:,band_merged_idx]==0)
+        mask *= (cat['flags_unwise'][:,band_merged_idx]==flags_unwise_val)
     if flags_info_val is not None:
-        mask *= (cat['flags_info'][:,band_merged_idx]==0)
+        mask *= (cat['flags_info'][:,band_merged_idx]==flags_info_val)
         
     return mask
 
-def unWISE_fluxes_to_mags(fluxes, mode='AB'):
+def unWISE_flag_filter_112822(cat, flags_unwise_val=0, flags_info_val=0, primary=True, band_merged_idx=0):
+    mask = np.bool((cat.shape[0]))
+    if primary:
+        mask *= (cat['primary']==1)
+    if flags_unwise_val is not None:
+        mask *= (cat['flags_unwise_1']==flags_unwise_val)
+        mask *= (cat['flags_unwise_2']==flags_unwise_val)
+
+    if flags_info_val is not None:
+        mask *= (cat['flags_info_1']==flags_info_val)
+        mask *= (cat['flags_info_2']==flags_info_val)
+        
+    return mask
+
+def unWISE_fluxes_to_mags_112822(fluxes, mode='AB'):
     Vega = 22.5-2.5*np.log10(fluxes)
     
     if mode=='Vega':
         return Vega
     else:
+        print("Converting to AB magnitudes..")
         AB = Vega.copy()
-        AB[:,0] + 2.699
-        AB[:,1] + 3.339
+        AB[0,:] += 2.699
+        AB[1,:] += 3.339
         
         return AB
