@@ -318,7 +318,7 @@ def srcmask_binwise_opt(cbps, m_min, m_max, d_mag, ifield=4, inst=1, rad_min=7.,
                        xkey='x', ykey='y', magkey='j_m', cmock=None, n_fine_bin=10, nwide=17, \
                        use_running_mask=False, running_mask=None, make_bright_mask=False, bright_mask_thresh=16, psthresh=1e-8, plot=False, \
                        observed_image=None, bright_nong_sub=False, bright_radmin=50., bright_drad=7., nong_mmax=7, nwide_cutout=100, inst_mask=None, \
-                       a1=220., b1=3.632, c1=8.52):
+                       a1=160., b1=3.632, c1=8.52):
     ''' 
     Radii are in units of arcseconds 
     

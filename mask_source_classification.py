@@ -108,12 +108,13 @@ def train_decision_tree(training_catalog, feature_names, \
 							  mode='regress', max_predict=None):
 
 	classes_train = np.array(training_catalog[outlablstr] < mag_lim).astype(np.int)
+	
 	if mode=='regress':
 		vals_train = training_catalog[outlablstr]
 		print('min/max vals train', np.min(vals_train), np.max(vals_train))
 		
 	train_features = feature_matrix_from_df(training_catalog, feature_names, filter_nans=True)
-		
+	print('min/max training feature is ', np.min(train_features), np.max(train_features))
 	if mode=='classify':
 		clf = tree.DecisionTreeClassifier(max_depth=max_depth)
 		fig = clf.fit(train_features, classes_train)
@@ -424,7 +425,7 @@ def mask_cat_predict_rf(ifield, inst, cmock, mask_cat_unWISE_PS=None, fieldstr_t
         full_merged_cat_unWISE_PS['gMeanPSFMag'] += 0.16 # correcting error in processed PS catalog
 
         # use decision tree to identify sources that need masking
-        features_merged_cat_unWISE_PS = feature_matrix_from_df(full_merged_cat_unWISE_PS, feature_names=feature_names, filter_nans=True)
+        featuresd_cat_unWISE_PS = feature_matrix_from_df(full_merged_cat_unWISE_PS, feature_names=feature_names, filter_nans=True)
         predictions_CIBER_field_unWISE_PS = decision_tree.predict(features_merged_cat_unWISE_PS)
         
         if mode=='regress':
@@ -527,7 +528,7 @@ def source_mask_construct_dt(ifield, inst, cmock, mask_cat_unWISE_PS=None, field
 																		 beta_m=beta_m, a1=a1, b1=b1, c1=c1, mag_lim=J_mag_lim,\
 																	alpha_m=alpha_m, pixsize=pixsize, inst=inst, dimx=nx, dimy=ny)
 
-		print('Now creating mask for 2MASS..')
+	print('Now creating mask for 2MASS..')
 	twomass = pd.read_csv(twomass_cat_directory+'2MASS_'+fieldstr_mask+'_filtxy.csv') # these are in Vega
 
 	if J_mag_lim <= 16.:

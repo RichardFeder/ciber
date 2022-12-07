@@ -83,7 +83,7 @@ def make_synthetic_trilegal_cat(trilegal_path, J_band_idx=16, H_band_idx=17, imd
 def mask_from_cat(xs=None, ys=None, mags=None, cat_df=None, dimx=1024, dimy=1024, pixsize=7.,\
                     interp_maskfn=None, mode='Zemcov+14', magstr='zMeanPSFMag', alpha_m=-6.25, beta_m=110, a1=252.8, b1=3.632, c1=8.52,\
                      Vega_to_AB = 0., mag_lim_min=0, mag_lim=None, fixed_radius=None, radii=None, compute_radii=True, inst=1, \
-                    radmap_full=None, rc=1., plot=True, interp_max_mag=None, interp_min_mag=None):
+                    radmap_full=None, rc=1., plot=True, interp_max_mag=None, interp_min_mag=None, m_min_thresh=None, radcap=200.):
     
     if fixed_radius is not None or radii is not None:
         compute_radii = False
@@ -106,6 +106,9 @@ def mask_from_cat(xs=None, ys=None, mags=None, cat_df=None, dimx=1024, dimy=1024
             xs = np.array(cat_df['x'+str(inst)])
             ys = np.array(cat_df['y'+str(inst)])
 
+            print('length after cutting on '+magstr+'< '+str(mag_lim)+' is '+str(len(xs)))
+
+            
         elif mags is not None:
             mag_lim_mask = (mags < mag_lim)*(mags > mag_lim_min)
             mags = mags[mag_lim_mask]
@@ -127,6 +130,10 @@ def mask_from_cat(xs=None, ys=None, mags=None, cat_df=None, dimx=1024, dimy=1024
                 mags[mags < interp_min_mag] = interp_min_mag
 
             radii = interp_maskfn(np.array(mags))
+
+            if m_min_thresh is not None:
+                radii[np.array(mags) < m_min_thresh] = radcap
+
             if plot:
                 plt.figure()
                 plt.scatter(mags, radii, s=3, color='k')

@@ -1,5 +1,5 @@
 import matplotlib
-matplotlib.use('TkAgg')
+# matplotlib.use('TkAgg')
 import matplotlib.pyplot as plt
 import numpy as np
 from numpy.fft import fftshift as fftshift
@@ -9,12 +9,15 @@ from numpy.fft import ifft2 as ifft2
 import multiprocessing
 from multiprocessing import Pool
 import pyfftw
+import time
+from filtering_utils import fit_gradient_to_map, precomp_gradient_dat, fit_gradient_to_map_precomp
+from plotting_fns import plot_map
 
 def allocate_empty_aligned_pyfftw(dat_shape, dtype='complex64'):
     return pyfftw.empty_aligned(dat_shape, dtype=dtype)
     
     
-def construct_pyfftw_objs(n_obj, dat_shape, dtype='complex64', axes=(1,2), n_threads=1, directions=['FFTW_BACKWARD', 'FFTW_FORWARD']):
+def construct_pyfftw_objs(n_obj, dat_shape, dtype='complex64', axes=(1,2), threads=1, directions=['FFTW_BACKWARD', 'FFTW_FORWARD']):
     
     fft_objs = []
     empty_aligned_objs = []
@@ -24,10 +27,33 @@ def construct_pyfftw_objs(n_obj, dat_shape, dtype='complex64', axes=(1,2), n_thr
     
     for j in range(n_obj-1):
         
-        fft_obj = pyfftw.FFTW(empty_aligned_objs[j], empty_aligned_objs[j+1], axes=axes, threads=n_threads, direction=directions[j], flags=('FFTW_MEASURE', ))
+        fft_obj = pyfftw.FFTW(empty_aligned_objs[j], empty_aligned_objs[j+1], axes=axes, threads=threads, direction=directions[j], flags=('FFTW_MEASURE', ))
     
         fft_objs.append(fft_obj)
          
+    return empty_aligned_objs, fft_objs
+
+
+def construct_pyfftw_objs_gen(n_obj, dat_shape, dtype='complex64', axes=(1,2), threads=1, directions=['FFTW_BACKWARD', 'FFTW_FORWARD'], \
+    n_fft_obj=None, fft_idx0_list=None, fft_idx1_list=None):
+    
+    fft_objs, empty_aligned_objs = [], []
+
+    if n_fft_obj is None:
+        n_fft_obj = n_obj-1
+    if fft_idx0_list is None:
+        fft_idx0_list = np.arange(n_obj-1)
+    if fft_idx1_list is None:
+        fft_idx1_list = np.arange(n_obj-1)+1
+    n_fft_obj = len(fft_idx0_list)
+
+    for i in range(n_obj):
+        empty_aligned_objs.append(allocate_empty_aligned_pyfftw(dat_shape, dtype=dtype))
+    
+    for j in range(n_fft_obj):
+        fft_obj = pyfftw.FFTW(empty_aligned_objs[fft_idx0_list[j]], empty_aligned_objs[fft_idx1_list[j]], axes=axes, threads=threads, direction=directions[j], flags=('FFTW_MEASURE', ))
+        fft_objs.append(fft_obj)
+
     return empty_aligned_objs, fft_objs
 
 
@@ -82,7 +108,7 @@ class Mkk_bare():
     def set_bin_edges(self, binl):
         self.binl = binl
 
-    def get_mkk_sim(self, mask, nsims, show_tone_map=False, mode='auto', n_split=1, \
+    def get_mkk_sim(self, mask, nsims, show_tone_map=False, mode='auto', n_split=1, threads=1, \
                     print_timestats=False, return_all_Mkks=False, n_fine_bins=None, sub_bins=False, store_Mkks=True, precompute_all=False):
         
         ''' This is the main function that computes an estimate of the mode coupling matrix Mkk from nsims generated tone maps. 
@@ -134,7 +160,7 @@ class Mkk_bare():
         
         maplist_split_shape = (nsims//n_split, self.dimx, self.dimy)
         
-        self.empty_aligned_objs, self.fft_objs = construct_pyfftw_objs(3, maplist_split_shape)
+        self.empty_aligned_objs, self.fft_objs = construct_pyfftw_objs(3, maplist_split_shape, threads=threads)
        
         Mkks, dC_ell_list = [], []
         
@@ -224,15 +250,92 @@ class Mkk_bare():
                 self.fft_objs[0](self.unshifted_ringmasks[idx]*self.noise)
 
 
-    
-    def get_ensemble_angular_autospec(self, nsims=2, sub_bins=False, apply_mask=False):
-                 
-        if apply_mask:
-            self.empty_aligned_objs[1] *= self.mask
-
-        self.fft_objs[1](self.empty_aligned_objs[1].real)
+    def get_ensemble_angular_autospec_ndim(self, nsims=2, sub_bins=False, apply_mask=False, mask=None, fft_obj_idx=1, obj_idx0=None, obj_idx1=None, \
+                                            obj_idx0_cross=None, obj_idx1_cross=None, fft_obj_idx_cross=None):
         
-        fftsq = [(dentry*np.conj(dentry)).real for dentry in self.empty_aligned_objs[2]]
+        if obj_idx0 is None:
+            obj_idx0 = 1
+        if obj_idx1 is None:
+            obj_idx1 = 2
+
+        cross_Mkk=False
+        if obj_idx0_cross is not None and obj_idx1_cross is not None and fft_obj_idx_cross is not None:
+            cross_Mkk = True
+
+        if apply_mask:
+            if mask is None:
+                mask = self.mask
+            self.empty_aligned_objs[obj_idx0] *= mask
+
+        eao_shape = self.empty_aligned_objs[obj_idx0].shape
+
+        # print('eao shape is ', eao_shape)
+        ndim_eao = len(eao_shape)
+        # print('ndim eao is ', ndim_eao)
+
+        self.fft_objs[fft_obj_idx](self.empty_aligned_objs[obj_idx0].real)
+        if cross_Mkk:
+            self.fft_objs[fft_obj_idx_cross](self.empty_aligned_objs[obj_idx0_cross].real)
+        
+        if ndim_eao==3:
+            c_ell_shape = (nsims, len(self.binl)-1)
+            if not cross_Mkk:
+                fftsq = [(dentry*np.conj(dentry)).real for dentry in self.empty_aligned_objs[obj_idx1]]
+            else:
+                fftsq = [(dentry*np.conj(dentry_cross)).real for dentry, dentry_cross in zip(self.empty_aligned_objs[obj_idx1], self.empty_aligned_objs[obj_idx1_cross])]
+
+        else:
+
+            c_ell_shape = (eao_shape[0]*eao_shape[1], len(self.binl)-1)
+            fftsq = []
+
+            if cross_Mkk:
+                for perf_dentry, perf_dentry_cross in zip(self.empty_aligned_objs[obj_idx1], self.empty_aligned_objs[obj_idx1_cross]):
+                    fftsq.extend([(dentry*np.conj(dentry_cross)).real for dentry, dentry_cross in zip(perf_dentry, perf_dentry_cross)])
+            else:
+                for perf_dentry in self.empty_aligned_objs[obj_idx1]:
+                    fftsq.extend([(dentry*np.conj(dentry)).real for dentry in perf_dentry])
+            
+
+        if sub_bins and self.n_fine_bins > 0:
+            C_ell = np.zeros((nsims, self.n_total_bins))
+            for i in range(self.n_total_bins):
+                if self.sub_ringmask_sums[i] > 0:
+                    C_ell[:,i] = np.array([np.sum(self.sub_masked_weights[i]*fftsq[j][self.sub_ringmasks[i]])/self.sub_masked_weight_sums[i] for j in range(nsims)])
+
+        else:
+            
+            C_ell = self.bandpower_average_powerspec(c_ell_shape, fftsq)
+            # C_ell = np.zeros(c_ell_shape)
+            # for i in range(len(self.binl)-1):
+            #     if self.ringmask_sums[i] > 0:
+            #         C_ell[:,i] = np.array([np.sum(self.masked_weights[i]*fftsq[j][self.ringmasks[i]])/self.masked_weight_sums[i] for j in range(nsims)])
+
+            # return C_ell, 
+        return C_ell
+    
+
+    def bandpower_average_powerspec(self, c_ell_shape, fftsq):
+        C_ell = np.zeros(c_ell_shape)
+        nsims = len(fftsq)
+        for i in range(len(self.binl)-1):
+            if self.ringmask_sums[i] > 0:
+                C_ell[:,i] = np.array([np.sum(self.masked_weights[i]*fftsq[j][self.ringmasks[i]])/self.masked_weight_sums[i] for j in range(nsims)])
+        return C_ell
+
+    def get_ensemble_angular_autospec(self, nsims=2, sub_bins=False, apply_mask=False, obj_idx0=None, obj_idx1=None):
+                 
+        if obj_idx0 is None:
+            obj_idx0 = 1
+        if obj_idx1 is None:
+            obj_idx1 = 2
+
+        if apply_mask:
+            self.empty_aligned_objs[obj_idx0] *= self.mask
+
+        self.fft_objs[1](self.empty_aligned_objs[obj_idx0].real)
+        
+        fftsq = [(dentry*np.conj(dentry)).real for dentry in self.empty_aligned_objs[obj_idx1]]
             
         if sub_bins and self.n_fine_bins > 0:
             C_ell = np.zeros((nsims, self.n_total_bins))
@@ -609,6 +712,210 @@ def save_mkks(filepath, all_Mkks=None, av_Mkk=None, inverse_Mkk=None, bins=None,
     print("saved mkk matrices to ", filepath)
 
 
+
+def estimate_mkk_ffest(cbps, nsims, masks, ifield_list=None, n_split=1, mean_normalizations=None, ff_weights=None, \
+                      verbose=False, grad_sub=False, niter=1, plot=False, threads=1, dtype='complex64', \
+                      clock=False):
+    
+    t0 = time.time()
+    if ifield_list is None:
+        ifield_list = [4, 5, 6, 7, 8]
+        
+    masks = masks.astype(np.float)
+        
+    nfield = len(ifield_list)
+    nsims_perf = nsims//n_split
+    nstack = nsims_perf*nfield
+    
+    if mean_normalizations is None:
+        mean_normalizations = np.zeros_like(ifield_list)
+            
+    maplist_split_shape = (nstack, cbps.dimx, cbps.dimy)
+    maplist_split_shapenew = (nfield,nsims_perf, cbps.dimx, cbps.dimy)
+    
+    # empty aligned object will have nfield, nsims perfield shape. so fftsq iterates over fields and extends by nsims per field.
+
+    print('maplist split shape is ', maplist_split_shape)
+    
+    cbps.Mkk_obj.precompute_mkk_quantities(precompute_all=True)
+
+    cbps.Mkk_obj.empty_aligned_objs, cbps.Mkk_obj.fft_objs = construct_pyfftw_objs_gen(4, maplist_split_shapenew, axes=(2,3), \
+                                                                                  n_fft_obj=2, fft_idx0_list=[0, 2], fft_idx1_list=[1,3], \
+                                                                                  threads=threads, dtype=dtype)
+
+    # precompute vectors for gradient estimation
+    dot1s = []
+    mask_ravs = []
+    for m, mask in enumerate(masks):
+        dot1, Xgrad, mask_rav = precomp_gradient_dat(cbps.dimx, cbps.dimy, mask=mask)
+        dot1s.append(dot1)
+        mask_ravs.append(mask_rav)
+    mask_ravs = np.array(mask_ravs)
+
+    n_total_bins = len(cbps.Mkk_obj.unshifted_ringmasks)
+    Mkks_per_field = np.zeros((nfield, nsims, n_total_bins, n_total_bins))
+    
+    # only need to compute ff estimates for one field at a time, so nstack instead of nstack*nfield
+    perf_mapshape = (nsims_perf, cbps.dimx, cbps.dimy)
+    
+    all_ff_estimates = np.zeros(maplist_split_shapenew)
+    
+    if ff_weights is None:
+        ff_weights = np.ones((nfield))
+
+    t1 = time.time()
+    if clock:
+        print('time for initializing pyfftw objs and other data:', t1-t0)
+        
+    ff_weight_ims = np.array([ff_weights[m]*mask for m, mask in enumerate(masks)])
+
+    for i in range(n_split):
+        print('Split '+str(i+1)+' of '+str(n_split))
+        
+        t2 = time.time()
+        # compute noise realizations beforehand so time isn't wasted generating a whole new set each time. We can do this because the ring masks
+        # that we multiply by the noise realizations are spatially disjoint, i.e. the union of all of the Fourier masks is the null set. 
+        cbps.Mkk_obj.noise = np.random.normal(size=maplist_split_shapenew)+ 1j*np.random.normal(size=maplist_split_shapenew)
+        
+        t3 = time.time()
+        if clock:
+            print('time to make noise realizations:', t3-t2)
+
+        for j in range(n_total_bins):
+            print('band ', j)
+            cbps.Mkk_obj.map_from_phase_realization(j, nsims=nstack)
+            
+            # now we have 5 x nsims/nsplit maps. add mean normalization to each and apply mask.
+            # I think I just need to get the relative mean normalizations correct.
+            # does it matter what the relative fluctuation amplitude is? 
+            
+            t4 = time.time()
+            for k in range(nfield):
+
+                cbps.Mkk_obj.empty_aligned_objs[1][k].real += mean_normalizations[k]
+                cbps.Mkk_obj.empty_aligned_objs[1][k].real *= masks[k]
+
+            t5 = time.time()
+            if clock:
+                print('time to add mean normalizations and multiply by mask:', t5-t4)
+                
+            for n in range(niter):
+                
+                tff0 = time.time()
+
+                # for each source estimate the flat field from the other four fields. 
+                for k in range(nfield):
+
+                    tnf0 = time.time()
+                    if verbose:
+                        print('now computing for k = ', k)
+                    notkrange = [kp for kp in range(nfield) if kp != k]
+
+                    # ff weighted images from four off fields
+                    # ff_weight_ims = np.array([ff_weights[kp]*masks[kp] for kp in notkrange])
+                    # sum_ff_weight_ims = np.sum(ff_weight_ims, axis=0)
+                    sum_ff_weight_ims = np.sum([ff_weights[kp]*masks[kp] for kp in notkrange], axis=0)
+
+                    tnf1 = time.time()
+                    if clock:
+                        print('tnf1 - tnf0 =', tnf1 - tnf0)
+
+                    if k==0:
+                        for kp in notkrange:
+                            cbps.Mkk_obj.empty_aligned_objs[1][kp] *= ff_weights[kp]/mean_normalizations[kp]
+                    else:
+                        cbps.Mkk_obj.empty_aligned_objs[1][k-1] *= ff_weights[k-1]/mean_normalizations[k-1]
+
+                    # for kp in notkrange:
+                        # cbps.Mkk_obj.empty_aligned_objs[1][kp] *= ff_weights[kp]/mean_normalizations[kp]
+
+                    tnf2 = time.time()
+                    if clock:
+                        print('multiplying by ff weights/mean normalization:', tnf2 - tnf1)
+
+                    # if verbose:
+                        # print('shaaape', np.sum(cbps.Mkk_obj.empty_aligned_objs[1][notkrange,:,:,:].real, axis=0).shape)
+
+                    # all_ff_estimates[k] = np.sum(cbps.Mkk_obj.empty_aligned_objs[1][notkrange], axis=0).real/sum_ff_weight_ims
+
+                    all_ff_estimates[k] = np.sum(cbps.Mkk_obj.empty_aligned_objs[1][notkrange].real, axis=0)/sum_ff_weight_ims
+                    # tnf21 = time.time()
+                    all_ff_estimates[k][np.isnan(all_ff_estimates[k])] = 1. 
+
+                    tnf2p5 = time.time()
+                    if clock:
+                        # print('ff estimate nan masking:', tnf2p5-tnf21)
+                        print('all ffestimates calc (switch real order) :', tnf2p5-tnf2)  
+
+                    cbps.Mkk_obj.empty_aligned_objs[2][k].real = cbps.Mkk_obj.empty_aligned_objs[1][k].real/all_ff_estimates[k]
+
+                    tnf3 = time.time()
+                    if clock:
+                        print('tnf3 - tnf2:', tnf3 - tnf2)
+                        print('transfer to eao[2]:', tnf3 - tnf2p5)
+
+                    # undo scaling of off fields to ff_estimate
+
+                    if k < nfield-1:
+                        cbps.Mkk_obj.empty_aligned_objs[1][k+1] /= ff_weights[k+1]/mean_normalizations[k+1]
+
+                    # for kp in notkrange:
+                    #     cbps.Mkk_obj.empty_aligned_objs[1][kp] /= ff_weights[kp]/mean_normalizations[kp] # only do this for the one that needs to change
+
+                    tnf4 = time.time()
+                    if clock:
+                        print('tnf4 - tnf3', tnf4-tnf3)
+
+                    if grad_sub:
+
+                        planes = np.array([fit_gradient_to_map_precomp(cbps.Mkk_obj.empty_aligned_objs[2][k,s].real, dot1s[k], Xgrad, mask_rav=mask_ravs[k])[1] for s in range(nsims_perf)])
+
+                        # planes = np.array([fit_gradient_to_map(cbps.Mkk_obj.empty_aligned_objs[2][k,s].real, masks[k])[1] for s in range(nsims_perf)])
+                        cbps.Mkk_obj.empty_aligned_objs[2][k].real -= np.array([masks[k]*planes[s] for s in range(nsims_perf)])
+
+                    tnf5 = time.time()
+                    if clock:
+                        print('grad sub ', tnf5-tnf4)
+                    if n==niter-1:
+                        unmasked_means = np.array([np.mean(cbps.Mkk_obj.empty_aligned_objs[2][k,s].real[masks[k]==1.]) for s in range(nsims_perf)])                
+                        cbps.Mkk_obj.empty_aligned_objs[2][k] -= np.array([masks[k]*unmasked_means[s] for s in range(nsims_perf)])
+                        # unmasked_means_sub = np.array([np.mean(cbps.Mkk_obj.empty_aligned_objs[2][k,s].real[masks[k]==1.]) for s in range(nsims_perf)])
+                        if k==0 and i==0 and verbose:
+                            print('unmasked mean pre sub:', unmasked_means)
+                            # print('unmasked mean post subs', unmasked_means_sub)
+
+                    tnf6 = time.time()
+                    if clock:
+                        print('tnf6-tnf5 =', tnf6-tnf5)
+
+                tff1 = time.time()
+                if clock:
+                    print('time for full iteration:', tff1-tff0)
+            if j<2 and plot:
+                for kc in range(nfield):
+                    plot_map(all_ff_estimates[kc,0], title='final ff estimate')
+                    plot_map(cbps.Mkk_obj.empty_aligned_objs[1][kc,0].real, title='cbps.Mkk_obj.empty_aligned_objs[1]['+str(kc)+',0]')
+                    print(np.mean(cbps.Mkk_obj.empty_aligned_objs[1][kc,0].real[masks[kc]==1]), mean_normalizations[kc])
+
+            masked_Cl = cbps.Mkk_obj.get_ensemble_angular_autospec_ndim(nsims=nstack, apply_mask=False, obj_idx0=2, obj_idx1=3)
+            for k in range(nfield):
+                if verbose and i==0:
+                    print('masked CL field '+str(k)+':')
+                    print(np.mean(masked_Cl[k*nsims_perf:(k+1)*nsims_perf], axis=0))
+
+                Mkks_per_field[k, i*nsims_perf:(i+1)*nsims_perf, j, :] = np.array(masked_Cl)[k*nsims_perf:(k+1)*nsims_perf]
+            
+        average_Mkks_perfield = np.mean(Mkks_per_field, axis=1)
+        
+        if plot:
+            for k in range(nfield):
+                plot_mkk_matrix(average_Mkks_perfield[k])            
+
+
+    return average_Mkks_perfield, Mkks_per_field
+
+ 
+    
 
  
 # mkk = multithreaded_mkk(nsims=20, n_process=2)

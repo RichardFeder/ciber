@@ -4,19 +4,72 @@ from scipy import stats
 from helgason import *
 from lognormal_counts import *
 from catalog_utils import *
+from plotting_fns import *
 import sys
+import config
+
+# from hmf.mass_function.hmf import MassFunction
 
 
-if sys.version_info[0] == 3:
-    from halo_model import *
-    from hmf import MassFunction
-    import hmf
-    import camb
+from astropy.cosmology import FlatLambdaCDM
+cosmo = FlatLambdaCDM(H0=70, Om0=0.28)
 
-    pars = camb.CAMBparams()
-    pars.set_cosmology(H0=67.5, ombh2=0.022, omch2=0.122)
-    pars.InitPower.set_params(ns=0.965)
+# from halo_model import *
+# from hmf import MassFunction
 
+# if sys.version_info[0] == 3:
+#     from halo_model import *
+    # from hmf import MassFunction
+#     import hmf
+# import camb
+
+# pars = camb.CAMBparams()
+# pars.set_cosmology(H0=67.5, ombh2=0.022, omch2=0.122)
+# pars.InitPower.set_params(ns=0.965)
+
+
+def limber_project(halo_ps, zmin, zmax, ng=None, flux_prod_rate=None, nbin=20, ell_min=90, ell_max=1e5, n_ell_bin=30):
+    ''' 
+    This function projects a 3D power spectrum to a 2D angular power spectrum. Currently takes in the dark matter 
+    halo power spectrum from the hmf package. The only place where this is used is when updating the redshift of the power spectrum.
+    
+    Note: Should add option to use array of power spectra as well
+    '''
+    cls = np.zeros((nbin, n_ell_bin))    
+
+    ell_space = 10**(np.linspace(np.log10(ell_min), np.log10(ell_max), n_ell_bin))
+    zs = np.linspace(zmin, zmax, nbin+1)
+    dz = zs[1]-zs[0]
+    central_zs = 0.5*(zs[1:]+zs[:-1])
+    
+    D_A = cosmo.angular_diameter_distance(central_zs)/cosmo.h # has units h^-1 Mpc
+    H_z = cosmo.H(central_zs) # has units km/s/Mpc (or km/s/(h^-1 Mpc)?)
+    inv_product = (cosmo.h*dz*H_z)/(const.c.to('km/s')*(1.+central_zs)*D_A**2)
+    
+    for i in range(nbin):
+        halo_ps.update(z=central_zs[i])
+        ks = ell_space / (cosmo.comoving_distance(central_zs[i]))
+        log_spline = interpolate.InterpolatedUnivariateSpline(np.log10(halo_ps.k), np.log10(halo_ps.nonlinear_power))    
+        ps = 10**(log_spline(np.log10(ks.value)))
+        cls[i] = ps
+
+    ''' One can compute the auto and cross power spectrum for intensity maps/tracer catalogs 
+    by specifying flux_prod_rate and/or ng (average number of galaxies per steradian)''' 
+    
+    if flux_prod_rate is not None:
+        if ng is not None:
+            cls = np.array([flux_prod_rate[i]*ng**(-1)*inv_product[i]*cls[i] for i in range(inv_product.shape[0])])
+        else:
+            cls = np.array([flux_prod_rate[i]**2*inv_product[i]*cls[i] for i in range(inv_product.shape[0])])
+    else:
+        if ng is not None:
+            cls = np.array([ng**(-2)*inv_product[i]*cls[i] for i in range(inv_product.shape[0])])
+        else:
+            cls = np.array([inv_product[i]*cls[i] for i in range(inv_product.shape[0])])
+
+    integral_cl = np.sum(cls, axis=0)
+
+    return ell_space, integral_cl
 
 
 def k_to_ell(k, comoving_dist):
@@ -80,8 +133,8 @@ This involves:
 class galaxy_catalog():
     
     lf = Luminosity_Function()
-    if sys.version_info[0] == 3:
-        mass_function = MassFunction(z=0., dlog10m=0.02)
+    # if sys.version_info[0] == 3:
+    # mass_function = MassFunction(z=0., dlog10m=0.02)
     cosmo = FlatLambdaCDM(H0=70, Om0=0.28)
 
 
@@ -160,7 +213,7 @@ class galaxy_catalog():
             pdfs.append(pdf)
         return pdfs
 
-    def generate_positions(self, Nsrc, size, nmaps, ell_min=90., random_positions=False, hsc=False, cl=None, ells=None, add_subpix_scatter=True):
+    def generate_positions(self, Nsrc, size, nmaps, ell_min=90., random_positions=False, hsc=False, cl=None, ells=None, add_subpix_scatter=True, plot=False):
         
         ''' If random_positions is True, this function just draws random source positions, but otherwise a clustering realization is generated and
         positions are sampled from this field. Can also take in a preselected HSC catalog'''
@@ -175,7 +228,11 @@ class galaxy_catalog():
         else:
             txs, tys = [], []
             # draw galaxy positions from GRF with given power spectrum, number_counts in deg^-2
-            counts, grfs = generate_count_map_2d(nmaps, cl=cl, size=size, ell_min=ell_min, Ntot=Nsrc, ell_sampled=ells)
+            counts, grfs = generate_count_map_2d(nmaps, cl=cl, size=size, ell_min=ell_min, Ntot=Nsrc, ell_sampled=ells, plot=plot)
+
+            if plot:
+                plot_map(counts[0], title='counts[0]')
+                plot_map(grfs[0], title='grfs[0]')
 
             self.total_counts += counts
 
@@ -193,9 +250,10 @@ class galaxy_catalog():
         
         return txs, tys
 
-    def generate_galaxy_catalogs(self, ng_bins=5, zmin=0.01, zmax=5.0, ndeg=4.0, m_min=13, m_max=28, hsc=False, \
+    def generate_galaxy_catalogs(self, ng_bins=5, zmin=0.0, zmax=2.0, ndeg=4.0, m_min=13, m_max=28, hsc=False, \
                                ell_min=90., Mabs_min=-30.0, Mabs_max=-15., size=1024, random_positions=False, \
-                                Mabs_nbin=100, band='J', cl=None, ells=None, n_catalogs=1, n_bin_Mapp=200):
+                                Mabs_nbin=100, band='J', cl=None, ells=None, n_catalogs=1, n_bin_Mapp=200, load_cl_limber_file=False, \
+                                plot=False, compute_halo_params=False):
         
         ''' This function puts together other functions in the galaxy_catalog() class as full pipeline to generate galaxy catalog realizations,
         given some angular power spectrum and Helgason model'''
@@ -234,13 +292,21 @@ class galaxy_catalog():
 
         for i, z in enumerate(midzs):
             
+            cl = None
+            if load_cl_limber_file:
+                clfile = np.load(config.exthdpath+'ciber_mocks/limber_cl_vs_redshift/limber_cls_zmin='+str(zmin)+'_zmax='+str(zmax)+'_zbin'+str(i)+'.npz')
+                ells = clfile['lb_limber']
+                cl = clfile['integral_cl']
+                # print('central zs for z bin centered on ', z, 'is', clfile['central_zs'])
+                # print('lb limber is ', ells)
+                # print('cl is', cl)
             if cl is None:
                 ells, cl = limber_project(self.mass_function, zrange_grf[i], zrange_grf[i+1], ell_min=30, ell_max=3e5)
             
             print('number counts here are:', np.sum(number_counts[i])*n_square_deg, n_square_deg)
             txs, tys = self.generate_positions(np.sum(number_counts[i])*n_square_deg, size, n_catalogs, \
                                               ell_min=ell_min, random_positions=random_positions, hsc=hsc, \
-                                            cl=cl, ells=ells, add_subpix_scatter=True)
+                                            cl=cl, ells=ells, add_subpix_scatter=True, plot=plot)
             
             for cat in range(n_catalogs):
                 thetax_list[cat].extend(txs[cat])
@@ -285,9 +351,16 @@ class galaxy_catalog():
             gal_abs_mags = np.array(mags_list[cat]) - dist_mods - 2.5*np.log10(1.0+np.array(gal_zs_list[cat]))
             array = np.array([thetax_list[cat], thetay_list[cat], gal_zs_list[cat], mags_list[cat], gal_abs_mags]).transpose()
             partial_cat = array[np.argsort(array[:,4])]
-            halo_masses, virial_radii = self.abundance_match_ms_given_mags(partial_cat[:,2])
+
+            if compute_halo_params:
+
+                halo_masses, virial_radii = self.abundance_match_ms_given_mags(partial_cat[:,2])
+            else:
+                halo_masses = np.zeros_like(partial_cat[:,2])
+                virial_radii = np.zeros_like(partial_cat[:,2])
+
             self.catalogs.append(np.hstack([partial_cat, np.array([halo_masses, virial_radii]).transpose()]))
-            
+                
         return self.catalogs
 
     def load_halo_mass_function(self, filename):

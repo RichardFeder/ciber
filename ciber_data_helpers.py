@@ -26,7 +26,6 @@ def load_psf_params_dict(inst, field=None, ifield=None, tail_path='data/psf_mode
         ifield_title_dict = dict({'Elat 10':4,'Elat 30':5, 'Bootes B':6, 'Bootes A':7, 'SWIRE':8})
         ifield = ifield_title_dict[field]
 
-
     params = psf_mod[inst][ifield]
 
     beta = params[0]
@@ -186,6 +185,34 @@ def write_Mkk_fits(Mkk, inv_Mkk, ifield, inst, sim_idx=None, generate_starmask=T
     hdul = fits.HDUList([hdup, hdum, hduim])
     return hdul
 
+
+def make_fits_files_by_quadrant(images, ifield_list=[4, 5, 6, 7, 8], use_maskinst=True, tail_name='', \
+                               save_path_base = '/Users/richardfeder/Downloads/ciber_flight/'):
+    
+    xs = [0, 0, 512, 512]
+    ys = [0, 512, 0, 512]
+    quadlist = ['A', 'B', 'C', 'D']
+    
+    maskinst_basepath = config.exthdpath+'ciber_fluctuation_data/TM1/masks/maskInst_102422'
+    for i in range(len(images)):
+        
+        mask_inst = fits.open(maskinst_basepath+'/field'+str(ifield_list[i])+'_TM'+str(inst)+'_maskInst_102422.fits')[1].data
+        image = images[i].copy()
+        
+        if use_maskinst:
+            image *= mask_inst
+        
+        for q in range(4):
+            quad = image[ys[q]:ys[q]+512, xs[q]:xs[q]+512]
+            plot_map(quad, title='quad '+str(q+1))
+            
+            hdul = fits.HDUList([fits.PrimaryHDU(quad), fits.ImageHDU(quad)])
+            
+            save_fpath = save_path_base+'TM'+str(inst)+'/secondhalf/ifield'+str(ifield_list[i])+'/ciber_flight_ifield'+str(ifield_list[i])+'_TM'+str(inst)+'_quad'+quadlist[q]
+            if tail_name is not None:
+                save_fpath += '_'+tail_name
+            hdul.writeto(save_fpath+'.fits', overwrite=True)
+            
 
 ''' The classes/functions below have not been fully developed or used yet, so I will defer documentation until they are.'''
 

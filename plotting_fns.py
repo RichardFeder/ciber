@@ -8,7 +8,7 @@ from PIL import Image
 # from Pillow import Image
 import glob
 
-from integrate_cl_wtheta import *
+# from integrate_cl_wtheta import *
 # from ciber_powerspec_pipeline import compute_knox_errors
 
 
@@ -959,7 +959,7 @@ def plot_map(image, figsize=(8,8), title=None, titlefontsize=16, xlabel='x [pix]
     
         plt.title(title, fontsize=titlefontsize)
     if nanpct:
-        plt.imshow(image, vmin=np.nanpercentile(image, lopct), vmax=np.nanpercentile(image, hipct), cmap=cmap, origin='lower')
+        plt.imshow(image, vmin=np.nanpercentile(image, lopct), vmax=np.nanpercentile(image, hipct), cmap=cmap, interpolation='None', origin='lower')
         print('min max of image in plot map are ', np.min(image), np.max(image))
     else:
         plt.imshow(image, cmap=cmap, origin='lower', interpolation='none')

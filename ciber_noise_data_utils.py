@@ -41,7 +41,7 @@ def chop_up_masks(sigmap, nside=5, ravel=False, show=False, verbose=True):
     return masks
 
 def compute_exp_difference(inst, cal_facs=None, pathA=None, pathB=None, expA=None, expB=None, data_path=None,idxA=None, idxB=None, mask=None, mode='flight', \
-                          plot_diff_hist=False):
+                          plot_diff_hist=False, return_maps=False):
     
     ''' Compute exposure differences and return mean values of (masked) images '''
 
@@ -80,7 +80,10 @@ def compute_exp_difference(inst, cal_facs=None, pathA=None, pathB=None, expA=Non
 
     mean_flight = 0.5*(expA+expB)
     
-    return exp_diff, meanA, meanB, mean_flight
+    if return_maps:
+        return exp_diff, meanA, meanB, mean_flight, expA, expB 
+    else:        
+        return exp_diff, meanA, meanB, mean_flight
 
 def compute_fourier_weights(cl2d_all, stdpower=2):
     
@@ -619,15 +622,17 @@ def get_lightsrc_mask_unsharp_masking(im_list, inst_mask=None, small_scale=5, la
          
     return mask, sum_im*mask
 
-
-def iter_sigma_clip_mask(image, sig=5, nitermax=10, initial_mask=None):
+def iter_sigma_clip_mask(image, sig=5, nitermax=10, mask=None):
+    # this version makes copy of the mask to be modified, rather than modifying the original
     # image assumed to be 2d
     iteridx = 0
     
     summask = image.shape[0]*image.shape[1]
-    running_mask = (image != 0).astype(np.int)
-    if initial_mask is not None:
-        running_mask *= initial_mask
+
+    if mask is not None:
+        running_mask = mask.copy()
+    else:
+        running_mask = np.ones_like(image)
         
     while iteridx < nitermax:
         
@@ -643,13 +648,17 @@ def iter_sigma_clip_mask(image, sig=5, nitermax=10, initial_mask=None):
         
     return running_mask
 
+
 def labexp_to_noisemodl(cbps, inst, ifield, labexp_fpaths, labexp_fpaths_2=None,\
                         clip_sigma = 4, sigma_clip_cl2d=False, cl2d_clip_sigma=4, cal_facs=None, nitermax=10,\
-                        plot=True, base_fluc_path='/Volumes/Seagate Backup Plus Drive/Toolkit/Mirror/Richard/ciber_fluctuation_data/'):
+                        plot=True, base_fluc_path=None, \
+                        maskInst_fpath=None):
     
     
     ''' estimates a read noise model from a collection of dark exposure pair differences. '''
 
+    if base_fluc_path is None:
+        base_fluc_path = config.exthdpath+'ciber_fluctuation_data/'
 
     nexp = len(labexp_fpaths)
     
@@ -665,17 +674,23 @@ def labexp_to_noisemodl(cbps, inst, ifield, labexp_fpaths, labexp_fpaths_2=None,
     meanAs, meanBs, mask_fracs = [], [], []
         
     for i in range(nexp//2):
-        mask_inst = cbps.load_mask(ifield=ifield, inst=inst, masktype='maskInst_clean', inplace=False)
-        
-        
+
+        if maskInst_fpath is None:
+            mask_inst = cbps.load_mask(ifield=ifield, inst=inst, masktype='maskInst_clean', inplace=False)
+        else:
+            mask_inst = fits.open(maskInst_fpath)['maskInst'].data # 10/24/22
+            
+        if plot:
+            plot_map(mask_inst, title='maskInst')
+
         if labexp_fpaths_2 is not None:
             lab_exp_diff, meanA, meanB, mean_exp = compute_exp_difference(inst, cal_facs=cal_facs, pathA=labexp_fpaths[i], pathB=labexp_fpaths_2[i], mask=mask_inst, plot_diff_hist=False)
         else:
+            # I think mainly use this?
             lab_exp_diff, meanA, meanB, mean_exp = compute_exp_difference(inst, cal_facs=cal_facs, pathA=labexp_fpaths[2*i], pathB=labexp_fpaths[2*i+1], mask=mask_inst, plot_diff_hist=False)
         
-        
         if plot:
-            plot_map(lab_exp_diff*mask_inst, title='lab exp diff')
+            plot_map(lab_exp_diff*mask_inst, title='lab exp diff * mask_inst')
         
         lab_exp_diff /= np.sqrt(2)
         new_mask = iter_sigma_clip_mask(lab_exp_diff, sig=clip_sigma, nitermax=nitermax, initial_mask=mask_inst.astype(np.int))
@@ -687,7 +702,7 @@ def labexp_to_noisemodl(cbps, inst, ifield, labexp_fpaths, labexp_fpaths_2=None,
         meanAs.append(meanA)
         meanBs.append(meanB)
 
-        masked_full = np.ma.array(lab_exp_diff, mask=~mask_inst.astype(np.bool))
+        masked_full = np.ma.array(lab_exp_diff, mask=~mask_inst.astype(np.bool)) # ? 
         mamean = np.ma.mean(masked_full)
         mameans_full[i] = mamean
         
@@ -695,37 +710,29 @@ def labexp_to_noisemodl(cbps, inst, ifield, labexp_fpaths, labexp_fpaths_2=None,
         mask_fracs.append(fdet)
 
         # get 2d power spectrum
-        l2d, cl2d = get_power_spectrum_2d(mask_inst*(lab_exp_diff-mamean), pixsize=cbps.Mkk_obj.pixsize)
+        masked_meansub_diff = mask_inst*(lab_exp_diff-mamean)
+        if plot:
+            plot_map(masked_meansub_diff, title='masked meansub diff')
+            
+        l2d, cl2d = get_power_spectrum_2d(masked_meansub_diff, pixsize=cbps.Mkk_obj.pixsize)
         
-        if sigma_clip_cl2d:
-            
-            # we are only going to try to mask the spurious modes at higher ell_x and ell_y, so we ignore the central band
-            ybandtop = 512+100
-            ybandbottom = 512-100
-
-            # make average 2D Cl excluding horizontal band
-            noband_noise = np.zeros_like(cl2d)
-            noband_noise[ybandtop:,:] = cl2d[ybandtop:,:]
-            noband_noise[:ybandbottom,:] = cl2d[:ybandbottom,:]
-            
-            itermask = iter_sigma_clip_mask(noband_noise, sig=cl2d_clip_sigma, nitermax=10, initial_mask=np.ones_like(noband_noise.astype(np.int)))
-
-            fourier_mask_full = itermask.copy()
-            fourier_mask_full[ybandbottom:ybandtop,:] = 1.
-            
-            if plot:
-                plot_map(fourier_mask_full, title='fourier mask')
-                plot_map(fourier_mask_full*cl2d, title='cl2d * fourier mask')
-
-            cl2d *= fourier_mask_full
-            
+        if plot:
+            plot_map(np.log10(cl2d), title='log10 cl2d indiv')
+    
         cls_2d_noise_full[i] = cl2d
         
         
     av_cl2d = np.mean(cls_2d_noise_full, axis=0)
     
+    if plot:
+        plot_map(np.log10(av_cl2d), title='log10 av_cl2d')
+
     # correct 2d power spectrum for mask with 1/fsky
+    print('mask fractions:', mask_fracs)
     av_mask_frac = np.mean(mask_fracs)
+    
+    print('average mask fraction:', av_mask_frac)
+
     av_cl2d /= av_mask_frac
     
     av_means = 0.5*(np.mean(meanAs)+np.mean(meanBs))
@@ -733,7 +740,8 @@ def labexp_to_noisemodl(cbps, inst, ifield, labexp_fpaths, labexp_fpaths_2=None,
     if plot:
         plot_map(av_cl2d, title='av cl2d')
         
-    return av_cl2d, av_means
+    return av_cl2d, av_means, lab_exp_diff*mask_inst
+
 
 
 def load_focus_mat(filename, nfr):
@@ -1119,6 +1127,7 @@ def validate_noise_model_flight_diff(cbps, inst, flight_halves=None, ifield_list
         nfr = cbps.field_nfrs[ifield]//2
         base_fluc_path = '/Volumes/Seagate Backup Plus Drive/Toolkit/Mirror/Richard/ciber_fluctuation_data/'
 
+
         mask_fpath = base_fluc_path+'/TM'+str(inst)+'/masks/joint_mask_with_ffmask_ifield'+str(ifield)+'_inst'+str(inst)+'.fits'
         mask = fits.open(mask_fpath)['joint_mask_'+str(ifield)].data
 
@@ -1143,7 +1152,8 @@ def validate_noise_model_flight_diff(cbps, inst, flight_halves=None, ifield_list
         else:
             shot_sigma_sb = cbps.compute_shot_sigma_map(inst, 0.5*(meanA+meanB)*np.ones_like(flight_exp_diff), nfr=nfr)
         # compute noise model fourier weights
-        noise_model = fits.open(noise_model_fpaths[i])['noise_model_'+str(ifield)].data
+
+        # noise_model = fits.open(noise_model_fpaths[i])['noise_model_'+str(ifield)].data
 
         if use_lab_phot:
             photon_eps = fits.open(noise_model_fpaths[i])[0].header['photon_eps']
@@ -1155,7 +1165,8 @@ def validate_noise_model_flight_diff(cbps, inst, flight_halves=None, ifield_list
         if use_lab_phot:
             meanAB -= photon_sb
             
-        shot_sigma_sb = cbps.compute_shot_sigma_map(inst, meanAB*np.ones_like(flight_exp_diff), nfr=nfr)
+        # shot_sigma_sb = cbps.compute_shot_sigma_map(inst, meanAB*np.ones_like(flight_exp_diff), nfr=nfr)
+        # shot_sigma_sb = cbps.compute_shot_sigma_map(inst, meanAB*np.ones_like(flight_exp_diff))
         
         fourier_weights, mean_cl2d = cbps.estimate_noise_power_spectrum(ifield=ifield, nsims=nsims, n_split=n_split, apply_mask=True, \
                    mask=mask, noise_model=noise_model, inst=inst, show=False,\
@@ -1163,10 +1174,10 @@ def validate_noise_model_flight_diff(cbps, inst, flight_halves=None, ifield_list
                     ff_estimate=None, field_nfr=nfr, verbose=verbose)
         
         for j in range(n_split):
-
+            
             rnmaps, _ = cbps.noise_model_realization(inst, maplist_split_shape, noise_model, fft_obj=fft_objs[0],\
                                           read_noise=True, photon_noise=False)
-        
+
             snmaps1 = np.random.normal(0, 1, size=(nsims//n_split, cbps.dimx, cbps.dimy))
             dsnmaps = shot_sigma_sb*snmaps1
         

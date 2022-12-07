@@ -2,11 +2,13 @@ import numpy as np
 import astropy.io.fits as fits
 import astropy.wcs as wcs
 import pandas as pd
+import config
 import scipy.io
 from scipy.ndimage import gaussian_filter
 import matplotlib
 import matplotlib.pyplot as plt
 from astropy.table import Table
+from reproject import reproject_interp
 
 from mkk_parallel import *
 # from ciber_powerspec_pipeline import *
@@ -28,13 +30,6 @@ class powerspec():
 
 
 	def load_in_powerspec(self, powerspec_fpath, mode=None, inplace=False):
-
-		# if inplace:
-		# 	if mode==''
-		# 	self.ps = powerspec
-
-		# else:
-		# 	return powerspec
 
 		pass
 
@@ -506,8 +501,214 @@ def read_ciber_powerspectra(filename):
 	norm_dcl_upper = array[:,3]
 	return np.array([ells, norm_cl, norm_dcl_lower, norm_dcl_upper])
 
+def regrid_iris_by_quadrant(fieldname, inst=1, quad_list=['A', 'B', 'C', 'D'], \
+                             xoff=[0,0,512,512], yoff=[0,512,0,512], astr_dir='../data/astroutputs/', \
+                             plot=True, dimx=1024, dimy=1024):
+    
+    ''' 
+    Used for regridding maps from IRIS to CIBER. For the CIBER1 imagers the 
+    astrometric solution is computed for each quadrant separately, so this function iterates
+    through the quadrants when constructing the full regridded images. 
+    
+    Parameters
+    ----------
+    
+    Returns
+    -------
+    
+    '''
+    
+    iris_regrid = np.zeros((dimx, dimy))    
+    astr_hdrs = [fits.open(astr_dir+'inst'+str(inst)+'/'+fieldname+'_'+quad+'_astr.fits')[0].header for quad in quad_list]
 
-def write_Mkk_fits(Mkk, inv_Mkk, ifield, inst, sim_idx=None, generate_starmask=True, generate_galmask=True, \
+    # loop over quadrants of first imager
+    
+    for iquad, quad in enumerate(quad_list):
+        
+        arrays, footprints = [], []
+        
+        iris_interp = mosaic(astr_hdrs[iquad])
+        
+        iris_regrid[yoff[iquad]:yoff[iquad]+512, xoff[iquad]:xoff[iquad]+512] = iris_interp
+        if plot:
+            plot_map(iris_interp, title='IRIS map interpolated to CIBER, quadrant '+quad)
+    
+    if plot:
+        plot_map(iris_regrid, title='IRIS map interpolated to CIBER')
+
+    return iris_regrid
+
+
+def load_quad_hdrs(ifield, inst, base_path='/Users/richardfeder/Downloads/ciber_flight/', quad_list=['A', 'B', 'C', 'D'], halves=True):
+    
+    if halves:
+        fpaths_first = [base_path+'/TM'+str(inst)+'/firsthalf/ifield'+str(ifield)+'/ciber_wcs_ifield'+str(ifield)+'_TM'+str(inst)+'_quad'+quad_str+'_firsthalf.fits' for quad_str in quad_list]
+        fpaths_second = [base_path+'/TM'+str(inst)+'/secondhalf/ifield'+str(ifield)+'/ciber_wcs_ifield'+str(ifield)+'_TM'+str(inst)+'_quad'+quad_str+'_secondhalf.fits' for quad_str in quad_list]
+        
+        all_wcs_first = [wcs.WCS(fits.open(fpath_first)[0].header) for fpath_first in fpaths_first]
+        all_wcs_second = [wcs.WCS(fits.open(fpath_second)[0].header) for fpath_second in fpaths_second]
+        
+        return all_wcs_first, all_wcs_second
+    else:
+        ciber_field_dict = dict({4:'elat10', 5:'elat30',6:'BootesB', 7:'BootesA', 8:'SWIRE', 'train':'UDS'})
+
+        fpaths = [base_path+'/astroutputs/inst'+str(inst)+'/'+ciber_field_dict[ifield]+'_'+quad_str+'_astr.fits' for quad_str in quad_list]
+        all_wcs = [wcs.WCS(fits.open(fpath)[0].header) for fpath in fpaths]
+        return all_wcs
+
+
+
+def regrid_arrays_by_quadrant(map1, ifield, inst0=1, inst1=2, quad_list=['A', 'B', 'C', 'D'], \
+                             xoff=[0,0,512,512], yoff=[0,512,0,512], astr_map0_hdrs=None, astr_map1_hdrs=None, indiv_map0_hdr=None, indiv_map1_hdr=None, astr_dir='data/astroutputs/', \
+                             plot=True, order=0):
+    
+    ''' 
+    Used for regridding maps from one imager to another. For the CIBER1 imagers the 
+    astrometric solution is computed for each quadrant separately, so this function iterates
+    through the quadrants when constructing the full regridded images. 
+    
+    Parameters
+    ----------
+    
+    Returns
+    -------
+    
+    '''
+
+    ciber_field_dict = dict({4:'elat10', 5:'elat30',6:'BootesB', 7:'BootesA', 8:'SWIRE', 'train':'UDS'})
+
+    map1_regrid, map1_fp_regrid = [np.zeros_like(map1) for x in range(2)]
+
+    fieldname = ciber_field_dict[ifield]
+    
+    map1_quads = [map1[yoff[iquad]:yoff[iquad]+512, xoff[iquad]:xoff[iquad]+512] for iquad in range(len(quad_list))]
+    
+    if astr_map0_hdrs is None and indiv_map0_hdr is None:
+        astr_map0_hdrs = load_quad_hdrs(ifield, inst0, base_path='data/', halves=False)
+    if astr_map1_hdrs is None and indiv_map1_hdr is None:
+        astr_map1_hdrs = load_quad_hdrs(ifield, inst1, base_path='data/', halves=False)
+
+    # if astr_map0_hdrs is None and indiv_map0_hdr is None:
+    #     astr_map0_hdrs = [fits.open(astr_dir+'inst'+str(inst0)+'/'+fieldname+'_'+quad+'_astr.fits')[0].header for quad in quad_list]
+    # if astr_map1_hdrs is None and indiv_map1_hdr is None:
+    #     astr_map1_hdrs = [fits.open(astr_dir+'inst'+str(inst1)+'/'+fieldname+'_'+quad+'_astr.fits')[0].header for quad in quad_list]
+    # loop over quadrants of first imager
+    
+    for iquad, quad in enumerate(quad_list):
+        
+        # arrays, footprints = [], []
+        run_sum_footprint, sum_array = [np.zeros_like(map1_quads[0]) for x in range(2)]
+
+        # reproject each quadrant of second imager onto first imager
+        if indiv_map0_hdr is None:
+            for iquad2, quad2 in enumerate(quad_list):
+                input_data = (map1_quads[iquad2], astr_map1_hdrs[iquad2])
+                array, footprint = reproject_interp(input_data, astr_map0_hdrs[iquad], (512, 512), order=order)
+
+                array[np.isnan(array)] = 0.
+                footprint[np.isnan(footprint)] = 0.
+
+                run_sum_footprint += footprint 
+                sum_array[run_sum_footprint < 2] += array[run_sum_footprint < 2]
+                run_sum_footprint[run_sum_footprint > 1] = 1
+
+                # arrays.append(array)
+                # footprints.append(footprint)
+       
+        # sumarray = np.nansum(arrays, axis=0)
+        # sumfootprints = np.nansum(footprints, axis=0)
+
+        if plot:
+            plot_map(sum_array, title='sum array')
+            plot_map(run_sum_footprint, title='sum footprints')
+        
+        # print('number of pixels with > 1 footprint', np.sum((sumfootprints==2)))
+        # map1_regrid[yoff[iquad]:yoff[iquad]+512, xoff[iquad]:xoff[iquad]+512] = sumarray
+        # map1_fp_regrid[yoff[iquad]:yoff[iquad]+512, xoff[iquad]:xoff[iquad]+512] = sumfootprints
+
+        map1_regrid[yoff[iquad]:yoff[iquad]+512, xoff[iquad]:xoff[iquad]+512] = sum_array
+        map1_fp_regrid[yoff[iquad]:yoff[iquad]+512, xoff[iquad]:xoff[iquad]+512] = run_sum_footprint
+
+    return map1_regrid, map1_fp_regrid
+
+def regrid_iris_ciber_science_fields(ifield_list=[4,5,6,7,8], inst=1, tail_name=None, plot=False, \
+            save_fpath=config.exthdpath+'ciber_fluctuation_data/'):
+    
+    ciber_field_dict = dict({4:'elat10', 5:'elat30',6:'BootesB', 7:'BootesA', 8:'SWIRE'})
+
+    save_paths = []
+    for fieldidx, ifield in enumerate(ifield_list):
+        print('Loading ifield', ifield)
+        fieldname = ciber_field_dict[ifield]
+        print(fieldname)
+        irismap = regrid_iris_by_quadrant(fieldname, inst=inst)
+
+        # make fits file saving data
+    
+        hduim = fits.ImageHDU(irismap, name='TM2_regrid')
+        
+        hdup = fits.PrimaryHDU()
+        hdup.header['ifield'] = ifield
+        hdup.header['dat_type'] = 'iris_interp'
+        hdul = fits.HDUList([hdup, hduim])
+        save_fpath_full = save_fpath+'TM'+str(inst)+'/iris_regrid/iris_regrid_ifield'+str(ifield)+'_TM'+str(inst)
+        if tail_name is not None:
+            save_fpath_full += '_'+tail_name
+        hdul.writeto(save_fpath_full+'.fits', overwrite=True)
+        
+        save_paths.append(save_fpath_full+'.fits')
+        
+    return save_paths
+
+def regrid_tm2_to_tm1_science_fields(ifield_list=[4,5,6,7,8], inst0=1, inst1=2, \
+                                     flight_dat_base_path=config.exthdpath+'noise_model_validation_data/', \
+                                    save_fpath=config.exthdpath+'/ciber_fluctuation_data/', \
+                                    tail_name=None, plot=False, cal_facs=None):
+    
+    ciber_field_dict = dict({4:'elat10', 5:'elat30',6:'BootesB', 7:'BootesA', 8:'SWIRE'})
+
+    save_paths = []
+    for fieldidx, ifield in enumerate(ifield_list):
+        print('Loading ifield', ifield)
+        fieldname = ciber_field_dict[ifield]
+        print(fieldname)
+        
+        tm1 = fits.open(flight_dat_base_path+'TM1/validationHalfExp/field'+str(ifield)+'/flightMap.FITS')
+        tm2 = fits.open(flight_dat_base_path+'TM2/validationHalfExp/field'+str(ifield)+'/flightMap.FITS')
+
+        # def regrid_arrays_by_quadrant(map1, ifield, inst0=1, inst1=2, quad_list=['A', 'B', 'C', 'D'], \
+        #                              xoff=[0,0,512,512], yoff=[0,512,0,512], astr_map0_hdrs=None, astr_map1_hdrs=None, indiv_map0_hdr=None, indiv_map1_hdr=None, astr_dir='data/astroutputs/', \
+        #                              plot=True, order=0):
+        
+
+        tm2_regrid, tm2_fp_regrid = regrid_arrays_by_quadrant(tm2[0].data, ifield, inst0=inst0, inst1=inst1, \
+                                                             plot=plot)
+
+        if cal_facs is not None:
+
+            plot_map(cal_facs[1]*tm1[0].data, title='tm1 data')
+            plot_map(cal_facs[2]*tm2_regrid, title='tm2 regrid')
+            plot_map(cal_facs[1]*(tm1[0].data+tm2_regrid), title='tm1+tm2 data')
+    
+        # make fits file saving data
+    
+        hduim = fits.ImageHDU(tm2_regrid, name='TM2_regrid')
+        hdufp = fits.ImageHDU(tm2_fp_regrid, name='TM2_footprint')
+        
+        hdup = fits.PrimaryHDU()
+        hdup.header['ifield'] = ifield
+        hdup.header['dat_type'] = 'observed'
+        hdul = fits.HDUList([hdup, hduim, hdufp])
+        save_fpath_full = save_fpath+'TM'+str(inst1)+'/regrid/flightMap_ifield'+str(ifield)+'_TM'+str(inst1)+'_regrid_to_TM'+str(inst0)
+        if tail_name is not None:
+            save_fpath_full += '_'+tail_name
+        hdul.writeto(save_fpath_full+'.fits', overwrite=True)
+        
+        save_paths.append(save_fpath_full+'.fits')
+        
+    return save_paths
+
+def write_Mkk_fits(Mkk, inv_Mkk, ifield, inst, cross_inst=None, sim_idx=None, generate_starmask=True, generate_galmask=True, \
                   use_inst_mask=True, dat_type=None, mag_lim_AB=None):
     hduim = fits.ImageHDU(inv_Mkk, name='inv_Mkk_'+str(ifield))        
     hdum = fits.ImageHDU(Mkk, name='Mkk_'+str(ifield))
@@ -515,6 +716,9 @@ def write_Mkk_fits(Mkk, inv_Mkk, ifield, inst, sim_idx=None, generate_starmask=T
     hdup = fits.PrimaryHDU()
     hdup.header['ifield'] = ifield
     hdup.header['inst'] = inst
+
+    if cross_inst is not None:
+        hdup.header['cross_inst'] = cross_inst
     if sim_idx is not None:
         hdup.header['sim_idx'] = sim_idx
     hdup.header['generate_galmask'] = generate_galmask
@@ -550,17 +754,18 @@ def write_ff_file(ff_estimate, ifield, inst, sim_idx=None, dat_type=None, mag_li
     
     return hdul
 
-
-def write_mask_file(joint_mask, ifield, inst, sim_idx=None, generate_galmask=None, generate_starmask=None, use_inst_mask=None, \
+def write_mask_file(mask, ifield, inst, cross_inst=None, sim_idx=None, generate_galmask=None, generate_starmask=None, use_inst_mask=None, \
                    dat_type=None, mag_lim_AB=None, with_ff_mask=None, name=None, a1=None, b1=None, c1=None, dm=None, alpha_m=None, beta_m=None):
 
     if name is None:
         name = 'joint_mask_'+str(ifield)
-    hdum = fits.ImageHDU(joint_mask, name=name)
+    hdum = fits.ImageHDU(mask, name=name)
     hdup = fits.PrimaryHDU()
     hdup.header['ifield'] = ifield
     hdup.header['inst'] = inst
 
+    if cross_inst is not None:
+        hdup.header['cross_inst'] = cross_inst
     if sim_idx is not None:
         hdup.header['sim_idx'] = sim_idx
     if generate_galmask is not None:
@@ -593,7 +798,6 @@ def write_mask_file(joint_mask, ifield, inst, sim_idx=None, generate_galmask=Non
     hdul = fits.HDUList([hdup, hdum])
     
     return hdul
-
 
 
 
