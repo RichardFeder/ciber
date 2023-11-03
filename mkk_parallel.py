@@ -15,8 +15,40 @@ from plotting_fns import plot_map
 
 def allocate_empty_aligned_pyfftw(dat_shape, dtype='complex64'):
     return pyfftw.empty_aligned(dat_shape, dtype=dtype)
+
+def apply_norm_mask(empty_aligned_objs, obj_idx, mean_normalizations, masks, plot=False):
+    # I think this works as an inplace operation
+    # print('adding normalization and applying mask to phase realization.. obj_idx = ', obj_idx)
+    if plot:
+        plot_map(np.array(empty_aligned_objs[obj_idx][0,0].real), title='before mean norm/mask..')
+
+    for k in range(len(mean_normalizations)):
+        empty_aligned_objs[obj_idx][k].real += mean_normalizations[k]
+        empty_aligned_objs[obj_idx][k].real *= masks[k]
+    if plot:
+        plot_map(np.array(empty_aligned_objs[obj_idx][0,0].real), title='np.array(empty_aligned_objs[obj_idx][0,0].real)')
     
+    return empty_aligned_objs
     
+def apply_weighted_ffnorm(k, all_notkranges, empty_aligned_objs, sum_ff_weight_ims,\
+                          obj_idx, ffnorm_facs):
+    if k==0:
+        for kp in all_notkranges[k]:
+            empty_aligned_objs[obj_idx][kp] *= ffnorm_facs[kp]
+    else:
+        empty_aligned_objs[obj_idx][k-1] *= ffnorm_facs[k-1]
+
+    ff_estimate = np.sum(empty_aligned_objs[obj_idx][all_notkranges[k]].real, axis=0)/sum_ff_weight_ims
+    ff_estimate[np.isnan(ff_estimate)] = 1.     
+    return ff_estimate
+    
+def clock_log(message=None, t0=0., verbose=False):
+    t1 = time.time()
+    if message is not None and verbose:
+        print(message, t1 - t0)
+
+    return t1
+
 def construct_pyfftw_objs(n_obj, dat_shape, dtype='complex64', axes=(1,2), threads=1, directions=['FFTW_BACKWARD', 'FFTW_FORWARD']):
     
     fft_objs = []
@@ -63,7 +95,7 @@ def compute_inverse_mkk(mkk):
     
     return inverse_mkk
 
-  
+
 def group_idxs(idx_list, imdim=1024):
     
     grouped_idx_list = []    
@@ -77,6 +109,36 @@ def group_idxs(idx_list, imdim=1024):
                 used_list.append(idx2)
 
     return grouped_idx_list
+
+
+def init_fftobj_info(cross_mkk=False):
+    fft_idx0_list, fft_idx1_list, directions  = [0, 2], [1, 3], ['FFTW_BACKWARD', 'FFTW_FORWARD']
+    n_obj, n_fft_obj = 4, 2
+    if cross_mkk:
+        fft_idx0_list.append(5)
+        fft_idx1_list.append(6)
+        directions.append('FFTW_FORWARD')
+        n_obj += 3 # [4, 5, 6]
+        n_fft_obj += 1
+        
+    info_list = [fft_idx0_list, fft_idx1_list, directions, n_obj, n_fft_obj]
+    print(info_list)
+    return info_list
+
+def precomp_gradsub(masks, dimx, dimy):
+    dot1s, mask_ravs = [], []
+    for m, mask in enumerate(masks):
+        dot1, Xgrad, mask_rav = precomp_gradient_dat(dimx, dimy, mask=mask)
+        dot1s.append(dot1)
+        mask_ravs.append(mask_rav)
+    mask_ravs = np.array(mask_ravs)
+
+    return dot1s, mask_ravs
+
+def perform_grad_sub(k, empty_aligned_objs, mask, obj_idx, dot1s, Xgrad, mask_rav, nsims_perf):
+    planes = np.array([fit_gradient_to_map_precomp(empty_aligned_objs[obj_idx][k,s].real, dot1s[k], Xgrad, mask_rav=mask_rav) for s in range(nsims_perf)])
+    empty_aligned_objs[obj_idx][k].real -= np.array([mask*planes[s] for s in range(nsims_perf)])
+    return planes
 
 
 class Mkk_bare():
@@ -269,9 +331,7 @@ class Mkk_bare():
 
         eao_shape = self.empty_aligned_objs[obj_idx0].shape
 
-        # print('eao shape is ', eao_shape)
         ndim_eao = len(eao_shape)
-        # print('ndim eao is ', ndim_eao)
 
         self.fft_objs[fft_obj_idx](self.empty_aligned_objs[obj_idx0].real)
         if cross_Mkk:
@@ -367,7 +427,7 @@ class Mkk_bare():
                 
                 # here we'll make rows that are M_{(kx,ky), (kx',ky')}
                 full_ringmask = (fftshift(self.ell_map) >= self.binl[i])*(fftshift(self.ell_map) <= self.binl[i+1])
-                full_unshifted_ringmask = fftshift(np.array((self.ell_map >= self.binl[i])*(self.ell_map <= self.binl[i+1])).astype(np.float)/self.arcsec_pp_to_radian)
+                full_unshifted_ringmask = fftshift(np.array((self.ell_map >= self.binl[i])*(self.ell_map <= self.binl[i+1])).astype(float)/self.arcsec_pp_to_radian)
                 
                 nonzero_us_idxs = np.nonzero(full_unshifted_ringmask)
                 pair_us_idxs = [[nonzero_us_idxs[0][i], nonzero_us_idxs[1][i]] for i in range(len(nonzero_us_idxs[0]))]
@@ -401,7 +461,7 @@ class Mkk_bare():
             else:
                 
                 sub_bins_list.append(len(unshifted_ringmasks))
-                unshifted_ringmasks.append(fftshift(np.array((self.ell_map >= self.binl[i])*(self.ell_map <= self.binl[i+1])).astype(np.float)/self.arcsec_pp_to_radian))
+                unshifted_ringmasks.append(fftshift(np.array((self.ell_map >= self.binl[i])*(self.ell_map <= self.binl[i+1])).astype(float)/self.arcsec_pp_to_radian))
                 ringmasks.append((fftshift(self.ell_map) >= self.binl[i])*(fftshift(self.ell_map) <= self.binl[i+1]))
  
             self.correspond_bins.append(sub_bins_list)
@@ -703,14 +763,203 @@ def plot_mkk_matrix(mkk, inverse=False, logscale=False, symlogscale=False, symli
         return f
 
 
-def save_mkks(filepath, all_Mkks=None, av_Mkk=None, inverse_Mkk=None, bins=None, midbin_ell=None):
+def save_mkks(filepath, all_Mkks=None, av_Mkk=None, inverse_Mkk=None, bins=None, midbin_ell=None, return_inv_Mkk=False, mask=None):
     
     if av_Mkk is not None and inverse_Mkk is None:
         inverse_Mkk = compute_inverse_mkk(av_Mkk)
         
-    np.savez(filepath, all_Mkks=all_Mkks, av_Mkk=av_Mkk, inverse_Mkk=inverse_Mkk, bins=bins, midbin_ell=midbin_ell)
+    np.savez(filepath, all_Mkks=all_Mkks, av_Mkk=av_Mkk, inverse_Mkk=inverse_Mkk, bins=bins, midbin_ell=midbin_ell, mask=mask)
     print("saved mkk matrices to ", filepath)
 
+    if return_inv_Mkk:
+        return inverse_Mkk
+
+
+def estimate_mkk_ffest_cross(cbps, nsims, masks, n_split=1, grad_sub=False, niter=1, \
+                       mean_normalizations=None, ff_weights=None, mean_normalizations_cross=None, ff_weights_cross=None, \
+                       ifield_list=[4, 5, 6, 7, 8], verbose=False, plot=False, threads=1, dtype='complex64', clock=False):
+    
+    ''' 
+    Compute mode coupling matrices for some number of fields for deconvolving observed power spectra.
+    This function uses both the mask and the stacked FF estimator to estimate full mode coupling. In the unmasked case, 
+    flat field errors can be 
+    from the set of stacked fields couple with 
+    
+    
+    '''
+    
+    t0 = time.time()
+    nfield = len(ifield_list)
+
+    cross_mkk = False
+    ffnorm_facs = np.array(ff_weights)/np.array(mean_normalizations)
+    print('ffnorm facs = ', ffnorm_facs)
+    
+    if mean_normalizations_cross is not None and ff_weights_cross is not None:
+        ffnorm_facs_cross = np.array(ff_weights_cross)/np.array(mean_normalizations_cross)
+        cross_mkk = True
+        
+    masks = masks.astype(float)
+    nsims_perf = nsims//n_split
+    nstack = nsims_perf*nfield
+    all_notkranges = [[kp for kp in range(nfield) if kp != k] for k in range(nfield)]
+
+    maplist_split_shape = (nstack, cbps.dimx, cbps.dimy)
+    maplist_split_shapenew = (nfield,nsims_perf, cbps.dimx, cbps.dimy)
+    perf_mapshape = (nsims_perf, cbps.dimx, cbps.dimy)
+
+    # empty aligned object will have nfield, nsims perfield shape. so fftsq iterates over fields and extends by nsims per field.
+
+    print('maplist split shape is ', maplist_split_shape)
+    cbps.Mkk_obj.precompute_mkk_quantities(precompute_all=True)
+    n_total_bins = len(cbps.Mkk_obj.unshifted_ringmasks)
+    
+    fft_idx0_list, fft_idx1_list,\
+            directions, n_obj, n_fft_obj = init_fftobj_info(cross_mkk=cross_mkk)
+        
+    cbps.Mkk_obj.empty_aligned_objs, cbps.Mkk_obj.fft_objs = construct_pyfftw_objs_gen(n_obj, maplist_split_shapenew, axes=(2,3), \
+                                                                                  n_fft_obj=n_fft_obj, fft_idx0_list=fft_idx0_list, fft_idx1_list=fft_idx1_list, \
+                                                                                  threads=threads, dtype=dtype, directions=directions)
+
+    # precompute vectors for gradient estimation
+
+    if grad_sub:
+        dot1s, mask_ravs = precomp_gradsub(masks, cbps.dimx, cbps.dimy)
+        
+    Mkks_per_field = np.zeros((nfield, nsims, n_total_bins, n_total_bins))
+    
+    # only need to compute ff estimates for one field at a time, so nstack instead of nstack*nfield
+    all_ff_estimates = np.zeros(maplist_split_shapenew)
+    
+    all_ff_estimates_cross = None
+    if cross_mkk:
+        all_ff_estimates_cross = np.zeros(maplist_split_shapenew)
+
+    t1 = clock_log(message='time for initializing pyfftw objs and other data:', t0=t0, verbose=clock)
+        
+    ff_weight_ims = np.array([ff_weights[m]*mask for m, mask in enumerate(masks)])
+    if cross_mkk:
+        ff_weight_ims_cross = np.array([ff_weights_cross[m]*mask for m, mask in enumerate(masks)])
+
+    for i in range(n_split):
+        print('Split '+str(i+1)+' of '+str(n_split))
+        
+        t2 = time.time()
+        # compute noise realizations beforehand so time isn't wasted generating a whole new set each time. We can do this because the ring masks
+        # that we multiply by the noise realizations are spatially disjoint, i.e. the union of all of the Fourier masks is the null set. 
+        cbps.Mkk_obj.noise = np.random.normal(size=maplist_split_shapenew)+ 1j*np.random.normal(size=maplist_split_shapenew)
+        
+        t3 = clock_log(message='time to make noise realizations:', t0=t2, verbose=clock)
+
+        for j in range(n_total_bins):
+            print('band ', j)
+            cbps.Mkk_obj.map_from_phase_realization(j, nsims=nstack)
+           
+            t4 = time.time()
+            
+            if cross_mkk:
+                if verbose:
+                    print('mean normalizations cross:', mean_normalizations_cross)
+                
+                cbps.Mkk_obj.empty_aligned_objs[4] = cbps.Mkk_obj.empty_aligned_objs[1].copy()
+                apply_norm_mask(cbps.Mkk_obj.empty_aligned_objs, 4, mean_normalizations_cross, masks, plot=False)
+
+            
+            apply_norm_mask(cbps.Mkk_obj.empty_aligned_objs, 1, mean_normalizations, masks, plot=False)
+
+            t5 = clock_log(message='time to add mean normalizations and multiply by mask:', t0=t4, verbose=clock)
+
+            for n in range(niter):
+                
+                tff0 = time.time()
+                # for each source estimate the flat field from the other four fields. 
+                for k in range(nfield):
+
+                    tnf0 = time.time()
+                    if verbose:
+                        print('For k = '+str(k)+', notkrange = '+str(all_notkranges[k]))
+                                        
+                    sum_ff_weight_ims = np.sum([ff_weights[kp]*masks[kp] for kp in all_notkranges[k]], axis=0)
+                    if cross_mkk:
+                        sum_ff_weight_ims_cross = np.sum([ff_weights_cross[kp]*masks[kp] for kp in all_notkranges[k]], axis=0)
+                    
+                    tnf1 = clock_log(message='tnf1 - tnf0 =', t0=tnf0, verbose=clock)
+                            
+                    all_ff_estimates[k] = apply_weighted_ffnorm(k, all_notkranges, cbps.Mkk_obj.empty_aligned_objs,\
+                                                                sum_ff_weight_ims, 1, ffnorm_facs)
+                    
+                    cbps.Mkk_obj.empty_aligned_objs[2][k].real = cbps.Mkk_obj.empty_aligned_objs[1][k].real/all_ff_estimates[k]
+
+                    if cross_mkk:
+                        all_ff_estimates_cross[k] = apply_weighted_ffnorm(k, all_notkranges, cbps.Mkk_obj.empty_aligned_objs,\
+                                                                          sum_ff_weight_ims_cross, 4, ffnorm_facs_cross)
+                        
+                        cbps.Mkk_obj.empty_aligned_objs[5][k].real = cbps.Mkk_obj.empty_aligned_objs[4][k].real/all_ff_estimates_cross[k]
+        
+                    tnf3 = clock_log(message='tnf3 - tnf2:', verbose=clock)
+
+                    # undo scaling of off fields to ff_estimate
+                    if k < nfield-1:
+                        cbps.Mkk_obj.empty_aligned_objs[1][k+1] /= ffnorm_facs[k+1]
+                        if cross_mkk:
+                            cbps.Mkk_obj.empty_aligned_objs[4][k+1] /= ffnorm_facs_cross[k+1]
+
+                    tnf4 = clock_log(message='tnf4 - tnf3', t0=tnf3, verbose=clock)
+
+                    if grad_sub: # probably skip this for mocks
+                        planes = perform_grad_sub(k, cbps.Mkk_obj.empty_aligned_objs, masks[k], 2, dot1s, Xgrad, mask_ravs[k], nsims_perf)
+                        if cross_mkk:
+                            planes_cross = perform_grad_sub(k, cbps.Mkk_obj.empty_aligned_objs, masks[k], 5, dot1s, Xgrad, mask_ravs[k], nsims_perf)
+
+                    tnf5 = clock_log(message='grad sub:', t0=tnf4, verbose=clock)
+
+                    if n==niter-1:
+                        unmasked_means = np.array([np.mean(cbps.Mkk_obj.empty_aligned_objs[2][k,s].real[masks[k]==1.]) for s in range(nsims_perf)])                
+                        cbps.Mkk_obj.empty_aligned_objs[2][k] -= np.array([masks[k]*unmasked_means[s] for s in range(nsims_perf)])
+                        
+                        if cross_mkk:
+                            unmasked_means_cross = np.array([np.mean(cbps.Mkk_obj.empty_aligned_objs[5][k,s].real[masks[k]==1.]) for s in range(nsims_perf)])                
+                            cbps.Mkk_obj.empty_aligned_objs[5][k] -= np.array([masks[k]*unmasked_means_cross[s] for s in range(nsims_perf)])
+                        
+                        if k==0 and i==0 and verbose:
+                            print('unmasked mean pre sub:', unmasked_means)
+                            if cross_mkk:
+                                print('unmasked mean pre sub:', unmasked_means_cross)
+
+                            
+                    tnf6 = clock_log(message='tnf6-tnf5 =', t0=tnf5, verbose=clock)
+
+                tff1 = clock_log(message='time for full iteration:', t0=tff0, verbose=clock)
+                    
+            if j<2 and plot:
+                for kc in range(nfield):
+                    plot_map(all_ff_estimates[kc,0], title='final ff estimate')
+                    plot_map(cbps.Mkk_obj.empty_aligned_objs[1][kc,0].real, title='cbps.Mkk_obj.empty_aligned_objs[1]['+str(kc)+',0]')
+                    print(np.mean(cbps.Mkk_obj.empty_aligned_objs[1][kc,0].real[masks[kc]==1]), mean_normalizations[kc])
+
+                    
+            obj_idx0_cross, obj_idx1_cross, fft_obj_idx_cross = [None for x in range(3)]
+            if cross_mkk:
+                obj_idx0_cross, obj_idx1_cross, fft_obj_idx_cross = 5, 6, 2
+            
+            masked_Cl = cbps.Mkk_obj.get_ensemble_angular_autospec_ndim(nsims=nstack, apply_mask=False, obj_idx0=2, obj_idx1=3, \
+                                                                       obj_idx0_cross=obj_idx0_cross, obj_idx1_cross=obj_idx1_cross, fft_obj_idx_cross=fft_obj_idx_cross)
+                                
+            for k in range(nfield):
+                if verbose and i==0:
+                    print('masked CL field '+str(k)+':')
+                    print(np.mean(masked_Cl[k*nsims_perf:(k+1)*nsims_perf], axis=0))
+
+                Mkks_per_field[k, i*nsims_perf:(i+1)*nsims_perf, j, :] = np.array(masked_Cl)[k*nsims_perf:(k+1)*nsims_perf]
+            
+        average_Mkks_perfield = np.mean(Mkks_per_field[:,:(i+1)*nsims_perf], axis=1)
+        
+        if plot:
+            for k in range(nfield):
+                plot_mkk_matrix(average_Mkks_perfield[k])            
+
+
+    return average_Mkks_perfield, Mkks_per_field
 
 
 def estimate_mkk_ffest(cbps, nsims, masks, ifield_list=None, n_split=1, mean_normalizations=None, ff_weights=None, \
@@ -720,8 +969,11 @@ def estimate_mkk_ffest(cbps, nsims, masks, ifield_list=None, n_split=1, mean_nor
     t0 = time.time()
     if ifield_list is None:
         ifield_list = [4, 5, 6, 7, 8]
+
+    if grad_sub is False:
+        niter = 1
         
-    masks = masks.astype(np.float)
+    masks = masks.astype(float)
         
     nfield = len(ifield_list)
     nsims_perf = nsims//n_split

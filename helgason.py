@@ -90,7 +90,7 @@ class Luminosity_Function():
         return m0-2.5*np.log10((1.+(z-self.z0m))**q)
 
 
-    def number_counts(self, zs, Mapp, band, dzs, dMapp=None):
+    def number_counts(self, zs, Mapp, band, dzs, dMapp=None, lam_obs=None):
         
         ''' This returns the number counts per magnitude per square degree. It does this by, for each redshift,
         1) computing wavelength that would redshift into observing band at z=0
@@ -100,6 +100,13 @@ class Luminosity_Function():
 
         if dMapp is None:
             dMapp = Mapp[1]-Mapp[0]
+
+        if lam_obs is None:
+            if band is not None:
+                lam_obs = self.band_dicts[band]['lambda']
+            else:
+                print('either need lam_obs or a band to get lam_obs')
+                return None
             
         nm = np.zeros((len(zs), len(Mapp)))
         for i, z in enumerate(zs):

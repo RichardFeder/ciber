@@ -253,7 +253,7 @@ class galaxy_catalog():
     def generate_galaxy_catalogs(self, ng_bins=5, zmin=0.0, zmax=2.0, ndeg=4.0, m_min=13, m_max=28, hsc=False, \
                                ell_min=90., Mabs_min=-30.0, Mabs_max=-15., size=1024, random_positions=False, \
                                 Mabs_nbin=100, band='J', cl=None, ells=None, n_catalogs=1, n_bin_Mapp=200, load_cl_limber_file=False, \
-                                plot=False, compute_halo_params=False):
+                                plot=False, compute_halo_params=False, lam_obs=None):
         
         ''' This function puts together other functions in the galaxy_catalog() class as full pipeline to generate galaxy catalog realizations,
         given some angular power spectrum and Helgason model'''
@@ -278,7 +278,7 @@ class galaxy_catalog():
         # First, I need to figure out how many sources are within a given redshift bin
         Mapps = np.linspace(m_min, m_max, n_bin_Mapp)
         dMapp = Mapps[1]-Mapps[0]
-        number_counts = np.array(self.lf.number_counts(zrange_grf, Mapps, band, dzs=dzs)[1]).astype(np.int)
+        number_counts = np.array(self.lf.number_counts(zrange_grf, Mapps, band, dzs=dzs, lam_obs=lam_obs)[1]).astype(np.int)
         print('number counts has shape ', number_counts.shape, 'while Mapps has nbins=', len(Mapps))
         # this should be a 2d array with len(Mapps) rows and len(midzs) columns
 

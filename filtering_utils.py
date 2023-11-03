@@ -77,6 +77,9 @@ def fit_gradient_to_map(image, mask=None):
     X = np.hstack(   ( np.reshape(X1, (dimx*dimy, 1)) , np.reshape(X2, (dimx*dimy, 1)) ) )
     X = np.hstack(   ( np.ones((dimx*dimy, 1)) , X ))
     
+    # additional shift parameter
+    # X = np.hstack( (np.ones((dimx*dimy))))
+
     YY = np.reshape(image, (dimx*dimy, 1)) # data vector
     
     if mask is not None:

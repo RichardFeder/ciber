@@ -3,17 +3,31 @@ import astropy.io.fits as fits
 import astropy.wcs as wcs
 import pandas as pd
 import config
+import scipy
 import scipy.io
 from scipy.ndimage import gaussian_filter
 import matplotlib
 import matplotlib.pyplot as plt
 from astropy.table import Table
 from reproject import reproject_interp
-
-from mkk_parallel import *
+from astropy.coordinates import SkyCoord
+from astropy import units as u
+import healpy as hp
+from scipy import interpolate
+import os
+from plotting_fns import *
+# from mkk_parallel import *
+# from ciber_noise_data_utils import iter_sigma_clip_mask
 # from ciber_powerspec_pipeline import *
 # from ciber_powerspec_pipeline import CIBER_PS_pipeline
 
+def make_fpaths(fpaths):
+    for fpath in fpaths:
+        if not os.path.isdir(fpath):
+            print('making directory path for ', fpath)
+            os.makedirs(fpath)
+        else:
+            print(fpath, 'already exists')
 
 
 def compute_sqrt_cl_errors(cl, dcl):
@@ -21,86 +35,86 @@ def compute_sqrt_cl_errors(cl, dcl):
     return sqrt_cl_errors
 
 
-class powerspec():
+def mock_consistency_chistat(lb, all_mock_recov_ps, mock_all_field_cl_weights, ifield_list = [4, 5, 6, 7, 8], lmax=10000, mode='chi2', all_cov_indiv_full=None, \
+                            cov_joint=None):
+    ''' 
+    mode either 'chi2' or 'chi'
+    
+    '''
+    
+    lbmask_chistat = (lb < lmax)*(lb > lb[0])
+            
+    if all_cov_indiv_full is not None:
+        print('all cov indiv shape ', np.array(all_cov_indiv_full).shape)
 
-	def __init__(self, n_ps_bin=25, dimx=1024, \
-				dimy=1024):
-
-		self.Mkk_obj = Mkk_bare(dimx=dimx, dimy=dimy, ell_min=180.*(1024./dimx), nbins=n_ps_bin)
-
-
-	def load_in_powerspec(self, powerspec_fpath, mode=None, inplace=False):
-
-		pass
-
-
-	def compute_est_true_ratio(self, ps_measured=None, ps_ground_truth=None, inplace=True):
-
-		''' Computes ratio between power spectra 
-
-		Inputs
-		------
-		
-		ps_measured (optional): np.array of shape (nfields, n_ps_bin), (nsims, n_ps_bin) or (nsims, nfields, n_ps_bin). 
-								Default is None.
-
-		ps_ground_truth (optional): np.array of shape (nfields, n_ps_bin), (nsims, n_ps_bin) or (nsims, nfields, n_ps_bin). 
-								Default is None.	
-
-		inplace : type 'boolean'. If True, stores power spectrum ratio in object. Default is True. 	
-
-		Returns
-		-------
-
-		est_true_ratio : np.array of shape (nfields, n_ps_bin), (nsims, n_ps_bin) or (nsims, nfields, n_ps_bin). 
-						Ratio of (sets of) power spectra.
-
-		'''
-		if ps_measured is None:
-			ps_measured = self.ps_measured
-		if ps_ground_truth is None:
-			ps_ground_truth = self.ps_ground_truth
-
-		est_true_ratio = ps_measured/ps_ground_truth
-
-		if inplace:
-			self.est_true_ratio = est_true_ratio
-		else:
-			return est_true_ratio
+        all_inv_cov_indiv_lbmask = np.zeros_like(all_cov_indiv_full)
+        
 
 
-	def grab_all_simidx_dat(self, fpaths, mean_or_median='mean', inter_idx=None, per_field=True, bls=None, inplace=True):
+    ndof = len(lb[lbmask_chistat])
+    
+    if cov_joint is not None:
+        inv_cov_joint = np.linalg.inv(cov_joint)
+        print('condition number of joint cov matrix is ', np.linalg.cond(cov_joint))
+    
+    all_std_recov_mock = []
+    for fieldidx, ifield in enumerate(ifield_list):
+        std_recov_mock_ps = np.std(all_mock_recov_ps[:,fieldidx], axis=0)
+        all_std_recov_mock.append(std_recov_mock_ps)
+        
+        if all_cov_indiv_full is not None:
+            all_inv_cov_indiv_lbmask[fieldidx] = np.linalg.inv(all_cov_indiv_full[fieldidx])
+    
+    all_std_recov_mock = np.array(all_std_recov_mock)
+    all_chistat_largescale = np.zeros((len(ifield_list), all_mock_recov_ps.shape[0]))
+    chistat_perfield = np.zeros_like(all_mock_recov_ps)
+    pte_perfield = np.zeros((all_mock_recov_ps.shape[0], all_mock_recov_ps.shape[1]))
 
-		nsims = len(fpaths)
+    for x in range(all_mock_recov_ps.shape[0]):
 
-		# here, "mean" power spectrum refers to average over fields
-		est_true_ratios = np.zeros((nsims, nfield, self.n_ps_bin))
-		all_mean_true_cls = np.zeros((nsims, self.n_ps_bin))
-		all_true_cls = np.zeros((nsims, nfield, self.n_ps_bin))
-		all_recovered_cls = np.zeros((nsims, nfield, self.n_ps_bin))
-		all_mean_recovered_cls = np.zeros((nsims, self.n_ps_bin))
+        mock_field_average_cl_indiv = np.zeros_like(mock_all_field_cl_weights[0,:])
+        for n in range(len(mock_field_average_cl_indiv)):
+            mock_field_average_cl_indiv[n] = np.average(all_mock_recov_ps[x,:,n], weights = mock_all_field_cl_weights[:,n])
 
+        if cov_joint is not None:
+            resid_joint = []
+            for fieldidx, ifield in enumerate(ifield_list):
+                resid_joint.extend(all_mock_recov_ps[x,fieldidx,lbmask_chistat]-mock_field_average_cl_indiv[lbmask_chistat])
+            resid_joint = np.array(resid_joint)
+            
+            chistat_joint_mockstd = np.multiply(resid_joint, np.dot(inv_cov_joint, resid_joint.transpose()))      
 
-		for f, fpath in enumerate(fpaths):
-			lb, recovered_cls, true_cls, mean_recovered_cls, mean_true_cl, est_true_ratio = grab_recovered_cl_dat(fpath, mean_or_median=mean_or_median, inter_idx=inter_idx, \
-																												  per_field=per_field, bls=bls)
+            
 
-			est_true_ratios[f] = est_true_ratio
-			all_recovered_cls[f] = recovered_cls
-			all_true_cls[f] = true_cls
-			all_mean_recovered_cls[f] = mean_recovered_cls
+            
+        for fieldidx, ifield in enumerate(ifield_list):
+            
+            resid = all_mock_recov_ps[x,fieldidx,:]-mock_field_average_cl_indiv
+            # deviation from field average of individual realization
+            
+            if mode=='chi2':
+                if cov_joint is not None:
+                    chistat_mean_cl_mockstd = chistat_joint_mockstd[fieldidx*ndof:(fieldidx+1)*ndof]
+                elif all_cov_indiv_full is not None:
+                    chistat_mean_cl_mockstd = np.multiply(resid[lbmask_chistat], np.dot(all_inv_cov_indiv_lbmask[fieldidx], resid[lbmask_chistat].transpose()))      
+                else:
+                    chistat_mean_cl_mockstd = resid**2/(all_std_recov_mock[fieldidx]**2)        
+            elif mode=='chi':
+                chistat_mean_cl_mockstd = resid/all_std_recov_mock[fieldidx]       
 
-		if inplace:
-			self.est_true_ratios = est_true_ratios
-			self.all_mean_true_cls = all_mean_true_cls
-			self.all_recovered_cls = all_recovered_cls
-			self.all_true_cls = all_true_cls
-			self.lb = lb 
-
-		else:
-			return lb, est_true_ratios, all_mean_true_cls, all_recovered_cls, all_recovered_mean_cls, all_true_cls
-
-
+            
+            if all_cov_indiv_full is not None or cov_joint is not None:
+                chistat_largescale = chistat_mean_cl_mockstd
+            else:
+                chistat_perfield[x, fieldidx] = chistat_mean_cl_mockstd
+                chistat_largescale = chistat_perfield[x, fieldidx, lbmask_chistat]
+            
+            all_chistat_largescale[fieldidx, x] = np.sum(chistat_largescale)
+            pte_indiv = 1. - scipy.stats.chi2.cdf(np.sum(chistat_largescale), ndof)
+            pte_perfield[x, fieldidx] = pte_indiv
+            
+            
+    return chistat_perfield, pte_perfield, all_chistat_largescale
 
 def compute_field_averaged_power_spectrum(per_field_cls, per_field_dcls=None, per_field_cl_weights=None, weight_mode='invvar', \
                                          which_idxs=None, verbose=False):
@@ -173,28 +187,298 @@ def compute_field_averaged_power_spectrum(per_field_cls, per_field_dcls=None, pe
     return field_averaged_cl, field_averaged_std, cl_sumweights, per_field_cl_weights
 
 
-def iter_sigma_clip_mask(image, sig=5, nitermax=10, initial_mask=None):
-    # image assumed to be 2d
-    iteridx = 0
-    
-    summask = image.shape[0]*image.shape[1]
-    running_mask = (image != 0).astype(np.int)
-    if initial_mask is not None:
-        running_mask *= initial_mask
-        
-    while iteridx < nitermax:
-        
-        new_mask = sigma_clip_maskonly(image, previous_mask=running_mask, sig=sig)
-        
-        if np.sum(running_mask*new_mask) < summask:
-            running_mask *= new_mask
-            summask = np.sum(running_mask)
-        else:
-            return running_mask
+def get_power_spectrum_2d_epochav(map_a, map_b, pixsize=7., verbose=False):
+    dimx, dimy = map_a.shape 
+    sterad_per_pix = (pixsize/3600/180*np.pi)**2
+    V = dimx * dimy * sterad_per_pix
 
-        iteridx += 1
+    ffta = np.fft.fftn(map_a*sterad_per_pix)
+    fftb = np.fft.fftn(map_b*sterad_per_pix)
+
+    av_fft = 0.5*(ffta+fftb)
+
+    ps2d_av = np.real(av_fft * np.conj(av_fft)) / V 
+    ps2d_av = np.fft.ifftshift(ps2d_av)
+    
+    l2d = get_l2d(dimx, dimy, pixsize)
+
+    return l2d, ps2d_av
+
+def get_power_spectrum_2d(map_a, map_b=None, pixsize=7., verbose=False):
+    '''
+    calculate 2d cross power spectrum Cl
+    
+    Inputs:
+    =======
+    map_a: 
+    map_b:map_b=map_a if no input, i.e. map_a auto
+    pixsize:[arcsec]
+    
+    Outputs:
+    ========
+    l2d: corresponding ell modes
+    ps2d: 2D Cl
+    '''
+    
+    if map_b is None:
+        map_b = map_a.copy()
         
-    return running_mask
+    dimx, dimy = map_a.shape
+    sterad_per_pix = (pixsize/3600/180*np.pi)**2
+    V = dimx * dimy * sterad_per_pix
+    
+    ffta = np.fft.fftn(map_a*sterad_per_pix)
+    fftb = np.fft.fftn(map_b*sterad_per_pix)
+    ps2d = np.real(ffta * np.conj(fftb)) / V 
+    ps2d = np.fft.ifftshift(ps2d)
+    
+    l2d = get_l2d(dimx, dimy, pixsize)
+
+    return l2d, ps2d
+
+def get_l2d(dimx, dimy, pixsize):
+    lx = np.fft.fftfreq(dimx)*2
+    ly = np.fft.fftfreq(dimy)*2
+    lx = np.fft.ifftshift(lx)*(180*3600./pixsize)
+    ly = np.fft.ifftshift(ly)*(180*3600./pixsize)
+    ly, lx = np.meshgrid(ly, lx)
+    l2d = np.sqrt(lx**2 + ly**2)
+    
+    return l2d
+
+def get_power_spec(map_a, map_b=None, mask=None, pixsize=7., 
+                   lbinedges=None, lbins=None, nbins=29, 
+                   logbin=True, weights=None, return_full=False, return_Dl=False, verbose=False):
+    '''
+    calculate 1d cross power spectrum Cl
+    
+    Inputs:
+    =======
+    map_a: 
+    map_b:map_b=map_a if no input, i.e. map_a auto
+    mask: common mask for both map
+    pixsize:[arcsec]
+    lbinedges: predefined lbinedges
+    lbins: predefined lbinedges
+    nbins: number of ell bins
+    logbin: use log or linear ell bin
+    weights: Fourier weight
+    return_full: return full output or not
+    return_Dl: return Dl=Cl*l*(l+1)/2pi or Cl
+    
+    Outputs:
+    ========
+    lbins: 1d ell bins
+    ps2d: 2D Cl
+    Clerr: Cl error, calculate from std(Cl2d(bins))/sqrt(Nmode)
+    Nmodes: # of ell modes per ell bin
+    lbinedges: 1d ell binedges
+    l2d: 2D ell modes
+    ps2d: 2D Cl before radial binning
+    '''
+
+    if map_b is None:
+        map_b = map_a.copy()
+
+    if mask is not None:
+        map_a = map_a*mask - np.mean(map_a[mask==1])
+        map_b = map_b*mask - np.mean(map_b[mask==1])
+    else:
+        map_a = map_a - np.mean(map_a)
+        map_b = map_b - np.mean(map_b)
+        
+    l2d, ps2d = get_power_spectrum_2d(map_a, map_b=map_b, pixsize=pixsize)
+            
+    lbins, Cl, Clerr = azim_average_cl2d(ps2d, l2d, nbins=nbins, lbinedges=lbinedges, lbins=lbins, weights=weights, logbin=logbin, verbose=verbose)
+    
+    if return_Dl:
+        Cl = Cl * lbins * (lbins+1) / 2 / np.pi
+        
+    if return_full:
+        return lbins, Cl, Clerr, Nmodes, lbinedges, l2d, ps2d
+    else:
+        return lbins, Cl, Clerr
+
+
+def update_meanvar(count, mean, M2, newValues, plot=False):
+    ''' 
+    Uses Welfords online algorithm to update ensemble mean and variance. 
+    This is written to handle batches of new samples at a time. 
+    
+    Slightly modified from:
+    https://stackoverflow.com/questions/56402955/whats-the-formula-for-welfords-algorithm-for-variance-std-with-batch-updates
+    
+    Parameters
+    ----------
+    
+    count : 'int'. Running number of samples, which gets increased by size of input batch.
+    mean : 'np.array'. Running mean
+    M2 : 'np.array'. Running sum of squares of deviations from sample mean.
+    newValues : 'np.array'. New data samples.
+    plot (optional, default=False) : 'bool'.
+    
+    Returns
+    -------
+    
+    count, mean, M2. Same definitions as above but updated to include contribution from newValues.
+    
+    '''
+    
+    count += len(newValues) # (nsim/nsplit, dimx, dimy)
+    delta = np.subtract(newValues, [mean for x in range(len(newValues))])
+    mean += np.sum(delta / count, axis=0)
+    
+    delta2 = np.subtract(newValues, [mean for x in range(len(newValues))])
+    M2 += np.sum(delta*delta2, axis=0)
+        
+    if plot:
+        plot_map(M2, title='M2')
+        plot_map(delta[0], title='delta')
+        plot_map(mean, title='mean')
+        
+    return count, mean, M2
+
+    
+def finalize_meanvar(count, mean, M2):
+    ''' 
+    Returns final mean, variance, and sample variance. 
+    
+    Parameters
+    ----------
+      
+    count : 'int'. Running number of samples, which gets increased by size of input batch.
+    mean : 'np.array'. Ensemble mean
+    M2 : 'np.array'. Running sum of squares of deviations from sample mean.
+    
+    Returns
+    -------
+    
+    mean : 'np.array'. Final ensemble mean.
+    variance : 'np.array'. Estimated variance.
+    sampleVariance : 'np.array'. Same as variance but with population correction (count-1).
+    
+    '''
+    mean, variance, sampleVariance = mean, M2/count, M2/(count - 1)
+    if count < 2:
+        return float('nan')
+    else:
+        return mean, variance, sampleVariance
+
+
+
+# powerspec_utils.py
+def return_frac_knox_error(lb, delta_ell, nsidedeg=2):
+    frac_knox_errors = np.sqrt(2./((2*lb+1)*delta_ell))
+    fsky = float(nsidedeg**2)/float(41253.)    
+    frac_knox_errors /= np.sqrt(fsky)
+    return frac_knox_errors
+    
+
+def azimuthalAverage(image, ell_min=90, center=None, logbins=True, nbins=60, sterad_term=None):
+    """
+    Calculate the azimuthally averaged radial profile.
+
+    image - The 2D image
+    ell_min - the minimum multipole used to set range of multipoles
+    center - The [x,y] pixel coordinates used as the center. The default is 
+             None, which then uses the center of the image (including 
+             fracitonal pixels).
+    logbins - boolean True if log bins else uniform bins
+    nbins - number of bins to use
+
+             
+    code adapted from https://www.astrobetter.com/blog/2010/03/03/fourier-transforms-of-images-in-python/
+    
+    """
+    # Calculate the indices from the image
+    y, x = np.indices(image.shape)
+
+    if center is None:
+        center = np.array([(x.max()-x.min())/2.0, (x.max()-x.min())/2.0])
+    r = np.hypot(x - center[0], y - center[1])
+
+    # Get sorted radii
+    ind = np.argsort(r.flat)
+    r_sorted = r.flat[ind]
+    i_sorted = image.flat[ind]
+    if sterad_term is not None:
+        i_sorted /= sterad_term
+
+
+    ell_max = ell_min*image.shape[0]/np.sqrt(0.5)
+    
+    if logbins:
+        radbins = 10**(np.linspace(np.log10(ell_min), np.log10(ell_max), nbins+1))
+    else:
+        radbins = np.linspace(ell_min, ell_max, nbins+1)
+    
+    # convert multipole bins into pixel values
+    radbins /= np.min(radbins)
+    rbin_idxs = get_bin_idxs(r_sorted, radbins)
+
+    rad_avg = np.zeros(nbins)
+    rad_std = np.zeros(nbins)
+    
+    for i in range(len(rbin_idxs)-1):
+        nmodes= len(i_sorted[rbin_idxs[i]:rbin_idxs[i+1]])
+        rad_avg[i] = np.mean(i_sorted[rbin_idxs[i]:rbin_idxs[i+1]])
+        rad_std[i] = np.std(i_sorted[rbin_idxs[i]:rbin_idxs[i+1]])/np.sqrt(nmodes)
+        
+    av_rbins = (radbins[:-1]+radbins[1:])/2
+
+    return av_rbins, np.array(rad_avg), np.array(rad_std)
+
+def azim_average_cl2d(ps2d, l2d, nbins=29, lbinedges=None, lbins=None, weights=None, logbin=False, verbose=False, stderr=True):
+    
+    if lbinedges is None:
+        lmin = np.min(l2d[l2d!=0])
+        lmax = np.max(l2d[l2d!=0])
+        if logbin:
+            lbinedges = np.logspace(np.log10(lmin), np.log10(lmax), nbins)
+            lbins = np.sqrt(lbinedges[:-1] * lbinedges[1:])
+        else:
+            lbinedges = np.linspace(lmin, lmax, nbins)
+            lbins = (lbinedges[:-1] + lbinedges[1:]) / 2
+
+        lbinedges[-1] = lbinedges[-1]*(1.01)
+        
+    if weights is None:
+        weights = np.ones(ps2d.shape)
+        
+    Cl = np.zeros(len(lbins))
+    Clerr = np.zeros(len(lbins))
+    
+    Nmodes = np.zeros(len(lbins),dtype=int)
+    Neffs = np.zeros(len(lbins))
+
+    for i,(lmin, lmax) in enumerate(zip(lbinedges[:-1], lbinedges[1:])):
+        sp = np.where((l2d>=lmin) & (l2d<lmax))
+        p = ps2d[sp]
+        w = weights[sp]
+
+        Neff = compute_Neff(w)
+
+        Cl[i] = np.sum(p*w) / np.sum(w)
+
+        if verbose:
+            print('sum weights:', np.sum(w))
+            
+        Clerr[i] = np.std(p)
+        if stderr:
+            Clerr[i] /= np.sqrt(len(p))
+        Nmodes[i] = len(p)
+        Neffs[i] = Neff
+
+    if verbose:
+        print('Nmodes:', Nmodes)
+        print('Neffs:', Neffs)
+    
+    return lbins, Cl, Clerr
+
+def compute_Neff(weights):
+    N_eff = np.sum(weights)**2/np.sum(weights**2)
+
+    return N_eff
 
 def sigma_clip_maskonly(vals, previous_mask=None, sig=5):
     
@@ -463,8 +747,238 @@ def lin_interp_powerspec(lb_orig, lb_interp, powerspec_orig):
 
 	return powerspec_interp
 
+def generate_map_meshgrid(ra_cen, dec_cen, nside_deg, dimx, dimy):
+    
+    ra_range = np.linspace(ra_cen - 0.5*nside_deg, ra_cen + 0.5*nside_deg, dimx)
+    dec_range = np.linspace(dec_cen - 0.5*nside_deg, dec_cen + 0.5*nside_deg, dimy)
+    map_ra, map_dec = np.meshgrid(ra_range, dec_range)
+    
+    return map_ra, map_dec
+
+def load_all_ciber_quad_wcs_hdrs(inst, field, hdrdir=None):
+    
+    if hdrdir is None:
+        hdrdir = 'data/astroutputs/inst'+str(inst)+'/'
+
+    xoff = [0,0,512,512]
+    yoff = [0,512,0,512]
+
+    wcs_hdrs = []
+    for iquad,quad in enumerate(['A','B','C','D']):
+        print('quad '+quad)
+        hdulist = fits.open(hdrdir + field + '_' + quad + '_astr.fits')
+        wcs_hdr=wcs.WCS(hdulist[('primary',1)].header, hdulist)
+        wcs_hdrs.append(wcs_hdr)
+
+    return wcs_hdrs
+
+def interpolate_iris_maps_hp(iris_hp, cbps, inst, ncoarse_samp, nside_upsample=None,\
+                             ifield_list=[4, 5, 6, 7, 8], use_ciber_wcs=True, nside_deg=4, \
+                            plot=True):
+    ''' 
+    Interpolate IRIS maps from Healpix format to cartesian grid 
+    If nside_upsample provided, maps upsampled to desired resolution, 
+        otherwise they are kept at resolution of ncoarse_samp.
+    '''
+    
+    all_maps = []
+    
+    field_center_ras = dict({'elat10':191.5, 'elat30':193.943, 'BootesB':218.109, 'BootesA':219.249, 'SWIRE':241.53})
+    field_center_decs = dict({'elat10':8.25, 'elat30':27.998, 'BootesB':33.175, 'BootesA':34.832, 'SWIRE':54.767})
+
+    
+    for fieldidx, ifield in enumerate(ifield_list):
+        
+        iris_coarse_sample = np.zeros((ncoarse_samp, ncoarse_samp))
+        
+        
+        if use_ciber_wcs:
+            field = cbps.ciber_field_dict[ifield]
+            wcs_hdrs = load_all_ciber_quad_wcs_hdrs(inst, field)
+            print('TM'+str(inst), 'ifield '+str(ifield))
+            
+            for ix in range(ncoarse_samp):
+                if ix %10 == 0:
+                    print('ix = ', ix)
+                for iy in range(ncoarse_samp):
+
+                    x0, x1 = ix*npix_persamp, (ix+1)*npix_persamp - 1
+                    y0, y1 = iy*npix_persamp, (iy+1)*npix_persamp - 1
 
 
+                    xs, ys = np.meshgrid(np.arange(x0, x1), np.arange(y0, y1))
+                    ciber_ra_av_all, ciber_dec_av_all = wcs_hdrs[0].all_pix2world(xs, ys, 0)
+                    map_ra_av_new = np.mean(ciber_ra_av_all)
+                    map_dec_av_new = np.mean(ciber_dec_av_all)
+                    
+                    c = SkyCoord(ra=map_ra_av_new*u.degree, dec=map_decs[ix,iy]*u.degree, frame='icrs')
+                    ipix = hp.pixelfunc.ang2pix(nside=2048, theta=c.galactic.l.degree, phi=c.galactic.b.degree, lonlat=True)
+                    iris_coarse_sample[ix, iy] = iris_hp[ipix]
+
+        else:
+            ra_cen = field_center_ras[cbps.ciber_field_dict[ifield]]
+            dec_cen = field_center_decs[cbps.ciber_field_dict[ifield]]
+
+            print('ra/dec:', ra_cen, dec_cen)
+            map_ras, map_decs = generate_map_meshgrid(ra_cen, dec_cen, nside_deg, dimx=ncoarse_samp, dimy=ncoarse_samp)
+            if plot:
+                plot_map(map_ras, title='RA')
+                plot_map(map_decs, title='DEC')
+
+            for ix in range(ncoarse_samp):
+                for iy in range(ncoarse_samp):
+                    c = SkyCoord(ra=map_ras[ix,iy]*u.degree, dec=map_decs[ix,iy]*u.degree, frame='icrs')
+                    ipix = hp.pixelfunc.ang2pix(nside=2048, theta=c.galactic.l.degree, phi=c.galactic.b.degree, lonlat=True)
+                    iris_coarse_sample[ix, iy] = iris_hp[ipix]
+
+        if nside_upsample is not None:
+            iris_resize = np.array(Image.fromarray(iris_coarse_sample).resize((nside_upsample, nside_upsample))).transpose()
+            
+            plot_map(iris_resize)
+
+            all_maps.append(iris_resize)
+        else:
+            plot_map(np.array(iris_coarse_sample).transpose())
+                    
+            all_maps.append(np.array(iris_coarse_sample).transpose())
+        
+    return all_maps
+        
+
+def compute_rms_subpatches(image, mask, npix_perside=16, pct=False):
+    ''' Compute RMS in small subpatches for comparison with photon noise level expected.'''
+    all_std, all_mean = [], []
+    dimx, dimy = image.shape[0], image.shape[1]
+    
+    binned_std = np.zeros_like(image)
+    
+    ndiv = dimx//npix_perside
+    print('ndiv = ', ndiv)
+    all_x, all_y = [], []
+    
+    for nx in range(ndiv-1):
+        if nx%50==0:
+            print('nx = ', nx)
+        for ny in range(ndiv-1):
+            
+            impatch = image[nx*npix_perside:(nx+1)*npix_perside, ny*npix_perside:(ny+1)*npix_perside]
+            maskpatch = mask[nx*npix_perside:(nx+1)*npix_perside, ny*npix_perside:(ny+1)*npix_perside]
+            
+            if np.sum((maskpatch==1)) > 0.9*npix_perside**2:
+                all_mean.append(np.mean(impatch[maskpatch==1]))
+                if pct:
+                    all_std.append(0.5*(np.nanpercentile(impatch[maskpatch==1], 84)-np.nanpercentile(impatch[maskpatch==1], 16)))
+                else:
+                    all_std.append(np.std(impatch[maskpatch==1]))
+                all_x.append((nx+0.5)*npix_perside)
+                all_y.append((ny+0.5)*npix_perside)
+                
+                binned_std[nx*npix_perside:(nx+1)*npix_perside, ny*npix_perside:(ny+1)*npix_perside] = np.std(impatch[maskpatch==1])
+                
+    return all_mean, all_std, all_x, all_y, binned_std  
+
+
+
+def compute_fieldav_powerspectra(ifield_list, all_signal_ps, all_recov_ps, flatidx=8, apply_field_weights=True):
+    # being used as of 12/6/22
+
+    print(all_signal_ps.shape, all_recov_ps.shape)
+    
+    npsbin = all_signal_ps.shape[2]
+    nfield = len(ifield_list)
+    nsim = all_signal_ps.shape[0]
+    
+    all_field_cl_weights = np.zeros((nfield, npsbin))
+    all_field_averaged_cls = np.zeros((nsim, npsbin))
+    
+    for fieldidx, ifield in enumerate(ifield_list):
+        # recov_ps_dcl = np.std(all_recov_ps[:,fieldidx,:], axis=0)
+        recov_ps_dcl = 0.5*(np.percentile(all_recov_ps[:,fieldidx,:], 84, axis=0)-np.percentile(all_recov_ps[:,fieldidx,:], 16, axis=0))
+        all_field_cl_weights[fieldidx] = 1./recov_ps_dcl**2
+    
+    all_field_cl_weights[:,:flatidx] = 1.0  
+    
+    if not apply_field_weights:
+        all_field_cl_weights = 1.0
+
+    cl_sumweights = np.sum(all_field_cl_weights, axis=0)
+    
+
+    for i in range(nsim):
+        for n in range(npsbin):
+            all_field_averaged_cls[i,n] = np.sum(all_field_cl_weights[:,n]*all_recov_ps[i,:,n])/cl_sumweights[n]
+
+    mean_input_powerspectra = np.mean(all_signal_ps, axis=1)
+
+    return mean_input_powerspectra, all_field_averaged_cls, all_field_cl_weights
+
+
+def process_mock_powerspectra(cbps, datestr, ifield_list, inst, run_name, nsim, flatidx=8, apply_field_weights=True):
+    # being used as of 12/6/22
+    all_signal_ps = np.zeros((nsim, len(ifield_list), cbps.n_ps_bin))
+    all_recov_ps = np.zeros((nsim, len(ifield_list), cbps.n_ps_bin))
+    
+    sim_test_fpath = 'data/input_recovered_ps/'+datestr+'/TM'+str(inst)+'/'
+    
+    for simidx in np.arange(nsim):
+        clpath = np.load(sim_test_fpath+run_name+'/input_recovered_ps_estFF_simidx'+str(simidx)+'.npz')
+        signal_ps = clpath['signal_ps']
+        lb = clpath['lb']
+        recovered_ps = clpath['recovered_ps_est_nofluc']
+
+        all_signal_ps[simidx] = signal_ps
+        all_recov_ps[simidx] = recovered_ps
+        
+    mean_input_powerspectra, \
+        all_field_averaged_cls,\
+            all_field_cl_weights = compute_fieldav_powerspectra(ifield_list, all_signal_ps, all_recov_ps, flatidx=flatidx, apply_field_weights=apply_field_weights)
+    
+    return mean_input_powerspectra, all_signal_ps, all_recov_ps, all_field_averaged_cls, all_field_cl_weights, lb
+
+def process_observed_powerspectra(cbps, datestr, ifield_list, inst, observed_run_name, mock_run_name, nsim_mock, flatidx=8, apply_field_weights=True, per_quadrant=False):
+    
+    sim_test_fpath = 'data/input_recovered_ps/'+datestr+'/TM'+str(inst)+'/'
+
+    mock_mean_input_ps, all_mock_signal_ps, all_mock_recov_ps,\
+            mock_all_field_averaged_cls, mock_all_field_cl_weights, lb = process_mock_powerspectra(cbps, datestr, ifield_list, \
+                                                                                                inst, mock_run_name, nsim_mock, flatidx=flatidx)
+    cl_sumweights = np.sum(mock_all_field_cl_weights, axis=0)
+    
+    if per_quadrant:
+
+        obs_clfile = np.load(sim_test_fpath+observed_run_name+'/input_recovered_ps_estFF_simidx0_per_quadrant.npz')
+        observed_recov_ps_per_quadant = obs_clfile['recovered_ps_est_per_quadrant']
+        observed_recov_dcl_per_quadrant = obs_clfile['recovered_dcl_per_quadrant']
+        lb = obs_clfile['lb']
+
+
+
+    else:
+        obs_clfile = np.load(sim_test_fpath+observed_run_name+'/input_recovered_ps_estFF_simidx0.npz')
+        observed_recov_ps = obs_clfile['recovered_ps_est_nofluc']
+        observed_recov_dcl_perfield = obs_clfile['recovered_dcl']
+        lb = obs_clfile['lb']
+
+    observed_field_average_cl = np.zeros((cbps.n_ps_bin))
+    observed_field_average_dcl = np.zeros((cbps.n_ps_bin))
+    
+    if apply_field_weights:
+        for n in range(cbps.n_ps_bin):
+            mock_all_field_cl_weights[:,n] /= np.sum(mock_all_field_cl_weights[:,n])
+            observed_field_average_cl[n] = np.average(observed_recov_ps[:,n], weights = mock_all_field_cl_weights[:,n])
+            neff_indiv = compute_neff(mock_all_field_cl_weights[:,n])
+            psvar_indivbin = np.sum(mock_all_field_cl_weights[:,n]*(observed_recov_ps[:,n] - observed_field_average_cl[n])**2)*neff_indiv/(neff_indiv-1.)
+            observed_field_average_dcl[n] = np.sqrt(psvar_indivbin/neff_indiv)
+
+    else:
+        observed_field_average_cl = np.mean(observed_recov_ps, axis=0)
+        observed_field_average_dcl = np.std(observed_recov_ps, axis=0)
+        
+        
+    return lb, observed_recov_ps, observed_recov_dcl_perfield, observed_field_average_cl, observed_field_average_dcl, \
+                mock_mean_input_ps, mock_all_field_averaged_cls,\
+                    mock_all_field_cl_weights, all_mock_recov_ps, all_mock_signal_ps
+    
 
 def compute_knox_errors(lbins, C_ell, N_ell, delta_ell, fsky=None, B_ell=None, snr=False):
 	
@@ -559,7 +1073,7 @@ def load_quad_hdrs(ifield, inst, base_path='/Users/richardfeder/Downloads/ciber_
 
 
 def regrid_arrays_by_quadrant(map1, ifield, inst0=1, inst1=2, quad_list=['A', 'B', 'C', 'D'], \
-                             xoff=[0,0,512,512], yoff=[0,512,0,512], astr_map0_hdrs=None, astr_map1_hdrs=None, indiv_map0_hdr=None, indiv_map1_hdr=None, astr_dir='data/astroutputs/', \
+                             xoff=[0,0,512,512], yoff=[0,512,0,512], astr_map0_hdrs=None, astr_map1_hdrs=None, indiv_map0_hdr=None, indiv_map1_hdr=None, astr_dir=None, \
                              plot=True, order=0):
     
     ''' 
@@ -575,6 +1089,9 @@ def regrid_arrays_by_quadrant(map1, ifield, inst0=1, inst1=2, quad_list=['A', 'B
     
     '''
 
+    if astr_dir is None:
+        astr_dir = '../../ciber/data/'
+
     ciber_field_dict = dict({4:'elat10', 5:'elat30',6:'BootesB', 7:'BootesA', 8:'SWIRE', 'train':'UDS'})
 
     map1_regrid, map1_fp_regrid = [np.zeros_like(map1) for x in range(2)]
@@ -584,9 +1101,11 @@ def regrid_arrays_by_quadrant(map1, ifield, inst0=1, inst1=2, quad_list=['A', 'B
     map1_quads = [map1[yoff[iquad]:yoff[iquad]+512, xoff[iquad]:xoff[iquad]+512] for iquad in range(len(quad_list))]
     
     if astr_map0_hdrs is None and indiv_map0_hdr is None:
-        astr_map0_hdrs = load_quad_hdrs(ifield, inst0, base_path='data/', halves=False)
+        print('loading WCS for inst = ', inst0)
+        astr_map0_hdrs = load_quad_hdrs(ifield, inst0, base_path=astr_dir, halves=False)
     if astr_map1_hdrs is None and indiv_map1_hdr is None:
-        astr_map1_hdrs = load_quad_hdrs(ifield, inst1, base_path='data/', halves=False)
+        print('loading WCS for inst = ', inst1)
+        astr_map1_hdrs = load_quad_hdrs(ifield, inst1, base_path=astr_dir, halves=False)
 
     # if astr_map0_hdrs is None and indiv_map0_hdr is None:
     #     astr_map0_hdrs = [fits.open(astr_dir+'inst'+str(inst0)+'/'+fieldname+'_'+quad+'_astr.fits')[0].header for quad in quad_list]
@@ -660,35 +1179,38 @@ def regrid_iris_ciber_science_fields(ifield_list=[4,5,6,7,8], inst=1, tail_name=
         
     return save_paths
 
+
 def regrid_tm2_to_tm1_science_fields(ifield_list=[4,5,6,7,8], inst0=1, inst1=2, \
-                                     flight_dat_base_path=config.exthdpath+'noise_model_validation_data/', \
+                                    inst0_maps=None, inst1_maps=None, flight_dat_base_path=config.exthdpath+'noise_model_validation_data/', \
                                     save_fpath=config.exthdpath+'/ciber_fluctuation_data/', \
-                                    tail_name=None, plot=False, cal_facs=None):
+                                    tail_name=None, plot=False, cal_facs=None, astr_dir=None):
     
     ciber_field_dict = dict({4:'elat10', 5:'elat30',6:'BootesB', 7:'BootesA', 8:'SWIRE'})
 
-    save_paths = []
+    save_paths, regrid_ims = [], []
     for fieldidx, ifield in enumerate(ifield_list):
         print('Loading ifield', ifield)
         fieldname = ciber_field_dict[ifield]
         print(fieldname)
         
-        tm1 = fits.open(flight_dat_base_path+'TM1/validationHalfExp/field'+str(ifield)+'/flightMap.FITS')
-        tm2 = fits.open(flight_dat_base_path+'TM2/validationHalfExp/field'+str(ifield)+'/flightMap.FITS')
+        if inst0_maps is not None and inst1_maps is not None:
+            print('taking directly from inst0_maps and inst1_maps..')
+            tm1 = inst0_maps[fieldidx]
+            tm2 = inst1_maps[fieldidx]
+        else:
+            tm1 = fits.open(flight_dat_base_path+'TM1/validationHalfExp/field'+str(ifield)+'/flightMap.FITS')[0].data
+            tm2 = fits.open(flight_dat_base_path+'TM2/validationHalfExp/field'+str(ifield)+'/flightMap.FITS')[0].data       
 
-        # def regrid_arrays_by_quadrant(map1, ifield, inst0=1, inst1=2, quad_list=['A', 'B', 'C', 'D'], \
-        #                              xoff=[0,0,512,512], yoff=[0,512,0,512], astr_map0_hdrs=None, astr_map1_hdrs=None, indiv_map0_hdr=None, indiv_map1_hdr=None, astr_dir='data/astroutputs/', \
-        #                              plot=True, order=0):
-        
 
-        tm2_regrid, tm2_fp_regrid = regrid_arrays_by_quadrant(tm2[0].data, ifield, inst0=inst0, inst1=inst1, \
-                                                             plot=plot)
+        tm2_regrid, tm2_fp_regrid = regrid_arrays_by_quadrant(tm2, ifield, inst0=inst0, inst1=inst1, \
+                                                             plot=plot, astr_dir=astr_dir)
 
         if cal_facs is not None:
-
-            plot_map(cal_facs[1]*tm1[0].data, title='tm1 data')
-            plot_map(cal_facs[2]*tm2_regrid, title='tm2 regrid')
-            plot_map(cal_facs[1]*(tm1[0].data+tm2_regrid), title='tm1+tm2 data')
+            plot_map(cal_facs[1]*tm2, title='TM2 data')
+            plot_map(cal_facs[1]*tm1, title='TM1 data')
+            plot_map(cal_facs[2]*tm2_regrid, title='TM2 regrid')
+            plot_map(cal_facs[1]*(tm1+tm2_regrid), title='TM1+TM2 data')
+        regrid_ims.append(tm2_regrid)
     
         # make fits file saving data
     
@@ -699,14 +1221,74 @@ def regrid_tm2_to_tm1_science_fields(ifield_list=[4,5,6,7,8], inst0=1, inst1=2, 
         hdup.header['ifield'] = ifield
         hdup.header['dat_type'] = 'observed'
         hdul = fits.HDUList([hdup, hduim, hdufp])
-        save_fpath_full = save_fpath+'TM'+str(inst1)+'/regrid/flightMap_ifield'+str(ifield)+'_TM'+str(inst1)+'_regrid_to_TM'+str(inst0)
+        save_fpath_full = save_fpath+'TM'+str(inst1)+'/ciber_regrid/flightMap_ifield'+str(ifield)+'_TM'+str(inst1)+'_regrid_to_TM'+str(inst0)
         if tail_name is not None:
             save_fpath_full += '_'+tail_name
         hdul.writeto(save_fpath_full+'.fits', overwrite=True)
         
         save_paths.append(save_fpath_full+'.fits')
         
-    return save_paths
+    return regrid_ims, save_paths
+
+def ciber_x_ciber_regrid_all_masks(cbps, inst, cross_inst, cross_union_mask_tail, mask_tail, mask_tail_cross, ifield_list=[4,5,6,7,8], astr_base_path='data/', \
+                                  base_fluc_path = 'data/fluctuation_data/', save=True, cross_mask=None, cross_inst_only=False, plot=False, plot_quad=False):
+    
+    ''' Function to regrid masks from one imager to another and return/save union of masks. 12/20/22'''
+    mask_base_path = base_fluc_path+'TM'+str(inst)+'/masks/'
+    mask_base_path_cross_inst = base_fluc_path+'TM'+str(cross_inst)+'/masks/'
+    mask_base_path_cross_union = base_fluc_path+'TM'+str(inst)+'_TM'+str(cross_inst)+'_cross/masks/'
+
+    masks, masks_cross, masks_cross_regrid, masks_union = [np.zeros((len(ifield_list), cbps.dimx, cbps.dimy)) for x in range(4)]
+    union_savefpaths = []
+
+    for fieldidx, ifield in enumerate(ifield_list):
+        print('ifield ', ifield)
+        
+        astr_map0_hdrs = load_quad_hdrs(ifield, inst, base_path=astr_base_path, halves=False)
+        astr_map1_hdrs = load_quad_hdrs(ifield, cross_inst, base_path=astr_base_path, halves=False)
+        make_fpaths([mask_base_path_cross_union+cross_union_mask_tail])
+        
+        masks[fieldidx] = fits.open(mask_base_path+mask_tail+'/joint_mask_ifield'+str(ifield)+'_inst'+str(inst)+'_observed_'+mask_tail+'.fits')['joint_mask_'+str(ifield)].data
+
+        if cross_mask is None:
+            if cross_inst_only:
+                print('Only using instrument mask of cross CIBER map..')
+                inst_mask_fpath = config.exthdpath+'/ciber_fluctuation_data/TM'+str(cross_inst)+'/masks/maskInst_102422/field'+str(ifield)+'_TM'+str(cross_inst)+'_maskInst_102422.fits'
+                masks_cross[fieldidx] = cbps.load_mask(ifield, inst, mask_fpath=inst_mask_fpath, instkey='maskinst', inplace=False)
+            else:
+                print('Using full cross map mask..')
+                masks_cross[fieldidx] = fits.open(mask_base_path_cross_inst+mask_tail_cross+'/joint_mask_ifield'+str(ifield)+'_inst'+str(cross_inst)+'_observed_'+mask_tail_cross+'.fits')['joint_mask_'+str(ifield)].data
+
+            mask_cross_regrid, mask_cross_fp_regrid = regrid_arrays_by_quadrant(masks_cross[fieldidx], ifield, inst0=inst, inst1=cross_inst, \
+                                                     astr_map0_hdrs=astr_map0_hdrs, astr_map1_hdrs=astr_map1_hdrs, plot=plot_quad)
+
+            masks_cross_regrid[fieldidx] = mask_cross_regrid
+        masks_union[fieldidx] = masks[fieldidx]*mask_cross_regrid
+
+        if plot:
+            plot_map(masks[fieldidx], title='mask fieldidx = '+str(fieldidx))
+            plot_map(masks_cross[fieldidx], title='mask fieldidx = '+str(fieldidx))
+
+        masks_union[fieldidx][masks_union[fieldidx] > 1] = 1.0
+        
+        print('Mask fraction for mask TM'+str(inst)+' is ', np.sum(masks[fieldidx])/float(1024**2))
+        print('Mask fraction for mask TM'+str(cross_inst)+' is ', np.sum(masks_cross[fieldidx])/float(1024**2))
+        print('Mask fraction for union mask is ', np.sum(masks_union[fieldidx])/float(1024**2))
+        if plot:
+            plot_map(masks_union[fieldidx], title='mask x mask cross')
+
+        if save:
+            hdul = write_mask_file(masks_union[fieldidx], ifield, inst, dat_type='cross_observed', cross_inst=cross_inst)
+            union_savefpath = mask_base_path_cross_union+cross_union_mask_tail+'/joint_mask_ifield'+str(ifield)+'_TM'+str(inst)+'_TM'+str(cross_inst)+'_observed_'+cross_union_mask_tail+'.fits'
+            print('Saving cross mask to ', union_savefpath)
+
+            hdul.writeto(union_savefpath, overwrite=True)
+            union_savefpaths.append(union_savefpath)
+    if save:
+        return masks, masks_cross, masks_cross_regrid, masks_union, union_savefpaths
+    
+    return masks, masks_cross, masks_cross_regrid, masks_union
+
 
 def write_Mkk_fits(Mkk, inv_Mkk, ifield, inst, cross_inst=None, sim_idx=None, generate_starmask=True, generate_galmask=True, \
                   use_inst_mask=True, dat_type=None, mag_lim_AB=None):
@@ -754,6 +1336,31 @@ def write_ff_file(ff_estimate, ifield, inst, sim_idx=None, dat_type=None, mag_li
     
     return hdul
 
+
+def write_regrid_proc_file(masked_proc, ifield, inst, regrid_to_inst, mask_tail=None,\
+                           dat_type='observed', mag_lim=None, mag_lim_cross=None, obs_level=None):
+    hdum = fits.ImageHDU(masked_proc, name='proc_regrid_'+str(ifield))
+    hdup = fits.PrimaryHDU()
+    hdup.header['ifield'] = ifield
+    hdup.header['inst'] = inst
+    hdup.header['regrid_to_inst'] = regrid_to_inst
+    
+    if mask_tail is not None:
+        hdup.header['mask_tail'] = mask_tail
+    if dat_type is not None:
+        hdup.header['dat_type'] = dat_type
+    if mag_lim is not None:
+        hdup.header['mag_lim'] = mag_lim
+    if mag_lim_cross is not None:
+        hdup.header['mag_lim_cross'] = mag_lim_cross
+    if obs_level is not None:
+        hdup.header['obs_level'] = obs_level
+
+    hdul = fits.HDUList([hdup, hdum])
+    
+    return hdul
+
+
 def write_mask_file(mask, ifield, inst, cross_inst=None, sim_idx=None, generate_galmask=None, generate_starmask=None, use_inst_mask=None, \
                    dat_type=None, mag_lim_AB=None, with_ff_mask=None, name=None, a1=None, b1=None, c1=None, dm=None, alpha_m=None, beta_m=None):
 
@@ -799,7 +1406,23 @@ def write_mask_file(mask, ifield, inst, cross_inst=None, sim_idx=None, generate_
     
     return hdul
 
+def save_resid_cl_file(cl_table, names, mode='isl', return_hdul=False, save=True, cl_save_fpath=None, **kwargs):
+    tab = Table(cl_table, names=tuple(names))
+    hdu_cl = fits.BinTableHDU(tab, name='cls_'+mode)
+    hdr = fits.Header()
 
+    for key, value in kwargs.items():
+        hdr[key] = value
+    prim = fits.PrimaryHDU(header=hdr)
+    hdul = fits.HDUList([prim, hdu_cl])
+    if save:
+        if cl_save_fpath is None:
+            print("No cl_save_fpath provided..")
+        else:
+            hdul.writeto(cl_save_fpath, overwrite=True)
+
+    if return_hdul:
+        return hdul
 
 def compute_neff(weights):
     weights = np.array(weights)
@@ -815,6 +1438,32 @@ def weighted_avg_and_std(values, weights):
     # Fast and numerically precise:
     variance = np.average((values-average)**2, weights=weights)
     return average, np.sqrt(variance)
+
+
+def load_weighted_cl_file_cross(cl_fpath, mode='observed'):
+
+    clfile = np.load(cl_fpath)
+    
+    if mode=='observed':
+        observed_recov_ps = clfile['observed_recov_ps']
+        observed_recov_dcl_perfield = clfile['observed_recov_dcl_perfield']
+        observed_field_average_cl = clfile['observed_field_average_cl']
+        observed_field_average_dcl = clfile['observed_field_average_dcl']
+#         mock_all_field_cl_weights = clfile['mock_all_field_cl_weights']
+        lb = clfile['lb']
+    
+        return lb, observed_recov_ps, observed_recov_dcl_perfield, observed_field_average_cl, observed_field_average_dcl, None
+    
+    elif mode=='mock':
+        mock_mean_input_ps = clfile['mock_mean_input_ps']
+        mock_all_field_averaged_cls = clfile['mock_all_field_averaged_cls']
+        mock_all_field_cl_weights = clfile['mock_all_field_cl_weights']
+        all_mock_recov_ps = clfile['all_mock_recov_ps']
+        all_mock_signal_ps = clfile['all_mock_signal_ps']
+        lb = clfile['lb']
+    
+        return lb, mock_mean_input_ps, mock_all_field_averaged_cls, mock_all_field_cl_weights, all_mock_recov_ps, all_mock_signal_ps
+    
 
 def compute_sim_corrected_fieldaverage(recovered_ps_by_field, input_ps_by_field, lb, obs_idx=0, compute_field_weights=True, \
                                       apply_field_weights=True, name=None, plot=True, save_plot=False):
@@ -901,6 +1550,85 @@ def compute_sim_corrected_fieldaverage(recovered_ps_by_field, input_ps_by_field,
     
     return pscorr_fieldaverage, pscorr_fieldstd, field_weights, obs_ps_corr_by_field, simav_pscorr_fieldstd, fig
     
+
+class powerspec():
+
+    def __init__(self, n_ps_bin=25, dimx=1024, \
+                dimy=1024):
+
+        self.Mkk_obj = Mkk_bare(dimx=dimx, dimy=dimy, ell_min=180.*(1024./dimx), nbins=n_ps_bin)
+
+
+    def load_in_powerspec(self, powerspec_fpath, mode=None, inplace=False):
+
+        pass
+
+
+    def compute_est_true_ratio(self, ps_measured=None, ps_ground_truth=None, inplace=True):
+
+        ''' Computes ratio between power spectra 
+
+        Inputs
+        ------
+        
+        ps_measured (optional): np.array of shape (nfields, n_ps_bin), (nsims, n_ps_bin) or (nsims, nfields, n_ps_bin). 
+                                Default is None.
+
+        ps_ground_truth (optional): np.array of shape (nfields, n_ps_bin), (nsims, n_ps_bin) or (nsims, nfields, n_ps_bin). 
+                                Default is None.    
+
+        inplace : type 'boolean'. If True, stores power spectrum ratio in object. Default is True.  
+
+        Returns
+        -------
+
+        est_true_ratio : np.array of shape (nfields, n_ps_bin), (nsims, n_ps_bin) or (nsims, nfields, n_ps_bin). 
+                        Ratio of (sets of) power spectra.
+
+        '''
+        if ps_measured is None:
+            ps_measured = self.ps_measured
+        if ps_ground_truth is None:
+            ps_ground_truth = self.ps_ground_truth
+
+        est_true_ratio = ps_measured/ps_ground_truth
+
+        if inplace:
+            self.est_true_ratio = est_true_ratio
+        else:
+            return est_true_ratio
+
+
+    def grab_all_simidx_dat(self, fpaths, mean_or_median='mean', inter_idx=None, per_field=True, bls=None, inplace=True):
+
+        nsims = len(fpaths)
+
+        # here, "mean" power spectrum refers to average over fields
+        est_true_ratios = np.zeros((nsims, nfield, self.n_ps_bin))
+        all_mean_true_cls = np.zeros((nsims, self.n_ps_bin))
+        all_true_cls = np.zeros((nsims, nfield, self.n_ps_bin))
+        all_recovered_cls = np.zeros((nsims, nfield, self.n_ps_bin))
+        all_mean_recovered_cls = np.zeros((nsims, self.n_ps_bin))
+
+
+        for f, fpath in enumerate(fpaths):
+            lb, recovered_cls, true_cls, mean_recovered_cls, mean_true_cl, est_true_ratio = grab_recovered_cl_dat(fpath, mean_or_median=mean_or_median, inter_idx=inter_idx, \
+                                                                                                                  per_field=per_field, bls=bls)
+
+            est_true_ratios[f] = est_true_ratio
+            all_recovered_cls[f] = recovered_cls
+            all_true_cls[f] = true_cls
+            all_mean_recovered_cls[f] = mean_recovered_cls
+
+        if inplace:
+            self.est_true_ratios = est_true_ratios
+            self.all_mean_true_cls = all_mean_true_cls
+            self.all_recovered_cls = all_recovered_cls
+            self.all_true_cls = all_true_cls
+            self.lb = lb 
+
+        else:
+            return lb, est_true_ratios, all_mean_true_cls, all_recovered_cls, all_recovered_mean_cls, all_true_cls
 
 
 
