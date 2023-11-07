@@ -12,7 +12,182 @@ import config
 from ciber_powerspec_pipeline import *
 from ps_pipeline_go import *
 
+from scipy.optimize import curve_fit
 
+
+def compare_with_zl_predictions_slope(inst, ifield_list, mask_base_path, mask_tail, dx=6, nregion=5, dimx=1024, average_g1g2_over_fields=False, \
+                                     zl_vals=None):
+    
+    xspace = np.linspace(0, dimx, nregion+1).astype(int)
+    yspace = np.linspace(0, dimx, nregion+1).astype(int)
+    
+    ciber_mean_adu_coarse, g1g2_vals_coarse, g1g2_unc_vals_coarse, \
+        zl_vals_coarse, nsrc_perbin_coarse = [np.zeros((len(ifield_list), nregion, nregion)) for x in range(5)]
+    
+    comp_slope_coarse, comp_intercept_coarse = [np.zeros((nregion, nregion)) for x in range(2)]
+    
+    dc_map = cbps.load_dark_current_template(inst, inplace=False)
+    calib_result_basepath = config.ciber_basepath+'data/calib/TM'+str(inst)+'/'
+    
+    for fieldidx, ifield in enumerate(ifield_list):
+        
+        # load flight images and masks, calculate mean photocurrent in sub-regions
+        
+        flight_im = cbps.load_flight_image(ifield, inst, inplace=False)
+        flight_im -= dc_map
+                
+        mask_fpath = mask_base_path+mask_tail+'/joint_mask_ifield'+str(ifield)+'_inst'+str(inst)+'_observed_'+mask_tail+'.fits'
+        mask = fits.open(mask_fpath)[1].data
+        
+        
+        ciber_mean_adu_coarse[fieldidx] = calc_mean_adu_coarse(flight_im, mask, nregion, xspace, yspace)
+        
+        plot_map(ciber_mean_adu_coarse[fieldidx], figsize=(5,5), title='mean adu coarse ifield '+str(ifield))
+        # load pos and pred/measured fluxes
+        
+        calib_fpath = calib_result_basepath+'ciber_sbcal_results_TM'+str(inst)+'_ifield'+str(ifield)+'_dx='+str(dx)+'.npz'
+        calresult = np.load(calib_fpath)
+        cal_src_posx = calresult['cal_src_posx']
+        cal_src_posy = calresult['cal_src_posy']
+        measured_fluxes = calresult['all_measured_fluxes']
+        pred_fluxes = calresult['all_pred_fluxes']
+        var_measured_fluxes = calresult['all_var_measured_fluxes']
+        
+        g1g2_coarsebin, g1g2_unc_coarsebin, nsrc_perbin = calc_g1g2_coarsebin(cal_src_posx, cal_src_posy, pred_fluxes, measured_fluxes, var_measured_fluxes, nregion)
+        g1g2_vals_coarse[fieldidx] = g1g2_coarsebin
+        g1g2_unc_vals_coarse[fieldidx] = g1g2_unc_coarsebin
+        nsrc_perbin_coarse[fieldidx] = nsrc_perbin
+        
+        
+        nsrcfig = plot_map(nsrc_perbin_coarse[fieldidx], vmax=90, vmin=40, cmap='bwr', xlabel=None, ylabel=None, title='Number of calibration sources\n(TM'+str(inst)+', ifield '+str(ifield)+')', figsize=(5,5), return_fig=True)
+        nsrcfig.savefig(config.ciber_basepath+'figures/calibration_results/nsrc_byregion_TM'+str(inst)+'_ifield'+str(ifield)+'.png', bbox_inches='tight')
+
+        g1g2fig = plot_map(g1g2_coarsebin, xlabel=None, ylabel=None, title='G1G2 by region (TM'+str(inst)+', ifield '+str(ifield)+')\n[nW m$^{-2}$ sr$^{-1}$/ADU fr$^{-1}$]', figsize=(5,5), return_fig=True)
+#         g1g2fig.savefig(config.ciber_basepath+'figures/calibration_results/g1g2_byregion_TM'+str(inst)+'_ifield'+str(ifield)+'.png', bbox_inches='tight')
+
+        ciber_mean_sb_coarse = ciber_mean_adu_coarse[fieldidx]*g1g2_coarsebin
+        
+        sbfig = plot_map(ciber_mean_sb_coarse, xlabel=None, ylabel=None, title='CIBER sky SB (TM'+str(inst)+', ifield '+str(ifield)+')\n[nW m$^{-2}$ sr$^{-1}$]', figsize=(5,5), return_fig=True)
+#         sbfig.savefig(config.ciber_basepath+'figures/calibration_results/ciber_sb_byregion_TM'+str(inst)+'_ifield'+str(ifield)+'.png', bbox_inches='tight')
+
+        if zl_vals is not None:
+            zl_vals_coarse[fieldidx] = zl_vals[fieldidx] 
+                    
+    
+    fig, ax = plt.subplots(nrows=nregion, ncols=nregion, figsize=(8,6))
+    
+    i=1
+    for nx in range(nregion):
+        for ny in range(nregion):
+            
+            plt.subplot(nregion, nregion, i)
+            i+=1
+
+            if average_g1g2_over_fields:
+                g1g2_apply = np.mean(g1g2_vals_coarse[:,nx,ny])
+                g1g2_unc_apply = np.sqrt(1./np.sum((1./g1g2_vals_coarse[:,nx,ny]**2)))
+            else:
+                g1g2_apply = g1g2_vals_coarse[:,nx,ny]
+                g1g2_unc_apply = g1g2_unc_vals_coarse[:,nx,ny]
+
+            ciber_pred_zl_sb = ciber_mean_adu_coarse[:,nx,ny]*g1g2_apply
+            ciber_pred_zl_sb_unc = np.abs(ciber_mean_adu_coarse[:,nx,ny]*g1g2_unc_apply)
+
+            # fit line to pred zl vs model zl
+            popt, pcov = curve_fit(linear_func, zl_vals_coarse[:,nx,ny], ciber_pred_zl_sb, sigma=ciber_pred_zl_sb_unc, absolute_sigma=True)
+
+            comp_slope_coarse[nx,ny] = popt[0]
+            comp_intercept_coarse[nx,ny] = popt[1]
+            
+            if inst==1:
+                sbmax = 1200
+            elif inst==2:
+                sbmax = 800
+            
+            ax[nregion-nx-1,ny].errorbar(zl_vals_coarse[:,nx,ny], ciber_pred_zl_sb, yerr=ciber_pred_zl_sb_unc, markersize=5, fmt='o', color='r')
+            ax[nregion-nx-1,ny].plot(np.linspace(0, sbmax, 100), popt[0]*np.linspace(0, sbmax, 100)+popt[1], color='k', linestyle='dashed')
+            
+            if nx==nregion-1:
+                plt.xlabel('Kelsall ZL\n[nW m$^{-2}$ sr$^{-1}$]')
+            if ny==0:
+                plt.ylabel('CIBER sky SB\n[nW m$^{-2}$ sr$^{-1}$]')
+                
+            fitstr = 'Slope='+str(np.round(popt[0], 2))+'$\\pm$'+str(np.round(np.sqrt(pcov[0,0]), 2))
+            fitstr += '\nIntercept='+str(int(popt[1]))+'$\\pm$'+str(int(np.sqrt(pcov[1,1])))
+            ax[nregion-nx-1,ny].text(0.25*sbmax, 0.15*sbmax, fitstr, fontsize=10)
+                
+            ax[nregion-nx-1,ny].set_xlim(0, sbmax)
+            ax[nregion-nx-1,ny].set_ylim(0, sbmax)
+            ax[nregion-nx-1,ny].grid(alpha=0.5)
+    plt.tight_layout()
+    plt.savefig(config.ciber_basepath+'figures/calibration_results/ciber_kelsall_meansb_compare_slopes_perregion_TM'+str(inst)+'.png', bbox_inches='tight', dpi=300)
+    plt.show()
+
+
+    slopef = plot_map(comp_slope_coarse, xlabel=None,ylabel=None, title='CIBER/Kelsall slopes, TM'+str(inst), figsize=(5,5), return_fig=True)
+    interf = plot_map(comp_intercept_coarse, xlabel=None,ylabel=None, title='Intercepts, TM'+str(inst), figsize=(5,5), return_fig=True)
+    
+#     slopef.savefig(config.ciber_basepath+'figures/calibration_results/slope_perregion_ciber_kelsall_TM'+str(inst)+'.png', bbox_inches='tight')
+#     interf.savefig(config.ciber_basepath+'figures/calibration_results/intercept_perregion_ciber_kelsall_TM'+str(inst)+'.png', bbox_inches='tight')
+
+    return comp_slope_coarse, comp_intercept_coarse
+
+def linear_func(x, m, b):
+    
+    return m*x + b
+
+def calc_g1g2_slope(pred_fluxes, measured_fluxes, var_measured_fluxes):
+    
+    popt, pcov = curve_fit(linear_func, pred_fluxes, measured_fluxes, sigma=np.sqrt(var_measured_fluxes), absolute_sigma=True)
+    
+    g1g2 = 1./popt[0]
+    
+    g1g2_unc = g1g2*(np.sqrt(pcov[0,0])/popt[0])
+        
+    return g1g2, g1g2_unc
+
+def calc_g1g2_coarsebin(cal_src_posx, cal_src_posy, pred_fluxes, measured_fluxes, var_measured_fluxes, nregion=5, dimx=1024):
+    
+    xspace = np.linspace(0, dimx, nregion+1).astype(int)
+    yspace = np.linspace(0, dimx, nregion+1).astype(int)
+    
+    nsrc_perbin, g1g2_coarsebin, g1g2_unc_coarsebin = [np.zeros((nregion, nregion)) for x in range(3)]
+    
+    for nx in range(nregion):
+        for ny in range(nregion):
+            
+            inregion = (cal_src_posx > xspace[nx])*(cal_src_posx < xspace[nx+1])*(cal_src_posy > yspace[ny])*(cal_src_posy < yspace[ny+1])
+                        
+            nsrc_perbin[nx, ny] = np.sum(inregion)
+            
+            posx_sel = cal_src_posx[inregion]
+            posy_sel = cal_src_posy[inregion]
+            pred_fluxes_sel = pred_fluxes[inregion]
+            measured_fluxes_sel = measured_fluxes[inregion]
+            var_measured_fluxes_sel = var_measured_fluxes[inregion]
+            
+            if nsrc_perbin[nx,ny] < 2:
+                continue
+                
+            g1g2, g1g2_unc = calc_g1g2_slope(pred_fluxes_sel, measured_fluxes_sel, var_measured_fluxes_sel)
+            g1g2_coarsebin[nx, ny] = g1g2
+            g1g2_unc_coarsebin[nx,ny] = g1g2_unc
+            
+    return g1g2_coarsebin, g1g2_unc_coarsebin, nsrc_perbin
+
+def calc_mean_adu_coarse(flight_im, mask, nregion, xspace, yspace):
+    
+    mean_adu_coarse = np.zeros((nregion, nregion))
+    
+    for nx in range(nregion):
+        for ny in range(nregion):
+            
+            flight_reg = flight_im[xspace[nx]:xspace[nx+1], yspace[ny]:yspace[ny+1]]
+            mask_reg = mask[xspace[nx]:xspace[nx+1], yspace[ny]:yspace[ny+1]]
+            
+            mean_adu_coarse[nx,ny] = np.median(flight_reg[mask_reg==1])
+            
+    return mean_adu_coarse
 
 def load_calib_catalog(inst, ifield, m_min=11, m_max=14.5, spline_k=2, trim_edge=50):
     
