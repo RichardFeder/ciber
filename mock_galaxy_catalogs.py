@@ -94,8 +94,8 @@ def positions_from_counts(counts_map, cat_len=None, add_subpix_scatter=False):
     thetax, thetay = [], []
     for i in np.arange(np.max(counts_map)):
         pos = np.where(counts_map > i)
-        thetax.extend(pos[0].astype(np.float))
-        thetay.extend(pos[1].astype(np.float))
+        thetax.extend(pos[0].astype(float))
+        thetay.extend(pos[1].astype(float))
 
     if cat_len is not None:
         idxs = np.random.choice(np.arange(len(thetax)), cat_len)
@@ -228,7 +228,7 @@ class galaxy_catalog():
         else:
             txs, tys = [], []
             # draw galaxy positions from GRF with given power spectrum, number_counts in deg^-2
-            counts, grfs = generate_count_map_2d(nmaps, cl=cl, size=size, ell_min=ell_min, Ntot=Nsrc, ell_sampled=ells, plot=plot)
+            counts, grfs = generate_count_map_2d(nmaps, cl=cl, size=size, ell_min=ell_min, Ntot=Nsrc, ell_sampled=ells)
 
             if plot:
                 plot_map(counts[0], title='counts[0]')
@@ -253,7 +253,7 @@ class galaxy_catalog():
     def generate_galaxy_catalogs(self, ng_bins=5, zmin=0.0, zmax=2.0, ndeg=4.0, m_min=13, m_max=28, hsc=False, \
                                ell_min=90., Mabs_min=-30.0, Mabs_max=-15., size=1024, random_positions=False, \
                                 Mabs_nbin=100, band='J', cl=None, ells=None, n_catalogs=1, n_bin_Mapp=200, load_cl_limber_file=False, \
-                                plot=False, compute_halo_params=False, lam_obs=None):
+                                plot=False, compute_halo_params=False, lam_obs=None, mode=None):
         
         ''' This function puts together other functions in the galaxy_catalog() class as full pipeline to generate galaxy catalog realizations,
         given some angular power spectrum and Helgason model'''
@@ -278,7 +278,7 @@ class galaxy_catalog():
         # First, I need to figure out how many sources are within a given redshift bin
         Mapps = np.linspace(m_min, m_max, n_bin_Mapp)
         dMapp = Mapps[1]-Mapps[0]
-        number_counts = np.array(self.lf.number_counts(zrange_grf, Mapps, band, dzs=dzs, lam_obs=lam_obs)[1]).astype(np.int)
+        number_counts = np.array(self.lf.number_counts(zrange_grf, Mapps, band, dzs=dzs, lam_obs=lam_obs, mode=mode)[1]).astype(int)
         print('number counts has shape ', number_counts.shape, 'while Mapps has nbins=', len(Mapps))
         # this should be a 2d array with len(Mapps) rows and len(midzs) columns
 
@@ -294,7 +294,7 @@ class galaxy_catalog():
             
             cl = None
             if load_cl_limber_file:
-                clfile = np.load(config.exthdpath+'ciber_mocks/limber_cl_vs_redshift/limber_cls_zmin='+str(zmin)+'_zmax='+str(zmax)+'_zbin'+str(i)+'.npz')
+                clfile = np.load(config.ciber_basepath+'data/ciber_mocks/limber_cl_vs_redshift/limber_cls_zmin='+str(zmin)+'_zmax='+str(zmax)+'_zbin'+str(i)+'.npz')
                 ells = clfile['lb_limber']
                 cl = clfile['integral_cl']
                 # print('central zs for z bin centered on ', z, 'is', clfile['central_zs'])
@@ -320,7 +320,7 @@ class galaxy_catalog():
             mags = []
 
             # draw apparent magnitudes based on Helgason number counts N(m)
-            mapp_pdf = number_counts[i].astype(np.float32)/float(np.sum(number_counts[i]))
+            mapp_pdf = number_counts[i].astype(float)/float(np.sum(number_counts[i]))
 
             n = int(np.sum(number_counts[i])*n_deg_across**2)
             if len(txs[0]) > 0:

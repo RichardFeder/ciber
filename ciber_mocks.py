@@ -278,7 +278,7 @@ def ihl_conv_templates(psf=None, rvir_min=1, rvir_max=50, dimx=150, dimy=150):
 	'''
 
 	ihl_conv_temps = []
-	rvir_range = np.arange(rvir_min, rvir_max).astype(np.float)
+	rvir_range = np.arange(rvir_min, rvir_max).astype(float)
 	for rvir in rvir_range:
 		ihl = normalized_ihl_template(R_vir=rvir, dimx=dimx, dimy=dimy)
 		if psf is not None:
@@ -293,10 +293,10 @@ def initialize_cblas_ciber(libmmult):
 
 	print('initializing c routines and data structs')
 
-	array_2d_float = npct.ndpointer(dtype=np.float32, ndim=2, flags="C_CONTIGUOUS")
-	array_1d_int = npct.ndpointer(dtype=np.int32, ndim=1, flags="C_CONTIGUOUS")
-	array_2d_double = npct.ndpointer(dtype=np.float64, ndim=2, flags="C_CONTIGUOUS")
-	array_2d_int = npct.ndpointer(dtype=np.int32, ndim=2, flags="C_CONTIGUOUS")
+	array_2d_float = npct.ndpointer(dtype=float, ndim=2, flags="C_CONTIGUOUS")
+	array_1d_int = npct.ndpointer(dtype=int, ndim=1, flags="C_CONTIGUOUS")
+	array_2d_double = npct.ndpointer(dtype=float, ndim=2, flags="C_CONTIGUOUS")
+	array_2d_int = npct.ndpointer(dtype=int, ndim=2, flags="C_CONTIGUOUS")
 
 	libmmult.pcat_model_eval.restype = None
 	libmmult.pcat_model_eval.argtypes = [c_int, c_int, c_int, c_int, c_int, array_2d_float, array_2d_float, array_2d_float, array_1d_int, array_1d_int, array_2d_float, array_2d_float, array_2d_float, array_2d_double, c_int, c_int, c_int, c_int]
@@ -631,7 +631,7 @@ class ciber_mock():
 			print('beta/rc/norm: ', beta, rc, norm)
 		if pcat_model_eval:
 
-			srcmap = image_model_eval(np.array(cat[:,0]).astype(np.float32)+dx, np.array(cat[:,1]).astype(np.float32)-dy ,np.array(cat[:, flux_idx]).astype(np.float32),0., (self.nx, self.ny), 35, self.cf, lib=self.libmmult.pcat_model_eval)
+			srcmap = image_model_eval(np.array(cat[:,0]).astype(float)+dx, np.array(cat[:,1]).astype(float)-dy ,np.array(cat[:, flux_idx]).astype(float),0., (self.nx, self.ny), 35, self.cf, lib=self.libmmult.pcat_model_eval)
 
 			return srcmap
 		else:
@@ -727,7 +727,7 @@ class ciber_mock():
 				else:
 					print('loading precomputed template bank in tempbank_dirpath')
 					srcmap_full = self.make_srcmap_temp_bank(ifield_list[c], inst, cat_full, flux_idx=-1, n_fine_bin=n_fine_bin, nwide=17, load_precomp_tempbank=True, \
-													tempbank_dirpath=config.exthdpath+'ciber_fluctuation_data/TM'+str(inst)+'/subpixel_psfs/')
+													tempbank_dirpath=config.ciber_basepath+'data/fluctuation_data/TM'+str(inst)+'/subpixel_psfs/')
 				self.psf_temp_bank = None
 
 			else:
@@ -764,7 +764,7 @@ class ciber_mock():
 							zmin=0.0, zmax=2.0, pcat_model_eval=False, ncatalog=1, add_noise=False, cat_return='tracer', m_tracer_max=20., \
 							temp_bank=True, convert_tracer_to_Vega=False, load_cl_limber_file=False, plot=False, \
 							simulate_pointing_offset=False, dx_pointing=0.5, dy_pointing=0.5, wcs_hdrs_first=None, wcs_hdrs_second=None, \
-							use_ciber_lam_eff=False):
+							use_ciber_lam_eff=False, mode=None):
 		""" 
 		This is the parent function that uses other functions in the class to generate a full mock catalog/CIBER image. If there is 
 		no mock catalog input, the function draws a galaxy catalog from the Helgason model with the galaxy_catalog() class. With a catalog 
@@ -795,6 +795,8 @@ class ciber_mock():
 		temp_bank (boolean, default=True): if True, image generation is done using a precomputed template bank of PSFs that are interpolated 
 												and downsampled to CIBER resolution.
 
+		mode (string, default=None): can specify high faint end ('hfe') and low faint end ('lfe') galaxy LF model from Helgason
+
 		Returns
 		-------
 		
@@ -813,6 +815,11 @@ class ciber_mock():
 		else:
 			ciber_lam_obs = None
 
+		if mode is not None:
+			print('Mode is ', mode)
+		else:
+			print('Default H12 model')
+
 		print('helgason band is ', band_helgason)
 		if mock_cat is not None:
 			m_arr = []
@@ -820,7 +827,7 @@ class ciber_mock():
 		else:
 			mock_galaxy = galaxy_catalog()
 			cat = mock_galaxy.generate_galaxy_catalogs(band=band_helgason, ng_bins=ng_bins, zmin=zmin, zmax=zmax, n_catalogs=ncatalog, m_min=m_min, m_max=m_max, load_cl_limber_file=load_cl_limber_file, plot=plot, \
-														lam_obs=ciber_lam_obs)
+														lam_obs=ciber_lam_obs, mode=mode)
 		
 		# tracer catalogs are selected using cuts on Vega mag, but actual magnitudes in tracer catalog are still in AB magnitude system (6/23/22)
 		print('len cat is ', len(cat))

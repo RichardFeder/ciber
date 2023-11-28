@@ -43,9 +43,18 @@ class Luminosity_Function():
                                 'H':self.H_dict, 'K':self.K_dict, 'L':self.L_dict}) # sets parameter dictionary of dictionaries
         self.z0m = z0m
 
-    def alpha(self, z, band='J'): # checked
+    def alpha(self, z, band='J', mode=None): # checked
+        if mode=='hfe':
+            alpha0 = -1.2
+        elif mode=='lfe':
+            alpha0 = -0.8
+        else:
+            alpha0 = self.alpha0
+
         r = self.band_dicts[band]['r']
-        return self.alpha0*(z/self.z0alpha)**r
+        return alpha0*(z/self.z0alpha)**r
+
+        # return self.alpha0*(z/self.z0alpha)**r
         # return self.alpha0*(z/self.z0alpha)**self.r
         
     def comoving_vol_element(self, z): # checked
@@ -90,7 +99,7 @@ class Luminosity_Function():
         return m0-2.5*np.log10((1.+(z-self.z0m))**q)
 
 
-    def number_counts(self, zs, Mapp, band, dzs, dMapp=None, lam_obs=None):
+    def number_counts(self, zs, Mapp, band, dzs, dMapp=None, lam_obs=None, mode=None):
         
         ''' This returns the number counts per magnitude per square degree. It does this by, for each redshift,
         1) computing wavelength that would redshift into observing band at z=0
@@ -110,10 +119,12 @@ class Luminosity_Function():
             
         nm = np.zeros((len(zs), len(Mapp)))
         for i, z in enumerate(zs):
-            rest_frame_lambda = self.band_dicts[band]['lambda']/(1.+z)            
+            # rest_frame_lambda = self.band_dicts[band]['lambda']/(1.+z)            
+            rest_frame_lambda = lam_obs/(1.+z)            
+
             nearest_band, dist = self.find_nearest_band(rest_frame_lambda)
             Mabs = self.get_abs_from_app(Mapp, z)
-            schec = self.schechter_lf_dm(Mabs, z, nearest_band)*(10**(-3) * self.schechter_units)*self.comoving_vol_element(z)
+            schec = self.schechter_lf_dm(Mabs, z, nearest_band, mode=mode)*(10**(-3) * self.schechter_units)*self.comoving_vol_element(z)
             nm[i] = schec.value
             
         if len(dzs)>0 and len(zs)>1:
@@ -130,12 +141,12 @@ class Luminosity_Function():
         return phi0*np.exp(-p*(z-self.z0m))
     
 
-    def schechter_lf_dm(self, M, z, band): # in absolute magnitudes
+    def schechter_lf_dm(self, M, z, band, mode=None): # in absolute magnitudes
         ''' Given an observing band and an absolute magnitude, this function evaluates the Schechter luminosity function from Helgason
         over some input range of redshifts.''' 
         Msz = self.m_star(z, band)
         phiz = self.phi_star(z, band)
-        alph = self.alpha(z)
+        alph = self.alpha(z, mode=mode)
         
         phi = 0.4*np.log(10)*phiz*(10**(0.4*(Msz-M)))**(alph+1)
         phi *= np.exp(-10**(0.4*(Msz-M)))
