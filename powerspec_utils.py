@@ -913,12 +913,13 @@ def compute_fieldav_powerspectra(ifield_list, all_signal_ps, all_recov_ps, flati
     return mean_input_powerspectra, all_field_averaged_cls, all_field_cl_weights
 
 
-def process_mock_powerspectra(cbps, datestr, ifield_list, inst, run_name, nsim, flatidx=8, apply_field_weights=True):
+def process_mock_powerspectra(cbps, datestr, ifield_list, inst, run_name, nsim, flatidx=8, apply_field_weights=True, sim_test_fpath=None):
     # being used as of 12/6/22
     all_signal_ps = np.zeros((nsim, len(ifield_list), cbps.n_ps_bin))
     all_recov_ps = np.zeros((nsim, len(ifield_list), cbps.n_ps_bin))
     
-    sim_test_fpath = 'data/input_recovered_ps/'+datestr+'/TM'+str(inst)+'/'
+    if sim_test_fpath is None:
+        sim_test_fpath = config.ciber_basepath+'data/input_recovered_ps/'+datestr+'/TM'+str(inst)+'/'
     
     for simidx in np.arange(nsim):
         clpath = np.load(sim_test_fpath+run_name+'/input_recovered_ps_estFF_simidx'+str(simidx)+'.npz')
@@ -935,18 +936,24 @@ def process_mock_powerspectra(cbps, datestr, ifield_list, inst, run_name, nsim, 
     
     return mean_input_powerspectra, all_signal_ps, all_recov_ps, all_field_averaged_cls, all_field_cl_weights, lb
 
-def process_observed_powerspectra(cbps, datestr, ifield_list, inst, observed_run_name, mock_run_name, nsim_mock, flatidx=8, apply_field_weights=True, per_quadrant=False):
+def process_observed_powerspectra(cbps, datestr, ifield_list, inst, observed_run_name, mock_run_name, nsim_mock, flatidx=8, apply_field_weights=True, per_quadrant=False, \
+                                    datestr_mock=None):
     
-    sim_test_fpath = 'data/input_recovered_ps/'+datestr+'/TM'+str(inst)+'/'
+    if datestr_mock is None:
+        datestr_mock = datestr
+
+    sim_test_fpath_mock = config.ciber_basepath+'data/input_recovered_ps/'+datestr_mock+'/TM'+str(inst)+'/'
+    sim_test_fpath_obs = config.ciber_basepath+'data/input_recovered_ps/'+datestr+'/TM'+str(inst)+'/'
 
     mock_mean_input_ps, all_mock_signal_ps, all_mock_recov_ps,\
-            mock_all_field_averaged_cls, mock_all_field_cl_weights, lb = process_mock_powerspectra(cbps, datestr, ifield_list, \
-                                                                                                inst, mock_run_name, nsim_mock, flatidx=flatidx)
+            mock_all_field_averaged_cls, mock_all_field_cl_weights, lb = process_mock_powerspectra(cbps, datestr_mock, ifield_list, \
+                                                                                                inst, mock_run_name, nsim_mock, flatidx=flatidx, \
+                                                                                                sim_test_fpath=sim_test_fpath_mock)
     cl_sumweights = np.sum(mock_all_field_cl_weights, axis=0)
     
     if per_quadrant:
 
-        obs_clfile = np.load(sim_test_fpath+observed_run_name+'/input_recovered_ps_estFF_simidx0_per_quadrant.npz')
+        obs_clfile = np.load(sim_test_fpath_obs+observed_run_name+'/input_recovered_ps_estFF_simidx0_per_quadrant.npz')
         observed_recov_ps_per_quadant = obs_clfile['recovered_ps_est_per_quadrant']
         observed_recov_dcl_per_quadrant = obs_clfile['recovered_dcl_per_quadrant']
         lb = obs_clfile['lb']
@@ -954,7 +961,7 @@ def process_observed_powerspectra(cbps, datestr, ifield_list, inst, observed_run
 
 
     else:
-        obs_clfile = np.load(sim_test_fpath+observed_run_name+'/input_recovered_ps_estFF_simidx0.npz')
+        obs_clfile = np.load(sim_test_fpath_obs+observed_run_name+'/input_recovered_ps_estFF_simidx0.npz')
         observed_recov_ps = obs_clfile['recovered_ps_est_nofluc']
         observed_recov_dcl_perfield = obs_clfile['recovered_dcl']
         lb = obs_clfile['lb']
@@ -1449,7 +1456,6 @@ def load_weighted_cl_file_cross(cl_fpath, mode='observed'):
         observed_recov_dcl_perfield = clfile['observed_recov_dcl_perfield']
         observed_field_average_cl = clfile['observed_field_average_cl']
         observed_field_average_dcl = clfile['observed_field_average_dcl']
-#         mock_all_field_cl_weights = clfile['mock_all_field_cl_weights']
         lb = clfile['lb']
     
         return lb, observed_recov_ps, observed_recov_dcl_perfield, observed_field_average_cl, observed_field_average_dcl, None

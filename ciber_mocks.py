@@ -37,25 +37,7 @@ def make_fpaths(fpaths):
 		else:
 			print(fpath, 'already exists')
 
-def compute_star_gal_mask(stellar_cat, galaxy_cat, star_mag_idx=2, gal_mag_idx=3, m_max=18.4, return_indiv_masks=False):
-	
-	'''star and galaxy catalogs reported with AB magnitudes. 
-	Default indices assume stellar catalog already passed through make_synthetic_trilegal_cat()'''
-	
-	filt_star_cat = filter_trilegal_cat(stellar_cat, J_band_idx=star_mag_idx, m_max=m_max)
-	
-	cmock = ciber_mock()
-	filt_gal_cat = cmock.catalog_mag_cut(galaxy_cat, galaxy_cat[:, gal_mag_idx], m_min=0., m_max=m_max)
-	
-	mask_filt_star = mask_from_cat(filt_x, mag_idx=star_mag_idx)
-	mask_gal = mask_from_cat(bright_cat, mag_idx=gal_mag_idx)
-	
-	joined_mask = mask_filt_star*mask_gal
-	
-	if return_indiv_masks:
-		return mask_filt_star, mask_gal
-	
-	return joined_mask
+
 
 def get_ciber_dgl_powerspec(dgl_fpath, inst, iras_color_facs=None, mapkey='iris_map', pixsize=7., dgl_bins=10):
 	
@@ -90,19 +72,7 @@ def get_ciber_dgl_powerspec(dgl_fpath, inst, iras_color_facs=None, mapkey='iris_
 	return lb, cl, dgl_map
 
 
-def zl_grad_generator(theta_mag, nsim, dc=0, dimx=1024, dimy=1024):
-	
-	random_angles = np.random.uniform(0, 2*np.pi, nsim)
-	
-	if type(dc) != list:
-		dc = [dc for x in range(nsim)]
-	
-	thetas = [[dc[r], theta_mag*np.cos(random_angle), theta_mag*np.sin(random_angle)] for r, random_angle in enumerate(random_angles)]
-	planes = np.array([calculate_plane(theta, dimx=dimx, dimy=dimy) for theta in thetas])
-	
-	return planes, thetas
-
-def zl_grad_generator_new(theta_mag=0.01, nsim=1, thetas=None, dc=0, dimx=1024, dimy=1024):
+def zl_grad_generator(theta_mag=0.01, nsim=1, thetas=None, dc=0, dimx=1024, dimy=1024):
 	
 	if thetas is None:
 		random_angles = np.random.uniform(0, 2*np.pi, nsim)
@@ -120,9 +90,9 @@ def generate_zl_realization(zl_level, apply_zl_gradient, theta_mag=0.01, thetas=
 
 	if apply_zl_gradient:
 		if thetas is None:
-			zl_realiz, theta_gen = zl_grad_generator_new(theta_mag=theta_mag, nsim=1, dc=zl_level, dimx=dimx, dimy=dimy)
+			zl_realiz, theta_gen = zl_grad_generator(theta_mag=theta_mag, nsim=1, dc=zl_level, dimx=dimx, dimy=dimy)
 		else:
-			zl_realiz, theta_gen = zl_grad_generator_new(thetas=thetas, dimx=dimx, dimy=dimy)
+			zl_realiz, theta_gen = zl_grad_generator(thetas=thetas, dimx=dimx, dimy=dimy)
 
 	else:
 		zl_realiz = zl_level*np.ones((dimx, dimy))
@@ -131,7 +101,9 @@ def generate_zl_realization(zl_level, apply_zl_gradient, theta_mag=0.01, thetas=
 
 
 def grab_cl_pivot_fac(ifield, inst, dimx=1024, dimy=1024):
-	iris_basepath = config.exthdpath+'ciber_fluctuation_data/TM'+str(inst)+'/iris_regrid/'
+	iris_basepath = config.ciber_basepath+'data/fluctuation_data/TM'+str(inst)+'/iris_regrid/'
+
+	# iris_basepath = config.exthdpath+'ciber_fluctuation_data/TM'+str(inst)+'/iris_regrid/'
 	cl_dgl_iras = np.load(iris_basepath+'dgl_from_iris_model_TM'+str(inst)+'_ifield'+str(ifield)+'.npz')['cl']
 
 	# cl_dgl_iras = np.load('data/fluctuation_data/TM'+str(inst)+'/dgl_sim/dgl_from_iris_model_TM'+str(inst)+'_'+field_name+'.npz')['cl']
@@ -214,35 +186,6 @@ def generate_psf_template_bank(beta, rc, norm, n_fine_bin=10, nwide=17, pix_to_a
 	return downsampled_psf_posts, dists
 
 
-# def get_ciber_dgl_powerspec(dgl_fpath, inst, iras_color_facs=None, mapkey='iris_map', pixsize=7., dgl_bins=10):
-	
-#     '''
-	
-#     Parameters
-#     ----------
-	
-#     iras_color_facs: dictionary of scalar conversion factors between mean surface brightness at 100 micron vs. CIBER bands
-	
-#     Returns
-#     -------
-	
-#     lb: multipoles used
-#     cl: angular 1d power spectrum
-#     dgl_map: dgl map obtained from dgl_fpath
-	
-	
-#     '''
-#     if iras_color_facs is None:
-#         iras_color_facs = dict({1:15., 2:8.}) # nW m^-2 sr^-1 (MJy sr^-1)^-1
-	
-#     dgl = np.load(dgl_fpath)[mapkey]
-#     dgl_map = dgl*iras_color_facs[inst]
-#     dgl_map -= np.mean(dgl_map)
-	
-#     lb, cl, cl_err = get_power_spec(dgl_map, pixsize=pixsize, nbins=dgl_bins)
-	
-#     return lb, cl, dgl_map
-	
 def get_q0_post(q, nwide):
 	q0 = int(np.floor(q)-nwide)
 	if q - np.floor(q) >= 0.5:
@@ -261,67 +204,7 @@ def make_synthetic_trilegal_cat(trilegal_path, J_band_idx=16, H_band_idx=17, imd
 	print('synthetic cat has shape ', synthetic_cat.shape)
 	return synthetic_cat
 
-def ihl_conv_templates(psf=None, rvir_min=1, rvir_max=50, dimx=150, dimy=150):
-	
-	''' 
-	This function precomputes a range of IHL templates that can then be queried quickly when making mocks, rather than generating a
-	separate IHL template for each source. This template is convolved with the mock PSF.
 
-	Inputs:
-		psf (np.array, default=None): point spread function used to convolve IHL template
-		rvir_min/rvir_max (int, default=1/50): these set range of virial radii in pixels for convolved IHL templates.
-		dimx, dimy (int, default=150): dimension of IHL template in x/y.
-
-	Output:
-		ihl_conv_temps (list of np.arrays): list of PSF-convolved IHL templates. 
-
-	'''
-
-	ihl_conv_temps = []
-	rvir_range = np.arange(rvir_min, rvir_max).astype(float)
-	for rvir in rvir_range:
-		ihl = normalized_ihl_template(R_vir=rvir, dimx=dimx, dimy=dimy)
-		if psf is not None:
-			conv = scipy.signal.convolve2d(ihl, psf, 'same')
-			ihl_conv_temps.append(conv)
-		else:
-			ihl_conv_temps.append(ihl)
-	return ihl_conv_temps
-
-
-def initialize_cblas_ciber(libmmult):
-
-	print('initializing c routines and data structs')
-
-	array_2d_float = npct.ndpointer(dtype=float, ndim=2, flags="C_CONTIGUOUS")
-	array_1d_int = npct.ndpointer(dtype=int, ndim=1, flags="C_CONTIGUOUS")
-	array_2d_double = npct.ndpointer(dtype=float, ndim=2, flags="C_CONTIGUOUS")
-	array_2d_int = npct.ndpointer(dtype=int, ndim=2, flags="C_CONTIGUOUS")
-
-	libmmult.pcat_model_eval.restype = None
-	libmmult.pcat_model_eval.argtypes = [c_int, c_int, c_int, c_int, c_int, array_2d_float, array_2d_float, array_2d_float, array_1d_int, array_1d_int, array_2d_float, array_2d_float, array_2d_float, array_2d_double, c_int, c_int, c_int, c_int]
-
-
-def normalized_ihl_template(dimx=50, dimy=50, R_vir=None):
-
-	''' This function generates a normalized template for intrahalo light, assuming a spherical projected profile.
-
-	Inputs:
-		dimx/dimy (int, default=50): dimension of template in x/y.
-		R_vir (float, default=None): the virial radius for the IHL template in units of pixels.
-
-	Output:
-		ihl_map (np.array): IHL template normalized to unity
-	
-	'''
-
-	if R_vir is None:
-		R_vir = np.sqrt((dimx/2)**2+(dimy/2)**2)
-	xx, yy = np.meshgrid(np.arange(dimx), np.arange(dimy), sparse=True)
-	ihl_map = np.sqrt(R_vir**2 - (xx-(dimx/2))**2 - (yy-(dimy/2))**2) # assumes a spherical projected profile for IHL
-	ihl_map[np.isnan(ihl_map)]=0
-	ihl_map /= np.sum(ihl_map)
-	return ihl_map
 
 def rebin_map_coarse(original_map, Nsub):
 	''' Downsample map, taking average of downsampled pixels '''
@@ -425,7 +308,7 @@ class ciber_mock():
 	ciber_field_dict = dict({4:'elat10', 5:'elat30',6:'BootesB', 7:'BootesA', 8:'SWIRE'})
 
 	pix_width = 7.*u.arcsec
-	pix_sr = ((pix_width.to(u.degree))*(np.pi/180.0))**2*u.steradian / u.degree # pixel solid angle in steradians
+	pix_sr = ((pix_width.to(u.degree))*(np.pi/180.0))**2*(u.steradian / u.degree) # pixel solid angle in steradians
 	lam_effs = np.array([1.05, 1.79])*1e-6*u.m # effective wavelength for bands
 
 	# sky_brightness = np.array([300., 370.])*sb_intensity_unit
@@ -1170,13 +1053,88 @@ def cl_predictions_vs_magcut(inst, ifield_list=[4, 5, 6, 7, 8], mag_lims=None, m
             
     return power_maglim_isl_igl, power_maglim_igl
 
-# moving to masking_utils.py (5/8/23)
-# def generate_full_mask_and_mll_112922(cbps, ifield_list, sim_idxs, masktail, inst = 1, dat_type='mock', generate_starmask = True, generate_galmask = True,\
-# 							  use_inst_mask = True, mag_lim_Vega=17.5, save_Mkk = True, save_mask = True, n_mkk_sims = 100,\
-# 							  datestr = '062322', datestr_trilegal='062422', convert_AB_to_Vega = True, \
-# 							 dm = 3., a1=160., b1=3.632, c1=8.0, intercept_mag=16.0, \
-# 							 include_ff_mask = False, interp_mask_fn_fpaths=None, max_depth=8, \
-# 							 mag_depth_obs=17.0, cib_file_mode='cib_with_tracer', dx=0., dy=0., interp_maskfn=None, plot=True, \
-# 							m_min_thresh=None, radcap=200., wcs_hdrs_first=None, wcs_hdrs_second=None, inst_mag_mask=None, \
-# 							twomass_only=False):
 
+''' below here is largely deprecated code '''
+
+def compute_star_gal_mask(stellar_cat, galaxy_cat, star_mag_idx=2, gal_mag_idx=3, m_max=18.4, return_indiv_masks=False):
+	
+	'''star and galaxy catalogs reported with AB magnitudes. 
+	Default indices assume stellar catalog already passed through make_synthetic_trilegal_cat()'''
+	
+	filt_star_cat = filter_trilegal_cat(stellar_cat, J_band_idx=star_mag_idx, m_max=m_max)
+	
+	cmock = ciber_mock()
+	filt_gal_cat = cmock.catalog_mag_cut(galaxy_cat, galaxy_cat[:, gal_mag_idx], m_min=0., m_max=m_max)
+	
+	mask_filt_star = mask_from_cat(filt_x, mag_idx=star_mag_idx)
+	mask_gal = mask_from_cat(bright_cat, mag_idx=gal_mag_idx)
+	
+	joined_mask = mask_filt_star*mask_gal
+	
+	if return_indiv_masks:
+		return mask_filt_star, mask_gal
+	
+	return joined_mask
+
+
+def ihl_conv_templates(psf=None, rvir_min=1, rvir_max=50, dimx=150, dimy=150):
+	
+	''' 
+	This function precomputes a range of IHL templates that can then be queried quickly when making mocks, rather than generating a
+	separate IHL template for each source. This template is convolved with the mock PSF.
+
+	Inputs:
+		psf (np.array, default=None): point spread function used to convolve IHL template
+		rvir_min/rvir_max (int, default=1/50): these set range of virial radii in pixels for convolved IHL templates.
+		dimx, dimy (int, default=150): dimension of IHL template in x/y.
+
+	Output:
+		ihl_conv_temps (list of np.arrays): list of PSF-convolved IHL templates. 
+
+	'''
+
+	ihl_conv_temps = []
+	rvir_range = np.arange(rvir_min, rvir_max).astype(float)
+	for rvir in rvir_range:
+		ihl = normalized_ihl_template(R_vir=rvir, dimx=dimx, dimy=dimy)
+		if psf is not None:
+			conv = scipy.signal.convolve2d(ihl, psf, 'same')
+			ihl_conv_temps.append(conv)
+		else:
+			ihl_conv_temps.append(ihl)
+	return ihl_conv_temps
+
+
+def initialize_cblas_ciber(libmmult):
+
+	print('initializing c routines and data structs')
+
+	array_2d_float = npct.ndpointer(dtype=float, ndim=2, flags="C_CONTIGUOUS")
+	array_1d_int = npct.ndpointer(dtype=int, ndim=1, flags="C_CONTIGUOUS")
+	array_2d_double = npct.ndpointer(dtype=float, ndim=2, flags="C_CONTIGUOUS")
+	array_2d_int = npct.ndpointer(dtype=int, ndim=2, flags="C_CONTIGUOUS")
+
+	libmmult.pcat_model_eval.restype = None
+	libmmult.pcat_model_eval.argtypes = [c_int, c_int, c_int, c_int, c_int, array_2d_float, array_2d_float, array_2d_float, array_1d_int, array_1d_int, array_2d_float, array_2d_float, array_2d_float, array_2d_double, c_int, c_int, c_int, c_int]
+
+
+def normalized_ihl_template(dimx=50, dimy=50, R_vir=None):
+
+	''' This function generates a normalized template for intrahalo light, assuming a spherical projected profile.
+
+	Inputs:
+		dimx/dimy (int, default=50): dimension of template in x/y.
+		R_vir (float, default=None): the virial radius for the IHL template in units of pixels.
+
+	Output:
+		ihl_map (np.array): IHL template normalized to unity
+	
+	'''
+
+	if R_vir is None:
+		R_vir = np.sqrt((dimx/2)**2+(dimy/2)**2)
+	xx, yy = np.meshgrid(np.arange(dimx), np.arange(dimy), sparse=True)
+	ihl_map = np.sqrt(R_vir**2 - (xx-(dimx/2))**2 - (yy-(dimy/2))**2) # assumes a spherical projected profile for IHL
+	ihl_map[np.isnan(ihl_map)]=0
+	ihl_map /= np.sum(ihl_map)
+	return ihl_map

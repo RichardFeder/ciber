@@ -26,7 +26,7 @@ def catalog_df_add_xy(field, df, datadir='/Users/luminatech/Documents/ciber2/cib
             hdulist = fits.open(hdrdir + field + '_' + quad + '_astr.fits')
             wcs_hdr=wcs.WCS(hdulist[('primary',1)].header, hdulist)
             hdulist.close()
-            src_coord = SkyCoord(ra=df['ra']*u.degree, dec=df['dec']*u.degree, frame='icrs')
+            src_coord = SkyCoord(ra=df['ra']*u.degree, dec=df['dec']*u.degree, frame='icrs', unit=u.deg)
 
             x_arr, y_arr = wcs_hdr.all_world2pix(df['ra'],df['dec'],0)
             df['x' + quad] = x_arr + xoff[iquad]
@@ -64,12 +64,12 @@ def catalog_df_add_xy(field, df, datadir='/Users/luminatech/Documents/ciber2/cib
 
 def check_for_catalog_duplicates(cat, cat2=None, match_thresh=0.1, nthneighbor=2, ra_errors=None, dec_errors=None, zscore=1):
     
-    cat_src_coord = SkyCoord(ra=cat['ra']*u.degree, dec=cat['dec']*u.degree, frame='icrs')
+    cat_src_coord = SkyCoord(ra=cat['ra']*u.degree, dec=cat['dec']*u.degree, frame='icrs', unit=u.deg)
     
     if cat2 is None:
         cat2_src_coord = cat_src_coord
     else:
-        cat2_src_coord = SkyCoord(ra=cat2['ra']*u.degree, dec=cat['dec']*u.degree, frame='icrs')
+        cat2_src_coord = SkyCoord(ra=cat2['ra']*u.degree, dec=cat['dec']*u.degree, frame='icrs', unit=u.deg)
 
     # choose nthneighbor=2 to not just include the same source
     idx, d2d, _ = match_coordinates_sky(cat_src_coord, cat2_src_coord, nthneighbor=nthneighbor) # there is an order specific element to this
@@ -92,7 +92,7 @@ def combine_catalog_dfs_no_duplicates(catalog_dfs, match_threshes=None, verbose=
         match_threshes = [0.1 for x in range(len(catalog_dfs)-1)]
     
     for cat_df in catalog_dfs:
-        cat_src_coord = SkyCoord(ra=cat_df['ra']*u.degree, dec=cat_df['dec']*u.degree, frame='icrs')
+        cat_src_coord = SkyCoord(ra=cat_df['ra']*u.degree, dec=cat_df['dec']*u.degree, frame='icrs', unit=u.deg)
         src_coords.append(cat_src_coord)
     
     if verbose:
@@ -114,7 +114,7 @@ def combine_catalog_dfs_no_duplicates(catalog_dfs, match_threshes=None, verbose=
         df_list.append(nodup_xmatch)
         
         df_merge = pd.concat(df_list, ignore_index=True)
-        df_merge_coords = SkyCoord(ra=df_merge['ra']*u.degree, dec=df_merge['dec']*u.degree, frame='icrs')
+        df_merge_coords = SkyCoord(ra=df_merge['ra']*u.degree, dec=df_merge['dec']*u.degree, frame='icrs', unit=u.deg)
         if verbose:
             print('df merge has length ', len(df_merge))
         
@@ -240,8 +240,8 @@ def crossmatch_unWISE_PanSTARRS_112822(unWISE_cat_wxy, PS_cat_wxy,\
     Vega_to_AB = dict({'g':-0.08, 'r':0.16, 'i':0.37, 'z':0.54, 'y':0.634, 'J':0.91, 'H':1.39})
     PS_bands = ['g', 'r', 'i', 'z', 'y']
     
-    unWISE_src_coord = SkyCoord(ra=unWISE_cat_wxy['ra']*u.degree, dec=unWISE_cat_wxy['dec']*u.degree, frame='icrs')
-    PS_src_coord = SkyCoord(ra=PS_cat_wxy['ra']*u.degree, dec=PS_cat_wxy['dec']*u.degree, frame='icrs')
+    unWISE_src_coord = SkyCoord(ra=unWISE_cat_wxy['ra']*u.degree, dec=unWISE_cat_wxy['dec']*u.degree, frame='icrs', unit=u.deg)
+    PS_src_coord = SkyCoord(ra=PS_cat_wxy['ra']*u.degree, dec=PS_cat_wxy['dec']*u.degree, frame='icrs', unit=u.deg)
 
     if base_cat=='unWISE':
         idx, d2d, _ = match_coordinates_sky(unWISE_src_coord, PS_src_coord) # the order of the input catalogs matters!
@@ -319,8 +319,8 @@ def crossmatch_unWISE_PanSTARRS(unWISE_cat_wxy=None, PS_cat_wxy=None, base_cat='
     if PS_cat_wxy is None:
         PS_cat_wxy = pd.read_csv(datdir+'PanSTARRS/filt/'+fieldstr_tail_PS+'_filt_any_band_detect.csv')
     
-    unWISE_src_coord = SkyCoord(ra=unWISE_cat_wxy['ra']*u.degree, dec=unWISE_cat_wxy['dec']*u.degree, frame='icrs')
-    PS_src_coord = SkyCoord(ra=PS_cat_wxy['ra']*u.degree, dec=PS_cat_wxy['dec']*u.degree, frame='icrs')
+    unWISE_src_coord = SkyCoord(ra=unWISE_cat_wxy['ra']*u.degree, dec=unWISE_cat_wxy['dec']*u.degree, frame='icrs', unit=u.deg)
+    PS_src_coord = SkyCoord(ra=PS_cat_wxy['ra']*u.degree, dec=PS_cat_wxy['dec']*u.degree, frame='icrs', unit=u.deg)
 
     if base_cat=='unWISE':
         idx, d2d, _ = match_coordinates_sky(unWISE_src_coord, PS_src_coord) # the order of the input catalogs matters!
@@ -521,6 +521,93 @@ def return_several_colors_df(cat_df, list_of_bands):
         colors.append(return_color_df(cat_df, band_pair[0], band_pair[1]))
         
     return colors
+
+def read_in_decals_cat(cbps, ifield_list=[4, 6, 7], catalog_basepath=None):
+    
+    if catalog_basepath is None:
+        catalog_basepath = config.ciber_basepath+'data/catalogs/'
+        
+    decals_basepath = catalog_basepath+'DECaLS/'
+    
+    for fieldidx, ifield in enumerate(ifield_list):
+        
+        decals_fpath = decals_basepath+'DECaLS_'+cbps.ciber_field_dict[ifield]+'.txt'
+        
+        decals_cat = np.loadtxt(decals_fpath, delimiter=',', skiprows=1)
+        
+        decals_df = pd.DataFrame(decals_cat, columns=['ra', 'dec', 'mag_g', 'mag_r', 'mag_i', 'mag_z', \
+                                                     'mag_W1', 'mag_W2', 'allmask_g',\
+                                                      'allmask_r', 'allmask_i', 'allmask_z'])
+        
+        print(decals_df)
+        
+        decals_filt = catalog_df_add_xy(cbps.ciber_field_dict[ifield], decals_df, datadir=config.ciber_basepath+'data/')
+
+        decals_filt, _, _ = check_for_catalog_duplicates(decals_filt)
+        
+        plt.figure()
+        plt.scatter(decals_filt['x1'], decals_filt['y1'], s=1, color='k')
+        plt.xlim(0, 1024)
+        plt.ylim(0, 1024)
+        plt.show()
+        
+        save_fpath = decals_basepath+'filt/decals_CIBER_ifield'+str(ifield)+'.csv'
+        print('saving to ', save_fpath)
+        decals_filt.to_csv(save_fpath)
+
+def read_in_ukidss_cat(catalog_basepath, ifield):
+    uk_path_dict = dict({'train':'ukidss_dr11_plus_UDS_12_7_20.csv', 4:'ukidss_dr11_plus_elat10_0_102220.csv', 5:'ukidss_dr11_plus_elat30_0_102220.csv', 8:'ukidss_dr11_plus_SWIRE_0_102220.csv'})
+    Vega_to_AB = dict({'g':-0.08, 'r':0.16, 'i':0.37, 'z':0.54, 'y':0.634, 'J':0.91, 'H':1.39, 'K':1.85})
+
+    if ifield=='train':
+        ukidss_uds = pd.read_csv(catalog_basepath+'UKIDSS/'+uk_path_dict[ifield], skiprows=9)
+        ukidss_uds['ra'] = np.array(ukidss_uds['# ra']).astype(float)
+    elif ifield in [4, 5]:
+        ukidss_uds = pd.read_csv(catalog_basepath+'UKIDSS/'+uk_path_dict[ifield], skiprows=10)
+    elif ifield==8:
+        ukidss_uds = pd.read_csv(catalog_basepath+'UKIDSS/'+uk_path_dict[ifield], skiprows=8, header=1)
+
+    ukidss_uds['J_Vega'] = ukidss_uds['jAB'] - Vega_to_AB['J']
+    ukidss_uds['H_Vega'] = ukidss_uds['hAB'] - Vega_to_AB['H']
+    ukidss_uds['K_Vega'] = ukidss_uds['kAB'] - Vega_to_AB['K']
+    
+    return ukidss_uds
+
+def read_in_flamingos_cat(cbps, bootes_ifield_list=[6,7], catalog_basepath=None):
+
+    if catalog_basepath is None:
+        catalog_basepath = config.ciber_basepath+'data/catalogs/bootes_dr1_flamingos/'
+    
+    flam_cat_fpath = catalog_basepath+'BOOTES_j_V1.0.cat'
+    
+    flam_cat = np.loadtxt(flam_cat_fpath, skiprows=74, dtype=str)
+
+    flam_cat_J = flam_cat[:,17].astype(float)
+    flam_cat_ra = flam_cat[:,7].astype(float)
+    flam_cat_dec = flam_cat[:,8].astype(float)
+    
+    remerge_cat = np.array([flam_cat_ra, flam_cat_dec, flam_cat_J])
+    
+    flam_df = pd.DataFrame(remerge_cat.transpose(), columns=['ra', 'dec', 'J'])
+
+    
+    print(flam_df['ra'])
+    for i, bootes_ifield in enumerate(bootes_ifield_list):
+        
+
+        flam_df_filt = catalog_df_add_xy(cbps.ciber_field_dict[bootes_ifield], flam_df, datadir=config.ciber_basepath+'data/')
+
+        flam_df_filt, _, _ = check_for_catalog_duplicates(flam_df_filt)
+        
+        plt.figure()
+        plt.scatter(flam_df_filt['x1'], flam_df_filt['y1'], s=1, color='k')
+        plt.xlim(0, 1024)
+        plt.ylim(0, 1024)
+        plt.show()
+        
+        save_fpath = catalog_basepath+'flamingos_J_wxy_CIBER_ifield'+str(bootes_ifield)+'.csv'
+        print('saving to ', save_fpath)
+        flam_df_filt.to_csv(save_fpath)
 
 def sdss_preprocess(sdss_path, redshift_keyword='redshift', class_cut=False, object_class_cut=None, warning_cut=False):
     

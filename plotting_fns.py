@@ -6,9 +6,33 @@ import numpy as np
 from matplotlib import cm
 from PIL import Image
 import glob
+import config
 import matplotlib.patches as mpatches
 
 
+def load_weighted_cl_file_cross(cl_fpath, mode='observed'):
+
+    clfile = np.load(cl_fpath)
+    
+    if mode=='observed':
+        observed_recov_ps = clfile['observed_recov_ps']
+        observed_recov_dcl_perfield = clfile['observed_recov_dcl_perfield']
+        observed_field_average_cl = clfile['observed_field_average_cl']
+        observed_field_average_dcl = clfile['observed_field_average_dcl']
+        lb = clfile['lb']
+        return lb, observed_recov_ps, observed_recov_dcl_perfield, observed_field_average_cl, observed_field_average_dcl, None
+    
+    elif mode=='mock':
+        mock_mean_input_ps = clfile['mock_mean_input_ps']
+        mock_all_field_averaged_cls = clfile['mock_all_field_averaged_cls']
+        mock_all_field_cl_weights = clfile['mock_all_field_cl_weights']
+        all_mock_recov_ps = clfile['all_mock_recov_ps']
+        all_mock_signal_ps = clfile['all_mock_signal_ps']
+        lb = clfile['lb']
+    
+        return lb, mock_mean_input_ps, mock_all_field_averaged_cls, mock_all_field_cl_weights, all_mock_recov_ps, all_mock_signal_ps
+    
+    
 def plot_field_weights_ciber_bands(mock_field_cl_basepath, return_fig=True, show=True):
     
 
@@ -60,14 +84,12 @@ def plot_field_weights_ciber_bands(mock_field_cl_basepath, return_fig=True, show
         return fig
 
 
-def single_panel_observed_ps_results(inst, masking_maglim, observed_field_average_cl, field_average_error, all_mock_recov_ps, \
-                                     include_dgl_ul=True, include_igl_helgason=True,\
-                                     include_z14=False, include_perfield=True, startidx=0, endidx=-1, show=True, \
+def single_panel_observed_ps_results(inst, masking_maglim, lb, observed_field_average_cl, observed_recov_ps, field_average_error, all_mock_recov_ps, \
+                                     ifield_list = [4, 5, 6, 7, 8], include_dgl_ul=True, include_igl_helgason=True,\
+                                     include_z14=False, rescale_Z14=False, fac=None, include_perfield=True, startidx=0, endidx=-1, show=True, \
                                     return_fig=True, zcolor='grey', xlim=[1.5e2, 1e5], ylim=[1e-2, 4e3], textpos=[2e2, 2e2], \
                                     obs_labels=['4th flight field average'], obs_colors=['k'], figsize=(6,5), zorders=None):
-    
-    ifield_list = [4, 5, 6, 7, 8]
-    
+        
     lam_dict = dict({1:1.1, 2:1.8})
     lam_dict_z14 = dict({1:1.1, 2:1.6})
     bandstr_dict = dict({1:'J', 2:'H'})
@@ -90,9 +112,13 @@ def single_panel_observed_ps_results(inst, masking_maglim, observed_field_averag
     else:     
         plt.errorbar(lb[startidx:endidx], prefac*observed_field_average_cl[startidx:endidx], yerr=(prefac)*np.median(np.abs(field_average_error), axis=0)[startidx:endidx], label=obs_labels[0], fmt='o', capthick=1.5, color='k', capsize=3, markersize=4, linewidth=2.)
 
+        np.savez('/Users/richardfeder/Downloads/CIBER_TM'+str(inst)+'_auto_ps_120523.npz', lb=lb, observed_field_average_cl=observed_field_average_cl, \
+                prefac=prefac, clerr = np.median(np.abs(field_average_error), axis=0))
+        
+        
     if include_dgl_ul:
     
-        dgl_auto_pred = np.load(config.ciber_basepath+'data/dgl_auto_constraints_TM'+str(inst)+'_sfd_clean_053023.npz')
+        dgl_auto_pred = np.load(config.ciber_basepath+'data/fluctuation_data/TM'+str(inst)+'/dgl_tracer_maps/sfd_clean/dgl_auto_constraints_TM'+str(inst)+'_sfd_clean_053023.npz')
         lb_modl = dgl_auto_pred['lb_modl']
         best_ps_fit_av = dgl_auto_pred['best_ps_fit_av']
         AC_A1 = dgl_auto_pred['AC_A1']
@@ -107,28 +133,31 @@ def single_panel_observed_ps_results(inst, masking_maglim, observed_field_averag
         config_dict, pscb_dict, float_param_dict, fpath_dict = return_default_cbps_dicts()
         ciber_mock_fpath = config.ciber_basepath+'data/ciber_mocks/'
         fpath_dict, list_of_dirpaths, base_path, trilegal_base_path = set_up_filepaths_cbps(fpath_dict, inst, 'test', '112022',\
-                                                                                        datestr_trilegal='112022', data_type=data_type, \
+                                                                                        datestr_trilegal='112022', data_type='mock', \
                                                                                        save_fpaths=True)
-
-        ifield_choose = 4
 
         all_cl = []
         prefac_full = lb*(lb+1)/(2*np.pi)
+        
+        isl_igl = np.load(config.ciber_basepath+'data/cl_predictions/TM'+str(inst)+'/igl_isl_pred_mlim='+str(masking_maglim)+'_meas.npz')['isl_igl']
+        plt.plot(lb, prefac_full*isl_igl, linestyle='dashdot', color='grey', label='IGL+ISL')
 
-        for cib_setidx in range(50):
-
-            cib_cl_file = fits.open(fpath_dict['cib_resid_ps_path']+'/cls_cib_vs_maglim_ifield'+str(ifield_choose)+'_inst'+str(inst)+'_simidx'+str(cib_setidx)+'_Vega_magcut.fits')
-            isl_cl_file = fits.open(fpath_dict['isl_resid_ps_path']+'/cls_isl_vs_maglim_ifield'+str(ifield_choose)+'_inst'+str(inst)+'_simidx'+str(cib_setidx)+'_Vega_magcut.fits')
-
-            all_cl.append(cib_cl_file['cls_cib'].data['cl_maglim_'+str(masking_maglim)] + isl_cl_file['cls_isl'].data['cl_maglim_'+str(masking_maglim)])
-
-        plt.plot(lb, prefac_full*(np.mean(all_cl, axis=0)), linestyle='dashdot', color='grey', label='IGL+ISL')
-       
     if include_z14:
         zemcov_auto = np.loadtxt(config.ciber_basepath+'/data/zemcov14_ps/ciber_'+str(lam_dict_z14[inst])+'x'+str(lam_dict_z14[inst])+'_dCl.txt', skiprows=8)
         zemcov_lb = zemcov_auto[:,0]
-        plt.plot(zemcov_lb, zemcov_auto[:,1], label='Zemcov+14', marker='.', color=zcolor, alpha=0.3)
-        plt.fill_between(zemcov_lb, zemcov_auto[:,1]-zemcov_auto[:,2], zemcov_auto[:,1]+zemcov_auto[:,3], color=zcolor, alpha=0.15)
+        
+        if rescale_Z14:
+            if fac is None:
+                if inst==1:
+                    fac = 1.6
+                else:
+                    fac = 2.09
+            else:
+                fac = 1
+        plt.plot(zemcov_lb, zemcov_auto[:,1]*fac**2, label='Zemcov+14', marker='.', color=zcolor, alpha=0.3)
+        
+        
+        plt.fill_between(zemcov_lb, (zemcov_auto[:,1]-zemcov_auto[:,2])*fac**2, (zemcov_auto[:,1]+zemcov_auto[:,3])*fac**2, color=zcolor, alpha=0.15)
 
 
     plt.xlim(xlim)
@@ -141,7 +170,7 @@ def single_panel_observed_ps_results(inst, masking_maglim, observed_field_averag
     plt.ylabel('$D_{\\ell}$ [nW$^2$ m$^{-4}$ sr$^{-2}$]', fontsize=16)
     plt.grid(alpha=0.5, color='grey')
 
-    plt.text(textpos[0], textpos[1], 'CIBER '+str(lam_dict[inst])+'$\\mu$m\nObserved data\nMask '+bandstr_dict[inst]+'$<'+str(masking_maglim)+'$', fontsize=18)
+    plt.text(textpos[0], textpos[1], 'CIBER '+str(lam_dict[inst])+' $\\mu$m\nObserved data\nMask '+bandstr_dict[inst]+'$<'+str(masking_maglim)+'$', fontsize=16)
     
     plt.legend(fontsize=10, loc=4, ncol=2)
     plt.tight_layout()
@@ -153,30 +182,30 @@ def single_panel_observed_ps_results(inst, masking_maglim, observed_field_averag
         return fig
 
 
-def make_figure_cross_spec_vs_masking_magnitude(inst=1, cross_inst=2, run_name='ciber_cross_ciber_perquad_regrid_070523', maglim_J=[17.5, 18.0, 18.5, 19.0], \
-                                               maglim_H=[17.0, 17.5, 18.0, 18.5], return_fig=True, show=True, startidx=1, endidx=-1):
-    observed_run_names_cross = ['ciber_cross_ciber_perquad_regrid_071023_Jlt'+str(maglim_J[j])+'_Hlt'+str(maglim_H[j])+'_withcrossnoise' for j in range(len(maglim_J))]
-    obs_labels = ['$J<'+str(maglim_J[m])+'\\times H<'+str(maglim_H[m])+'$' for m in range(len(maglim_J))]
+def make_figure_cross_spec_vs_masking_magnitude(inst=1, cross_inst=2, maglim_J=[17.5, 18.0, 18.5, 19.0], \
+                                               maglim_H=[17.0, 17.5, 18.0, 18.5], observed_run_names_cross=None, return_fig=True, show=True, startidx=1, endidx=-1):
 
+    if observed_run_names_cross is None:
+        observed_run_names_cross = ['ciber_cross_ciber_perquad_regrid_Jlt'+str(maglim_J[j])+'_Hlt'+str(maglim_H[j])+'_111923' for j in range(len(maglim_J))]
+    
+    obs_labels = ['$J<'+str(maglim_J[m])+'\\times H<'+str(maglim_H[m])+'$' for m in range(len(maglim_J))]
     obs_fieldav_cross_cl, obs_fieldav_cross_dcl = [], []    
     obs_colors = ['indigo', 'darkviolet', 'mediumorchid', 'plum']
     
+    cl_base_path = config.ciber_basepath+'data/input_recovered_ps/cl_files/'
     for obs_name in observed_run_names_cross:
-        cl_fpath_obs = 'data/input_recovered_ps/cl_files/TM'+str(inst)+'_TM'+str(cross_inst)+'_cross/cl_'+obs_name+'.npz'
+        cl_fpath_obs = cl_base_path+'TM'+str(inst)+'_TM'+str(cross_inst)+'_cross/cl_'+obs_name+'.npz'
         lb, observed_recov_ps, observed_recov_dcl_perfield,\
-            observed_field_average_cl, observed_field_average_dcl,\
-                mock_all_field_cl_weights = load_weighted_cl_file_cross(cl_fpath_obs)
+        observed_field_average_cl, observed_field_average_dcl,\
+            mock_all_field_cl_weights = load_weighted_cl_file_cross(cl_fpath_obs)
 
         obs_fieldav_cross_cl.append(observed_field_average_cl)
         obs_fieldav_cross_dcl.append(observed_field_average_dcl)
         
-        
     fig = plt.figure(figsize=(6,5))
-    
     prefac = lb*(lb+1)/(2*np.pi)
-
     for m, maglim in enumerate(maglim_J):
-        plt.errorbar(lb[startidx:endidx], (prefac*obs_fieldav_cross_cl[m])[startidx:endidx], yerr=(prefac*obs_fieldav_cross_dcl[m])[startidx:endidx], label=obs_labels[m], fmt='o', capthick=1.5, color=obs_colors[m], capsize=3, markersize=4, linewidth=2.)
+        plt.errorbar(lb[startidx:endidx], (prefac*obs_fieldav_cross_cl[m])[startidx:endidx], yerr=(prefac*obs_fieldav_cross_dcl[m])[startidx:endidx], label=obs_labels[m], fmt='o', capthick=1.5, color='C'+str(m+1), capsize=3, markersize=4, linewidth=2.)
 
     plt.xlim(2e2, 1e5)
     plt.yscale('log')
@@ -185,13 +214,12 @@ def make_figure_cross_spec_vs_masking_magnitude(inst=1, cross_inst=2, run_name='
     plt.xlabel('$\\ell$', fontsize=16)
     plt.ylabel('$D_{\\ell}$ [nW$^2$ m$^{-4}$ sr$^{-2}$]', fontsize=18)
     plt.grid(alpha=0.5, color='grey')
-    plt.ylim(1e-2, 1e3)
-    plt.text(250, 150, 'CIBER 1.1$\\mu$m $\\times 1.8\\mu$m\nObserved data', fontsize=18)
+    plt.ylim(1e-2, 1e6)
+    plt.text(250, 4e4, 'CIBER 1.1 $\\mu$m $\\times$ 1.8 $\\mu$m\nObserved data', fontsize=16)
 
     bbox_dict = dict({'facecolor':'white', 'alpha':0.8, 'edgecolor':'None', 'pad':0.})
 
-    plt.legend(fontsize=12, loc=4, ncol=1, framealpha=1.)
-    plt.tight_layout()
+    plt.legend(fontsize=10, loc=4, ncol=2, framealpha=1., bbox_to_anchor=[0.9, 1.0])
 
     if show:
         plt.show()
@@ -251,6 +279,96 @@ def make_figure_cross_corrcoeff_ciber_ciber_vs_mag(maglim_J = [17.5, 18.0, 18.5,
         plt.show()
     if return_fig:
         return fig
+
+
+def plot_bandpowers_vs_magnitude(cbps, inst, mag_lims, binned_obs_fieldav, igl_isl_vs_maglim, igl_vs_maglim,\
+                                 nbp=12, nrow=3, ncol=4, mode='diff', idx0=0, return_fig=True, show=True, \
+                                xticks=[11, 13, 15, 17, 19]):
+            
+    if inst==1:
+        if mode=='diff':
+            textypos = 20
+        else:
+            textypos = 100
+        bandstr = '$J_{lim}$'
+    else:
+        if mode=='diff':
+            textypos = 20
+        else:
+            textypos = 100
+            
+        bandstr = '$H_{lim}$'
+        
+    mag_labels = []
+    
+    if mode=='diff':
+        for x in range(igl_isl_vs_maglim.shape[0]-1):        
+            maglabel = '['+str(mag_lims[x])+'] - ['+str(mag_lims[x+1])+']'
+            mag_labels.append(maglabel)
+        
+        xticks = mag_lims[1:]
+        textxpos = mag_lims[1]
+    else:
+        textxpos = mag_lims[0]
+
+    fig = plt.figure(figsize=(9, 6))
+    
+    for idx in range(nbp):
+        
+        plt.subplot(nrow,ncol,idx+1)
+        plt.text(textxpos, textypos, str(int(cbps.Mkk_obj.binl[idx0+2*idx]))+'$<\\ell \\leq$'+str(int(cbps.Mkk_obj.binl[idx0+2*(idx+1)])), fontsize=10)
+
+        if mode=='diff':
+            delta_obs_fieldav = binned_obs_fieldav[:-1,idx]-binned_obs_fieldav[1:,idx]
+            delta_igl_isl = igl_isl_vs_maglim[:-1,idx]-igl_isl_vs_maglim[1:,idx]
+            delta_igl = igl_vs_maglim[:-1,idx]-igl_vs_maglim[1:,idx]
+
+            plt.errorbar(mag_lims[1:], prefac_binned[idx]*delta_obs_fieldav, color='k', fmt='o-', capsize=2, markersize=3, zorder=10)
+            plt.plot(mag_lims[1:], prefac_binned[idx]*delta_igl_isl, color='b', marker='.')
+            plt.plot(mag_lims[1:], prefac_binned[idx]*delta_igl, color='r', marker='.')
+
+        else:
+            plt.errorbar(mag_lims, prefac_binned[idx]*binned_obs_fieldav[:,idx], yerr=prefac_binned[idx]*binned_obs_fieldav_dcl[:,idx], color='k', fmt='o-', capsize=2, markersize=3, zorder=10)
+            plt.plot(mag_lims, prefac_binned[idx]*igl_isl_vs_maglim[:,idx], color='b', marker='.')
+            plt.plot(mag_lims, prefac_binned[idx]*igl_vs_maglim[:,idx], color='r', marker='.')
+            
+        plt.yscale('log')
+        
+        if idx > 7:
+            
+            if mode!='diff':
+                plt.xlabel(bandstr+' [Vega]', fontsize=12)
+                plt.xticks(xticks, xticks)
+            else:
+                plt.xticks(xticks, mag_labels, rotation='vertical')
+            plt.tick_params(labelsize=9)
+        else:
+            plt.xticks(xticks, ['' for x in range(len(xticks))])
+
+        if idx in [0, 4, 8]:
+            plt.ylabel('$\Delta(D_{\\ell}/\\ell)$', fontsize=12)
+            
+        plt.grid(alpha=0.5)
+
+        if mode=='diff':
+            plt.xlim(xticks[0]-0.25, xticks[-1]+0.25)
+            if inst==1:
+                plt.ylim(5e-5, 2e2)
+            else:
+                plt.ylim(5e-6, 1e2)
+        else:
+            if inst==1:
+                plt.ylim(5e-5, 1e3)
+            else:
+                plt.ylim(5e-5, 1e3)
+            
+    plt.tight_layout()
+    if show:
+        plt.show()
+            
+    if return_fig:
+        return fig
+
 
 def plot_ciber_field_consistency_test(inst, lb, observed_recov_ps, all_mock_signal_ps, mock_all_field_cl_weights, \
                                       lmax=10000, startidx=1, endidx=None, mode='chi2', \

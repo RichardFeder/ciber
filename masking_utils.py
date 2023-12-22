@@ -100,7 +100,9 @@ def make_blob_mask(cbps, inst):
     return blob_mask
 
 def make_cluster_mask(cbps, inst, ifield):
-    wencat = pd.read_csv('data/cluster_dat/cluster_catalog_wen12_sdss_'+cbps.ciber_field_dict[ifield]+'.csv')
+    wencat = pd.read_csv(config.ciber_basepath+'data/catalogs/cluster_dat/cluster_catalog_wen12_sdss_'+cbps.ciber_field_dict[ifield]+'.csv')
+
+    # wencat = pd.read_csv('data/cluster_dat/cluster_catalog_wen12_sdss_'+cbps.ciber_field_dict[ifield]+'.csv')
     additional_maskx = np.array(wencat['x'+str(inst)])
     additional_masky = np.array(wencat['y'+str(inst)])
     cluster_radius = 21
@@ -131,7 +133,7 @@ def mask_from_cat(xs=None, ys=None, mags=None, cat_df=None, dimx=1024, dimy=1024
 					interp_maskfn=None, mode=None, magstr='zMeanPSFMag', alpha_m=-6.25, beta_m=110, a1=252.8, b1=3.632, c1=8.52,\
 					 Vega_to_AB = 0., mag_lim_min=0, mag_lim=None, fixed_radius=None, radii=None, compute_radii=True, inst=1, \
 					radmap_full=None, rc=1., plot=True, interp_max_mag=None, interp_min_mag=None, m_min_thresh=None, radcap=200., \
-					mag_fudge=14, fudge_fac=None, mask_transition_mag=14):
+					mag_fudge=14, fudge_fac=None, mask_transition_mag=14, min_radius = None):
 	
 	if fixed_radius is not None or radii is not None:
 		compute_radii = False
@@ -183,6 +185,9 @@ def mask_from_cat(xs=None, ys=None, mags=None, cat_df=None, dimx=1024, dimy=1024
 
 			if m_min_thresh is not None:
 				radii[np.array(mags) < m_min_thresh] = radcap
+
+			if min_radius is not None:
+				radii[radii < min_radius] = min_radius
 
 			# if fudge_fac is not None:
 			# 	radii[np.array(mags) > mag_fudge] *= 2
@@ -530,12 +535,18 @@ def generate_full_masks_050823(cbps, ifield_list, sim_idxs, masktail, inst = 1, 
 							twomass_only=False, generate_shotnoise_cat=False, add_spitzer_Lmask=False, mag_key_sdwfs='CH1_mag_auto', mag_lim_sdwfs=18.0, \
 							add_wise_Lmask=False, mag_lim_wise=16.0, \
 							fudge_fac=None, min_mag_fudge=14, max_mag_fudge=16.0, wcs_headers=None, mask_cat_fpaths=None, mode='Zemcov+14', \
-							apply_mask_errs=False, mask_err_vs_mag_fpath=None, mask_transition_mag=14):
+							apply_mask_errs=False, mask_err_vs_mag_fpath=None, mask_transition_mag=14, min_radius=None, \
+							add_flamingos=False):
 
 	if twomass_only:
 		generate_starmask = True
 		generate_galmask = False 
 		print('twomass only is True, setting starmask to True since this is where I load the 2MASS catalog..')
+
+	if inst==1:
+		twomass_max_mag = 16.0
+	else:
+		twomass_max_mag = 15.0
 
 	if inst_mag_mask is not None:
 		mag_lim_AB = mag_lim_Vega + cbps.Vega_to_AB[inst_mag_mask]
@@ -543,7 +554,9 @@ def generate_full_masks_050823(cbps, ifield_list, sim_idxs, masktail, inst = 1, 
 		mag_lim_AB = mag_lim_Vega + cbps.Vega_to_AB[inst]
 	print('mag_lim_AB is ', mag_lim_AB)
 
-	catalog_basepath = config.exthdpath+'/ciber_fluctuation_data/catalogs/'
+	# catalog_basepath = config.exthdpath+'/ciber_fluctuation_data/catalogs/'
+
+	catalog_basepath = config.ciber_basepath+'data/catalogs/'
 
 	if interp_mask_fn_fpaths is None:
 		param_combo = [a1, b1, c1]
@@ -587,13 +600,15 @@ def generate_full_masks_050823(cbps, ifield_list, sim_idxs, masktail, inst = 1, 
 	imarray_shape = (len(ifield_list), cbps.dimx, cbps.dimy)
 
 	if dat_type=='mock':
-		base_path = config.exthdpath+'ciber_mocks/'
+		base_path = config.ciber_basepath+'data/ciber_mocks/'
+		# base_path = config.exthdpath+'ciber_mocks/'
 		mask_fpath = base_path+datestr+'/TM'+str(inst)+'/masks/'
 		mkk_fpath = base_path+datestr+'/TM'+str(inst)+'/mkk/'
 		mkk_ffest_fpath = base_path+datestr+'/TM'+str(inst)+'/mkk_ffest/'
 
 	elif dat_type=='real':
-		base_path = 'data/fluctuation_data/'
+		base_path = config.ciber_basepath+'data/fluctuation_data/'
+		# base_path = 'data/fluctuation_data/'
 		mask_fpath = base_path+'TM'+str(inst)+'/masks/'
 		mkk_fpath = base_path+'TM'+str(inst)+'/mkk/'
 		mkk_ffest_fpath = base_path+'/TM'+str(inst)+'/mkk_ffest/'
@@ -652,7 +667,8 @@ def generate_full_masks_050823(cbps, ifield_list, sim_idxs, masktail, inst = 1, 
 			joint_mask = np.ones(cbps.map_shape)
 			if use_inst_mask:
 
-				inst_mask_fpath = config.exthdpath+'/ciber_fluctuation_data/TM'+str(inst)+'/masks/maskInst_080423/field'+str(ifield)+'_TM'+str(inst)+'_maskInst_080423.fits'
+				inst_mask_fpath = config.ciber_basepath+'data/fluctuation_data/TM'+str(inst)+'/masks/maskInst_aducorr/field'+str(ifield)+'_TM'+str(inst)+'_maskInst_aducorr.fits'
+				# inst_mask_fpath = config.exthdpath+'/ciber_fluctuation_data/TM'+str(inst)+'/masks/maskInst_080423/field'+str(ifield)+'_TM'+str(inst)+'_maskInst_080423.fits'
 				# inst_mask_fpath = config.exthdpath+'/ciber_fluctuation_data/TM'+str(inst)+'/masks/maskInst_102422/field'+str(ifield)+'_TM'+str(inst)+'_maskInst_102422.fits'
 				mask_inst = cbps.load_mask(ifield, inst, mask_fpath=inst_mask_fpath, instkey='maskinst', inplace=False)
 				joint_mask *= mask_inst
@@ -733,11 +749,20 @@ def generate_full_masks_050823(cbps, ifield_list, sim_idxs, masktail, inst = 1, 
 						star_cat_df = pd.DataFrame({magkey:twomass_cat[:,2], 'x'+str(inst):twomass_cat[:,0],'y'+str(inst):twomass_cat[:,1]}, columns=starcatcols)
 
 
+				# mag_lim_star = min(mag_lim_Vega, twomass_max_mag)
+				# print('maglim star = ', mag_lim_star)
+
+				# starmask, radii_stars = mask_from_cat(cat_df = star_cat_df, mag_lim_min=0, inst=inst,\
+				# 											mag_lim=mag_lim_star, interp_maskfn=interp_maskfn,\
+				# 									  magstr=magkey, Vega_to_AB=0., dimx=cbps.dimx, dimy=cbps.dimy, plot=False, \
+				# 									 interp_max_mag = max_mag, interp_min_mag=min_mag, m_min_thresh=m_min_thresh, radcap=radcap, \
+				# 									 mode=mode, mask_transition_mag=mask_transition_mag)
+
 				starmask, radii_stars = mask_from_cat(cat_df = star_cat_df, mag_lim_min=0, inst=inst,\
 															mag_lim=mag_lim_Vega, interp_maskfn=interp_maskfn,\
 													  magstr=magkey, Vega_to_AB=0., dimx=cbps.dimx, dimy=cbps.dimy, plot=False, \
 													 interp_max_mag = max_mag, interp_min_mag=min_mag, m_min_thresh=m_min_thresh, radcap=radcap, \
-													 mode=mode, mask_transition_mag=mask_transition_mag)
+													 mode=mode, mask_transition_mag=mask_transition_mag, min_radius=min_radius)
 
 				# if interp_mask_fn_fpaths is not None:
 				# 	# simulated sources changed to Vega magnitudes with convert_AB_to_Vega, masking function magnitudes in Vega units
@@ -767,8 +792,10 @@ def generate_full_masks_050823(cbps, ifield_list, sim_idxs, masktail, inst = 1, 
 					if mask_cat_fpaths is not None:
 						mask_cat_unWISE_PS = pd.read_csv(mask_cat_fpaths[fieldidx])
 					else:
-						mask_cat_unWISE_PS = pd.read_csv(catalog_basepath+'mask_predict/mask_predict_unWISE_PS_fullmerge_'+field_name+'_ukdebias.csv')
+						# mask_cat_unWISE_PS = pd.read_csv(catalog_basepath+'mask_predict/mask_predict_unWISE_PS_fullmerge_'+field_name+'_ukdebias.csv')
+						# mask_cat_unWISE_PS = pd.read_csv(catalog_basepath+'mask_predict/mask_predict_unWISE_PS_fullmerge_'+field_name+'_ukdebias_C15train.csv')
 					
+						mask_cat_unWISE_PS = pd.read_csv(catalog_basepath+'mask_predict/mask_predict_LS_fullmerge_'+field_name+'_uds_ls_grzW1W2_gr.csv')
 						# mask_cat_unWISE_PS = pd.read_csv(catalog_basepath+'mask_predict/mask_predict_unWISE_PS_fullmerge_'+field_name+'.csv')
 					if wcs_headers is not None:
 
@@ -828,7 +855,8 @@ def generate_full_masks_050823(cbps, ifield_list, sim_idxs, masktail, inst = 1, 
 
 				galmask, radii_gals = mask_from_cat(cat_df = gal_cat_df, mag_lim_min=0, inst=inst,\
 										mag_lim=mag_lim_Vega, interp_maskfn=interp_maskfn, magstr='m_app', Vega_to_AB=0., dimx=cbps.dimx, dimy=cbps.dimy, plot=False, \
-												   interp_max_mag = max_mag, interp_min_mag=min_mag, mode=mode, mask_transition_mag=mask_transition_mag)
+												   interp_max_mag = max_mag, interp_min_mag=min_mag, mode=mode, mask_transition_mag=mask_transition_mag, \
+												   min_radius=min_radius)
 				
 				# if interp_mask_fn_fpaths is not None:
 
@@ -848,8 +876,12 @@ def generate_full_masks_050823(cbps, ifield_list, sim_idxs, masktail, inst = 1, 
 
 
 			if add_spitzer_Lmask and ifield in [6, 7]:
+
+				sdwfs_catpath = catalog_basepath+'SDWFS/sdwfs_wxy_CIBER_ifield'+str(ifield)+'.csv'
 				print('Combining with spitzer mask down to W1 = ', str(mag_lim_sdwfs))
-				sdwfs_cat = pd.read_csv('data/Spitzer/sdwfs_catalogs/sdwfs_wxy_CIBER_ifield'+str(ifield)+'.csv')
+				sdwfs_cat = pd.read_csv(sdwfs_catpath)
+
+				# sdwfs_cat = pd.read_csv('data/Spitzer/sdwfs_catalogs/sdwfs_wxy_CIBER_ifield'+str(ifield)+'.csv')
 				sdwfs_mag = np.array(sdwfs_cat[mag_key_sdwfs])
 				sdwfs_x, sdwfs_y = np.array(sdwfs_cat['x'+str(inst)]), np.array(sdwfs_cat['y'+str(inst)])
 
@@ -896,7 +928,29 @@ def generate_full_masks_050823(cbps, ifield_list, sim_idxs, masktail, inst = 1, 
 				if len(radii_gals_wise) > 0:
 					print('len radii gals wise is ', len(radii_gals_wise))
 					joint_mask *= wisemask
-					
+
+
+			if add_flamingos and ifield in [6, 7]:
+				print('Combining with Flamingos survey J band mask')
+				flamingos_cat = pd.read_csv(catalog_basepath+'bootes_dr1_flamingos/flamingos_J_wxy_CIBER_ifield'+str(ifield)+'.csv')
+				flam_mag = np.array(flamingos_cat['J'])
+				flam_x, flam_y = np.array(flamingos_cat['x'+str(inst)]), np.array(flamingos_cat['y'+str(inst)])
+				
+				flam_cat = np.array([flam_x, flam_y, flam_mag]).transpose()
+				flamcatcols = ['x'+str(inst), 'y'+str(inst), 'm_app']
+				flam_cat_df = pd.DataFrame(flam_cat, columns = flamcatcols)
+
+				flammask, radii_gals_flam = mask_from_cat(cat_df = flam_cat_df, mag_lim_min=15.0, inst=inst,\
+										mag_lim=mag_lim_Vega, interp_maskfn=interp_maskfn, magstr='m_app', Vega_to_AB=0., dimx=cbps.dimx, dimy=cbps.dimy, plot=False, \
+												   interp_max_mag = max_mag) 
+
+				if plot:
+					plot_map(flammask, title='Flamingos mask J < '+str(mag_lim_Vega))
+
+				if len(radii_gals_flam) > 0:
+					print('len radii_gals_flam is ', len(radii_gals_flam))
+					joint_mask *= flammask
+
 			print(float(np.sum(joint_mask))/float(1024**2))
 
 			joint_masks[fieldidx] = joint_mask.copy()
