@@ -26,7 +26,13 @@ def catalog_df_add_xy(field, df, datadir='/Users/luminatech/Documents/ciber2/cib
             hdulist = fits.open(hdrdir + field + '_' + quad + '_astr.fits')
             wcs_hdr=wcs.WCS(hdulist[('primary',1)].header, hdulist)
             hdulist.close()
-            src_coord = SkyCoord(ra=df['ra']*u.degree, dec=df['dec']*u.degree, frame='icrs', unit=u.deg)
+
+            ra_arr = np.array(df['ra']).astype(float)
+            dec_arr = np.array(df['dec']).astype(float)
+
+            src_coord = SkyCoord(ra=ra_arr*u.degree, dec=dec_arr*u.degree, frame='icrs', unit=u.degree)
+
+            # src_coord = SkyCoord(ra=df['ra']*u.degree, dec=df['dec']*u.degree, frame='icrs', unit=u.degree)
 
             x_arr, y_arr = wcs_hdr.all_world2pix(df['ra'],df['dec'],0)
             df['x' + quad] = x_arr + xoff[iquad]
@@ -64,12 +70,25 @@ def catalog_df_add_xy(field, df, datadir='/Users/luminatech/Documents/ciber2/cib
 
 def check_for_catalog_duplicates(cat, cat2=None, match_thresh=0.1, nthneighbor=2, ra_errors=None, dec_errors=None, zscore=1):
     
-    cat_src_coord = SkyCoord(ra=cat['ra']*u.degree, dec=cat['dec']*u.degree, frame='icrs', unit=u.deg)
+    ra_arr = np.array(cat['ra']).astype(float)
+    dec_arr = np.array(cat['dec']).astype(float)
+
+    print('ra arr has length ', len(ra_arr))
+    print('dec arr has length ', len(dec_arr))
+
+    cat_src_coord = SkyCoord(ra=ra_arr*u.degree, dec=dec_arr*u.degree, frame='icrs', unit=u.degree)
+
+    # cat_src_coord = SkyCoord(ra=cat['ra']*u.degree, dec=cat['dec']*u.degree, frame='icrs', unit=u.degree)
     
     if cat2 is None:
         cat2_src_coord = cat_src_coord
     else:
-        cat2_src_coord = SkyCoord(ra=cat2['ra']*u.degree, dec=cat['dec']*u.degree, frame='icrs', unit=u.deg)
+        ra_arr2 = np.array(cat2['ra']).astype(float)
+        dec_arr2 = np.array(cat2['dec']).astype(float)
+
+        cat2_src_coord = SkyCoord(ra=ra_arr2*u.degree, dec=dec_arr2*u.degree, frame='icrs', unit=u.deg)
+
+        # cat2_src_coord = SkyCoord(ra=cat2['ra']*u.degree, dec=cat['dec']*u.degree, frame='icrs', unit=u.deg)
 
     # choose nthneighbor=2 to not just include the same source
     idx, d2d, _ = match_coordinates_sky(cat_src_coord, cat2_src_coord, nthneighbor=nthneighbor) # there is an order specific element to this
@@ -522,38 +541,170 @@ def return_several_colors_df(cat_df, list_of_bands):
         
     return colors
 
-def read_in_decals_cat(cbps, ifield_list=[4, 6, 7], catalog_basepath=None):
+def read_in_sdwfs_cat(cbps, catalog_basepath='data/Spitzer/sdwfs_catalogs/', catalog_fname='SDWFS_ch1_stack.v34.txt', bootes_ifield_list=[6,7], bootes_cen_ras=[217.2, 218.4], bootes_cen_decs=[33.2, 34.8]):
+    
+    sdwfs_cat = np.loadtxt(catalog_basepath+catalog_fname, skiprows=21)
+
+    sdwfs_ra = sdwfs_cat[:,0]
+    sdwfs_dec = sdwfs_cat[:,1]
+
+    sdwfs_ch1_magauto = sdwfs_cat[:,18]
+    sdwfs_ch2_magauto = sdwfs_cat[:,19]
+
+    sdwfs_ch1_magauto_err = sdwfs_cat[:,22]
+    sdwfs_ch2_magauto_err = sdwfs_cat[:,23]
+    
+    remerge_cat = np.array([sdwfs_ra, sdwfs_dec, sdwfs_ch1_magauto, sdwfs_ch2_magauto, sdwfs_ch1_magauto_err, sdwfs_ch2_magauto_err])
+    
+    print('remerge cat has shape', remerge_cat.shape)
+    
+    for i, bootes_ifield in enumerate(bootes_ifield_list):
+        
+        radecmask = (sdwfs_ra > bootes_cen_ras[i]-2)*(sdwfs_ra < bootes_cen_ras[i]+2)*(sdwfs_dec > bootes_cen_decs[i]-2)*(sdwfs_dec < bootes_cen_decs[i]+2)
+        
+        ciber_fov_cat = remerge_cat[:,np.where(radecmask)[0]]
+        
+        print('ciber fov cat has shape', ciber_fov_cat.shape)
+        
+        sdwfs_ciber_df = pd.DataFrame(ciber_fov_cat.transpose(), columns=['ra', 'dec', 'CH1_mag_auto', 'CH2_mag_auto', 'CH1_mag_auto_err', 'CH2_mag_auto_err'])
+        
+        print(sdwfs_ciber_df)
+        sdwfs_ciber_filt = catalog_df_add_xy(cbps.ciber_field_dict[bootes_ifield], sdwfs_ciber_df, datadir=config.ciber_basepath+'data/')
+
+        sdwfs_ciber_filt, _, _ = check_for_catalog_duplicates(sdwfs_ciber_filt)
+        
+        plt.figure()
+        plt.scatter(sdwfs_ciber_filt['x1'], sdwfs_ciber_filt['y1'], s=1, color='k')
+        plt.xlim(0, 1024)
+        plt.ylim(0, 1024)
+        plt.show()
+        print('saving to ', catalog_basepath+'sdwfs_wxy_CIBER_ifield'+str(bootes_ifield)+'.csv')
+        sdwfs_ciber_filt.to_csv(catalog_basepath+'sdwfs_wxy_CIBER_ifield'+str(bootes_ifield)+'.csv')
+
+
+def read_in_decals_cat(cbps, ifield_list=[4, 5, 6, 7, 8], catalog_basepath=None, convert_to_Vega=True, with_photz=True, \
+                      quadstr='A'):
     
     if catalog_basepath is None:
         catalog_basepath = config.ciber_basepath+'data/catalogs/'
         
     decals_basepath = catalog_basepath+'DECaLS/'
     
+    Vega_to_AB = dict({'mag_g':-0.08, 'mag_r':0.16, 'mag_i':0.37, 'mag_z':0.54, 'J':0.91, 'H':1.39, 'K':1.85, 'mag_W1':2.699, 'mag_W2':3.339})
+
+
+    if with_photz: # DR9 for now
+        
+        mag_keys = ['mag_g', 'mag_r', 'mag_z', 'mag_W1', 'mag_W2']
+
+        catnames = ('ra', 'dec', 'mag_g', 'mag_r', \
+            'mag_z', 'mag_W1', 'mag_W2', 'allmask_g',\
+            'allmask_r', 'allmask_z', 'type', 'z_phot_mean', 'z_phot_std', 'z_spec')
+        
+        dtypes = (float, float, float, float, \
+              float, float, float, float, \
+              float, float, '|S15', float, float, float)
+        
+    else:
+        mag_keys = ['mag_g', 'mag_r', 'mag_i', 'mag_z', 'mag_W1', 'mag_W2']
+
+        catnames = ('ra', 'dec', 'mag_g', 'mag_r', 'mag_i',\
+                    'mag_z', 'mag_W1', 'mag_W2', 'allmask_g',\
+                    'allmask_r', 'allmask_i', 'allmask_z', 'type')
+    
+        dtypes = (float, float, float, float, float, \
+              float, float, float, float, \
+              float, float, float,'|S15')
+
+    
     for fieldidx, ifield in enumerate(ifield_list):
         
-        decals_fpath = decals_basepath+'DECaLS_'+cbps.ciber_field_dict[ifield]+'.txt'
+        fieldname = cbps.ciber_field_dict[ifield]
         
-        decals_cat = np.loadtxt(decals_fpath, delimiter=',', skiprows=1)
+        if ifield=='UDS':
+            decals_fpath = decals_basepath+'DECaLS_uds.txt'
+        else:
+            
+            if with_photz:
+                decals_fpath = decals_basepath+fieldname+'/dr9_'+cbps.ciber_field_dict[ifield]+'_photz_'+quadstr+'.txt'
+            else:
+                decals_fpath = decals_basepath+fieldname+'/DECaLS_'+cbps.ciber_field_dict[ifield]+'_deep_v2_'+quadstr+'.txt'
         
-        decals_df = pd.DataFrame(decals_cat, columns=['ra', 'dec', 'mag_g', 'mag_r', 'mag_i', 'mag_z', \
-                                                     'mag_W1', 'mag_W2', 'allmask_g',\
-                                                      'allmask_r', 'allmask_i', 'allmask_z'])
-        
-        print(decals_df)
-        
-        decals_filt = catalog_df_add_xy(cbps.ciber_field_dict[ifield], decals_df, datadir=config.ciber_basepath+'data/')
+#         decals_cat = np.loadtxt(decals_fpath, delimiter=',', skiprows=1)
+        decals_cat = np.loadtxt(decals_fpath, delimiter=',', skiprows=1, \
+                               dtype={'names': catnames,
+                          'formats': dtypes})
 
-        decals_filt, _, _ = check_for_catalog_duplicates(decals_filt)
+#         decals_cat = np.genfromtxt(decals_fpath, delimiter=',', dtype=None)
+        
+        decals_df = pd.DataFrame(decals_cat, columns=list(catnames))
+
+        print(np.array(decals_df['type']))
+        print(np.array(decals_df['ra']))
         
         plt.figure()
-        plt.scatter(decals_filt['x1'], decals_filt['y1'], s=1, color='k')
-        plt.xlim(0, 1024)
-        plt.ylim(0, 1024)
+        plt.hist(np.array(decals_df['z_phot_mean']), bins=np.linspace(0, 2, 20))
+        plt.xlabel('z')
         plt.show()
+            
+        if convert_to_Vega:
+            for key in mag_keys:
+                print('subtracting ', key, 'by ', Vega_to_AB[key])
+                decals_df[key] -= Vega_to_AB[key]
         
-        save_fpath = decals_basepath+'filt/decals_CIBER_ifield'+str(ifield)+'.csv'
+        
+        plt.figure(figsize=(6,5))
+        for key in mag_keys:
+            plt.hist(np.array(decals_df[key]), bins=np.linspace(10, 25, 20), histtype='step', label=key)
+            
+        plt.yscale('log')
+        plt.legend()
+        plt.show()
+            
+        if ifield != 'UDS':
+            decals_filt = catalog_df_add_xy(cbps.ciber_field_dict[ifield], decals_df, datadir=config.ciber_basepath+'data/')
+
+            decals_filt, _, _ = check_for_catalog_duplicates(decals_filt)
+
+            plt.figure()
+            plt.scatter(decals_filt['x1'], decals_filt['y1'], s=1, color='k')
+            plt.xlim(0, 1024)
+            plt.ylim(0, 1024)
+            plt.show()
+            
+        else:
+            decals_filt, _, _ = check_for_catalog_duplicates(decals_df)
+
+        if with_photz:
+            save_fpath = decals_basepath+'filt/dr9_CIBER_ifield'+str(ifield)+'_photz_'+quadstr+'.csv'
+        else:
+            save_fpath = decals_basepath+'filt/decals_CIBER_ifield'+str(ifield)+'_photz_'+quadstr+'.csv'
         print('saving to ', save_fpath)
         decals_filt.to_csv(save_fpath)
+
+def read_in_hsc_swire_cat(cbps, catalog_basepath=None, convert_to_Vega=True):
+
+    if catalog_basepath is None:
+        catalog_basepath = config.ciber_basepath+'data/catalogs/'
+
+    hsc_fpath = catalog_basepath+'HSC/SWIRE_full.csv'
+    hsc_df = pd.read_csv(hsc_fpath)
+    hsc_df = hsc_df.rename(columns={"g_ra":"ra", "g_dec":"dec"})
+    
+    # hsc_df
+    hsc_df['ra'] = np.array(hsc_df['ra']).astype(float)
+    hsc_df['dec'] = np.array(hsc_df['dec']).astype(float)
+
+    plt.figure(figsize=(10, 10))
+    plt.scatter(hsc_df['ra'], hsc_df['dec'], s=2, alpha=0.01, color='k')
+    plt.show()
+    
+    hsc_filt = catalog_df_add_xy('SWIRE', hsc_df, datadir=config.ciber_basepath+'data/')
+    hsc_filt, _, _ = check_for_catalog_duplicates(hsc_filt)
+        
+    save_fpath =  catalog_basepath+'HSC/HSC_deep_CIBER_ifield8_photz.csv'
+    print('saving to ', save_fpath)
+    hsc_filt.to_csv(save_fpath)
 
 def read_in_ukidss_cat(catalog_basepath, ifield):
     uk_path_dict = dict({'train':'ukidss_dr11_plus_UDS_12_7_20.csv', 4:'ukidss_dr11_plus_elat10_0_102220.csv', 5:'ukidss_dr11_plus_elat30_0_102220.csv', 8:'ukidss_dr11_plus_SWIRE_0_102220.csv'})

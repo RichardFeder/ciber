@@ -1447,6 +1447,26 @@ def weighted_avg_and_std(values, weights):
     return average, np.sqrt(variance)
 
 
+def compute_weighted_cl(all_cl, all_clerr):
+    
+    all_cl = np.array(all_cl)
+    all_clerr = np.array(all_clerr)
+    
+    variance = all_clerr**2
+    
+    weights = 1./variance
+    
+    cl_sumweights = np.sum(weights, axis=0)
+    
+    weighted_variance = 1./cl_sumweights
+    
+    field_averaged_std = np.sqrt(weighted_variance)
+    
+    field_averaged_cl = np.nansum(weights*all_cl, axis=0)/cl_sumweights
+    
+    return field_averaged_cl, field_averaged_std
+
+
 def load_weighted_cl_file_cross(cl_fpath, mode='observed'):
 
     clfile = np.load(cl_fpath)
