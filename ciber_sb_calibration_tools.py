@@ -15,7 +15,6 @@ from sklearn.linear_model import LinearRegression
 def linear_func_nointercept(x, m):
     return m*x
 
-
 def linear_func(x, m, b):
     return m*x + b
 
@@ -1146,6 +1145,127 @@ def jackknife_g1g2_slope(pred_fluxes, measured_fluxes, var_measured_fluxes, with
     
     return all_g1g2
 
+def make_calibration_catalog(ifield, catalog_basepath=None, save=False):
+    
+    cbps = CIBER_PS_pipeline()
+    fieldname = cbps.ciber_field_dict[ifield]
+
+    if catalog_basepath is None:
+        catalog_basepath = config.exthdpath+'ciber/ciber1/data/catalogs/'
+
+    # 2MASS
+    twomass_cat = pd.read_csv(catalog_basepath+'2MASS/filt/2MASS_filt_rdflag_wxy_'+fieldname+'_Jlt16.0.csv')
+    # convert to AB
+    twomass_J = twomass_cat['j_m'] + 0.91
+    twomass_H = twomass_cat['h_m'] + 1.39
+    twomass_K = twomass_cat['k_m'] + 1.83
+    
+    twomass_ra = np.array(twomass_cat['ra'])
+    twomass_dec = np.array(twomass_cat['dec'])
+
+    twomass_x1 = np.array(twomass_cat['x1'])
+    twomass_x2 = np.array(twomass_cat['x2'])
+
+    twomass_y1 = np.array(twomass_cat['y1'])
+    twomass_y2 = np.array(twomass_cat['y2'])
+    
+    # PanSTARRS
+    panstarrs_cat = pd.read_csv(catalog_basepath+'PanSTARRS/filt/'+fieldname+'_0_102120_filt_any_band_detect.csv')
+    panstarrs_ra = panstarrs_cat['ra']
+    panstarrs_dec = panstarrs_cat['dec']
+
+    ps_g = np.array(panstarrs_cat['gMeanPSFMag'])
+    ps_r = np.array(panstarrs_cat['rMeanPSFMag'])
+    ps_i = np.array(panstarrs_cat['iMeanPSFMag'])
+    ps_z = np.array(panstarrs_cat['zMeanPSFMag'])
+    ps_y = np.array(panstarrs_cat['yMeanPSFMag'])
+    
+    
+    calibration_cat = np.zeros((len(twomass_ra), 14))
+
+    calibration_cat[:,0] = twomass_ra
+    calibration_cat[:,1] = twomass_dec
+
+    calibration_cat[:,2] = twomass_x1
+    calibration_cat[:,3] = twomass_y1
+
+    calibration_cat[:,4] = twomass_x2
+    calibration_cat[:,5] = twomass_y2
+
+    calibration_cat[:,6] = twomass_J
+    calibration_cat[:,7] = twomass_H
+    calibration_cat[:,8] = twomass_K
+    
+    for x in range(len(twomass_ra)):
+    
+    dra = twomass_ra[x]-panstarrs_ra
+    ddec = twomass_dec[x]-panstarrs_dec
+    
+    dr = np.sqrt(dra**2+ddec**2)*3600
+    
+    whichmin = np.where((dr<2.0))[0]
+    
+    if len(whichmin) == 0:
+        continue
+    
+    if len(whichmin) > 1:
+
+        mags_g = ps_g[whichmin]
+        mags_r = ps_r[whichmin]
+        mags_i = ps_i[whichmin]
+        mags_z = ps_g[whichmin]
+        mags_y = ps_y[whichmin]
+        
+        flux_g = 10**(-0.4*(mags_g-23.9))
+        flux_r = 10**(-0.4*(mags_r-23.9))    
+        flux_i = 10**(-0.4*(mags_i-23.9))
+        flux_z = 10**(-0.4*(mags_z-23.9))
+        flux_y = 10**(-0.4*(mags_y-23.9))
+        
+        sumflux_g = np.sum(flux_g[mags_g != -99.])
+        sumflux_r = np.sum(flux_r[mags_r != -99.])
+        sumflux_i = np.sum(flux_i[mags_i != -99.])
+        sumflux_z = np.sum(flux_z[mags_z != -99.])
+        sumflux_y = np.sum(flux_y[mags_y != -99.])
+        
+        calibration_cat[x,9] = -2.5*np.log10(sumflux_g)+23.9
+        calibration_cat[x,10] = -2.5*np.log10(sumflux_r)+23.9
+        calibration_cat[x,11] = -2.5*np.log10(sumflux_i)+23.9
+        calibration_cat[x,12] = -2.5*np.log10(sumflux_z)+23.9
+        calibration_cat[x,13] = -2.5*np.log10(sumflux_y)+23.9
+        
+    else:
+        
+        calibration_cat[x,9] = ps_g[whichmin[0]]
+        calibration_cat[x,10] = ps_r[whichmin[0]]
+        calibration_cat[x,11] = ps_i[whichmin[0]]
+        calibration_cat[x,12] = ps_z[whichmin[0]]
+        calibration_cat[x,13] = ps_y[whichmin[0]]
+        
+    bins = 20
+        
+    plt.figure()
+    plt.hist(calibration_cat[:,6], bins=bins, histtype='step', label='J')
+    plt.hist(calibration_cat[:,7], bins=bins, histtype='step', label='H')
+    plt.hist(calibration_cat[:,8], bins=bins, histtype='step', label='K')
+
+    plt.hist(calibration_cat[:,9], bins=bins, histtype='step', label='g')
+    plt.hist(calibration_cat[:,10], bins=bins, histtype='step', label='r')
+    plt.hist(calibration_cat[:,11], bins=bins, histtype='step', label='i')
+    plt.hist(calibration_cat[:,12], bins=bins, histtype='step', label='z')
+    plt.hist(calibration_cat[:,13], bins=bins, histtype='step', label='y')
+
+    plt.legend()
+    plt.yscale('log')
+    plt.show()
+    
+    if save:
+        save_fpath = catalog_basepath+'calibration_catalogs/calibration_src_catalog_ifield'+str(ifield)+'.npz'
+        print('save fpath is ', save_fpath)
+        np.savez(save_fpath, calibration_cat=calibration_cat, \
+            columns=['ra', 'dec', 'x1', 'y1', 'x2', 'y2', 'j_m', 'h_m', 'k_m', 'g', 'r', 'i', 'z', 'y'])
+        
+    return calibration_cat
 
 
     
