@@ -18,8 +18,9 @@ from flat_field_est import *
 from masking_utils import *
 from powerspec_utils import *
 from ciber_mocks import *
-# from noise_model import *
+from numerical_routines import *
 from filtering_utils import calculate_plane, fit_gradient_to_map
+
 # from ps_pipeline_go import update_dicts
 # from ciber_noise_data_utils import iter_sigma_clip_mask, sigma_clip_maskonly
 
@@ -47,33 +48,14 @@ def update_dicts(list_of_dicts, kwargs, verbose=False):
 				indiv_dict[key] = value 
 	return list_of_dicts 
 
-def mean_sub_masked_image(image, mask):
-	masked_image = image*mask # dividing by the flat field introduces infinities (and maybe NaNs too?)
-	masked_image[np.isinf(masked_image)] = 0
-	masked_image[np.isnan(masked_image)] = 0
-	unmasked_mean = np.mean(masked_image[mask==1])
-	masked_image[mask==1] -= unmasked_mean
-	
-	return masked_image
+# numerical_routines.py
+# def mean_sub_masked_image(image, mask):
+# def compute_fourier_weights(cl2d_all, stdpower=2, mode='mean'):
 
 def verbprint(verbose, text):
 	if verbose:
 		print(text)
 
-def compute_fourier_weights(cl2d_all, stdpower=2, mode='mean'):
-	
-	fw_std = np.std(cl2d_all, axis=0)
-	fw_std[fw_std==0] = np.inf
-	fourier_weights = 1./(fw_std**stdpower)
-	print('max of fourier weights is ', np.max(fourier_weights))
-	fourier_weights /= np.max(fourier_weights)
-	
-	if mode=='mean':
-		mean_cl2d = np.mean(cl2d_all, axis=0)
-	elif mode=='median':
-		mean_cl2d = np.median(cl2d_all, axis=0)
-	
-	return mean_cl2d, fourier_weights
 
 
 def additional_masks(cbps, mask, inst, ifield,\
@@ -95,35 +77,11 @@ def additional_masks(cbps, mask, inst, ifield,\
 
 	return mask
 
-def load_regrid_dgl_map(inst, ifield, dgl_mode, base_path=None, p = 0.0184):
+# ciber_data_file_utils.py
+# def load_regrid_lens_map(inst, ifield, cmblens_mode, base_path=None):
+# def load_regrid_dgl_map(inst, ifield, dgl_mode, base_path=None, p = 0.0184):
+# def load_isl_rms(isl_rms_fpath, masking_maglim, nfield):
 
-	if base_path is None:
-		base_path = config.ciber_basepath+'data/fluctuation_data/TM'+str(inst)+'/dgl_tracer_maps/'+dgl_mode+'/'
-
-	regrid_fpath = base_path + dgl_mode+'_regrid_ifield'+str(ifield)+'_TM'+str(inst)+'fromhp.fits'
-
-	print('regrid fpath is ', regrid_fpath)
-	regrid_map = fits.open(regrid_fpath)[1].data
-
-	if dgl_mode != 'IRIS':
-		regrid_map /= p # from E(B-V) to 100 um intensity
-
-	return regrid_map
-
-def load_isl_rms(isl_rms_fpath, masking_maglim, nfield):
-	
-	isl_rms = np.load(isl_rms_fpath)['isl_sb_rms']
-	isl_maglims = np.load(isl_rms_fpath)['mag_lim_list']
-
-	matchidx = np.where(isl_maglims == masking_maglim)[0]
-	if len(matchidx)==0:
-		print('Cannot find masking magnitude limit of ', masking_maglim, ' in ', isl_rms_fpath)
-		mean_isl_rms = np.zeros((nfield))
-	else:
-		mean_isl_rms = np.mean(isl_rms[:, :, matchidx[0]], axis=0)
-		print("mean isl rms of each field is ", mean_isl_rms)
-		
-	return mean_isl_rms
 
 
 def stack_masks_ffest(all_masks, ff_stack_min):
@@ -137,41 +95,9 @@ def stack_masks_ffest(all_masks, ff_stack_min):
 
 	return all_masks, stack_masks
 
-def randn_skew_fast(N=None, shape=None, alpha=0.0, loc=0.0, scale=1.0):
-	if shape is None:
-		shape = (N,N)
-	sigma = alpha / np.sqrt(1.0 + alpha**2) 
-	u0 = np.random.normal(0, 1, shape)
-	v = np.random.normal(0, 1, shape)
-	u1 = (sigma*u0 + np.sqrt(1.0 - sigma**2)*v) * scale
-	u1[u0 < 0] *= -1
-	u1 = u1 + loc
-	return u1
-
-def generate_rand_skew_layered(skew_upsamp, realiz_shape, skew_max=8, plot=False):
-	
-	skew_realiz = np.zeros(realiz_shape)
-	
-	skew_upsamp_round = np.round(skew_upsamp)
-	skew_upsamp_round[skew_upsamp_round > skew_max] = skew_max
-	
-	plot_map(skew_upsamp_round, title='skew upsamp round')
-	
-	for skewval in range(skew_max+1):
-		
-		if skewval==0:
-			p = np.ones_like(skew_realiz)
-		else:
-			p = randn_skew_fast(shape=realiz_shape, alpha=skewval, loc=1.0)
-		
-		skew_realiz_pmask = np.broadcast_to(skew_upsamp_round==skewval, realiz_shape)
-		p[~skew_realiz_pmask] = 0.
-		skew_realiz += p
-		
-	if plot:
-		plot_map(skew_realiz[0], title='skew realiz')
-	
-	return skew_realiz
+# numerical_routines.py
+# def randn_skew_fast(N=None, shape=None, alpha=0.0, loc=0.0, scale=1.0):
+# def generate_rand_skew_layered(skew_upsamp, realiz_shape, skew_max=8, plot=False):
 
 # def iterative_gradient_ff_solve_bulk(orig_images, niter=3, masks=None, weights_ff=None, plot=False, ff_stack_min=2, masks_ffest=None):
 
@@ -298,436 +224,19 @@ def iterative_gradient_ff_solve(orig_images, niter=3, masks=None, weights_ff=Non
 	
 	return images, ff_estimates, final_planes, stack_masks, all_coeffs
 
-
-def compute_cross_shot_noise_trilegal(mag_lim_list, inst, cross_inst, ifield_list, datestr, fpath_dict, mode='isl', mag_lim_list_cross=None, \
-									 simidx0=0, nsims=100, ifield_plot=4, save=True, ciberdir='.', ciber_mock_fpath=None, convert_Vega_to_AB=True, simstr=None):
+# cl_predictions.py
+# def compute_cross_shot_noise_trilegal(mag_lim_list, inst, cross_inst, ifield_list, datestr, fpath_dict, mode='isl', mag_lim_list_cross=None, \
+# 									 simidx0=0, nsims=100, ifield_plot=4, save=True, ciberdir='.', ciber_mock_fpath=None, convert_Vega_to_AB=True, simstr=None):
 	
-	trilegal_band_dict = dict({1:'j_m', 2:'h_m'})
-	trilegal_fnu_dict = dict({1:'j_nuInu', 2:'h_nuInu'})
-	
-	trilegal_base_path = fpath_dict['trilegal_base_path']    
-	base_fluc_path = config.exthdpath+'ciber_fluctuation_data/'
-	tempbank_dirpath = base_fluc_path+'/TM'+str(inst)+'/subpixel_psfs/'
-	tempbank_cross_dirpath = base_fluc_path+'/TM'+str(cross_inst)+'/subpixel_psfs/'
-	bls_fpath = fpath_dict['bls_base_path']+'/bl_est_postage_stamps_TM'+str(inst)+'_081121.npz'
-	bls_cross_fpath = base_fluc_path+'TM'+str(cross_inst)+'/beam_correction/bl_est_postage_stamps_TM'+str(cross_inst)+'_081121.npz'
-
-	bandstr, Iarr_str = trilegal_band_dict[inst], trilegal_fnu_dict[inst]
-	bandstr_cross, Iarr_str_cross = trilegal_band_dict[cross_inst], trilegal_fnu_dict[cross_inst]
-
-	print(bandstr, Iarr_str, bandstr_cross, Iarr_str_cross)
-	
-	if ciber_mock_fpath is None:
-		ciber_mock_fpath = config.exthdpath+'ciber_mocks/'
-		
-	powerspec_truth_fpath = ciber_mock_fpath+datestr+'/TM1_TM2_cross/'+mode+'_resid_ps/'
-
-	if simstr is not None:
-		powerspec_truth_fpath += simstr+'/'
-	
-	cbps = CIBER_PS_pipeline()
-	cmock = ciber_mock(ciberdir=ciberdir)
-
-	isl_sb_rms = np.zeros((nsims, len(ifield_list), len(mag_lim_list)))
-
-	B_ells = np.load(bls_fpath)['B_ells_post']
-	B_ells_cross = np.load(bls_cross_fpath)['B_ells_post']
-
-	for setidx in np.arange(simidx0, nsims):
-
-		for fieldidx, ifield in enumerate(ifield_list):
-
-			if setidx==0 and fieldidx==0:
-				plt.figure()
-				plt.loglog(cbps.Mkk_obj.midbin_ell, B_ells[fieldidx]**2, label='TM'+str(inst))
-				plt.loglog(cbps.Mkk_obj.midbin_ell, B_ells_cross[fieldidx]**2, label='TM'+str(inst))
-				plt.legend()
-				plt.show()
-				
-			mock_trilegal = fits.open(trilegal_base_path+'/mock_trilegal_simidx'+str(setidx)+'_'+datestr+'.fits')
-			full_src_map = mock_trilegal['trilegal_'+str(cbps.inst_to_band[inst])+'_'+str(ifield)].data
-			full_src_map_cross = mock_trilegal['trilegal_'+str(cbps.inst_to_band[cross_inst])+'_'+str(ifield)].data
 			
-			mock_trilegal_cat = mock_trilegal['tracer_cat_'+str(ifield)].data
-			
-			full_tracer_cat = np.array([mock_trilegal_cat[key] for key in ['x', 'y', bandstr, Iarr_str, bandstr_cross, Iarr_str_cross]])
+# def compute_residual_source_shot_noise(mag_lim_list, inst, ifield_list, datestr, fpath_dict=None, mode='cib', cmock=None, cbps=None, convert_Vega_to_AB=True, \
+# 									simidx0=0, nsims=100, ifield_plot=4, save=True, return_cls=True, \
+# 									  ciber_mock_dirpath='/Volumes/Seagate Backup Plus Drive/Toolkit/Mirror/Richard/ciber_mocks/', trilegal_fpaths=None, \
+# 									  tailstr='Vega_magcut', return_src_maps=False, simstr='with_dpoint'):
 
-			for m, mag_lim in enumerate(mag_lim_list):   
-								
-				mag_lim_AB = mag_lim.copy()
-				name = 'cl_maglim_'+str(mag_lim)
-
-				if mag_lim_list_cross is not None:
-					mag_lim_AB_cross = mag_lim_list_cross[m].copy()
-					name += '_'+str(mag_lim_list_cross[m])
-				
-				if convert_Vega_to_AB:
-					mag_lim_AB += cmock.Vega_to_AB[inst]
-					if mag_lim_list_cross is not None:
-						mag_lim_AB_cross += cmock.Vega_to_AB[cross_inst]
-					if m==0:
-						print('converting mag limit threshold from Vega to AB to match mock catalog..')
-				if setidx==0:
-					print('AB mag lim for '+bandstr+' is ', mag_lim_AB)
-
-				bright_mask = (full_tracer_cat[2,:] < mag_lim_AB)
-				if mag_lim_list_cross is not None:
-					bright_mask *= (full_tracer_cat[4,:] < mag_lim_AB_cross)
-					
-				bright_cut = np.where(bright_mask)[0]
-				cut_cat = full_tracer_cat[:, bright_cut].transpose()
-
-				load_precomp_tempbank = True 
-
-				bright_src_map = cmock.make_srcmap_temp_bank(ifield, inst, cut_cat, flux_idx=3, load_precomp_tempbank=True, \
-															tempbank_dirpath=tempbank_dirpath)
-				
-				bright_src_map_cross = cmock.make_srcmap_temp_bank(ifield, cross_inst, cut_cat, flux_idx=-1, load_precomp_tempbank=True, \
-															tempbank_dirpath=tempbank_cross_dirpath)
-
-				diff_full_bright = full_src_map - bright_src_map
-				diff_full_bright -= np.mean(diff_full_bright)
-				
-				diff_full_bright_cross = full_src_map_cross - bright_src_map_cross
-				diff_full_bright_cross -= np.mean(diff_full_bright_cross)
-
-				lb, cl_diff_maglim, clerr_maglim = get_power_spec(diff_full_bright, map_b=diff_full_bright_cross,\
-																  lbinedges=cbps.Mkk_obj.binl, lbins=cbps.Mkk_obj.midbin_ell)
-
-				cl_diff_maglim /= (B_ells[fieldidx]*B_ells_cross[fieldidx])
-				
-				if m==0:
-					lb, cl_full, clerr_full = get_power_spec(full_src_map-np.mean(full_src_map), map_b=full_src_map_cross-np.mean(full_src_map_cross),\
-															 lbinedges=cbps.Mkk_obj.binl, lbins=cbps.Mkk_obj.midbin_ell)
-					cl_full /= (B_ells[fieldidx]*B_ells_cross[fieldidx])
-
-					cl_table = [lb, cl_full]
-					names = ['lb', 'cl_full']
-				cl_table.append(cl_diff_maglim)
-				names.append(name)
-
-			cl_save_fpath = powerspec_truth_fpath+'/cls_cross_'+mode+'_vs_maglim_ifield'+str(ifield)+'_inst'+str(inst)+'_crossinst'+str(cross_inst)+'_simidx'+str(setidx)+'.fits'
-
-			if save:
-				save_resid_cl_file(cl_table, names, mode=mode, save=True, cl_save_fpath=cl_save_fpath, inst=inst, cross_inst=cross_inst, ifield=ifield, setidx=setidx)
-
-			cmock.psf_temp_bank = None
-
-			if ifield==ifield_plot:
-				cl_table_test = fits.open(cl_save_fpath)['cls_'+mode].data
-				plt.figure()
-				plt.loglog(lb, lb**2*cl_table_test['cl_full']/(2*np.pi), label='full')
-				for m in range(len(mag_lim_list)):
-					maglim_key = 'cl_maglim_'+str(mag_lim_list[m])
-					if mag_lim_list_cross is not None:
-						maglim_key += '_'+str(mag_lim_list_cross[m])
-					
-					plt.loglog(lb, lb**2*cl_table_test[maglim_key]/(2*np.pi), label=cbps.inst_to_band[inst]+' > '+str(mag_lim_list[m]))
-				plt.legend(fontsize=14)
-				plt.ylim(1e-3, 1e4)
-				plt.show()
-
-				
-def compute_residual_source_shot_noise(mag_lim_list, inst, ifield_list, datestr, fpath_dict=None, mode='cib', cmock=None, cbps=None, convert_Vega_to_AB=True, \
-									simidx0=0, nsims=100, ifield_plot=4, save=True, return_cls=True, \
-									  ciber_mock_dirpath='/Volumes/Seagate Backup Plus Drive/Toolkit/Mirror/Richard/ciber_mocks/', trilegal_fpaths=None, \
-									  tailstr='Vega_magcut', return_src_maps=False, simstr='with_dpoint'):
-	
-	
-	if fpath_dict is not None:
-		powerspec_truth_fpath = fpath_dict[mode+'_resid_ps_path']
-		trilegal_base_path = fpath_dict['trilegal_base_path']
-		cib_realiz_path = fpath_dict['cib_realiz_path']
-		bls_fpath = fpath_dict['bls_base_path']+'/bl_est_postage_stamps_TM'+str(inst)+'_081121.npz'
-		tempbank_dirpath = fpath_dict['subpixel_psfs_path']+'/'
-	else:
-		bls_fpath = ciber_mock_dirpath+datestr+'/'
-		powerspec_truth_fpath = base_path+'TM'+str(inst)+'/powerspec/'
-		print('base path is ', base_path)
-		print('powerspec_truth_fpath is ', powerspec_truth_fpath)
-		make_fpaths([base_path, powerspec_truth_fpath])
-		trilegal_base_path = base_path+'trilegal'
-		cib_realiz_path = base_path+'TM'+str(inst)
-		bls_base_path = None
-		tempbank_dirpath = 'data/subpixel_psfs/'
-
-	print('powerspec truth fpath is ', powerspec_truth_fpath)
-	if mode=='isl':
-		print('trilegal base path is ', trilegal_base_path)
-	elif mode=='cib':
-		print('cib realiz path is ', cib_realiz_path)
-	print('bls fpath is ', bls_fpath)
-	print('temp bank dirpath is ', tempbank_dirpath)
-	
-	if cbps is None:
-		cbps = CIBER_PS_pipeline()
-	if cmock is None:
-		cmock = ciber_mock(ciberdir='/Users/luminatech/Documents/ciber2/ciber/')
-
-	if mode=='isl':
-		isl_sb_rms = np.zeros((nsims, len(ifield_list), len(mag_lim_list)))
-		trilegal_band_dict = dict({1:'j_m', 2:'h_m'})
-		trilegal_fnu_dict = dict({1:'j_nuInu', 2:'h_nuInu'})
-		bandstr, Iarr_str = trilegal_band_dict[inst], trilegal_fnu_dict[inst]
-		print('bandstr, Iarr_str = ', bandstr, Iarr_str)
-	elif mode=='cib':
-		bandstr = 'm_app'
-
-	if bls_fpath is not None:
-		B_ells = np.load(bls_fpath)['B_ells_post']
-	else:
-		B_ells = np.zeros((len(ifield_list), cbps.n_ps_bin))
-		for fieldidx, ifield in enumerate(ifield_list):
-			B_ells[fieldidx, :] = cbps.load_bl(ifield, inst, inplace=False)
-
-	if return_src_maps:
-		src_maps = np.zeros((len(ifield_list), len(mag_lim_list), cbps.dimx, cbps.dimy))
-
-	for setidx in np.arange(simidx0, nsims):
-		for fieldidx, ifield in enumerate(ifield_list):
-			if setidx==0 and fieldidx==0:
-				plt.figure()
-				plt.loglog(cbps.Mkk_obj.midbin_ell, B_ells[fieldidx]**2)
-				plt.show()
-			   
-			if mode=='isl':
-				if trilegal_fpaths is not None:
-					trilegal_path = trilegal_fpaths[setidx][fieldidx]
-				else:
-					trilegal_path = trilegal_base_path+'/mock_trilegal_simidx'+str(setidx)+'_'+datestr+'.fits'
-
-				mock_trilegal = fits.open(trilegal_path)
-				full_src_map = mock_trilegal['trilegal_'+str(cbps.inst_to_band[inst])+'_'+str(ifield)].data
-				mock_trilegal_cat = mock_trilegal['tracer_cat_'+str(ifield)].data
-				full_tracer_cat = np.array([mock_trilegal_cat['x'], mock_trilegal_cat['y'], mock_trilegal_cat[bandstr], mock_trilegal_cat[Iarr_str]])
-
-			elif mode=='cib':
-				# load in mock cib image/tracer catalog
-
-				# mock_gal = fits.open(cib_realiz_path+'/cib_with_tracer_5field_set'+str(setidx)+'_'+datestr+'_TM'+str(inst)+'.fits')
-				# mock_gal = fits.open(cib_realiz_path+'/cib_with_tracer_with_dpoint_5field_set'+str(setidx)+'_'+datestr+'_TM'+str(inst)+'.fits')
-				
-				mock_gal = fits.open(cib_realiz_path+'/cib_with_tracer_'+simstr+'_5field_set'+str(setidx)+'_'+datestr+'_TM'+str(inst)+'.fits')
-
-				mock_gal_cat = mock_gal['tracer_cat_'+str(ifield)].data
-				full_src_map = mock_gal['cib_'+cbps.inst_to_band[inst]+'_'+str(ifield)].data
-				
-				# full_src_map = mock_gal['map_'+str(ifield)].data
-				# Tracer catalog magnitudes are in AB system
-				I_arr_full = cmock.mag_2_nu_Inu(mock_gal_cat[bandstr], inst-1)
-				full_tracer_cat = np.array([mock_gal_cat['x'], mock_gal_cat['y'], mock_gal_cat[bandstr], I_arr_full])
-			else:
-				print('mode not recognized, try again!')
-				return None
-			
-			print('tracer cat for ifield'+str(ifield)+' has shape ', full_tracer_cat.shape)
-
-			for m, mag_lim in enumerate(mag_lim_list):                
-				if convert_Vega_to_AB:
-					if m==0:
-						print('converting mag limit threshold from Vega to AB to match mock catalog..')
-					if setidx==0:
-						print('AB mag lim for '+bandstr+' is ', mag_lim+cmock.Vega_to_AB[inst])
-					mag_limit_match = mag_lim + cmock.Vega_to_AB[inst]
-				else:
-					if m==0:
-						print('Vega mag lim for '+bandstr+' is ', mag_lim)
-					mag_limit_match = mag_lim
-					
-				bright_cut = np.where(full_tracer_cat[2,:] < mag_limit_match)[0]
-				print('Number of sources > mag lim is ', len(np.where(full_tracer_cat[2,:] < mag_limit_match)[0]))
-				cut_cat = full_tracer_cat[:, bright_cut].transpose()
-				if m==0:
-					load_precomp_tempbank = True 
-				else:
-					load_precomp_tempbank = False
-				bright_src_map = cmock.make_srcmap_temp_bank(ifield, inst, cut_cat, flux_idx=-1, load_precomp_tempbank=load_precomp_tempbank, \
-															tempbank_dirpath=tempbank_dirpath)
-				
-				diff_full_bright = full_src_map - bright_src_map
-
-				if return_src_maps and setidx==simidx0:
-					src_maps[fieldidx, m] = diff_full_bright
-
-				diff_full_bright -= np.mean(diff_full_bright)
-				
-				lb, cl_diff_maglim, clerr_maglim = get_power_spec(diff_full_bright, lbinedges=cbps.Mkk_obj.binl, lbins=cbps.Mkk_obj.midbin_ell)
-				
-				if mode=='isl':
-					isl_sb_rms[setidx, fieldidx, m] = np.std(diff_full_bright)
-
-				# cl_diff_maglim /= B_ell**2
-				cl_diff_maglim /= B_ells[fieldidx]**2
-
-				if m==0:
-					lb, cl_full, clerr_full = get_power_spec(full_src_map-np.mean(full_src_map), lbinedges=cbps.Mkk_obj.binl, lbins=cbps.Mkk_obj.midbin_ell)
-					# cl_full /= B_ell**2
-					cl_full /= B_ells[fieldidx]**2
-
-					cl_table = [lb, cl_full]
-					names = ['lb', 'cl_full']
-				cl_table.append(cl_diff_maglim)
-				names.append('cl_maglim_'+str(mag_lim))
-
-
-			cl_save_fpath = powerspec_truth_fpath+'/cls_'+mode+'_vs_maglim_ifield'+str(ifield)+'_inst'+str(inst)+'_simidx'+str(setidx)
-			if tailstr is not None:
-				cl_save_fpath+= '_'+tailstr
-
-			cl_save_fpath += '.fits'
-			
-			if save:
-				tab = Table(cl_table, names=tuple(names))
-				hdu_cl = fits.BinTableHDU(tab, name='cls_'+mode)
-				hdr = fits.Header()
-				hdr['inst'] = inst
-				hdr['ifield'] = ifield
-				hdr['sim_idx'] = setidx
-				prim = fits.PrimaryHDU(header=hdr)
-				hdul = fits.HDUList([prim, hdu_cl])
-				hdul.writeto(cl_save_fpath, overwrite=True)
-			
-			cmock.psf_temp_bank = None
-				
-			if ifield==ifield_plot:
-				cl_table_test = fits.open(cl_save_fpath)['cls_'+mode].data
-
-				plt.figure()
-				plt.loglog(lb, lb**2*cl_table_test['cl_full']/(2*np.pi), label='full')
-				for m in range(len(mag_lim_list)):
-					plt.loglog(lb, lb**2*cl_table_test['cl_maglim_'+str(mag_lim_list[m])]/(2*np.pi), label=cbps.inst_to_band[inst]+' > '+str(mag_lim_list[m]))
-				plt.legend(fontsize=14)
-				plt.ylim(1e-3, 1e4)
-				plt.grid()
-				plt.show()
-
-	if return_src_maps:
-		return src_maps
-	if mode=='isl':
-		return isl_sb_rms
-	elif mode=='cib':
-		return None
-
-
-def estimate_mkk_ffest(cbps, nsims, masks, ifield_list=None, n_split=1, mean_normalizations=None, ff_weights=None, \
-					  verbose=False, grad_sub=False, niter=1):
-	
-	if ifield_list is None:
-		ifield_list = [4, 5, 6, 7, 8]
-		
-	masks = masks.astype(float)
-		
-	nfield = len(ifield_list)
-	nsims_perf = nsims//n_split
-	nstack = nsims_perf*nfield
-	
-	if mean_normalizations is None:
-		mean_normalizations = np.zeros_like(ifield_list)
-			
-	maplist_split_shape = (nstack, cbps.dimx, cbps.dimy)
-	maplist_split_shapenew = (nfield,nsims_perf, cbps.dimx, cbps.dimy)
-	
-	# empty aligned object will have nfield, nsims perfield shape. so fftsq iterates over fields and extends by nsims per field.
-
-	print('maplist split shape is ', maplist_split_shape)
-	
-	cbps.Mkk_obj.precompute_mkk_quantities(precompute_all=True)
-
-	cbps.Mkk_obj.empty_aligned_objs, cbps.Mkk_obj.fft_objs = construct_pyfftw_objs_gen(4, maplist_split_shapenew, axes=(2,3), \
-																				  n_fft_obj=2, fft_idx0_list=[0, 2], fft_idx1_list=[1,3])
-
-	n_total_bins = len(cbps.Mkk_obj.unshifted_ringmasks)
-	Mkks_per_field = np.zeros((nfield, nsims, n_total_bins, n_total_bins))
-	
-	# only need to compute ff estimates for one field at a time, so nstack instead of nstack*nfield
-	perf_mapshape = (nsims_perf, cbps.dimx, cbps.dimy)
-	
-	ff_estimates = np.zeros(perf_mapshape)
-	
-	if ff_weights is None:
-		ff_weights = np.ones((nfield))
-		
-	ff_weight_ims = np.array([ff_weights[m]*mask for m, mask in enumerate(masks)])
-
-	for i in range(n_split):
-		print('Split '+str(i+1)+' of '+str(n_split))
-		
-		# compute noise realizations beforehand so time isn't wasted generating a whole new set each time. We can do this because the ring masks
-		# that we multiply by the noise realizations are spatially disjoint, i.e. the union of all of the Fourier masks is the null set. 
-		cbps.Mkk_obj.noise = np.random.normal(size=maplist_split_shapenew)+ 1j*np.random.normal(size=maplist_split_shapenew)
-		
-		for j in range(n_total_bins):
-			print('band ', j)
-			cbps.Mkk_obj.map_from_phase_realization(j, nsims=nstack)
-			
-			# now we have 5 x nsims/nsplit maps. add mean normalization to each and apply mask.
-			# I think I just need to get the relative mean normalizations correct.
-			# does it matter what the relative fluctuation amplitude is? 
-			
-			for k in range(nfield):
-
-				cbps.Mkk_obj.empty_aligned_objs[1][k].real += mean_normalizations[k]
-				cbps.Mkk_obj.empty_aligned_objs[1][k].real *= masks[k]
-				
-			# for each source estimate the flat field from the other four fields. 
-			for k in range(nfield):
-				if verbose:
-					print('now computing for k = ', k)
-				notkrange = [kp for kp in range(nfield) if kp != k]
-
-				ff_weight_ims = np.array([ff_weights[kp]*masks[kp] for kp in notkrange])
-
-				sum_ff_weight_ims = np.sum(ff_weight_ims, axis=0)
-
-				for kp in notkrange:
-					cbps.Mkk_obj.empty_aligned_objs[1][kp] *= ff_weights[kp]/mean_normalizations[kp]
-
-				if verbose:
-					print('shaaape', np.sum(cbps.Mkk_obj.empty_aligned_objs[1][notkrange,:,:,:].real, axis=0).shape)
-
-				ff_estimates = np.sum(cbps.Mkk_obj.empty_aligned_objs[1][notkrange].real, axis=0)/sum_ff_weight_ims
-				ff_estimates[np.isnan(ff_estimates)] = 1.   
-
-				cbps.Mkk_obj.empty_aligned_objs[2][k].real = cbps.Mkk_obj.empty_aligned_objs[1][k].real/ff_estimates
-
-				if grad_sub:
-					planes = np.array([fit_gradient_to_map(cbps.Mkk_obj.empty_aligned_objs[2][k,s].real, masks[k])[1] for s in range(nsims_perf)])
-#                     plot_map(planes[0], title='plane kp = '+str(kp))
-					cbps.Mkk_obj.empty_aligned_objs[2][k].real -= np.array([masks[k]*planes[s] for s in range(nsims_perf)])
-#                     plot_map(cbps.Mkk_obj.empty_aligned_objs[2][k,0].real, title='post plane sub kp = '+str(kp))
-
-				unmasked_means = np.array([np.mean(cbps.Mkk_obj.empty_aligned_objs[2][k,s].real[masks[k]==1.]) for s in range(nsims_perf)])                
-				cbps.Mkk_obj.empty_aligned_objs[2][k] -= np.array([masks[k]*unmasked_means[s] for s in range(nsims_perf)])
-				unmasked_means_sub = np.array([np.mean(cbps.Mkk_obj.empty_aligned_objs[2][k,s].real[masks[k]==1.]) for s in range(nsims_perf)])
-				if k==0 and i==0:
-					print('unmasked mean pre sub:', unmasked_means)
-					print('unmasked mean post subs', unmasked_means_sub)
-					plot_map(cbps.Mkk_obj.empty_aligned_objs[2][k,0].real, title='cbps.Mkk_obj.empty_aligned_objs[2][k,0].real post mean sub')
-
-				# undo scaling of off fields to ff_estimate
-				for kp in notkrange:
-					cbps.Mkk_obj.empty_aligned_objs[1][kp] /= ff_weights[kp]/mean_normalizations[kp]
-
-				if verbose:
-					print('unmasked means sub:', unmasked_means_sub)
-					print('ff scatter for field'+str(k)+':'+str(np.std([ff_estimate[masks[k]==1.] for ff_estimate in ff_estimates])))
-	
-			masked_Cl = cbps.Mkk_obj.get_ensemble_angular_autospec_ndim(nsims=nstack, apply_mask=False, obj_idx0=2, obj_idx1=3)
-			for k in range(nfield):
-				if verbose and i==0:
-					print('masked CL field '+str(k)+':')
-					print(np.mean(masked_Cl[k*nsims_perf:(k+1)*nsims_perf], axis=0))
-
-				Mkks_per_field[k, i*nsims_perf:(i+1)*nsims_perf, j, :] = np.array(masked_Cl)[k*nsims_perf:(k+1)*nsims_perf]
-			
-		average_Mkks_perfield = np.mean(Mkks_per_field, axis=1)
-		
-		for k in range(nfield):
-			plot_mkk_matrix(average_Mkks_perfield[k])            
-
-
-	return average_Mkks_perfield, Mkks_per_field
-
+# mkk_parallel.py
+# def estimate_mkk_ffest(cbps, nsims, masks, ifield_list=None, n_split=1, mean_normalizations=None, ff_weights=None, \
+# 					  verbose=False, grad_sub=False, niter=1):
 	
 class CIBER_PS_pipeline():
 
@@ -1344,8 +853,8 @@ class CIBER_PS_pipeline():
 					# 	plot_map(snmaps2[0], title='snmaps[0]')
 
 
-				# if i==0:
-				# 	plot_map(rnmaps[0], title='rn maps noise bias realizations')
+				if i==0:
+					plot_map(rnmaps[0], title='rn maps noise bias realizations')
 
 				if cross_noise_model is not None:
 					rnmaps_cross, snmaps_cross = self.noise_model_realization(cross_inst, maplist_split_shape, cross_noise_model, fft_obj=fft_objs_cross[0],\
@@ -1401,7 +910,17 @@ class CIBER_PS_pipeline():
 			if mc_ff_estimates is not None:
 				print('using MC flat field estimate')
 				nmc = len(mc_ff_estimates)
+
+
+				if i==0:
+					plot_map(simmaps[0], title='sim map before ff error')
+
 				simmaps /= mc_ff_estimates[i%nmc]
+
+				if i==0:
+					plot_map(mc_ff_estimates[i%nmc], title='FF errors')
+
+					plot_map(simmaps[0], title='sim map / ff error')
 
 				if point_src_comp is not None:
 					print('adding point source x FF error noise component..')
@@ -1705,7 +1224,7 @@ class CIBER_PS_pipeline():
 		return read_noise_models
 
 		
-	def collect_ff_realiz_estimates(self, fieldidx, run_name, fpath_dict, pscb_dict, config_dict, float_param_dict, datestr='112022'):
+	def collect_ff_realiz_estimates(self, fieldidx, run_name, fpath_dict, pscb_dict, config_dict, float_param_dict, datestr='112022', ff_min=None, ff_max=None):
 		all_ff_ests_nofluc = np.zeros((float_param_dict['nmc_ff'], self.dimx, self.dimy))
 		all_ff_ests_nofluc_cross = None 
 
@@ -1713,7 +1232,14 @@ class CIBER_PS_pipeline():
 
 			for ffidx in range(float_param_dict['nmc_ff']):
 				ff_file = np.load(fpath_dict['ff_est_dirpath']+'/'+run_name+'/ff_realization_estimate_ffidx'+str(ffidx)+'.npz')
-				all_ff_ests_nofluc[ffidx] = ff_file['ff_realization_estimates'][fieldidx]
+				ff_est = ff_file['ff_realization_estimates'][fieldidx]
+
+				if ff_min is not None and ff_max is not None:
+					ff_est[(ff_est > ff_max)] = 1.0
+					ff_est[(ff_est < ff_min)] = 1.0
+
+				all_ff_ests_nofluc[ffidx] = ff_est
+
 				if ffidx==0:
 					plot_map(all_ff_ests_nofluc[0], title='loaded MC ff estimate 0')
 
@@ -2583,6 +2109,9 @@ class CIBER_PS_pipeline():
 
 			for i in range(nsims):
 
+
+				if i%100==0:
+					print('i = ', i)
 				_, _, diff_realization = generate_diffuse_realization(self.dimx, self.dimy, power_law_idx=0.0, scale_fac=3e8)
 
 				if include_dgl:
@@ -2800,7 +2329,7 @@ class CIBER_PS_pipeline():
 			else:
 				weights = self.FW_image # this feeds Fourier weights into get_power_spec, which uses them with Cl2D
 			
-		plot_map(masked_image, title='masked image right before get power spec', cmap='Greys', hipct=99.9, lopct=1)
+		# plot_map(masked_image, title='masked image right before get power spec', cmap='Greys', hipct=99.9, lopct=1)
 
 		if max_val_after_sub is not None:
 			print('cutting all values > ', max_val_after_sub)
@@ -3117,6 +2646,8 @@ class CIBER_PS_pipeline():
 		
 		nfields = len(ifield_list)
 
+		print('zl levels in gsmt:', zl_levels)
+
 		if ff_truth is None:
 			if gsmt_dict['apply_smooth_FF']:
 				if ff_fpath is None:
@@ -3341,9 +2872,6 @@ class CIBER_PS_pipeline():
 		return joint_masks, observed_ims, total_signals, snmaps, rnmaps, shot_sigma_sb_maps, noise_models, ff_truth, diff_realizations, zl_perfield, mock_cib_ims
 	   
 
-
-
-
 def small_Nl2D_from_larger(dimx_small, dimy_small, n_ps_bin,ifield, noise_model=None, \
 						   inst=1, dimx_large=1024, dimy_large=1024, nsims=100, \
 						  div_fac = 2.83):
@@ -3391,23 +2919,6 @@ def small_Nl2D_from_larger(dimx_small, dimy_small, n_ps_bin,ifield, noise_model=
 
 
 # def process_ciber_maps(cbps, ifield_list, inst, ciber_maps, masks, cross_maps=None, ff_stack_min=1, clip_sigma=None, nitermax=10):
-	
-# 	if clip_sigma is not None:
-# 		for fieldidx, ifield in enumerate(ifield_list):
-# 			sigclip = iter_sigma_clip_mask(ciber_maps[fieldidx], sig=clip_sigma, nitermax=nitermax, mask=masks[fieldidx].astype(np.int))
-# 			masks[fieldidx] *= sigclip
-	
-# 	mask_fractions = np.array([float(np.sum(masks[fieldidx]))/float(cbps.dimx**2) for fieldidx in range(len(ifield_list))])
-# 	mean_norms = [cbps.zl_levels_ciber_fields[inst][cbps.ciber_field_dict[ifield]] for ifield in ifield_list]
-# 	ff_weights = cbps.compute_ff_weights(inst, mean_norms, ifield_list, photon_noise=True)
-# 	print('ff_weights is ', ff_weights)
-	
-# 	processed_ciber_maps, ff_estimates,\
-# 			final_planes, stack_masks,\
-# 				all_coeffs = iterative_gradient_ff_solve(ciber_maps, niter=5, masks=masks, \
-# 														weights_ff=ff_weights, ff_stack_min=ff_stack_min)
-	
-# 	return processed_ciber_maps, ff_estimates, final_planes, stack_masks, ff_weights
 
 def process_ciber_maps(cbps, ifield_list, inst, ciber_maps, masks, cross_maps=None, ff_stack_min=1, clip_sigma=4, nitermax=10, niter=5):
 	
@@ -3426,28 +2937,6 @@ def process_ciber_maps(cbps, ifield_list, inst, ciber_maps, masks, cross_maps=No
 				all_coeffs = iterative_gradient_ff_solve(ciber_maps, niter=niter, masks=masks, \
 														weights_ff=ff_weights, ff_stack_min=ff_stack_min)
 
-
-	if clip_sigma is not None:
-		print('doing sigma clip againnn')
-
-		for fieldidx, ifield in enumerate(ifield_list):
-
-			mask_rav = (processed_ciber_maps[fieldidx]*masks[fieldidx]*stack_masks[fieldidx]).ravel()
-
-			masks[fieldidx] *= stack_masks[fieldidx]
-			sigclip = iter_sigma_clip_mask(processed_ciber_maps[fieldidx], sig=clip_sigma, nitermax=nitermax, mask=masks[fieldidx].astype(int))
-			stack_masks[fieldidx] *= sigclip
-
-			mask_rav_post = (processed_ciber_maps[fieldidx]*masks[fieldidx]*stack_masks[fieldidx]).ravel()
-
-			masks[fieldidx] *= stack_masks[fieldidx]
-
-			plt.figure()
-			plt.hist(mask_rav_post[mask_rav_post != 0], bins=100, histtype='step', label='post')
-			plt.hist(mask_rav[mask_rav != 0], bins=100, histtype='step', label='orig')
-			plt.yscale('log')
-			plt.legend()
-			plt.show()
 	
 	return processed_ciber_maps, ff_estimates, final_planes, stack_masks, ff_weights
 
@@ -3494,47 +2983,6 @@ def process_ciber_maps_perquad(cbps, ifield_list, inst, ciber_maps, masks, cross
 		ff_estimates[:,cbps.x0s[q]:cbps.x1s[q], cbps.y0s[q]:cbps.y1s[q]] = ff_estimates_quad
 
 	return processed_ims, ff_estimates, masks
-
-
-def iter_sigma_clip_mask(image, sig=5, nitermax=10, mask=None):
-	# this version makes copy of the mask to be modified, rather than modifying the original
-	# image assumed to be 2d
-	iteridx = 0
-	
-	summask = image.shape[0]*image.shape[1]
-
-	if mask is not None:
-		running_mask = mask.copy()
-	else:
-		running_mask = np.ones_like(image)
-		
-	while iteridx < nitermax:
-		
-		new_mask = sigma_clip_maskonly(image, previous_mask=running_mask, sig=sig)
-		
-		if np.sum(running_mask*new_mask) < summask:
-			running_mask *= new_mask
-			summask = np.sum(running_mask)
-		else:
-			return running_mask
-
-		iteridx += 1
-		
-	return running_mask
-
-def sigma_clip_maskonly(vals, previous_mask=None, sig=5):
-	
-	valcopy = vals.copy()
-	if previous_mask is not None:
-		valcopy[previous_mask==0] = np.nan
-		sigma_val = np.nanstd(valcopy)
-	else:
-		sigma_val = np.nanstd(valcopy)
-	
-	abs_dev = np.abs(vals-np.nanmedian(valcopy))
-	mask = (abs_dev < sig*sigma_val).astype(int)
-
-	return mask
 
 def compute_delta_shot_noise_maskerrs(inst, magkey, ifield, datestr_trilegal, apply_mask_errs=True, mask_err_vs_mag_fpath=None, masking_maglim=17.5, simidx0=0, nsims=100):
     

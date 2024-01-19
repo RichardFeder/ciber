@@ -17,6 +17,10 @@ from datetime import datetime
 from mkk_parallel import *
 from plotting_fns import plot_map
 from cross_spectrum_analysis import *
+from ciber_data_file_utils import *
+
+# def write_noise_model_fits(noise_model, ifield, inst, pixsize=7., photon_eps=None, \
+#                   dat_type=None):
 
 def chop_up_masks(sigmap, nside=5, ravel=False, show=False, verbose=True):
     
@@ -148,7 +152,7 @@ def compute_masked_quantities_by_quadrant(ifield, inst, labidx=1, dimx=1024, dim
         elif mode=='lab':
             exp_image = cbps.cal_facs[inst]*fits.open(data_fpath)[0].data
         
-        new_mask = iter_sigma_clip_mask(exp_image, sig=sig, nitermax=nitermax, initial_mask=mask_inst.astype(np.int))
+        new_mask = iter_sigma_clip_mask(exp_image, sig=sig, nitermax=nitermax, initial_mask=mask_inst.astype(int))
         mask_inst *= new_mask
 
         if plot_labexp:
@@ -159,7 +163,7 @@ def compute_masked_quantities_by_quadrant(ifield, inst, labidx=1, dimx=1024, dim
         quad_masks = np.array([mask_inst[xmins[i]:xmaxs[i],ymins[i]:ymaxs[i]] for i in range(len(xmins))])
 
         for qidx, quad_mask in enumerate(quad_masks):
-            masked_quad = np.ma.array(quads[qidx], mask=~quad_mask.astype(np.bool))
+            masked_quad = np.ma.array(quads[qidx], mask=~quad_mask.astype(bool))
             mamean = np.ma.mean(masked_quad)
             mameans[lidx,qidx] = mamean
 
@@ -590,7 +594,7 @@ def get_lightsrc_mask_unsharp_masking(im_list, inst_mask=None, small_scale=5, la
         
     small_over_large[np.isnan(small_over_large)] = 0.
 
-    mask = (np.abs(small_over_large-np.nanmedian(small_over_large)) < nsig*np.nanstd(small_over_large[small_over_large != 0])).astype(np.float)
+    mask = (np.abs(small_over_large-np.nanmedian(small_over_large)) < nsig*np.nanstd(small_over_large[small_over_large != 0])).astype(float)
 
     if inst_mask is not None:
         mask *= inst_mask
@@ -693,7 +697,7 @@ def labexp_to_noisemodl(cbps, inst, ifield, labexp_fpaths, labexp_fpaths_2=None,
             plot_map(lab_exp_diff*mask_inst, title='lab exp diff * mask_inst')
         
         lab_exp_diff /= np.sqrt(2)
-        new_mask = iter_sigma_clip_mask(lab_exp_diff, sig=clip_sigma, nitermax=nitermax, initial_mask=mask_inst.astype(np.int))
+        new_mask = iter_sigma_clip_mask(lab_exp_diff, sig=clip_sigma, nitermax=nitermax, initial_mask=mask_inst.astype(int))
         mask_inst *= new_mask
         
         if plot:
@@ -702,7 +706,7 @@ def labexp_to_noisemodl(cbps, inst, ifield, labexp_fpaths, labexp_fpaths_2=None,
         meanAs.append(meanA)
         meanBs.append(meanB)
 
-        masked_full = np.ma.array(lab_exp_diff, mask=~mask_inst.astype(np.bool)) # ? 
+        masked_full = np.ma.array(lab_exp_diff, mask=~mask_inst.astype(bool)) # ? 
         mamean = np.ma.mean(masked_full)
         mameans_full[i] = mamean
         
@@ -743,19 +747,10 @@ def labexp_to_noisemodl(cbps, inst, ifield, labexp_fpaths, labexp_fpaths_2=None,
     return av_cl2d, av_means, lab_exp_diff*mask_inst
 
 
+# ciber_data_file_utils.py
+# def load_focus_mat(filename, nfr):
 
-def load_focus_mat(filename, nfr):
-    x = loadmat(filename, struct_as_record=True)
-    nfr_arr = x['framedat'][0,0]['nfr_arr'][0]
-    if nfr in nfr_arr:
-        nfr_idx = list(nfr_arr).index(nfr)
-
-        if np.max(nfr_arr) < maxframe:
-            return x['framedat'][0,0]['map_arr'][nfr_idx]
-        else:
-            return None
-        
-
+    
 def masks_from_sigmap(sigmap, bins=10, ravel=False, show=False):
     
     sigmap[sigmap==0] = np.nan
@@ -776,7 +771,7 @@ def masks_from_sigmap(sigmap, bins=10, ravel=False, show=False):
         if show:
             plt.figure(figsize=(8,8))
             plt.title(str(np.round(bins[b], 2))+' < val < '+str(np.round(bins[b+1], 2)), fontsize=18)
-            plt.imshow(sigmap*np.array(binmask).astype(np.int), origin='lower', vmin=bins[b], vmax=bins[b+1])
+            plt.imshow(sigmap*np.array(binmask).astype(int), origin='lower', vmin=bins[b], vmax=bins[b+1])
             plt.colorbar()
             plt.show()
         
@@ -804,7 +799,7 @@ def pairwise_means_variances(im_list, initial_mask=None, plot=False, imdim=1024,
     if initial_mask is not None:
         pair_mask = initial_mask.copy()
     else:
-        pair_mask = np.ones_like(im_list[0]).astype(np.int)
+        pair_mask = np.ones_like(im_list[0]).astype(int)
     
     sigclipmasks = []
     
@@ -822,7 +817,7 @@ def pairwise_means_variances(im_list, initial_mask=None, plot=False, imdim=1024,
                 f.savefig(savedir+'/pair_diff_'+str(idx)+'.png', bbox_inches='tight', dpi=150)
         
         sigclipmask = sigma_clip_maskonly(pair_diff, previous_mask=pair_mask, sig=4)
-        sigclipmasks.append(sigclipmask.astype(np.int))
+        sigclipmasks.append(sigclipmask.astype(int))
         
         pair_means_cut.append(pair_mean)
         pair_diffs_cut.append(pair_diff)
@@ -893,109 +888,12 @@ def pairwise_means_variances(im_list, initial_mask=None, plot=False, imdim=1024,
     return pair_means_cut, pair_diffs_cut, vars_of_diffs, means_of_means
 
 
-
-def plot_means_vs_vars(m_o_m, v_o_d, timestrs, timestr_cut=None, var_frac_thresh=None, xlim=None, ylim=None, all_set_numbers_list=None, all_timestr_list=None,\
-                      nfr=5, inst=1, fit_line=True, itersigma=4.0, niter=5, imdim=1024, figure_size=(12,6), markersize=100, titlestr=None, mode='linear', jackknife_g1=False, split_boot=10, boot_g1=True, n_boot=100):
+# plotting_fns.py
+# def plot_means_vs_vars(m_o_m, v_o_d, timestrs, timestr_cut=None, var_frac_thresh=None, xlim=None, ylim=None, all_set_numbers_list=None, all_timestr_list=None,\
+#                       nfr=5, inst=1, fit_line=True, itersigma=4.0, niter=5, imdim=1024, figure_size=(12,6), markersize=100, titlestr=None, mode='linear', jackknife_g1=False, split_boot=10, boot_g1=True, n_boot=100):
     
-    mask = [True for x in range(len(m_o_m))]
-    
-    if timestr_cut is not None:
-        mask *= np.array([t==timestr_cut for t in all_timestr_list])
-    
-    photocurrent = np.array(m_o_m[mask])
-    varcurrent = np.array(v_o_d[mask])
-
-    if fit_line:
-        if boot_g1:
-
-            boot_g1s = np.zeros((n_boot,))
-            for i in range(n_boot):
-                randidxs = np.random.choice(np.arange(len(photocurrent)), len(photocurrent)//split_boot)
-                phot = photocurrent[randidxs]
-                varc = varcurrent[randidxs]
-
-                _, _, g1_boot = fit_meanphot_vs_varphot(phot, 0.5*varc, nfr=nfr, itersigma=itersigma, niter=niter)
-                boot_g1s[i] = g1_boot
-
-            print('bootstrap sigma(G1) = '+str(np.std(boot_g1s)))
-            print('while bootstrap mean is '+str(np.mean(boot_g1s)))
-                
-        fitted_line, sigmask, g1_iter = fit_meanphot_vs_varphot(photocurrent, 0.5*varcurrent, nfr=nfr, itersigma=itersigma, niter=niter)
-
-    else:
-        g1_iter = None
-        
-    
-    if var_frac_thresh is not None:
-        median_var = np.median(varcurrent)
-        mask *= (np.abs(v_o_d-median_var) < var_frac_thresh*median_var) 
-                
-    min_x_val, max_x_val = np.min(photocurrent), np.max(photocurrent)
-            
-    if all_set_numbers_list is not None:
-        colors = np.array(all_set_numbers_list)[mask]
-    else:
-        colors = np.arange(len(m_o_m))[mask]
-        
-    f = plt.figure(figsize=figure_size)
-    title = 'TM'+str(inst)
-    if timestr_cut is not None:
-        title += ', '+timestr_cut
-    if titlestr is not None:
-        title += ' '+titlestr
-                
-    plt.title(title, fontsize=18)
-        
-    markers = ['o', 'x', '*', '^', '+']
-    set_color_idxs = []
-    
-    
-    for t, target_timestr in enumerate(timestrs):
-        tstrmask = np.array([tstr==target_timestr for tstr in all_timestr_list])
-        
-        tstr_colors = None
-        if all_set_numbers_list is not None:
-            tstr_colors = np.array(all_set_numbers_list)[mask*tstrmask]
-        
-        if fit_line:
-            if t==0:
-                if inst==1:
-                    xvals = np.linspace(-1, -18, 100)
-                else:
-                    xvals = np.linspace(np.min(photocurrent), np.max(photocurrent), 100)
-
-                plt.plot(xvals, fitted_line(xvals), label='$G_1$='+str(np.round(np.mean(boot_g1s), 3))+'$\\pm$'+str(np.round(np.std(boot_g1s), 3)))
-            plt.scatter(photocurrent[tstrmask], sigmask[tstrmask], s=markersize, marker=markers[t], c=tstr_colors, label=target_timestr)
-            if ylim is not None:
-                plt.ylim(ylim)
-            if xlim is not None:
-                plt.xlim(xlim)
-        else:
-            plt.scatter(photocurrent[tstrmask], 0.5*varcurrent[tstrmask], s=markersize, marker=markers[t], c=tstr_colors, label=target_timestr)
-            plt.xlim(xlim)
-            plt.ylim(ylim)            
-
-    plt.legend(fontsize=16)
-    plt.xlabel('mean [ADU/fr]', fontsize=18)
-    plt.ylabel('$\\sigma^2$ [(ADU/fr)$^2$]', fontsize=18)
-    plt.tick_params(labelsize=14)
-    plt.show()
-    
-    return f, g1_iter
-
-def sigma_clip_maskonly(vals, previous_mask=None, sig=5):
-    
-    valcopy = vals.copy()
-    if previous_mask is not None:
-        valcopy[previous_mask==0] = np.nan
-        sigma_val = np.nanstd(valcopy)
-    else:
-        sigma_val = np.nanstd(valcopy)
-    
-    abs_dev = np.abs(vals-np.nanmedian(valcopy))
-    mask = (abs_dev < sig*sigma_val).astype(np.int)
-
-    return mask
+# numerical_routines.py
+# def sigma_clip_maskonly(vals, previous_mask=None, sig=5):
 
 def slice_by_timestr(all_means_of_means, all_vars_of_diffs, all_timestr_list, timestrs, all_set_nos=None, mask_nos=None, all_mask_nos=None, set_bins=None, photocurrent_bins=None, \
                     itersigma=4.0, niter=5, inst=1, minpts=10, nfr=5, jackknife_g1=False, boot_g1=True, n_boot=100):
@@ -1207,24 +1105,6 @@ def validate_noise_model_flight_diff(cbps, inst, flight_halves=None, ifield_list
     return lb, N_ells, N_ells_flight, N_ells_phot, N_ell_errs_flight, flight_diffs
 
 
-def write_noise_model_fits(noise_model, ifield, inst, pixsize=7., photon_eps=None, \
-                  dat_type=None):
-
-    ''' writes noise model to FITS file with some metadata. '''
-
-    hduim = fits.ImageHDU(noise_model, name='noise_model_'+str(ifield))        
-
-    hdup = fits.PrimaryHDU()
-    hdup.header['ifield'] = ifield
-    hdup.header['inst'] = inst
-    hdup.header['pixsize'] = pixsize
-    if photon_eps is not None:
-        hdup.header['photon_eps'] = photon_eps
-    if dat_type is not None:
-        hdup.header['dat_type'] = dat_type        
-
-    hdul = fits.HDUList([hdup, hduim])
-    return hdul
 
 
 

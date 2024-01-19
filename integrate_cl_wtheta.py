@@ -191,6 +191,31 @@ def integrate_spline_cell(integrand, ell, N=10, a=2e-3, b=1e-2):
 def integrate_spline_wtheta(integrand, theta, N=100, a=200, b=1e5):
     return density_simpsons(integrand, a=a, b=b, N=N)
 
+def integrate_w_theta(ls, w, weights=None):
+    ''' Integrate potentially weighted angular correlation function. If no weights are provided, then inverse theta weighting is used.'''
+
+    thetas = np.pi/ls
+    dthetas = thetas[:-1]-thetas[1:]
+    w_integrand = 0.5*(w[:-1]+w[1:])
+    if weights is None: # then use inverse theta weighting
+        avthetas = 0.5*(thetas[:-1]+thetas[1:])
+        weights = 1./avthetas
+        
+    w_integrand *= weights
+    w_integrand *= dthetas
+    return np.sum(w_integrand)
+
+def integrate_C_l(ls, C, weights=None):
+    ''' Integrate potentially weighted angular correlation function. If no weights are provided, then inverse multipole weighting is used.'''
+
+    dls = ls[:-1]-ls[1:]
+    C_integrand = 0.5*(C[:-1]+C[1:])
+    if weights is None:
+        weights = 0.5*(ls[1:]+ls[:-1])
+        
+    C_integrand *= weights
+    C_integrand *= dls
+    return np.sum(C_integrand)
 
 def make_integrand_theta_sp(spline, theta):
     def integrand_func(ell):

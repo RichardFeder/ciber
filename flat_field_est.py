@@ -185,7 +185,7 @@ def compute_stack_ff_estimate(images, masked_images=None, masks=None,  target_im
 		print('weights are ', weights)
 		print('means are ', means)
 	
-	weight_ims = np.array([mask.astype(np.float) for mask in masks])
+	weight_ims = np.array([mask.astype(float) for mask in masks])
 	ff_indiv = np.zeros_like(masked_images)
 
 	for i in range(len(images)):
@@ -209,43 +209,49 @@ def compute_stack_ff_estimate(images, masked_images=None, masks=None,  target_im
 
 
 
-def plot_indiv_ps_results_fftest(lb, list_of_recovered_cls, cls_truth=None, n_skip_last = 3, mean_labels=None, return_fig=True, ciblab = 'CIB + DGL ground truth', truthlab='truth field average', ylim=[1e-3, 1e2]):
-	prefac = lb*(lb+1)/(2*np.pi)
-	
-	if mean_labels is None:
-		mean_labels = [None for x in range(len(list_of_recovered_cls))]
-		
-	f = plt.figure(figsize=(8,6))
-	
-	for i, recovered_cls in enumerate(list_of_recovered_cls):
-		
-		for j in range(recovered_cls.shape[0]):
-			
-			plt.plot(lb[:-n_skip_last], np.sqrt(prefac*np.abs(recovered_cls[j]))[:-n_skip_last], linewidth=1, marker='.', color='C'+str(i+2), alpha=0.3)
-			
-		plt.plot(lb[:-n_skip_last], np.sqrt(prefac*np.abs(np.mean(np.abs(recovered_cls), axis=0)))[:-n_skip_last], marker='*', label=mean_labels[i], color='C'+str(i+2), linewidth=3)
+def compute_flatfield_prods(ifield_list, inst, observed_ims, joint_masks, cbps, show_plots=False, ff_stack_min=1, \
+                           inv_var_weight=True, field_nfrs=None, ff_weights=None):
 
-	if cls_truth is not None:
-		for j in range(cls_truth.shape[0]):
-			label = None
-			if j==0:
-				label = ciblab
-			plt.plot(lb[:-n_skip_last], np.sqrt(prefac*cls_truth[j])[:-n_skip_last], color='k', alpha=0.3, linewidth=1, linestyle='dashed', marker='.', label=label)
+    
+    ff_estimates = np.zeros((len(ifield_list), cbps.dimx, cbps.dimy))
+    ff_joint_masks = np.zeros((len(ifield_list), cbps.dimx, cbps.dimy))
+    
+    if weights is not None:
+        inv_var_weight = False
 
-		plt.plot(lb[:-n_skip_last], np.sqrt(prefac*np.mean(cls_truth, axis=0))[:-n_skip_last], color='k', linewidth=3, label=truthlab)
+    for i, ifield in enumerate(ifield_list):
+        stack_obs = list(observed_ims.copy())
+        stack_mask = list(joint_masks.copy().astype(np.bool))
 
-				
-	plt.legend(fontsize=14)
-	plt.xscale('log')
-	plt.yscale('log')
-	plt.ylim(ylim)
-	plt.xlabel('Multipole $\\ell$', fontsize=20)
-	plt.ylabel('$\\left[\\frac{\\ell(\\ell+1)}{2\\pi}C_{\\ell}\\right]^{1/2}$ [nW m$^{-2}$ sr$^{-1}$]', fontsize=20)
-	plt.tick_params(labelsize=16)
-	# plt.savefig('/Users/luminatech/Downloads/input_recover_powerspec_fivefields_estimated_ff_bkg250_bl_cut_simidx'+str(simidx)+'_min_stack_ff='+str(min_stack_ff)+'.png', bbox_inches='tight')
-	plt.show()
-	
-	if return_fig:
-		return f
+        if weights is not None:
+            ff_weights = list(np.array(weights).copy())
+            del(ff_weights[i])
+        else:
+            ff_weights = None
 
+        if field_nfrs is not None:
+            ff_field_nfrs = list(np.array(field_nfrs).copy())
+        elif cbps.field_nfrs is not None:
+            ff_field_nfrs = list(cbps.field_nfrs.copy())
+            del(ff_field_nfrs[imidx])
+        else:
+            ff_field_nfrs = None
+
+        del(stack_obs[i])
+        del(stack_mask[i])
+
+        ff_estimate, ff_mask, ff_weights = compute_stack_ff_estimate(stack_obs, target_mask=joint_masks[i], masks=stack_mask, means=None, inv_var_weight=inv_var_weight, ff_stack_min=ff_stack_min, \
+                                                                    field_nfrs=ff_field_nfrs, weights=ff_weights)
+        ff_estimates[i] = ff_estimate
+
+        sum_stack_mask = np.sum(stack_mask, axis=0)
+        
+        
+        ff_joint_masks[i] = joint_masks[i]*ff_mask
+
+        if show_plots:
+            plot_map(ff_estimate)
+            sumstackfig = plot_map(sum_stack_mask, title='sum stack mask')
+            
+    return ff_estimates, ff_joint_masks
 

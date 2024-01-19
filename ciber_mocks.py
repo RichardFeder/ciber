@@ -8,10 +8,11 @@ from astropy.io import fits
 import scipy.signal
 from mock_galaxy_catalogs import *
 from helgason import *
-from ciber_data_helpers import *
 from cross_spectrum_analysis import *
+from ciber_beam import *
 # from noise_model import CIBER_NoiseModel
 from masking_utils import *
+from numerical_routines import *
 import config
 from powerspec_utils import write_mask_file, write_Mkk_fits
 from mkk_parallel import compute_inverse_mkk, plot_mkk_matrix
@@ -28,21 +29,19 @@ from numpy.fft import ifftshift as ifftshift
 from numpy.fft import fft2 as fft2
 from numpy.fft import ifft2 as ifft2
 
+from ciber_data_file_utils import *
 
-def make_fpaths(fpaths):
-	for fpath in fpaths:
-		if not os.path.isdir(fpath):
-			print('making directory path for ', fpath)
-			os.makedirs(fpath)
-		else:
-			print(fpath, 'already exists')
+# numerical_routines.py
+# def get_q0_post(q, nwide):
 
+# ciber_data_file_utils.py
+# def save_mock_items_to_npz(filepath, catalog=None, srcmap_full=None, srcmap_nb=None, \
+# def save_mock_to_fits(full_maps, cats, tail_name=None, full_maps_band2=None, m_tracer_max=None, m_min=None, m_max=None, inst=None, \
+# def make_fpaths(fpaths):
 
-
-def get_ciber_dgl_powerspec(dgl_fpath, inst, iras_color_facs=None, mapkey='iris_map', pixsize=7., dgl_bins=10):
+def get_ciber_dgl_powerspec(dgl_fpath, inst, iras_color_facs=None, mapkey='iris_map', pixsize=7., dgl_bins=10, mode='Onishi'):
 	
 	'''
-	
 	Parameters
 	----------
 	
@@ -55,12 +54,13 @@ def get_ciber_dgl_powerspec(dgl_fpath, inst, iras_color_facs=None, mapkey='iris_
 	cl: angular 1d power spectrum
 	dgl_map: dgl map obtained from dgl_fpath
 	
-	
 	'''
 	
 	if iras_color_facs is None:
-		iras_color_facs = dict({1:6.4, 2:2.6}) # from MIRIS observations, Onishi++2018
-#         iras_color_facs = dict({1:15., 2:8.}) # nW m^-2 sr^-1 (MJy sr^-1)^-1
+		if mode=='Onishi':
+			iras_color_facs = dict({1:6.4, 2:2.6}) # from MIRIS observations, Onishi++2018
+		elif mode=='Z14':
+        	iras_color_facs = dict({1:15., 2:8.}) # nW m^-2 sr^-1 (MJy sr^-1)^-1
 
 	dgl = fits.open(dgl_fpath)[1].data
 		
@@ -155,7 +155,6 @@ def generate_diffuse_realization(N, M, power_law_idx=-3.0, scale_fac=1., B_ell_2
 	return ell_map, ps, diffuse_realiz
 
 	
-
 def generate_psf_template_bank(beta, rc, norm, n_fine_bin=10, nwide=17, pix_to_arcsec=7.):
 	
 	# instantiate the postage stamp
@@ -185,13 +184,6 @@ def generate_psf_template_bank(beta, rc, norm, n_fine_bin=10, nwide=17, pix_to_a
 			
 	return downsampled_psf_posts, dists
 
-
-def get_q0_post(q, nwide):
-	q0 = int(np.floor(q)-nwide)
-	if q - np.floor(q) >= 0.5:
-		q0 += 1
-	return q0
-
 def make_synthetic_trilegal_cat(trilegal_path, J_band_idx=16, H_band_idx=17, imdim=1024.):
 	''' 
 	Generate synthetic catalog realization from TRILEGAL catalog. All this function does is draw uniformly random positions and 
@@ -204,7 +196,11 @@ def make_synthetic_trilegal_cat(trilegal_path, J_band_idx=16, H_band_idx=17, imd
 	print('synthetic cat has shape ', synthetic_cat.shape)
 	return synthetic_cat
 
+def filter_trilegal_cat(trilegal_cat, m_min=4, m_max=17, filter_band_idx=16):
+	
+	filtered_trilegal_cat = np.array([x for x in trilegal_cat if x[filter_band_idx]<m_max and x[filter_band_idx]>m_min])
 
+	return filtered_trilegal_cat
 
 def rebin_map_coarse(original_map, Nsub):
 	''' Downsample map, taking average of downsampled pixels '''
@@ -212,73 +208,6 @@ def rebin_map_coarse(original_map, Nsub):
 	m, n = np.array(original_map.shape)//(Nsub, Nsub)
 	
 	return original_map.reshape(m, Nsub, n, Nsub).mean((1,3))
-
-
-def save_mock_items_to_npz(filepath, catalog=None, srcmap_full=None, srcmap_nb=None, \
-						   conv_noise=None, m_min=None, m_min_nb=None, ihl_map=None, m_lim=None):
-	''' Convenience file for saving mock observation files. '''
-	np.savez_compressed(filepath, catalog=catalog, srcmap_full=srcmap_full, \
-						srcmap_nb=srcmap_nb, conv_noise=conv_noise, \
-						ihl_map=ihl_map, m_lim=m_lim, m_min=m_min, m_min_nb=m_min_nb)
-
-
-def save_mock_to_fits(full_maps, cats, tail_name=None, full_maps_band2=None, m_tracer_max=None, m_min=None, m_max=None, inst=None, \
-					 data_path='/Users/luminatech/Documents/ciber2/ciber/data/mock_cib_fftest/082321/', \
-					 ifield_list=None, map_names=None, names=['x', 'y', 'redshift', 'm_app', 'M_abs', 'Mh', 'Rvir'], save_fpath=None, return_save_fpath=False, **kwargs):
-	''' This function is dedicated to converting mocks from ciber_mock.make_mock_ciber_map() to a fits file where they can be accessed.'''
-	hdul = []
-	hdr = fits.Header()
-
-	for key, value in kwargs.items():
-		hdr[key] = value
-
-	if m_tracer_max is not None:
-		hdr['m_tracer_max'] = m_tracer_max
-	if m_min is not None:
-		hdr['m_min'] = m_min
-	if m_max is not None:
-		hdr['m_max'] = m_max
-	if inst is not None:
-		hdr['inst'] = inst
-		
-	primary_hdu = fits.PrimaryHDU(header=hdr)
-	hdul.append(primary_hdu)
-
-	for c, cat in enumerate(cats):
-		print('cat shape here is ', cat.shape)
-		tab = Table([cat[:,i] for i in range(len(names))], names=names)
-		cib_idx = c
-		if ifield_list is not None:
-			cib_idx = ifield_list[c]
-			
-		if map_names is not None:
-			map_name = map_names[0]
-
-			if len(map_names)==2:
-				map_name2 = map_names[1]
-		else:
-			map_name = 'map'
-			map_name2 = 'map2'
-			
-		hdu = fits.BinTableHDU(tab, name='tracer_cat_'+str(cib_idx))
-		hdul.append(hdu)
-
-		im_hdu = fits.ImageHDU(full_maps[c], name=map_name+'_'+str(cib_idx))
-		hdul.append(im_hdu)
-		
-		if full_maps_band2 is not None:
-			im_hdu2 = fits.ImageHDU(full_maps_band2[c], name=map_name2+'_'+str(cib_idx))
-			hdul.append(im_hdu2)
-
-	hdulist = fits.HDUList(hdul)
-	
-	if save_fpath is None:
-		save_fpath = data_path+tail_name+'.fits'
-
-	hdulist.writeto(save_fpath, overwrite=True)
-
-	if return_save_fpath:
-		return save_fpath
 
 
 def virial_radius_2_reff(r_vir, zs, theta_fov_deg=2.0, npix_sidelength=1024.):
@@ -955,103 +884,8 @@ class ciber_mock():
 		
 		return number_counts_array, all_save_fpaths
 
-
-def cl_predictions_vs_magcut(inst, ifield_list=[4, 5, 6, 7, 8], mag_lims=None, mag_cut_cat = 15.0, nsim=10, ifield_choose=4):
-    
-    if mag_lims is None:
-        if inst==1:
-            mag_lims = [13.0, 14.0, 15.0, 16.0, 16.5, 17.0, 17.5, 18.0, 18.5]
-        elif inst==2:
-            mag_lims = [14.0, 15.0, 16.0, 16.5, 17.0, 17.5, 18.0]
-            
-    magkey_dict = dict({1:'j_m', 2:'h_m'})
-
-    cmock = ciber_mock()
-    cbps_nm = CIBER_NoiseModel()
-    
-    config_dict, pscb_dict, float_param_dict, fpath_dict = return_default_cbps_dicts()
-    ciber_mock_fpath = config.exthdpath+'ciber_mocks/'
-    fpath_dict, list_of_dirpaths, base_path, trilegal_base_path = set_up_filepaths_cbps(fpath_dict, inst, 'test', '112022',\
-                                                                                    datestr_trilegal='112022', data_type='observed', \
-                                                                                   save_fpaths=True)
-    
-
-
-    all_cls_add = np.zeros((len(mag_lims), len(cbps_nm.cbps.Mkk_obj.midbin_ell)))
-    base_fluc_path = config.exthdpath+'ciber_fluctuation_data/'
-    tempbank_dirpath = base_fluc_path+'/TM'+str(inst)+'/subpixel_psfs/'
-    catalog_basepath = base_fluc_path+'catalogs/'
-    bls_fpath = base_fluc_path+'TM'+str(inst)+'/beam_correction/bl_est_postage_stamps_TM'+str(inst)+'_081121.npz'
-    
-    B_ells = np.load(bls_fpath)['B_ells_post']
-    all_twomass_cats = []
-    
-    for fieldidx, ifield in enumerate(ifield_list):
-        field_name = cbps_nm.cbps.ciber_field_dict[ifield]
-        twomass_cat = pd.read_csv(catalog_basepath+'2MASS/filt/2MASS_filt_rdflag_wxy_'+field_name+'_Jlt17.5.csv')
-        all_twomass_cats.append(twomass_cat)
-
-    
-    power_maglim_isl_igl, power_maglim_igl = [], []
-    
-    for magidx, mag_lim in enumerate(mag_lims):
-        
-        if mag_lim <= mag_cut_cat:
-
-            all_maps, all_masks = [], []
-
-            for fieldidx, ifield in enumerate(ifield_list):
-                
-                maskInst_fpath = cbps_nm.save_fpath+'TM'+str(inst)+'/masks/maskInst_102422/field'+str(ifield)+'_TM'+str(inst)+'_maskInst_102422.fits'
-                mask_inst = fits.open(maskInst_fpath)['maskInst'].data # 10/24/22
-
-                twomass_x = np.array(all_twomass_cats[fieldidx]['x'+str(inst)])
-                twomass_y = np.array(all_twomass_cats[fieldidx]['y'+str(inst)])
-                twomass_mag = np.array(all_twomass_cats[fieldidx][magkey_dict[inst]]) # magkey                
-                twomass_magcut = (twomass_mag < mag_cut_cat)*(twomass_mag > mag_lim)
-
-                twomass_x_sel = twomass_x[twomass_magcut]
-                twomass_y_sel = twomass_y[twomass_magcut]
-                twomass_mag_sel = twomass_mag[twomass_magcut]
-
-                # convert back to AB mag for generating map 
-                twomass_mag_sel_AB = twomass_mag_sel+cmock.Vega_to_AB[inst]
-                I_arr_full = cmock.mag_2_nu_Inu(twomass_mag_sel_AB, inst-1)
-                full_tracer_cat = np.array([twomass_x_sel, twomass_y_sel, twomass_mag_sel_AB, I_arr_full])
-
-                bright_src_map = cmock.make_srcmap_temp_bank(ifield, inst, full_tracer_cat.transpose(), flux_idx=-1, load_precomp_tempbank=True, \
-                                                            tempbank_dirpath=tempbank_dirpath)
-
-                all_maps.append(bright_src_map)
-                all_masks.append(mask_inst)
-                
-            cls_indiv = []
-            for idx, indiv in enumerate(all_maps):
-                indiv_masked = indiv*all_masks[idx]
-                indiv_masked[indiv_masked != 0] -= np.mean(indiv_masked[indiv_masked != 0])
-                lb, clb, clerr = get_power_spec(indiv_masked, lbinedges=cbps_nm.cbps.Mkk_obj.binl, lbins=cbps_nm.cbps.Mkk_obj.midbin_ell)
-
-                cls_indiv.append(clb/B_ells[idx]**2)
-                
-            av_clb = np.mean(np.array(cls_indiv), axis=0)
-            all_cls_add[magidx] = av_clb
-            
-        all_cl, all_cl_igl = [], []
-        for cib_setidx in range(nsim):
-            cib_cl_file = fits.open(fpath_dict['cib_resid_ps_path']+'/cls_cib_vs_maglim_ifield'+str(ifield_choose)+'_inst'+str(inst)+'_simidx'+str(cib_setidx)+'_Vega_magcut.fits')
-            isl_cl_file = fits.open(fpath_dict['isl_resid_ps_path']+'/cls_isl_vs_maglim_ifield'+str(ifield_choose)+'_inst'+str(inst)+'_simidx'+str(cib_setidx)+'_Vega_magcut.fits')
-
-            if mag_lim <= mag_cut_cat:
-                all_cl.append(cib_cl_file['cls_cib'].data['cl_maglim_'+str(mag_cut_cat)] + isl_cl_file['cls_isl'].data['cl_maglim_'+str(mag_cut_cat)] + av_clb)
-            else:
-                all_cl.append(cib_cl_file['cls_cib'].data['cl_maglim_'+str(mag_lim)] + isl_cl_file['cls_isl'].data['cl_maglim_'+str(mag_lim)])
-            all_cl_igl.append(cib_cl_file['cls_cib'].data['cl_maglim_'+str(mag_lim)])
-            
-        power_maglim_isl_igl.append(np.mean(all_cl, axis=0))
-        power_maglim_igl.append(np.mean(all_cl_igl, axis=0))
-            
-            
-    return power_maglim_isl_igl, power_maglim_igl
+# cl_predictions.py
+# def cl_predictions_vs_magcut(inst, ifield_list=[4, 5, 6, 7, 8], mag_lims=None, mag_cut_cat = 15.0, nsim=10, ifield_choose=4):
 
 
 ''' below here is largely deprecated code '''

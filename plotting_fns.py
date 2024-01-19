@@ -4,35 +4,15 @@ import mpl_toolkits
 # from mpl_toolkits.axes_grid.inset_locator import inset_axes
 import numpy as np
 from matplotlib import cm
-from PIL import Image
+# from PIL import Image
 import glob
 import config
 import matplotlib.patches as mpatches
+from ciber_data_file_utils import *
+from ps_tests import *
+from numerical_routines import *
 
 
-def load_weighted_cl_file_cross(cl_fpath, mode='observed'):
-
-    clfile = np.load(cl_fpath)
-    
-    if mode=='observed':
-        observed_recov_ps = clfile['observed_recov_ps']
-        observed_recov_dcl_perfield = clfile['observed_recov_dcl_perfield']
-        observed_field_average_cl = clfile['observed_field_average_cl']
-        observed_field_average_dcl = clfile['observed_field_average_dcl']
-        lb = clfile['lb']
-        return lb, observed_recov_ps, observed_recov_dcl_perfield, observed_field_average_cl, observed_field_average_dcl, None
-    
-    elif mode=='mock':
-        mock_mean_input_ps = clfile['mock_mean_input_ps']
-        mock_all_field_averaged_cls = clfile['mock_all_field_averaged_cls']
-        mock_all_field_cl_weights = clfile['mock_all_field_cl_weights']
-        all_mock_recov_ps = clfile['all_mock_recov_ps']
-        all_mock_signal_ps = clfile['all_mock_signal_ps']
-        lb = clfile['lb']
-    
-        return lb, mock_mean_input_ps, mock_all_field_averaged_cls, mock_all_field_cl_weights, all_mock_recov_ps, all_mock_signal_ps
-    
-    
 def plot_field_weights_ciber_bands(mock_field_cl_basepath, return_fig=True, show=True):
     
 
@@ -83,6 +63,44 @@ def plot_field_weights_ciber_bands(mock_field_cl_basepath, return_fig=True, show
     if return_fig:
         return fig
 
+def plot_indiv_ps_results_fftest(lb, list_of_recovered_cls, cls_truth=None, n_skip_last = 3, mean_labels=None, return_fig=True, ciblab = 'CIB + DGL ground truth', truthlab='truth field average', ylim=[1e-3, 1e2]):
+    prefac = lb*(lb+1)/(2*np.pi)
+    
+    if mean_labels is None:
+        mean_labels = [None for x in range(len(list_of_recovered_cls))]
+        
+    f = plt.figure(figsize=(8,6))
+    
+    for i, recovered_cls in enumerate(list_of_recovered_cls):
+        
+        for j in range(recovered_cls.shape[0]):
+            
+            plt.plot(lb[:-n_skip_last], np.sqrt(prefac*np.abs(recovered_cls[j]))[:-n_skip_last], linewidth=1, marker='.', color='C'+str(i+2), alpha=0.3)
+            
+        plt.plot(lb[:-n_skip_last], np.sqrt(prefac*np.abs(np.mean(np.abs(recovered_cls), axis=0)))[:-n_skip_last], marker='*', label=mean_labels[i], color='C'+str(i+2), linewidth=3)
+
+    if cls_truth is not None:
+        for j in range(cls_truth.shape[0]):
+            label = None
+            if j==0:
+                label = ciblab
+            plt.plot(lb[:-n_skip_last], np.sqrt(prefac*cls_truth[j])[:-n_skip_last], color='k', alpha=0.3, linewidth=1, linestyle='dashed', marker='.', label=label)
+
+        plt.plot(lb[:-n_skip_last], np.sqrt(prefac*np.mean(cls_truth, axis=0))[:-n_skip_last], color='k', linewidth=3, label=truthlab)
+
+                
+    plt.legend(fontsize=14)
+    plt.xscale('log')
+    plt.yscale('log')
+    plt.ylim(ylim)
+    plt.xlabel('Multipole $\\ell$', fontsize=20)
+    plt.ylabel('$\\left[\\frac{\\ell(\\ell+1)}{2\\pi}C_{\\ell}\\right]^{1/2}$ [nW m$^{-2}$ sr$^{-1}$]', fontsize=20)
+    plt.tick_params(labelsize=16)
+    # plt.savefig('/Users/luminatech/Downloads/input_recover_powerspec_fivefields_estimated_ff_bkg250_bl_cut_simidx'+str(simidx)+'_min_stack_ff='+str(min_stack_ff)+'.png', bbox_inches='tight')
+    plt.show()
+    
+    if return_fig:
+        return f
 
 def single_panel_observed_ps_results(inst, masking_maglim, lb, observed_field_average_cl, observed_recov_ps, field_average_error, all_mock_recov_ps, \
                                      ifield_list = [4, 5, 6, 7, 8], include_dgl_ul=True, include_igl_helgason=True,\
@@ -873,20 +891,6 @@ def compute_all_intermediate_power_spectra(lb, cls_inter, inter_labels, signal_p
     if return_fig:
         return f
 
-def convert_pngs_to_gif(filenames, gifdir='../../M_ll_correction/', name='mkk', duration=1000, loop=0):
-
-    # Create the frames
-    frames = []
-    for i in range(len(filenames)):
-        new_frame = Image.open(gifdir+filenames[i])
-        frames.append(new_frame)
-
-    # Save into a GIF file that loops forever
-    frames[0].save(gifdir+name+'.gif', format='GIF',
-                   append_images=frames[1:],
-                   save_all=True,
-                   duration=duration, loop=loop)
-
 
 def plot_means_vs_vars(m_o_m, v_o_d, timestr_cut=None, var_frac_thresh=None, xlim=None, ylim=None, all_set_numbers_list=None, all_timestr_list=None,\
                       nfr=5, inst=1, fit_line=True, itersigma=4.0, niter=5):
@@ -1068,4 +1072,254 @@ def create_multipanel_figure(images, names, colormap):
     
     return fig
 
+
+def plot_means_vs_vars(m_o_m, v_o_d, timestrs, timestr_cut=None, var_frac_thresh=None, xlim=None, ylim=None, all_set_numbers_list=None, all_timestr_list=None,\
+                      nfr=5, inst=1, fit_line=True, itersigma=4.0, niter=5, imdim=1024, figure_size=(12,6), markersize=100, titlestr=None, mode='linear', jackknife_g1=False, split_boot=10, boot_g1=True, n_boot=100):
+    
+    mask = [True for x in range(len(m_o_m))]
+    
+    if timestr_cut is not None:
+        mask *= np.array([t==timestr_cut for t in all_timestr_list])
+    
+    photocurrent = np.array(m_o_m[mask])
+    varcurrent = np.array(v_o_d[mask])
+
+    if fit_line:
+        if boot_g1:
+
+            boot_g1s = np.zeros((n_boot,))
+            for i in range(n_boot):
+                randidxs = np.random.choice(np.arange(len(photocurrent)), len(photocurrent)//split_boot)
+                phot = photocurrent[randidxs]
+                varc = varcurrent[randidxs]
+
+                _, _, g1_boot = fit_meanphot_vs_varphot(phot, 0.5*varc, nfr=nfr, itersigma=itersigma, niter=niter)
+                boot_g1s[i] = g1_boot
+
+            print('bootstrap sigma(G1) = '+str(np.std(boot_g1s)))
+            print('while bootstrap mean is '+str(np.mean(boot_g1s)))
+                
+        fitted_line, sigmask, g1_iter = fit_meanphot_vs_varphot(photocurrent, 0.5*varcurrent, nfr=nfr, itersigma=itersigma, niter=niter)
+
+    else:
+        g1_iter = None
+        
+    
+    if var_frac_thresh is not None:
+        median_var = np.median(varcurrent)
+        mask *= (np.abs(v_o_d-median_var) < var_frac_thresh*median_var) 
+                
+    min_x_val, max_x_val = np.min(photocurrent), np.max(photocurrent)
+            
+    if all_set_numbers_list is not None:
+        colors = np.array(all_set_numbers_list)[mask]
+    else:
+        colors = np.arange(len(m_o_m))[mask]
+        
+    f = plt.figure(figsize=figure_size)
+    title = 'TM'+str(inst)
+    if timestr_cut is not None:
+        title += ', '+timestr_cut
+    if titlestr is not None:
+        title += ' '+titlestr
+                
+    plt.title(title, fontsize=18)
+        
+    markers = ['o', 'x', '*', '^', '+']
+    set_color_idxs = []
+    
+    
+    for t, target_timestr in enumerate(timestrs):
+        tstrmask = np.array([tstr==target_timestr for tstr in all_timestr_list])
+        
+        tstr_colors = None
+        if all_set_numbers_list is not None:
+            tstr_colors = np.array(all_set_numbers_list)[mask*tstrmask]
+        
+        if fit_line:
+            if t==0:
+                if inst==1:
+                    xvals = np.linspace(-1, -18, 100)
+                else:
+                    xvals = np.linspace(np.min(photocurrent), np.max(photocurrent), 100)
+
+                plt.plot(xvals, fitted_line(xvals), label='$G_1$='+str(np.round(np.mean(boot_g1s), 3))+'$\\pm$'+str(np.round(np.std(boot_g1s), 3)))
+            plt.scatter(photocurrent[tstrmask], sigmask[tstrmask], s=markersize, marker=markers[t], c=tstr_colors, label=target_timestr)
+            if ylim is not None:
+                plt.ylim(ylim)
+            if xlim is not None:
+                plt.xlim(xlim)
+        else:
+            plt.scatter(photocurrent[tstrmask], 0.5*varcurrent[tstrmask], s=markersize, marker=markers[t], c=tstr_colors, label=target_timestr)
+            plt.xlim(xlim)
+            plt.ylim(ylim)            
+
+    plt.legend(fontsize=16)
+    plt.xlabel('mean [ADU/fr]', fontsize=18)
+    plt.ylabel('$\\sigma^2$ [(ADU/fr)$^2$]', fontsize=18)
+    plt.tick_params(labelsize=14)
+    plt.show()
+    
+    return f, g1_iter
+
+def plot_2d_fourier_modes(ps2d, fw_image=None, ps2d_dos=None, fw_image_dos=None, imshow=True, title=None, title_fs=20, show=True, return_fig=True,\
+                         label=None, label_dos=None):
+
+    f = plt.figure(figsize=(7,6))
+    if title is not None:
+        plt.suptitle(title, fontsize=title_fs)
+
+    all_ps2d_rav = []
+    l2d = get_l2d(cbps.dimx, cbps.dimy, pixsize=7.)
+
+    for binidx in np.arange(9):
+        
+        lmin, lmax = cbps.Mkk_obj.binl[binidx], cbps.Mkk_obj.binl[binidx+1]
+        l2d_mask = (lmin < l2d)*(l2d < lmax)
+        l2d_mask[l2d==0] = 0
+        
+        if fw_image is not None:
+            ps2d_copy, fw_image_copy = weighted_powerspec_2d(ps2d, l2d_mask.astype(int), fw_image=fw_image)
+        else:
+            ps2d_copy = weighted_powerspec_2d(ps2d, l2d_mask.astype(int))
+
+        nonz_ps2d = ps2d_copy.ravel()[ps2d_copy.ravel()!=0]
+        
+        if ps2d_dos is not None:
+            if fw_image_dos is not None:
+                ps2d_copy_dos, fw_image_copy_dos = weighted_powerspec_2d(ps2d_dos, l2d_mask.astype(int), fw_image=fw_image_dos)
+            else:
+                ps2d_copy_dos = weighted_powerspec_2d(ps2d_dos, l2d_mask.astype(int))
+
+            nonz_ps2d_dos = ps2d_copy_dos.ravel()[ps2d_copy_dos.ravel()!=0]
+
+        
+        all_ps2d_rav.append(nonz_ps2d)
+
+        plt.subplot(3,3,binidx+1)
+        plt.title(str(int(lmin))+'$<\\ell<$'+str(int(lmax)), fontsize=12)
+        
+        if imshow:
+            posidxs = np.where(ps2d_copy !=0)
+
+            xmin, xmax = np.min(posidxs[0])-1, np.max(posidxs[0])+2
+            ymin, ymax = np.min(posidxs[1])-1, np.max(posidxs[1])+2
+            
+            vmin, vmax = np.nanmin(ps2d_copy[ps2d_copy!=0]), np.nanmax(ps2d_copy[ps2d_copy!=0])
+            
+            ps2d_copy[(ps2d_copy==0)] = np.nan
+            plt.imshow(ps2d_copy[xmin:xmax,ymin:ymax],origin='lower', vmin=vmin, vmax=vmax)
+
+            plt.xticks([], [])
+            plt.yticks([], [])
+            plt.colorbar(fraction=0.046, pad=0.04)
+            
+        else:
+
+            if ps2d_copy_dos is not None:
+                min_ps2d_rav = np.nanmin([np.nanmin(nonz_ps2d), np.nanmin(nonz_ps2d_dos)])
+                max_ps2d_rav = np.nanmax([np.nanmax(nonz_ps2d), np.nanmax(nonz_ps2d_dos)])
+            else:
+                min_ps2d_rav = np.nanmin(nonz_ps2d)
+                max_ps2d_rav = np.nanmax(nonz_ps2d)
+                
+            bins = np.linspace(min_ps2d_rav, max_ps2d_rav, 10)
+            plt.subplot(3,3,binidx+1)
+
+            plt.title(str(int(lmin))+'$<\\ell<$'+str(int(lmax)), fontsize=14)
+
+            plt.hist(nonz_ps2d, bins=bins, color='k', histtype='step', label=label)
+            if ps2d_copy_dos is not None:
+                plt.hist(nonz_ps2d_dos, bins=bins, color='C3', histtype='step', label=label_dos)
+
+
+    plt.tight_layout()
+    if show:
+        plt.show()
+    if return_fig:
+        return f
+
+def plot_mean_var_modes(all_cl2ds, return_fig=True, plot=True):
+
+    var_modes = np.var(all_cl2ds, axis=0)
+    mean_modes = np.mean(all_cl2ds, axis=0)
+    mean_rav = np.log10(mean_modes.ravel())
+    var_rav = np.log10(var_modes.ravel())
+
+    logvarmin, logvarmax = -14, -0
+    logmeanmin, logmeanmax = -7, -0
+
+    within_bounds = (var_rav > logvarmin)*(var_rav < logvarmax)*(mean_rav > logmeanmin)*(mean_rav < logmeanmax)
+
+    f = plt.figure(figsize=(6,5))
+    plt.hexbin(mean_rav[within_bounds], var_rav[within_bounds], bins=100, norm=matplotlib.colors.LogNorm(vmax=1e2))
+    plt.colorbar()
+    plt.plot(np.linspace(-7, -0.5, 1000), np.linspace(-14, -1, 1000), linestyle='dashed', color='r')
+    plt.xlim(logmeanmin, logmeanmax)
+    plt.ylim(logvarmin, logvarmax)
+    if plot:
+        plt.show()
+    if return_fig:
+        return f
+
+def plot_var_ratios(var_ratios, labels, plot=True):
+    
+    f = plt.figure(figsize=(6,5))
+    for v, var_ratio in enumerate(var_ratios):
+        plt.scatter(lb, var_ratio, color='C'+str(v), label=labels[v])
+
+    plt.plot(lb, np.mean(np.array(var_ratios), axis=0), color='k', label='Field average')
+    plt.ylabel('$\\sigma(N_{\\ell}^{model})/\\sigma(N_{\\ell}^{data})$', fontsize=14)
+    plt.xlabel('$\\ell$', fontsize=14)
+    plt.yscale('log')
+    plt.xscale("log")
+    plt.ylim(1e-1, 1e1)
+    plt.grid()
+    plt.legend(fontsize=12, ncol=2, loc=3)
+    plt.tick_params(labelsize=12)
+    plt.tight_layout()
+    if plot:
+        plt.show()
+
+    return f
+
+def plot_compare_rdnoise_darkdiff_cl(inst, fieldname, lb, prefac, cl_modl, cl_modl_std, meancl_dd, stdcl_dd, \
+                               return_fig=True, plot=True, ymin=1e-4, ymax=1e3):
+
+    f = plt.figure(figsize=(8,4))
+    plt.subplot(1,2,1)
+    plt.errorbar(lb, prefac*cl_modl, yerr=prefac*cl_modl_std, label='Simulated read noise', color='C3', capsize=4, fmt='o', marker='x')
+    plt.errorbar(lb, prefac*meancl_dd, yerr=prefac*stdcl_dd, color='k', marker='+', label='Dark differences (real data)', capsize=4, fmt='o')
+    plt.text(200, 150, 'TM'+str(inst)+' ('+fieldname+')', fontsize=16)
+    plt.xscale('log')
+    plt.yscale('log')
+    plt.grid()
+    plt.xlabel('$\\ell$', fontsize=14)
+    plt.ylabel('$D_{\\ell}$ [nW$^2$ m$^{-4}$ sr$^{-2}$]', fontsize=14)
+    plt.legend(loc=4)
+    if fieldname=='elat30':
+        plt.ylim(ymin, 10*ymax)
+    else:
+        plt.ylim(ymin, ymax)
+    plt.tick_params(labelsize=12)
+
+    plt.subplot(1,2,2)
+    plt.errorbar(lb, cl_modl/cl_modl, yerr=cl_modl_std/cl_modl, color='C3', label='Simulated read noise', capsize=4, fmt='o', marker='x', markersize=5)
+    plt.errorbar(lb, meancl_dd/cl_modl, yerr=stdcl_dd/cl_modl, color='k', label='Dark differences (real data)', markersize=5, capsize=4, fmt='o', marker='+')
+    plt.ylabel('$N_{\\ell}/\\langle N_{\\ell}^{NM}\\rangle$', fontsize=14)
+    plt.xscale('log')
+    plt.axhline(1.0, linestyle='dashed', color='k', linewidth=2)
+    plt.ylim(-1., 3.0)
+    plt.xlabel('$\\ell$', fontsize=16)
+    plt.legend(loc=4)
+
+    plt.grid()
+    plt.tick_params(labelsize=12)
+
+    plt.tight_layout()
+
+    if plot:
+        plt.show()
+    if return_fig:
+        return f
 

@@ -51,6 +51,74 @@ def beam_correction_gaussian(lb, theta_fwhm, unit='arcmin'):
     print(theta_fwhm_rad, sigma_fwhm)
     return np.exp(-(lb*sigma_fwhm)**2/2)
 
+
+def regrid_iris_ciber_science_fields(ifield_list=[4,5,6,7,8], inst=1, tail_name=None, plot=False, \
+            save_fpath=config.exthdpath+'ciber_fluctuation_data/'):
+    
+    ciber_field_dict = dict({4:'elat10', 5:'elat30',6:'BootesB', 7:'BootesA', 8:'SWIRE'})
+
+    save_paths = []
+    for fieldidx, ifield in enumerate(ifield_list):
+        print('Loading ifield', ifield)
+        fieldname = ciber_field_dict[ifield]
+        print(fieldname)
+        irismap = regrid_iris_by_quadrant(fieldname, inst=inst)
+
+        # make fits file saving data
+    
+        hduim = fits.ImageHDU(irismap, name='TM2_regrid')
+        
+        hdup = fits.PrimaryHDU()
+        hdup.header['ifield'] = ifield
+        hdup.header['dat_type'] = 'iris_interp'
+        hdul = fits.HDUList([hdup, hduim])
+        save_fpath_full = save_fpath+'TM'+str(inst)+'/iris_regrid/iris_regrid_ifield'+str(ifield)+'_TM'+str(inst)
+        if tail_name is not None:
+            save_fpath_full += '_'+tail_name
+        hdul.writeto(save_fpath_full+'.fits', overwrite=True)
+        
+        save_paths.append(save_fpath_full+'.fits')
+        
+    return save_paths
+
+
+def regrid_iris_by_quadrant(fieldname, inst=1, quad_list=['A', 'B', 'C', 'D'], \
+                             xoff=[0,0,512,512], yoff=[0,512,0,512], astr_dir='../data/astroutputs/', \
+                             plot=True, dimx=1024, dimy=1024):
+    
+    ''' 
+    Used for regridding maps from IRIS to CIBER. For the CIBER1 imagers the 
+    astrometric solution is computed for each quadrant separately, so this function iterates
+    through the quadrants when constructing the full regridded images. 
+    
+    Parameters
+    ----------
+    
+    Returns
+    -------
+    
+    '''
+    
+    iris_regrid = np.zeros((dimx, dimy))    
+    astr_hdrs = [fits.open(astr_dir+'inst'+str(inst)+'/'+fieldname+'_'+quad+'_astr.fits')[0].header for quad in quad_list]
+
+    # loop over quadrants of first imager
+    
+    for iquad, quad in enumerate(quad_list):
+        
+        arrays, footprints = [], []
+        
+        iris_interp = mosaic(astr_hdrs[iquad])
+        
+        iris_regrid[yoff[iquad]:yoff[iquad]+512, xoff[iquad]:xoff[iquad]+512] = iris_interp
+        if plot:
+            plot_map(iris_interp, title='IRIS map interpolated to CIBER, quadrant '+quad)
+    
+    if plot:
+        plot_map(iris_regrid, title='IRIS map interpolated to CIBER')
+
+    return iris_regrid
+
 def proc_cibermap_regrid(cbps, inst, regrid_to_inst, mask_tail, ifield_list=[4, 5, 6, 7, 8], datestr='112022', \
                         niter=5, nitermax=1, sig=5, ff_min=0.5, ff_max=1.5, astr_dir='../../ciber/data/', \
                         save=True, mask_tail_ffest=None):
@@ -164,7 +232,192 @@ def proc_cibermap_regrid(cbps, inst, regrid_to_inst, mask_tail, ifield_list=[4, 
         
     return all_regrid_masked_proc
 
+def regrid_tm2_to_tm1_science_fields(ifield_list=[4,5,6,7,8], inst0=1, inst1=2, \
+                                    inst0_maps=None, inst1_maps=None, flight_dat_base_path=config.exthdpath+'noise_model_validation_data/', \
+                                    save_fpath=config.exthdpath+'/ciber_fluctuation_data/', \
+                                    tail_name=None, plot=False, cal_facs=None, astr_dir=None):
+    
+    ciber_field_dict = dict({4:'elat10', 5:'elat30',6:'BootesB', 7:'BootesA', 8:'SWIRE'})
 
+    save_paths, regrid_ims = [], []
+    for fieldidx, ifield in enumerate(ifield_list):
+        print('Loading ifield', ifield)
+        fieldname = ciber_field_dict[ifield]
+        print(fieldname)
+        
+        if inst0_maps is not None and inst1_maps is not None:
+            print('taking directly from inst0_maps and inst1_maps..')
+            tm1 = inst0_maps[fieldidx]
+            tm2 = inst1_maps[fieldidx]
+        else:
+            tm1 = fits.open(flight_dat_base_path+'TM1/validationHalfExp/field'+str(ifield)+'/flightMap.FITS')[0].data
+            tm2 = fits.open(flight_dat_base_path+'TM2/validationHalfExp/field'+str(ifield)+'/flightMap.FITS')[0].data       
+
+
+        tm2_regrid, tm2_fp_regrid = regrid_arrays_by_quadrant(tm2, ifield, inst0=inst0, inst1=inst1, \
+                                                             plot=plot, astr_dir=astr_dir)
+
+        if cal_facs is not None:
+            plot_map(cal_facs[1]*tm2, title='TM2 data')
+            plot_map(cal_facs[1]*tm1, title='TM1 data')
+            plot_map(cal_facs[2]*tm2_regrid, title='TM2 regrid')
+            plot_map(cal_facs[1]*(tm1+tm2_regrid), title='TM1+TM2 data')
+        regrid_ims.append(tm2_regrid)
+    
+        # make fits file saving data
+    
+        hduim = fits.ImageHDU(tm2_regrid, name='TM2_regrid')
+        hdufp = fits.ImageHDU(tm2_fp_regrid, name='TM2_footprint')
+        
+        hdup = fits.PrimaryHDU()
+        hdup.header['ifield'] = ifield
+        hdup.header['dat_type'] = 'observed'
+        hdul = fits.HDUList([hdup, hduim, hdufp])
+        save_fpath_full = save_fpath+'TM'+str(inst1)+'/ciber_regrid/flightMap_ifield'+str(ifield)+'_TM'+str(inst1)+'_regrid_to_TM'+str(inst0)
+        if tail_name is not None:
+            save_fpath_full += '_'+tail_name
+        hdul.writeto(save_fpath_full+'.fits', overwrite=True)
+        
+        save_paths.append(save_fpath_full+'.fits')
+        
+    return regrid_ims, save_paths
+
+def regrid_arrays_by_quadrant(map1, ifield, inst0=1, inst1=2, quad_list=['A', 'B', 'C', 'D'], \
+                             xoff=[0,0,512,512], yoff=[0,512,0,512], astr_map0_hdrs=None, astr_map1_hdrs=None, indiv_map0_hdr=None, indiv_map1_hdr=None, astr_dir=None, \
+                             plot=True, order=0):
+    
+    ''' 
+    Used for regridding maps from one imager to another. For the CIBER1 imagers the 
+    astrometric solution is computed for each quadrant separately, so this function iterates
+    through the quadrants when constructing the full regridded images. 
+    
+    Parameters
+    ----------
+    
+    Returns
+    -------
+    
+    '''
+
+    if astr_dir is None:
+        astr_dir = '../../ciber/data/'
+
+    ciber_field_dict = dict({4:'elat10', 5:'elat30',6:'BootesB', 7:'BootesA', 8:'SWIRE', 'train':'UDS'})
+
+    map1_regrid, map1_fp_regrid = [np.zeros_like(map1) for x in range(2)]
+
+    fieldname = ciber_field_dict[ifield]
+    
+    map1_quads = [map1[yoff[iquad]:yoff[iquad]+512, xoff[iquad]:xoff[iquad]+512] for iquad in range(len(quad_list))]
+    
+    if astr_map0_hdrs is None and indiv_map0_hdr is None:
+        print('loading WCS for inst = ', inst0)
+        astr_map0_hdrs = load_quad_hdrs(ifield, inst0, base_path=astr_dir, halves=False)
+    if astr_map1_hdrs is None and indiv_map1_hdr is None:
+        print('loading WCS for inst = ', inst1)
+        astr_map1_hdrs = load_quad_hdrs(ifield, inst1, base_path=astr_dir, halves=False)
+
+    # if astr_map0_hdrs is None and indiv_map0_hdr is None:
+    #     astr_map0_hdrs = [fits.open(astr_dir+'inst'+str(inst0)+'/'+fieldname+'_'+quad+'_astr.fits')[0].header for quad in quad_list]
+    # if astr_map1_hdrs is None and indiv_map1_hdr is None:
+    #     astr_map1_hdrs = [fits.open(astr_dir+'inst'+str(inst1)+'/'+fieldname+'_'+quad+'_astr.fits')[0].header for quad in quad_list]
+    # loop over quadrants of first imager
+    
+    for iquad, quad in enumerate(quad_list):
+        
+        # arrays, footprints = [], []
+        run_sum_footprint, sum_array = [np.zeros_like(map1_quads[0]) for x in range(2)]
+
+        # reproject each quadrant of second imager onto first imager
+        if indiv_map0_hdr is None:
+            for iquad2, quad2 in enumerate(quad_list):
+                input_data = (map1_quads[iquad2], astr_map1_hdrs[iquad2])
+                array, footprint = reproject_interp(input_data, astr_map0_hdrs[iquad], (512, 512), order=order)
+
+                array[np.isnan(array)] = 0.
+                footprint[np.isnan(footprint)] = 0.
+
+                run_sum_footprint += footprint 
+                sum_array[run_sum_footprint < 2] += array[run_sum_footprint < 2]
+                run_sum_footprint[run_sum_footprint > 1] = 1
+
+                # arrays.append(array)
+                # footprints.append(footprint)
+       
+        # sumarray = np.nansum(arrays, axis=0)
+        # sumfootprints = np.nansum(footprints, axis=0)
+
+        if plot:
+            plot_map(sum_array, title='sum array')
+            plot_map(run_sum_footprint, title='sum footprints')
+        
+        # print('number of pixels with > 1 footprint', np.sum((sumfootprints==2)))
+        # map1_regrid[yoff[iquad]:yoff[iquad]+512, xoff[iquad]:xoff[iquad]+512] = sumarray
+        # map1_fp_regrid[yoff[iquad]:yoff[iquad]+512, xoff[iquad]:xoff[iquad]+512] = sumfootprints
+
+        map1_regrid[yoff[iquad]:yoff[iquad]+512, xoff[iquad]:xoff[iquad]+512] = sum_array
+        map1_fp_regrid[yoff[iquad]:yoff[iquad]+512, xoff[iquad]:xoff[iquad]+512] = run_sum_footprint
+
+    return map1_regrid, map1_fp_regrid
+
+def ciber_x_ciber_regrid_all_masks(cbps, inst, cross_inst, cross_union_mask_tail, mask_tail, mask_tail_cross, ifield_list=[4,5,6,7,8], astr_base_path='data/', \
+                                  base_fluc_path = 'data/fluctuation_data/', save=True, cross_mask=None, cross_inst_only=False, plot=False, plot_quad=False):
+    
+    ''' Function to regrid masks from one imager to another and return/save union of masks. 12/20/22'''
+    mask_base_path = base_fluc_path+'TM'+str(inst)+'/masks/'
+    mask_base_path_cross_inst = base_fluc_path+'TM'+str(cross_inst)+'/masks/'
+    mask_base_path_cross_union = base_fluc_path+'TM'+str(inst)+'_TM'+str(cross_inst)+'_cross/masks/'
+
+    masks, masks_cross, masks_cross_regrid, masks_union = [np.zeros((len(ifield_list), cbps.dimx, cbps.dimy)) for x in range(4)]
+    union_savefpaths = []
+
+    for fieldidx, ifield in enumerate(ifield_list):
+        print('ifield ', ifield)
+        
+        astr_map0_hdrs = load_quad_hdrs(ifield, inst, base_path=astr_base_path, halves=False)
+        astr_map1_hdrs = load_quad_hdrs(ifield, cross_inst, base_path=astr_base_path, halves=False)
+        make_fpaths([mask_base_path_cross_union+cross_union_mask_tail])
+        
+        masks[fieldidx] = fits.open(mask_base_path+mask_tail+'/joint_mask_ifield'+str(ifield)+'_inst'+str(inst)+'_observed_'+mask_tail+'.fits')['joint_mask_'+str(ifield)].data
+
+        if cross_mask is None:
+            if cross_inst_only:
+                print('Only using instrument mask of cross CIBER map..')
+                inst_mask_fpath = config.exthdpath+'/ciber_fluctuation_data/TM'+str(cross_inst)+'/masks/maskInst_102422/field'+str(ifield)+'_TM'+str(cross_inst)+'_maskInst_102422.fits'
+                masks_cross[fieldidx] = cbps.load_mask(ifield, inst, mask_fpath=inst_mask_fpath, instkey='maskinst', inplace=False)
+            else:
+                print('Using full cross map mask..')
+                masks_cross[fieldidx] = fits.open(mask_base_path_cross_inst+mask_tail_cross+'/joint_mask_ifield'+str(ifield)+'_inst'+str(cross_inst)+'_observed_'+mask_tail_cross+'.fits')['joint_mask_'+str(ifield)].data
+
+            mask_cross_regrid, mask_cross_fp_regrid = regrid_arrays_by_quadrant(masks_cross[fieldidx], ifield, inst0=inst, inst1=cross_inst, \
+                                                     astr_map0_hdrs=astr_map0_hdrs, astr_map1_hdrs=astr_map1_hdrs, plot=plot_quad)
+
+            masks_cross_regrid[fieldidx] = mask_cross_regrid
+        masks_union[fieldidx] = masks[fieldidx]*mask_cross_regrid
+
+        if plot:
+            plot_map(masks[fieldidx], title='mask fieldidx = '+str(fieldidx))
+            plot_map(masks_cross[fieldidx], title='mask fieldidx = '+str(fieldidx))
+
+        masks_union[fieldidx][masks_union[fieldidx] > 1] = 1.0
+        
+        print('Mask fraction for mask TM'+str(inst)+' is ', np.sum(masks[fieldidx])/float(1024**2))
+        print('Mask fraction for mask TM'+str(cross_inst)+' is ', np.sum(masks_cross[fieldidx])/float(1024**2))
+        print('Mask fraction for union mask is ', np.sum(masks_union[fieldidx])/float(1024**2))
+        if plot:
+            plot_map(masks_union[fieldidx], title='mask x mask cross')
+
+        if save:
+            hdul = write_mask_file(masks_union[fieldidx], ifield, inst, dat_type='cross_observed', cross_inst=cross_inst)
+            union_savefpath = mask_base_path_cross_union+cross_union_mask_tail+'/joint_mask_ifield'+str(ifield)+'_TM'+str(inst)+'_TM'+str(cross_inst)+'_observed_'+cross_union_mask_tail+'.fits'
+            print('Saving cross mask to ', union_savefpath)
+
+            hdul.writeto(union_savefpath, overwrite=True)
+            union_savefpaths.append(union_savefpath)
+    if save:
+        return masks, masks_cross, masks_cross_regrid, masks_union, union_savefpaths
+    
+    return masks, masks_cross, masks_cross_regrid, masks_union
 
 def calculate_ciber_cross_noise_uncertainty(inst, ifield, mask, cross_map, mask_cross=None, noise_model=None,\
                                             nsims=200, n_split=4, cbps=None, plot=False, verbose=False):
@@ -217,8 +470,6 @@ def calculate_ciber_cross_noise_uncertainty(inst, ifield, mask, cross_map, mask_
 
         
     return lb, all_cl1ds_cross_noise
-
-
 
 
 def get_ciber_dgl_powerspec2(dgl_fpath, inst, iras_color_facs=None, mapkey='iris_map', pixsize=7., dgl_bins=10):
@@ -339,19 +590,6 @@ def func_powerlaw(ell, m, c, c0):
     return c0 + ell**m * c
 
 
-# _ecliptic = np.radians(23.43927944)
-    
-# def equatorial_to_ecliptic(ra, dec):
-
-#     ec_latitude = np.arcsin(np.sin(dec) * np.cos(_ecliptic))
-#     ec_latitude = ec_latitude - (np.cos(dec) * np.sin(_ecliptic) * np.sin(ra))
-#     _num, _den = np.sin(ra) * np.cos(_ecliptic) + np.tan(dec) * np.sin(_ecliptic), np.cos(ra)
-#     ec_longitude = np.arcsin(_num / _den)
-#     print('ec long:', ec_longitude)
-#     ec_latitude, ec_longitude = np.degrees([ec_latitude, ec_longitude])
-#     return ec_latitude, ec_longitude
-
-
 # 3.4 arcminute resolution for healpix, 7" CIBER pixels --> 30 x 30 pixel size sampling
 # so maybe oversample at 16x16 pixel averages
 def which_quad(x, y):
@@ -371,252 +609,7 @@ def which_quad(x, y):
     
     return quad
 
-
-def ciber_ciber_rl_coefficient(obs_name_A, obs_name_B, obs_name_AB, startidx=1, endidx=-1):
-
-    
-    obs_fieldav_cls, obs_fieldav_dcls = [], []
-    inst_list = [1, 2]
-    for clidx, obs_name in enumerate([obs_name_A, obs_name_B, obs_name_AB]):
-        if clidx<2:
-            cl_fpath_obs = config.ciber_basepath+'data/input_recovered_ps/cl_files/TM'+str(inst_list[clidx])+'/cl_'+obs_name+'.npz'
-            lb, observed_recov_ps, observed_recov_dcl_perfield,\
-            observed_field_average_cl, observed_field_average_dcl,\
-                mock_all_field_cl_weights = load_weighted_cl_file(cl_fpath_obs)     
-        else:
-            cl_fpath_obs = config.ciber_basepath+'data/input_recovered_ps/cl_files/TM1_TM2_cross/cl_'+obs_name+'.npz'
-            lb, observed_recov_ps, observed_recov_dcl_perfield,\
-            observed_field_average_cl, observed_field_average_dcl,\
-                mock_all_field_cl_weights = load_weighted_cl_file_cross(cl_fpath_obs)
-
-        obs_fieldav_cls.append(observed_field_average_cl)
-        obs_fieldav_dcls.append(observed_field_average_dcl)
-
-    r_TM = obs_fieldav_cls[2]/np.sqrt(obs_fieldav_cls[0]*obs_fieldav_cls[1])
-
-    sigma_r_TM = np.sqrt((1./(obs_fieldav_cls[0]*obs_fieldav_cls[1]))*(obs_fieldav_dcls[2]**2 + (obs_fieldav_cls[2]*obs_fieldav_dcls[0]/(2*obs_fieldav_cls[0]))**2+(obs_fieldav_cls[2]*obs_fieldav_dcls[1]/(2*obs_fieldav_cls[1]))**2))
-
-    return lb, r_TM, sigma_r_TM
+# powerspec_utils.py
+# def ciber_ciber_rl_coefficient(obs_name_A, obs_name_B, obs_name_AB, startidx=1, endidx=-1):
 
 
-# def simulate_deep_cats_correlation_coeff_cosmos(inst=1, ifield_choose = 4, include_IRAC_mask=False, maglim_IRAC=18., m_max=28, \
-#                                                inv_Mkk=None, mkk_correct=True, coverage_mask=None):
-
-#     Vega_to_AB = dict({'g':-0.08, 'r':0.16, 'i':0.37, 'z':0.54, 'y':0.634, 'J':0.91, 'H':1.39, 'K':1.85, \
-#                       'CH1':2.699, 'CH2':3.339})
-   
-#     nx, ny = 650, 650
-#     startidx, endidx = 1, -1
-    
-#     cbps = CIBER_PS_pipeline(dimx=nx, dimy=ny)
-
-#     subpixel_psf_dirpath = config.exthdpath+'ciber_fluctuation_data/TM'+str(inst)+'/subpixel_psfs/'
-#     lb, mean_bl, bls = cbps.compute_beam_correction_posts(ifield_choose, inst)    
-    
-#     cmock = ciber_mock(nx=nx, ny=ny)
-
-#     m_min_J_list = [17.5, 18.5, 19.5, 20.5, 21.5]
-#     m_min_H_list = [17.0, 18.0, 19.0, 20.0, 21.0]
-#     m_min_CH1_list = [16.0, 17.0, 18.0, 19.0]
-#     m_min_CH2_list = [16.0, 17.0, 18.0, 19.0]
-
-#     cosmos_catalog = np.load('data/cosmos/cosmos20_farmer_catalog_wxy_073123.npz')
-
-#     # these are all AB mags from Farmer catalog
-#     cosmos_xpos = cosmos_catalog['cosmos_xpos']
-#     cosmos_ypos = cosmos_catalog['cosmos_ypos']
-#     cosmos_J_mag = cosmos_catalog['cosmos_J_mag']
-#     cosmos_H_mag = cosmos_catalog['cosmos_H_mag']
-#     cosmos_CH1_mag = cosmos_catalog['cosmos_CH1_mag']
-#     cosmos_CH2_mag = cosmos_catalog['cosmos_CH2_mag']
-    
-#     plt.figure()
-#     plt.hist(cosmos_J_mag, bins=np.linspace(16, 26, 30), histtype='step', label='J')
-#     plt.hist(cosmos_H_mag, bins=np.linspace(16, 26, 30), histtype='step', label='H')
-#     plt.hist(cosmos_CH1_mag, bins=np.linspace(16, 26, 30), histtype='step', label='CH1')
-#     plt.hist(cosmos_CH2_mag, bins=np.linspace(16, 26, 30), histtype='step', label='CH2')
-#     plt.yscale('log')
-#     plt.legend()
-#     plt.show()
-
-#     cosmos_bordermask = (cosmos_xpos < nx)*(cosmos_ypos < ny)*(cosmos_xpos > 0)*(cosmos_ypos > 0)
-    
-#     if inv_Mkk is None and mkk_correct:
-#         H, xedges, yedges = np.histogram2d(cosmos_xpos, cosmos_ypos, bins=[np.linspace(0, nx, nx+1), np.linspace(0, ny, ny+1)])
-
-#         coverage_mask = (H != 0)
-
-#         H_mask = H*coverage_mask
-#         plt.figure()
-#         plt.imshow(H_mask, origin='lower')
-#         plt.colorbar()
-#         plt.show()
-
-#         print('coverage_mask has shape ', coverage_mask.shape)
-#         plt.figure()
-#         plt.imshow(coverage_mask, origin='lower')
-#         plt.colorbar()
-#         plt.show()
-        
-#         av_Mkk = cbps.Mkk_obj.get_mkk_sim(coverage_mask, 100, n_split=1)
-        
-#         inv_Mkk = save_mkks('data/cosmos/Mkk_file_C20_coverage.npz', av_Mkk=av_Mkk, return_inv_Mkk=True, mask=coverage_mask)
-    
-    
-# #     coverage_mask = H_mask
-    
-#     all_clauto_J, all_clauto_H, all_clauto_CH1, all_clauto_CH2 = [[] for x in range(4)]
-#     all_clx_JH, all_clx_J_CH1, all_clx_J_CH2, all_clx_H_CH1, all_clx_H_CH2, all_clx_CH1_CH2 = [[] for x in range(6)]
-    
-#     all_clautos = []
-#     all_clcrosses = []
-
-#     for magidx in range(len(m_min_J_list)):
-
-#         magmask_J = (cosmos_J_mag-Vega_to_AB['J'] > m_min_J_list[magidx])*(cosmos_J_mag-Vega_to_AB['J'] < m_max)
-#         magmask_H = (cosmos_H_mag-Vega_to_AB['H'] > m_min_H_list[magidx])*(cosmos_H_mag-Vega_to_AB['H'] < m_max)
-        
-#         magmask = magmask_J*magmask_H
-        
-#         if include_IRAC_mask:
-#             print('adding IRAC mask L < '+str(maglim_IRAC))
-#             magmask *= (cosmos_CH1_mag-Vega_to_AB['CH1'] > maglim_IRAC)
-        
-#         mask = cosmos_bordermask*magmask
-        
-    
-#         I_arr_J = cmock.mag_2_nu_Inu(cosmos_J_mag, 0)
-#         I_arr_H = cmock.mag_2_nu_Inu(cosmos_H_mag, 1)
-#         I_arr_CH1 = cmock.mag_2_nu_Inu(cosmos_CH1_mag, band=None, lam_eff=3.6*1e-6*u.m)
-#         I_arr_CH2 = cmock.mag_2_nu_Inu(cosmos_CH2_mag, band=None, lam_eff=4.5*1e-6*u.m)
-        
-#         I_arr_J[np.isnan(I_arr_J)] = 0.
-#         I_arr_H[np.isnan(I_arr_H)] = 0.
-#         I_arr_CH1[np.isnan(I_arr_CH1)] = 0.
-#         I_arr_CH2[np.isnan(I_arr_CH2)] = 0.
-        
-#         mock_cat_J = np.array([cosmos_xpos[mask], cosmos_ypos[mask], cosmos_J_mag[mask], I_arr_J[mask]]).transpose()
-#         mock_cat_H = np.array([cosmos_xpos[mask], cosmos_ypos[mask], cosmos_H_mag[mask], I_arr_H[mask]]).transpose()
-#         mock_cat_CH1 = np.array([cosmos_xpos[mask], cosmos_ypos[mask], cosmos_CH1_mag[mask], I_arr_CH1[mask]]).transpose()
-#         mock_cat_CH2 = np.array([cosmos_xpos[mask], cosmos_ypos[mask], cosmos_CH2_mag[mask], I_arr_CH2[mask]]).transpose()
-        
-#         sourcemap_J = cmock.make_srcmap_temp_bank(ifield_choose, inst, mock_cat_J, flux_idx=-1, n_fine_bin=10, nwide=17,tempbank_dirpath=subpixel_psf_dirpath, load_precomp_tempbank=True)
-#         sourcemap_H = cmock.make_srcmap_temp_bank(ifield_choose, inst, mock_cat_H, flux_idx=-1, n_fine_bin=10, nwide=17,tempbank_dirpath=subpixel_psf_dirpath, load_precomp_tempbank=True)
-#         sourcemap_CH1 = cmock.make_srcmap_temp_bank(ifield_choose, inst, mock_cat_CH1, flux_idx=-1, n_fine_bin=10, nwide=17,tempbank_dirpath=subpixel_psf_dirpath, load_precomp_tempbank=True)
-#         sourcemap_CH2 = cmock.make_srcmap_temp_bank(ifield_choose, inst, mock_cat_CH2, flux_idx=-1, n_fine_bin=10, nwide=17,tempbank_dirpath=subpixel_psf_dirpath, load_precomp_tempbank=True)        
-        
-#         sourcemap_J *= coverage_mask
-#         sourcemap_H *= coverage_mask
-#         sourcemap_CH1 *= coverage_mask
-#         sourcemap_CH2 *= coverage_mask
-        
-#         sourcemap_J[coverage_mask != 0] -= np.mean(sourcemap_J[coverage_mask != 0])
-#         sourcemap_H[coverage_mask != 0] -= np.mean(sourcemap_H[coverage_mask != 0])
-#         sourcemap_CH1[coverage_mask != 0] -= np.mean(sourcemap_CH1[coverage_mask != 0])
-#         sourcemap_CH2[coverage_mask != 0] -= np.mean(sourcemap_CH2[coverage_mask != 0])
-        
-        
-#         # autos
-#         lb, clauto_J, clerr_auto_J = get_power_spec(sourcemap_J, \
-#                                                  lbinedges=cbps.Mkk_obj.binl, lbins=cbps.Mkk_obj.midbin_ell)
-#         lb, clauto_H, clerr_auto_H = get_power_spec(sourcemap_H, \
-#                                                  lbinedges=cbps.Mkk_obj.binl, lbins=cbps.Mkk_obj.midbin_ell)
-#         lb, clauto_CH1, clerr_auto_CH1 = get_power_spec(sourcemap_CH1, \
-#                                                  lbinedges=cbps.Mkk_obj.binl, lbins=cbps.Mkk_obj.midbin_ell)
-#         lb, clauto_CH2, clerr_auto_CH2 = get_power_spec(sourcemap_CH2, \
-#                                                  lbinedges=cbps.Mkk_obj.binl, lbins=cbps.Mkk_obj.midbin_ell)
-        
-#         cl_autos = [clauto_J, clauto_H, clauto_CH1, clauto_CH2]
-        
-#         # now compute crosses
-#         lb, clx_J_H, clerr_x_J_H = get_power_spec(sourcemap_J, map_b=sourcemap_H, \
-#                                  lbinedges=cbps.Mkk_obj.binl, lbins=cbps.Mkk_obj.midbin_ell)
-#         lb, clx_J_CH1, clerr_x_J_CH1 = get_power_spec(sourcemap_J, map_b=sourcemap_CH1, \
-#                                  lbinedges=cbps.Mkk_obj.binl, lbins=cbps.Mkk_obj.midbin_ell)
-#         lb, clx_J_CH2, clerr_x_J_CH2 = get_power_spec(sourcemap_J, map_b=sourcemap_CH2, \
-#                                  lbinedges=cbps.Mkk_obj.binl, lbins=cbps.Mkk_obj.midbin_ell)
-#         lb, clx_H_CH1, clerr_x_H_CH1 = get_power_spec(sourcemap_H, map_b=sourcemap_CH1, \
-#                          lbinedges=cbps.Mkk_obj.binl, lbins=cbps.Mkk_obj.midbin_ell)
-#         lb, clx_H_CH2, clerr_x_H_CH2 = get_power_spec(sourcemap_H, map_b=sourcemap_CH2, \
-#                  lbinedges=cbps.Mkk_obj.binl, lbins=cbps.Mkk_obj.midbin_ell)
-#         lb, clx_CH1_CH2, clerr_x_CH1_CH2 = get_power_spec(sourcemap_CH1, map_b=sourcemap_CH2, \
-#                  lbinedges=cbps.Mkk_obj.binl, lbins=cbps.Mkk_obj.midbin_ell)
-        
-#         cl_crosses = [clx_J_H, clx_J_CH1, clx_J_CH2, clx_H_CH1, clx_H_CH2, clx_CH1_CH2]
-
-#         for clidx, cl in enumerate(cl_autos):
-#             if mkk_correct:
-#                 cl_autos[clidx] = np.dot(inv_Mkk.transpose(), cl)
-#             cl_autos[clidx] = cl_autos[clidx] / mean_bl**2
-            
-            
-#         for clidx, clx in enumerate(cl_crosses):
-#             if mkk_correct:
-#                 cl_crosses[clidx] = np.dot(inv_Mkk.transpose(), clx)
-#             cl_crosses[clidx] = cl_crosses[clidx] / mean_bl**2
-    
-    
-#         r_ell_J_H = cl_crosses[0]/np.sqrt(cl_autos[0]*cl_autos[1])
-#         r_ell_J_CH1 = cl_crosses[1]/np.sqrt(cl_autos[0]*cl_autos[2])
-#         r_ell_J_CH2 = cl_crosses[2]/np.sqrt(cl_autos[0]*cl_autos[3])
-        
-#         r_ell_H_CH1 = cl_crosses[3]/np.sqrt(cl_autos[1]*cl_autos[2])
-#         r_ell_H_CH2 = cl_crosses[4]/np.sqrt(cl_autos[1]*cl_autos[3])
-#         r_ell_CH1_CH2 = cl_crosses[5]/np.sqrt(cl_autos[2]*cl_autos[3])
-        
-#         plt.figure()
-#         plt.plot(lb[startidx:endidx], r_ell_J_H[startidx:endidx], label='J x H')
-#         plt.plot(lb[startidx:endidx], r_ell_J_CH1[startidx:endidx], label='J x CH1')
-#         plt.plot(lb[startidx:endidx], r_ell_J_CH2[startidx:endidx], label='J x CH2')
-        
-#         plt.plot(lb[startidx:endidx], r_ell_H_CH1[startidx:endidx], label='H x CH1')
-#         plt.plot(lb[startidx:endidx], r_ell_H_CH2[startidx:endidx], label='H x CH2')
-#         plt.plot(lb[startidx:endidx], r_ell_CH1_CH2[startidx:endidx], label='CH1 x CH2')
-#         plt.xscale('log')
-#         plt.ylim(0, 1.3)
-#         plt.xlabel('$\\ell$', fontsize=16)
-#         plt.ylabel('$r_{\\ell}$', fontsize=16)
-#         plt.legend(fontsize=12, ncol=2, loc=3)
-        
-#         textstr = 'COSMOS field\nMask $J<$'+str(m_min_J_list[magidx])+' $\\cup$ $H<$'+str(m_min_H_list[magidx])
-        
-#         if include_IRAC_mask:
-#             textstr += ' $\\cup$ $L<$'+str(maglim_IRAC)
-            
-#         plt.text(400, 1.05, textstr, color='k', fontsize=16)
-#         plt.grid()
-        
-#         if include_IRAC_mask:
-#             plt.savefig('/Users/richardfeder/Downloads/r_ell_cosmos_JHCH1CH2_mask_Jlt'+str(m_min_J_list[magidx])+'_Hlt'+str(m_min_H_list[magidx])+'_CH1lt'+str(maglim_IRAC)+'.png', bbox_inches='tight', dpi=200)
-#         else:
-#             plt.savefig('/Users/richardfeder/Downloads/r_ell_cosmos_JHCH1CH2_mask_Jlt'+str(m_min_J_list[magidx])+'_Hlt'+str(m_min_H_list[magidx])+'.png', bbox_inches='tight', dpi=200)
-#         plt.show()
-        
-#         prefac = lb*(lb+1)/(2*np.pi)
-        
-#         plt.figure()
-#         plt.plot(lb, prefac*cl_autos[0], label='J')
-#         plt.plot(lb, prefac*cl_autos[1], label='H')
-#         plt.plot(lb, prefac*cl_autos[2], label='CH1')
-#         plt.plot(lb, prefac*cl_autos[3], label='CH2')
-#         plt.legend(loc=3, ncol=2)
-#         plt.xscale('log')
-#         plt.yscale('log')
-#         plt.show()
-        
-#         all_clautos.append(cl_autos)
-#         all_clcrosses.append(cl_crosses)
-
-#         all_clauto_J.append(cl_autos[0])
-#         all_clauto_H.append(cl_autos[1])
-#         all_clauto_CH1.append(cl_autos[2])
-#         all_clauto_CH2.append(cl_autos[3])
-        
-#         all_clx_JH.append(cl_crosses[0])
-#         all_clx_J_CH1.append(cl_crosses[1])
-#         all_clx_J_CH2.append(cl_crosses[2])
-#         all_clx_H_CH1.append(cl_crosses[3])
-#         all_clx_H_CH2.append(cl_crosses[4])
-#         all_clx_CH1_CH2.append(cl_crosses[5])
-        
-#     return lb, all_clautos, all_clcrosses
