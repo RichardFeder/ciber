@@ -2,7 +2,7 @@ import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 import os
-from ciber_data_helpers import make_radius_map, compute_radmap_full
+# from ciber_data_helpers import make_radius_map, compute_radmap_full
 from plotting_fns import plot_map
 import config
 import astropy.wcs as wcs

@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 from astropy.table import Table
 from PIL import Image
 import os
+import config
 
 
 '''---------------------- loading functions ----------------------'''
@@ -109,7 +110,7 @@ def load_quad_hdrs(ifield, inst, base_path='/Users/richardfeder/Downloads/ciber_
         return all_wcs
 
 
-def load_weighted_cl_file_cross(cl_fpath, mode='observed'):
+def load_weighted_cl_file(cl_fpath, mode='observed'):
 
     clfile = np.load(cl_fpath)
     
@@ -399,6 +400,38 @@ def save_mock_to_fits(full_maps, cats, tail_name=None, full_maps_band2=None, m_t
 
 	if return_save_fpath:
 		return save_fpath
+
+
+
+def save_weighted_cl_file(lb, inst, observed_run_name, observed_recov_ps, observed_recov_dcl_perfield, observed_field_average_cl, observed_field_average_dcl, \
+                mock_all_field_cl_weights, cl_base_path=config.ciber_basepath+'data/input_recovered_ps/cl_files/', cross_inst=None):
+    
+    if cross_inst is None:
+        cl_fpath = cl_base_path+'TM'+str(inst)+'/cl_'+observed_run_name+'.npz'
+    else:
+        cl_fpath = cl_base_path+'TM'+str(inst)+'_TM'+str(cross_inst)+'_cross/cl_'+observed_run_name+'.npz'
+
+    print('saving to ', cl_fpath)
+    np.savez(cl_fpath, \
+            lb=lb, inst=inst, observed_recov_ps=observed_recov_ps, observed_recov_dcl_perfield=observed_recov_dcl_perfield, \
+            observed_field_average_cl=observed_field_average_cl, observed_field_average_dcl=observed_field_average_dcl, \
+            mock_all_field_cl_weights=mock_all_field_cl_weights)
+    
+    return cl_fpath
+
+def save_weighted_mock_cl_file(lb, inst, mock_run_name, mock_mean_input_ps, mock_all_field_averaged_cls, mock_all_field_cl_weights, \
+                              all_mock_recov_ps, all_mock_signal_ps, cl_base_path=config.ciber_basepath+'data/input_recovered_ps/cl_files/'):
+    
+    
+    cl_fpath = cl_base_path+'TM'+str(inst)+'/cl_'+mock_run_name+'.npz'
+
+    print('saving to ', cl_fpath)
+    np.savez(cl_fpath, \
+            lb=lb, inst=inst, mock_mean_input_ps=mock_mean_input_ps, mock_all_field_averaged_cls=mock_all_field_averaged_cls, \
+            mock_all_field_cl_weights=mock_all_field_cl_weights, all_mock_recov_ps=all_mock_recov_ps, \
+            all_mock_signal_ps=all_mock_signal_ps)
+    
+    return cl_fpath
 
 def save_resid_cl_file(cl_table, names, mode='isl', return_hdul=False, save=True, cl_save_fpath=None, **kwargs):
     tab = Table(cl_table, names=tuple(names))

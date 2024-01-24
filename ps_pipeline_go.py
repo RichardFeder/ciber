@@ -18,8 +18,7 @@ from ciber_powerspec_pipeline import *
 # from ciber_powerspec_pipeline import CIBER_PS_pipeline, iterative_gradient_ff_solve, lin_interp_powerspec,\
 									 # grab_all_simidx_dat, grab_recovered_cl_dat, generate_synthetic_mock_test_set,\
 									 # instantiate_dat_arrays_fftest, instantiate_cl_arrays_fftest, calculate_powerspec_quantities, compute_powerspectra_realdat
-from ciber_noise_data_utils import *
-from cross_spectrum_analysis import *
+# from cross_spectrum_analysis import *
 # from ciber_data_helpers import load_psf_params_dict
 from plotting_fns import plot_map
 from ciber_mocks import *

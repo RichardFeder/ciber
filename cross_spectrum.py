@@ -8,11 +8,11 @@ from ciber_powerspec_pipeline import *
 from ciber_mocks import *
 from mock_galaxy_catalogs import *
 from lognormal_counts import *
-from ciber_data_helpers import *
+# from ciber_data_helpers import *
 from helgason import *
 from ps_pipeline_go import *
 from noise_model import *
-from cross_spectrum_analysis import *
+# from cross_spectrum_analysis import *
 from mkk_parallel import *
 from mkk_diagnostics import *
 from flat_field_est import *

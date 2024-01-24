@@ -16,7 +16,7 @@ from datetime import datetime
 
 from mkk_parallel import *
 from plotting_fns import plot_map
-from cross_spectrum_analysis import *
+# from cross_spectrum_analysis import *
 from ciber_data_file_utils import *
 
 # def write_noise_model_fits(noise_model, ifield, inst, pixsize=7., photon_eps=None, \
