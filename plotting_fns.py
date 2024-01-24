@@ -13,6 +13,85 @@ from ps_tests import *
 from numerical_routines import *
 
 
+
+def plot_spitzer_auto(inst, irac_ch, lb, spitzer_auto_cl, spitzer_auto_clerr, all_cl_spitzer, all_clerr_spitzer, return_fig=True):
+    
+    ''' Plot cross spectra with individual cross noise terms '''
+    
+    pf = lb*(lb+1)/(2*np.pi)
+    
+    f = plt.figure(figsize=(6,5))
+    
+    plt.title('IRAC CH'+str(irac_ch), fontsize=14)
+    plt.errorbar(lb, pf*all_cl_spitzer[1], yerr=pf*all_clerr_spitzer[1], alpha=0.7, fmt='o', color='r', label='Bootes A')
+    plt.errorbar(lb, pf*all_cl_spitzer[0], yerr=pf*all_clerr_spitzer[0], alpha=0.7, fmt='o', color='b', label='Bootes B')
+    
+    plt.errorbar(lb, pf*spitzer_auto_cl, yerr=pf*spitzer_auto_clerr, fmt='o', color='k', label='Spitzer auto')
+    plt.plot(lb, pf*spitzer_auto_clerr, color='k', linestyle='dashed')
+    
+    plt.xscale('log')
+    plt.yscale('log')
+    plt.xlabel('$\\ell$', fontsize=14)
+    plt.ylabel('$D_{\\ell}$', fontsize=14)
+    plt.legend()
+    plt.show()
+    
+    if return_fig:
+        return f
+
+
+def plot_fieldav_ciber_spitzer_cross(inst, irac_ch, lb, fieldav_cl_cross, fieldav_clerr_cross, all_cl_cross, all_clerr_cross_tot, \
+                                    return_fig=True):
+
+    pf = lb*(lb+1)/(2*np.pi)
+
+    f = plt.figure(figsize=(6, 5))
+
+    plt.title('CIBER TM'+str(inst)+' x IRAC CH'+str(irac_ch), fontsize=14)
+    plt.errorbar(lb, pf*all_cl_cross[1], yerr=pf*all_clerr_cross_tot[1], alpha=0.7, fmt='o', color='r', label='Bootes A')
+
+    plt.errorbar(lb, pf*all_cl_cross[0], yerr=pf*all_clerr_cross_tot[0], alpha=0.7, fmt='o', color='b', label='Bootes B')
+
+    plt.errorbar(lb, pf*fieldav_cl_cross, yerr=pf*fieldav_clerr_cross, fmt='o', color='k', label='Field average')
+
+    plt.plot(lb, pf*fieldav_clerr_cross, linestyle='dashed', color='k')
+    plt.xscale('log')
+    plt.yscale('log')
+    plt.xlabel('$\\ell$', fontsize=14)
+    plt.ylabel('$D_{\\ell}$', fontsize=14)
+    plt.legend()
+    plt.show()
+
+    if return_fig:
+        return f
+
+
+def plot_ciber_spitzer_cross_with_terms(inst, irac_ch, fieldname, lb, cl_cross, clerr_cross_tot, clerr_ciber_noise_spitzer, \
+                                       clerr_spitzer_noise_ciber, return_fig=True):
+    
+    ''' Plot cross spectra with individual cross noise terms '''
+    
+    pf = lb*(lb+1)/(2*np.pi)
+    
+    f = plt.figure(figsize=(6,5))
+    
+    plt.title('CIBER TM'+str(inst)+' x IRAC CH'+str(irac_ch)+', '+fieldname, fontsize=14)
+    plt.errorbar(lb, pf*cl_cross, yerr=pf*clerr_cross_tot, fmt='o', label='CIBER x Spitzer')
+    
+    plt.plot(lb, pf*clerr_ciber_noise_spitzer, color='C0', linestyle='dashed', label='CIBER noise x Spitzer')
+    plt.plot(lb, pf*clerr_spitzer_noise_ciber, color='C1', linestyle='dashed', label='Spitzer noise x CIBER')
+    plt.plot(lb, pf*clerr_cross_tot, color='k', linestyle='dashed', label='Total uncertainty')
+    
+    plt.xscale('log')
+    plt.yscale('log')
+    plt.xlabel('$\\ell$', fontsize=14)
+    plt.ylabel('$D_{\\ell}$', fontsize=14)
+    plt.legend()
+    plt.show()
+    
+    if return_fig:
+        return f
+
 def plot_field_weights_ciber_bands(mock_field_cl_basepath, return_fig=True, show=True):
     
 
@@ -297,6 +376,46 @@ def make_figure_cross_corrcoeff_ciber_ciber_vs_mag(maglim_J = [17.5, 18.0, 18.5,
         plt.show()
     if return_fig:
         return fig
+
+
+def plot_ciber_x_ciber_ps(ifield_list, lb, all_cl1d_obs, all_nl1d_unc, field_weights,\
+                          startidx=1, endidx=-1, return_fig=True, flatidx=7):
+    
+    
+    f = plt.figure(figsize=(6,5))
+    
+    for fieldidx, ifield in enumerate(ifield_list):
+        plt.errorbar(lb[startidx:endidx], (prefac*all_cl1d_obs[fieldidx])[startidx:endidx], yerr=(prefac*all_nl1d_unc[fieldidx])[startidx:endidx], label=cbps.ciber_field_dict[ifield], fmt='.', color='C'+str(fieldidx), alpha=0.3, capsize=4, markersize=10)
+
+    mean_cl_cross = np.mean(all_cl1d_obs, axis=0)
+    std_cl_cross = np.std(all_cl1d_obs, axis=0)/np.sqrt(5)
+
+    weighted_cross_average_cl, weighted_cross_average_dcl = compute_weighted_cl(all_cl1d_obs, field_weights)
+    weighted_cross_average_cl[:flatidx] = mean_cl_cross[:flatidx]
+    weighted_cross_average_dcl[:flatidx] = std_cl_cross[:flatidx]
+
+    plt.errorbar(lb[startidx:endidx], (prefac*weighted_cross_average_cl)[startidx:endidx], yerr=(prefac*weighted_cross_average_dcl)[startidx:endidx], label='Field average', fmt='o', capthick=1.5, color='k', capsize=3, markersize=4, linewidth=2.)
+
+    plt.xlim(2e2, 1e5)
+    plt.yscale('log')
+    plt.xscale('log')
+    plt.tick_params(labelsize=14)
+    plt.xlabel('$\\ell$', fontsize=16)
+    plt.ylabel('$D_{\\ell}$ [nW$^2$ m$^{-4}$ sr$^{-2}$]', fontsize=18)
+    plt.grid(alpha=0.5, color='grey')
+
+    plt.ylim(1e-2, 1e4)
+    plt.text(2.5e2, 3e2, 'CIBER 1.1 $\\mu$m $\\times 1.8$ $\\mu$m\nObserved data\nMask $J<'+str(maglim_J)+'$ and $H<'+str(maglim_H)+'$', fontsize=16)
+
+
+    plt.legend(fontsize=10, loc=4, ncol=2, framealpha=1.)
+    plt.tight_layout()
+    plt.show()
+    
+    if return_fig:
+        return f, weighted_cross_average_cl, weighted_cross_average_dcl
+    else:
+        return weighted_cross_average_cl, weighted_cross_average_dcl
 
 
 def plot_bandpowers_vs_magnitude(cbps, inst, mag_lims, binned_obs_fieldav, igl_isl_vs_maglim, igl_vs_maglim,\

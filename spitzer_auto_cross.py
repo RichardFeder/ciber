@@ -4,7 +4,7 @@ from plotting_fns import plot_map
 import config
 from ciber_powerspec_pipeline import *
 from noise_model import *
-from cross_spectrum_analysis import *
+# from cross_spectrum_analysis import *
 from cross_spectrum import *
 from mkk_parallel import *
 from mkk_diagnostics import *
@@ -17,10 +17,53 @@ import scipy.io
 
 
 
+class spitzer_cl():
+    
+    def __init__(self):
+        self.all_cl_spitzer = []
+        self.all_clerr_spitzer = []
+        self.all_cl_cross = []
+        self.all_clerr_cross = []
+        self.all_clerr_cross_tot = []
+        self.all_nl1d_diff = []
+        self.all_nl1d_err_diff = []
+        self.all_fft2_spitzer = []
+        self.all_clerr_spitzer_noise_ciber = []
+        self.all_clerr_ciber_noise_spitzer = []
+        
+    def append_nls(self, nl1d_diff=None, nl1d_err_diff=None, nl2d_diff=None):
+        
+        if nl1d_diff is not None:
+            self.all_nl1d_diff.append(nl1d_diff)
+        if nl1d_err_diff is not None:
+            self.all_nl1d_err_diff.append(nl1d_err_diff)
+        if nl2d_diff is not None:
+            self.all_fft2_spitzer.append(nl2d_diff)
+        
+    def append_cls(self, cl_cross=None, clerr_cross=None, clerr_cross_tot=None, \
+                  clerr_ciber_noise_spitzer=None, clerr_spitzer_noise_ciber=None, \
+                  cl_spitzer=None, clerr_spitzer=None):
+        
+        if cl_cross is not None:
+            self.all_cl_cross.append(cl_cross)
+        if clerr_cross is not None:
+            self.all_clerr_cross.append(clerr_cross)
+        if clerr_cross_tot is not None:
+            self.all_clerr_cross_tot.append(clerr_cross_tot)
+        if clerr_ciber_noise_spitzer is not None:
+            self.all_clerr_ciber_noise_spitzer.append(clerr_ciber_noise_spitzer)
+        if clerr_spitzer_noise_ciber is not None:
+            self.all_clerr_spitzer_noise_ciber.append(clerr_spitzer_noise_ciber)
+        if cl_spitzer is not None:
+            self.all_cl_spitzer.append(cl_spitzer)
+        if clerr_spitzer is not None:
+            self.all_clerr_spitzer.append(clerr_spitzer)
 
-def load_irac_bl(irac_ch, base_path='data/Spitzer/irac_bl/'):
+def load_irac_bl(irac_ch, base_path=None):
 
-	irac_bl_fpath = base_path+'irac_ch'+str(irac_ch)+'_071323.csv'
+	if base_path is None:
+		base_path = config.ciber_basepath+'data/Spitzer/'
+	irac_bl_fpath = base_path+'irac_ch'+str(irac_ch)+'_bl.csv'
 	print('loading from ', irac_bl_fpath)
 	irac_bl = pd.read_csv(irac_bl_fpath, header=None)
 	irac_lb, irac_blval = np.array(irac_bl)[:,0], np.array(irac_bl)[:,1]
@@ -32,39 +75,118 @@ def load_irac_bl(irac_ch, base_path='data/Spitzer/irac_bl/'):
 	return irac_lb, irac_blval
 
 
-def load_spitzer_bootes_maps(inst, irac_ch, bootes_ifields, spitzer_string):
+def calc_cl_simp(cl, cl_err, bl=None, t_ell=None, inv_Mkk=None):
+
+    if inv_Mkk is not None:
+        cl = np.dot(inv_Mkk.transpose(), cl)
+        invmkkdiag = np.diagonal(inv_Mkk.transpose())
+        print('invmkkdiag = ', invmkkdiag)
+        cl_err /= invmkkdiag
+
+    if bl is not None:
+        cl /= bl**2
+        cl_err /= bl**2
+
+    if t_ell is not None:
+        cl /= t_ell
+        cl_err /= t_ell
+
+    return cl, cl_err
+
+def load_ciber_spitzer_data_products(cbps, irac_ch, inst, ifield_list, spitzer_string, mask_tail, plot=False, \
+                                    base_path=None):
+    
+    if base_path is None:
+        base_path = config.ciber_basepath+'data/'
+        
+    bootes_ifields = [6, 7]
+        
+    field_set_shape = (len(ifield_list), cbps.dimx, cbps.dimy)
+    masks, ciber_maps = [np.zeros(field_set_shape) for x in range(2)]
+    
+    lb = cbps.Mkk_obj.midbin_ell
+        
+    # IRAC beam interpolate to CIBER bandpass centers
+    irac_lb, irac_blval = load_irac_bl(irac_ch=irac_ch)
+    interp_maskfn = scipy.interpolate.interp1d(np.log10(irac_lb), np.log10(irac_blval))
+    cibermatch_bl = 10**interp_maskfn(np.log10(lb))
+    
+    # CIBER beams
+    bls_fpath = base_path+'fluctuation_data/TM'+str(inst)+'/beam_correction/bl_est_postage_stamps_TM'+str(inst)+'_081121.npz'
+    B_ells = np.load(bls_fpath)['B_ells_post']
+    
+
+    # transfer function 
+    t_ell_av_grad = np.load(base_path+'transfer_function/t_ell_est_nsims=100.npz')['t_ell_av']
+    t_ell_av_quad = np.load(base_path+'transfer_function/t_ell_masked_wdgl_2500_n=2p5_wgrad_quadrant_nsims=1000.npz')['t_ell_av']
+    t_ell_av = np.sqrt(t_ell_av_grad*t_ell_av_quad)
+    
+    if plot:
+        plt.figure(figsize=(6,5))
+        plt.scatter(lb, cibermatch_bl, label='IRAC')
+        plt.plot(lb, B_ells[0], label='CIBER')
+        plt.plot(lb, np.sqrt(cibermatch_bl*B_ells[0]), label='IRAC x CIBER')
+        plt.plot(lb, t_ell_av, color='k', label='Filtering transfer function')
+        plt.legend()
+        plt.xlabel('$\\ell$', fontsize=14)
+        plt.ylabel('$T_{\\ell}$', fontsize=14)
+        plt.xscale('log')
+        plt.yscale('log')
+        plt.show()
+    
+    # compute effective beam functions and loads maps
+    full_bls = np.zeros_like(B_ells)
+
+    for fieldidx, ifield in enumerate(ifield_list):
+
+        full_bls[fieldidx] = np.sqrt(cibermatch_bl*B_ells[fieldidx,:])
+
+        mask_fpath = base_path+'fluctuation_data/TM'+str(inst)+'/masks/'+mask_tail+'/joint_mask_ifield'+str(ifield)+'_inst'+str(inst)+'_observed_'+mask_tail+'.fits'
+        masks[fieldidx] = fits.open(mask_fpath)[1].data.astype(int)
+
+        flight_map = cbps.load_flight_image(ifield, inst, inplace=False, verbose=True)
+        print('Subtracting by dark current')
+        dark_current = cbps.load_dark_current_template(inst, inplace=False)
+        flight_map -= dark_current
+        ciber_maps[fieldidx,:,:] = flight_map*cbps.cal_facs[inst]
+            
+    spitzer_regrid_maps, spitzer_regrid_masks, \
+        all_diff1, all_diff2, all_spitz_by_epoch = load_spitzer_bootes_maps(inst, irac_ch, bootes_ifields, spitzer_string)
+
+            
+    return ciber_maps, masks, full_bls, cibermatch_bl, t_ell_av, lb, \
+            spitzer_regrid_maps, spitzer_regrid_masks, all_diff1, all_diff2, all_spitz_by_epoch
+
+def load_spitzer_bootes_maps(inst, irac_ch, bootes_ifields, spitzer_string, base_path=None):
 	
-	spitzer_regrid_maps, spitzer_regrid_masks = [], []
+	if base_path is None:
+		base_path = config.ciber_basepath+'data/'
+
+	spitzer_regrid_maps, spitzer_regrid_masks, all_diff1, all_diff2, all_spitz_epochs = [[] for x in range(5)]
 	irac_lam_dict = dict({1:3.6, 2:4.5})
 	
-	all_diff1, all_diff2, all_spitz_epochs = [], [], []
 	for idx, ifield in enumerate(bootes_ifields):
-		spitzer_fpath = 'data/Spitzer/spitzer_regrid/sdwfs_regrid_TM'+str(inst)+'_ifield'+str(ifield)+'_'+spitzer_string+'.fits'
-		print('spitzer_fpath', spitzer_fpath)
+		spitzer_fpath = base_path+'Spitzer/spitzer_regrid/sdwfs_regrid_TM'+str(inst)+'_ifield'+str(ifield)+'_'+spitzer_string+'.fits'
+		
+		print('Loading Spitzer map from', spitzer_fpath)
 		spitz = fits.open(spitzer_fpath)
 		spitzer_regrid_to_ciber = spitz['sdwfs_map_regrid_ifield'+str(ifield)].data
 		spitzer_mask_regrid_to_ciber = spitz['sdwfs_mask_regrid_ifield'+str(ifield)].data
 
 		diff1 = spitz['sdwfs_diff1_ifield'+str(ifield)].data
 		diff2 = spitz['sdwfs_diff2_ifield'+str(ifield)].data
-		
 		spitz_epochs = spitz['sdwfs_epochs_ifield'+str(ifield)].data
 
 		lam = irac_lam_dict[irac_ch]
 		fac = convert_MJysr_to_nWm2sr(lam)
 		print("fac for lambda = "+str(lam)+" is "+str(fac))
+		
+		all_diff1.append(diff1/fac)
+		all_diff2.append(diff2/fac)
+		all_spitz_epochs.append(spitz_epochs/fac)
 
-		spitzer_regrid_to_ciber /= fac
-		diff1 /= fac
-		diff2 /= fac
-		spitz_epochs /= fac
-		
-		all_diff1.append(diff1)
-		all_diff2.append(diff2)
-		all_spitz_epochs.append(spitz_epochs)
 		spitzer_mask_regrid_to_ciber = spitz['sdwfs_mask_regrid_ifield'+str(ifield)].data
-		
-		spitzer_regrid_maps.append(spitzer_regrid_to_ciber)
+		spitzer_regrid_maps.append(spitzer_regrid_to_ciber/fac)
 		spitzer_regrid_masks.append(spitzer_mask_regrid_to_ciber)
 		
 	return spitzer_regrid_maps, spitzer_regrid_masks, all_diff1, all_diff2, all_spitz_epochs
@@ -569,299 +691,543 @@ def ciber_spitzer_crosscorr_full(irac_ch, inst, spitzer_string, mask_tail, compu
 	return save_cl_fpath
 
 
-# load fourier weights
-# noisemodl_run_name = 'observed_quadsub_nochisq_rdnoise_022223'
-# noisemodl_base_path = 'data/noise_models_sim/112022/TM'+str(inst)+'/'
-# noisemodl_tailpath = '/noise_bias_fieldidx'+str(bootes_fieldidxs[bootes_fieldidx])+'.npz'
-# noisemodl_fpath = noisemodl_base_path + noisemodl_run_name + noisemodl_tailpath
-# print('LOADING NOISE MODEL FROM ', noisemodl_fpath)
-# noisemodl_file = np.load(noisemodl_fpath)
-# fourier_weights_nofluc = noisemodl_file['fourier_weights_nofluc']
-# plot_map(fourier_weights_nofluc)
-		
 
-def estimate_spitzer_noise_cross_ciber(cbps_nm, irac_ch, inst, bootes_ciber_maps, combined_masks, spitzer_string, bootes_ifield_list=[6, 7], bootes_fieldidxs=[2,3],\
-									   nsims=200, n_split=4, plot=True, fft2_spitzer=None, compute_spitzer_FW=False, \
-									  base_path='/Users/richardfeder/Downloads/ciber_downloads/', save=True, add_str=None):
 	
-	''' feed in bootes maps for CIBER and their maps'''
-	maplist_split_shape = (nsims//n_split, cbps_nm.cbps.dimx, cbps_nm.cbps.dimy)
-	empty_aligned_objs, fft_objs = construct_pyfftw_objs(3, maplist_split_shape)
-	empty_aligned_objs_cross, fft_objs_cross = construct_pyfftw_objs(3, (1, cbps_nm.cbps.dimx, cbps_nm.cbps.dimy))
-	empty_aligned_objs_maps, fft_objs_maps = construct_pyfftw_objs(3, (1, maplist_split_shape[1], maplist_split_shape[2]))
+def estimate_spitzer_noise_cross_ciber(cbps, irac_ch, inst, bootes_ciber_maps, combined_masks, spitzer_string, bootes_ifield_list=[6, 7], bootes_fieldidxs=[2,3],\
+                                       nsims=200, n_split=4, plot=True, fft2_spitzer=None, compute_spitzer_FW=False, \
+                                      base_path=None, save=True, add_str=None):
 
-	lb = cbps_nm.cbps.Mkk_obj.midbin_ell
+    ''' feed in bootes maps for CIBER and their maps'''
+    
+    if base_path is None:
+        base_path = config.ciber_basepath+'data/Spitzer/cross_noise/spitzer_noise_cross_ciber/'
+        
+    maplist_split_shape = (nsims//n_split, cbps.dimx, cbps.dimy)
+    empty_aligned_objs, fft_objs = construct_pyfftw_objs(3, maplist_split_shape)
+    empty_aligned_objs_cross, fft_objs_cross = construct_pyfftw_objs(3, (1, cbps.dimx, cbps.dimy))
+    empty_aligned_objs_maps, fft_objs_maps = construct_pyfftw_objs(3, (1, maplist_split_shape[1], maplist_split_shape[2]))
 
-	sterad_per_pix = (cbps_nm.cbps.pixsize/3600/180*np.pi)**2
-	V = cbps_nm.cbps.dimx*cbps_nm.cbps.dimy*sterad_per_pix
-	l2d = get_l2d(cbps_nm.cbps.dimx, cbps_nm.cbps.dimy, cbps_nm.cbps.pixsize)
-	
-	if len(fft2_spitzer.shape)==2:
-		print('single fft2, recasting into list of nfield='+str(len(bootes_ifield_list))+' copies..')
-		fft2_spitzer = [fft2_spitzer for x in range(len(bootes_ifield_list))]
-		plot_map(fft2_spitzer[0])
+    lb = cbps.Mkk_obj.midbin_ell
 
-	all_nl1ds_spitzer_both, all_nl1ds_cross_ciber_both, all_nl_save_fpaths, all_fourier_weights = [[] for x in range(4)]
+    sterad_per_pix = (cbps.pixsize/3600/180*np.pi)**2
+    V = cbps.dimx*cbps.dimy*sterad_per_pix
+    l2d = get_l2d(cbps.dimx, cbps.dimy, cbps.pixsize)
 
-	for bootes_fieldidx, bootes_ifield in enumerate(bootes_ifield_list):
-		
-		if not compute_spitzer_FW:
-			fourier_weights = []
+    if len(fft2_spitzer.shape)==2:
+        print('single fft2, recasting into list of nfield='+str(len(bootes_ifield_list))+' copies..')
+        fft2_spitzer = [fft2_spitzer for x in range(len(bootes_ifield_list))]
+        plot_map(fft2_spitzer[0])
 
+    all_nl1ds_spitzer_both, all_nl1ds_cross_ciber_both,\
+        all_nl_save_fpaths, all_fourier_weights = [[] for x in range(4)]
 
-		all_nl1ds_spitzer, all_nl1ds_cross_ciber = [], []
+    for bootes_fieldidx, bootes_ifield in enumerate(bootes_ifield_list):
 
-		ciber_bootes_obs_indiv = bootes_ciber_maps[bootes_fieldidx]
-		combined_mask_indiv = combined_masks[bootes_fieldidx]
-		
-		masked_ciber_bootes_obs = ciber_bootes_obs_indiv*combined_mask_indiv
-		
-		count = 0
+        if not compute_spitzer_FW:
+            fourier_weights = []
+        all_nl1ds_spitzer, all_nl1ds_cross_ciber = [], []
 
-		mean_nl2d, M2_nl2d = [np.zeros(ciber_bootes_obs_indiv.shape) for x in range(2)]
-		
-		for q in range(4):
-			quad_ciber = masked_ciber_bootes_obs[cbps_nm.cbps.x0s[q]:cbps_nm.cbps.x1s[q], cbps_nm.cbps.y0s[q]:cbps_nm.cbps.y1s[q]]
-			masked_ciber_bootes_obs[cbps_nm.cbps.x0s[q]:cbps_nm.cbps.x1s[q], cbps_nm.cbps.y0s[q]:cbps_nm.cbps.y1s[q]][quad_ciber!=0] -= np.mean(quad_ciber[quad_ciber!=0])
+        ciber_bootes_obs_indiv = bootes_ciber_maps[bootes_fieldidx]
+        combined_mask_indiv = combined_masks[bootes_fieldidx]
+        mean_nl2d, M2_nl2d = [np.zeros(ciber_bootes_obs_indiv.shape) for x in range(2)]
 
-		fft_objs_maps[1](np.array([masked_ciber_bootes_obs*sterad_per_pix]))
+        count = 0
 
-		if plot:
-			plot_map(combined_mask_indiv, title='combined mask')
-			plot_map(masked_ciber_bootes_obs, title='CIBER obs * combined_mask')
+        masked_ciber_bootes_obs = cbps.mean_sub_masked_image_per_quadrant(ciber_bootes_obs_indiv, combined_mask_indiv)
 
-		for i in range(n_split):
-			print('Split '+str(i+1)+' of '+str(n_split)+'..')
-			if i==0:
-				plot_map(fft2_spitzer[bootes_fieldidx], title='fft2 bootes fieldidx')
-				plot_map(np.log10(np.abs(fft2_spitzer[bootes_fieldidx])), title='log abs fft2 bootes fieldidx')
-			
-			# read/photon noise is from the CIBER convention, read_noise=True just means Gaussian realizations from fft2_spitzer here
-			spitzer_noise_realiz, _ = cbps_nm.cbps.noise_model_realization(inst, maplist_split_shape, fft2_spitzer[bootes_fieldidx], fft_obj=fft_objs[0],\
-												  read_noise=True, photon_noise=False, adu_to_sb=False)
+        fft_objs_maps[1](np.array([masked_ciber_bootes_obs*sterad_per_pix]))
 
-			spitzer_noise_realiz /= cbps_nm.cbps.arcsec_pp_to_radian
-			
-			if i==0:
-				plot_map(spitzer_noise_realiz[0]*combined_mask_indiv, title='spitzer noise')
-				plot_map(gaussian_filter(masked_ciber_bootes_obs, sigma=10), title='smoothed ciber map')
-				# lb = get_power_spec(combined_mask_indiv*spitzer_noise_realiz[0], lbinedges=cbps_nm.cbps.Mkk_obj.binl, lbins=cbps_nm.cbps.Mkk_obj.midbin_ell)[0]
-				print('lb is ', lb)
-		
-			fft_objs[1](spitzer_noise_realiz*sterad_per_pix)
+        if plot:
+            plot_map(combined_mask_indiv, title='combined mask')
+            plot_map(masked_ciber_bootes_obs, title='CIBER obs * combined_mask')
 
-			# if compute_spitzer_FW:
-			# 	# use fft objects to get running estimate of 2D PS and Fourier weights
-			# 	cl2ds = np.array([fftshift(dentry*np.conj(dentry)).real for dentry in empty_aligned_objs[2]])
-			# 	count, mean_nl2d, M2_nl2d = update_meanvar(count, mean_nl2d, M2_nl2d, cl2ds/V/cbps_nm.cbps.cal_facs[inst]**2)
+        for i in range(n_split):
+            print('Split '+str(i+1)+' of '+str(n_split)+'..')
+            if i==0:
+                plot_map(fft2_spitzer[bootes_fieldidx], title='fft2 bootes fieldidx')
+                plot_map(np.log10(np.abs(fft2_spitzer[bootes_fieldidx])), title='log abs fft2 bootes fieldidx')
 
+            # read/photon noise is from the CIBER convention, read_noise=True just means Gaussian realizations from fft2_spitzer here
+            spitzer_noise_realiz, _ = cbps.noise_model_realization(inst, maplist_split_shape, fft2_spitzer[bootes_fieldidx], fft_obj=fft_objs[0],\
+                                                  read_noise=True, photon_noise=False, adu_to_sb=False)
 
-			# nl1ds_spitzer = [get_power_spec(combined_mask_indiv*indiv_map, weights=None, lbinedges=cbps_nm.cbps.Mkk_obj.binl, lbins=cbps_nm.cbps.Mkk_obj.midbin_ell)[1] for indiv_map in spitzer_noise_realiz]
+            spitzer_noise_realiz /= cbps.arcsec_pp_to_radian
 
-			
-			nl2ds_spitzer_noise_ciber_map = np.array([fftshift(dentry*np.conj(empty_aligned_objs_maps[2][0])).real for dentry in empty_aligned_objs[2]])
-			# nl1ds_cross_ciber = [azim_average_cl2d(nl2d/V/(cbps_nm.cbps.cal_facs[inst]), l2d, lbinedges=cbps_nm.cbps.Mkk_obj.binl, lbins=cbps_nm.cbps.Mkk_obj.midbin_ell)[1] for nl2d in nl2ds_spitzer_noise_ciber_map]
-			nl1ds_cross_ciber = [azim_average_cl2d(nl2d/V, l2d, lbinedges=cbps_nm.cbps.Mkk_obj.binl, lbins=cbps_nm.cbps.Mkk_obj.midbin_ell)[1] for nl2d in nl2ds_spitzer_noise_ciber_map]
+            if i==0:
+                plot_map(spitzer_noise_realiz[0]*combined_mask_indiv, title='spitzer noise')
+                plot_map(gaussian_filter(masked_ciber_bootes_obs, sigma=10), title='smoothed ciber map')
 
-			if compute_spitzer_FW:
-				# use fft objects to get running estimate of 2D PS and Fourier weights
-				count, mean_nl2d, M2_nl2d = update_meanvar(count, mean_nl2d, M2_nl2d, nl2ds_spitzer_noise_ciber_map/V/cbps_nm.cbps.cal_facs[inst])
+            fft_objs[1](spitzer_noise_realiz*sterad_per_pix)
 
+            nl2ds_spitzer_noise_ciber_map = np.array([fftshift(dentry*np.conj(empty_aligned_objs_maps[2][0])).real for dentry in empty_aligned_objs[2]])
+            nl1ds_cross_ciber = [azim_average_cl2d(nl2d/V, l2d, lbinedges=cbps.Mkk_obj.binl, lbins=cbps.Mkk_obj.midbin_ell)[1] for nl2d in nl2ds_spitzer_noise_ciber_map]
 
-			# nl1ds_cross_ciber = [get_power_spec(combined_mask_indiv*indiv_map, map_b=masked_ciber_bootes_obs, weights=None, lbinedges=cbps_nm.cbps.Mkk_obj.binl, lbins=cbps_nm.cbps.Mkk_obj.midbin_ell)[1] for indiv_map in spitzer_noise_realiz]
+            if compute_spitzer_FW:
+                # use fft objects to get running estimate of 2D PS and Fourier weights
+                count, mean_nl2d, M2_nl2d = update_meanvar(count, mean_nl2d, M2_nl2d, nl2ds_spitzer_noise_ciber_map/V/cbps.cal_facs[inst])
 
-			# all_nl1ds_spitzer.extend(nl1ds_spitzer)
-			all_nl1ds_cross_ciber.extend(nl1ds_cross_ciber)
-			
-		# all_nl1ds_spitzer = np.array(all_nl1ds_spitzer)
-		all_nl1ds_cross_ciber = np.array(all_nl1ds_cross_ciber)
-		
-		# all_nl1ds_spitzer_both.append(all_nl1ds_spitzer)
-		all_nl1ds_cross_ciber_both.append(all_nl1ds_cross_ciber)
-		
-		if compute_spitzer_FW:
-			mean_nl2d, var_nl2d, svar_nl2d = finalize_meanvar(count, mean_nl2d, M2_nl2d)
-			fourier_weights = 1./var_nl2d
-			plot_map(fourier_weights, title='Fourier weights')
-			all_fourier_weights.append(fourier_weights)
-			# all_var_nl2d.append(var_nl2d)
-		
-		if save:
-			if add_str is not None:
-				if bootes_fieldidx == 0:
-					add_str = '_'+add_str
-			else:
-				add_str = ''
+            all_nl1ds_cross_ciber.extend(nl1ds_cross_ciber)
 
-			print('add string:', add_str)
-			nl_save_fpath = base_path+'ciber_meeting_030223/nl1ds_TM'+str(inst)+'_ifield'+str(bootes_ifield)+'_irac_ch'+str(irac_ch)+'_spitzernoise_ciber_cross'+add_str+'.npz'
+        all_nl1ds_cross_ciber = np.array(all_nl1ds_cross_ciber)
+        
+        all_nl1ds_cross_ciber_both.append(all_nl1ds_cross_ciber)
 
-			all_nl_save_fpaths.append(nl_save_fpath)
-#             np.savez(nl_save_fpath, \
-#                  all_nl1ds_spitzer=all_nl1ds_spitzer, all_nl1ds_cross_ciber=all_nl1ds_cross_ciber, lb=cbps_nm.cbps.Mkk_obj.midbin_ell)
-						
-			np.savez(nl_save_fpath, fourier_weights_spitzer=fourier_weights, \
-				 all_nl1ds_spitzer=all_nl1ds_spitzer, all_nl1ds_cross_ciber=all_nl1ds_cross_ciber, lb=lb, \
-				 var_nl2d=var_nl2d, mean_nl2d=mean_nl2d)
-			
-	if save:
-		return all_nl_save_fpaths, lb, all_nl1ds_spitzer, all_nl1ds_cross_ciber
+        if compute_spitzer_FW:
+            mean_nl2d, var_nl2d, svar_nl2d = finalize_meanvar(count, mean_nl2d, M2_nl2d)
+            fourier_weights = 1./var_nl2d
+            plot_map(fourier_weights, title='Fourier weights')
+            all_fourier_weights.append(fourier_weights)
 
-	else:
-		return lb, all_nl1ds_spitzer_both, all_nl1ds_cross_ciber_both
+        if save:
+            if add_str is not None:
+                if bootes_fieldidx == 0:
+                    add_str = '_'+add_str
+            else:
+                add_str = ''
 
+            print('add string:', add_str)
+            
+            nl_save_fpath = base_path+'nl1ds_TM'+str(inst)+'_ifield'+str(bootes_ifield)+'_irac_ch'+str(irac_ch)+'_spitzer_noise_ciber_map'+add_str+'.npz'
 
-def estimate_ciber_noise_cross_spitzer(cbps_nm, irac_ch, inst, bootes_spitzer_maps, combined_masks, spitzer_string, bootes_ifield_list=[6, 7], bootes_fieldidxs=[2,3],\
-									   nsims=200, n_split=10, plot=True, read_noise=True, photon_noise=False, \
-									   include_ff_errors=True, observed_run_name=None, nmc_ff=10, \
-									  base_path='/Users/richardfeder/Downloads/ciber_downloads/',\
-									   ff_est_dirpath=None, save=True, add_str=None, n_FF_realiz=10):
-	
-	if ff_est_dirpath is None:
-		ff_est_dirpath = 'data/ff_mc_ests/112022/TM'+str(inst)+'/'
+            all_nl_save_fpaths.append(nl_save_fpath)
 
-	''' feed in bootes maps for CIBER and their maps'''
-	maplist_split_shape = (nsims//n_split, cbps_nm.cbps.dimx, cbps_nm.cbps.dimy)
-	empty_aligned_objs, fft_objs = construct_pyfftw_objs(3, maplist_split_shape)
-	empty_aligned_objs_maps, fft_objs_maps = construct_pyfftw_objs(3, (1, maplist_split_shape[1], maplist_split_shape[2]))
+            np.savez(nl_save_fpath, fourier_weights_spitzer=fourier_weights, \
+                 all_nl1ds_spitzer=all_nl1ds_spitzer, all_nl1ds_cross_ciber=all_nl1ds_cross_ciber, lb=lb, \
+                 var_nl2d=var_nl2d, mean_nl2d=mean_nl2d)
 
-	sterad_per_pix = (cbps_nm.cbps.pixsize/3600/180*np.pi)**2
-	V = cbps_nm.cbps.dimx*cbps_nm.cbps.dimy*sterad_per_pix
-	l2d = get_l2d(cbps_nm.cbps.dimx, cbps_nm.cbps.dimy, cbps_nm.cbps.pixsize)
+    if save:
+        return all_nl_save_fpaths, lb, all_nl1ds_cross_ciber
+    else:
+        return lb, all_nl1ds_cross_ciber_both
 
-	lb = cbps_nm.cbps.Mkk_obj.midbin_ell
-	all_nl1ds_cross_spitzer_both, nl_save_fpath_both = [], []
-	
-	nmfile = np.load(base_path+'noise_model_fpaths_TM'+str(inst)+'_021523.npz')
-	noise_model_fpaths_quad = nmfile['noise_model_fpaths_quad']
-	ciber_bootes_noise_models = [fits.open(noise_model_fpaths_quad[f])[1].data for f in bootes_fieldidxs]
-	
-	all_ff_ests_nofluc_both, simmap_dc = None, None
-	# if include_ff_errors and observed_run_name is not None:
-	if include_ff_errors or photon_noise:
-		if observed_run_name is not None:
-			all_ff_ests_nofluc_both, simmap_dc = [], []
-			for idx, bootes_ifield in enumerate(bootes_ifield_list):
-				# load the MC FF estimates obtained by several draws of noise
-				if include_ff_errors:
-					all_ff_ests_nofluc = []
-					for ffidx in range(n_FF_realiz):
-						ff_file = np.load(ff_est_dirpath+'/'+observed_run_name+'/ff_realization_estimate_ffidx'+str(ffidx)+'.npz')
-						all_ff_ests_nofluc.append(ff_file['ff_realization_estimates'][bootes_fieldidxs[idx]])
-						if ffidx==0:
-							plot_map(all_ff_ests_nofluc[0], title='loaded MC ff estimate 0')
-					
-					all_ff_ests_nofluc_both.append(all_ff_ests_nofluc)
-				simmap_dc.append(cbps_nm.cbps.zl_levels_ciber_fields[inst][cbps_nm.cbps.ciber_field_dict[bootes_ifield]])
-				
-			print("simmap dc:", simmap_dc)
-			if include_ff_errors:
-				all_ff_ests_nofluc_both = np.array(all_ff_ests_nofluc_both)
-				print('all_ff_ests_nofluc_both has shape', all_ff_ests_nofluc_both.shape)
-				
-	
-	for bootes_fieldidx, bootes_ifield in enumerate(bootes_ifield_list):
-		
-		mean_nl2d, M2_nl2d = [np.zeros_like(ciber_bootes_noise_models[0]) for x in range(2)]
-		count = 0
+def estimate_ciber_noise_cross_spitzer(cbps, irac_ch, inst, bootes_spitzer_maps, combined_masks, spitzer_string, bootes_ifield_list=[6, 7], bootes_fieldidxs=[2,3],\
+                                       nsims=200, n_split=10, plot=True, read_noise=True, photon_noise=False, \
+                                       include_ff_errors=True, observed_run_name=None, nmc_ff=10, \
+                                      base_path=None, datestr='111323', \
+                                       ff_est_dirpath=None, save=True, add_str=None, n_FF_realiz=10):
 
-		if photon_noise:
-			field_nfr = cbps_nm.cbps.field_nfrs[bootes_ifield]
-			print('field nfr for '+str(bootes_ifield)+' is '+str(field_nfr))
+    if base_path is None:
+        base_path = config.ciber_basepath+'data/Spitzer/cross_noise/ciber_noise_spitzer_map/'
+    
+    
+    if ff_est_dirpath is None:
+#         ff_est_dirpath = 'data/ff_mc_ests/112022/TM'+str(inst)+'/'
+        ff_est_dirpath = config.ciber_basepath+'data/ff_mc_ests/'+datestr+'/TM'+str(inst)+'/'
 
-			shot_sigma_sb = cbps_nm.cbps.compute_shot_sigma_map(inst, image=simmap_dc[bootes_fieldidx]*np.ones_like(ciber_bootes_noise_models[0]), nfr=field_nfr)
-			plot_map(shot_sigma_sb, title='shot sigma sb for CIBER noise x Spitzer')
-		else:
-			shot_sigma_sb = None
+    ''' feed in bootes maps for CIBER and their maps'''
+    maplist_split_shape = (nsims//n_split, cbps.dimx, cbps.dimy)
+    empty_aligned_objs, fft_objs = construct_pyfftw_objs(3, maplist_split_shape)
+    empty_aligned_objs_maps, fft_objs_maps = construct_pyfftw_objs(3, (1, maplist_split_shape[1], maplist_split_shape[2]))
 
-		all_nl1ds_cross_spitzer = []
-		
-		spitzer_bootes_obs_indiv = bootes_spitzer_maps[bootes_fieldidx]
-		combined_mask_indiv = combined_masks[bootes_fieldidx]
+    sterad_per_pix = (cbps.pixsize/3600/180*np.pi)**2
+    V = cbps.dimx*cbps.dimy*sterad_per_pix
+    l2d = get_l2d(cbps.dimx, cbps.dimy, cbps.pixsize)
 
-		fft_objs_maps[1](np.array([combined_mask_indiv*spitzer_bootes_obs_indiv*sterad_per_pix]))
+    lb = cbps.Mkk_obj.midbin_ell
+    all_nl1ds_cross_spitzer_both, nl_save_fpath_both = [], []
+    
+    ciber_bootes_noise_models = cbps.grab_noise_model_set(bootes_ifield_list, inst, noise_modl_type='quadsub_021523')
+    
+    all_ff_ests_nofluc_both, simmap_dc = None, None
+    # if include_ff_errors and observed_run_name is not None:
+    if include_ff_errors or photon_noise:
+        if observed_run_name is not None:
+            all_ff_ests_nofluc_both = np.zeros((2, n_FF_realiz, cbps.dimx, cbps.dimy))
+            simmap_dc = np.zeros((2))
+            for idx, bootes_ifield in enumerate(bootes_ifield_list):
+                # load the MC FF estimates obtained by several draws of noise
+                if include_ff_errors:
+                    all_ff_ests_nofluc_both[idx] = cbps.collect_ff_realiz_simp(bootes_fieldidxs[idx], inst, observed_run_name, n_FF_realiz, datestr=datestr)
+                
+                simmap_dc[idx] = cbps.zl_levels_ciber_fields[inst][cbps.ciber_field_dict[bootes_ifield]]
 
-		
-		if plot:
-			plot_map(combined_mask_indiv, title='combined mask')
-			plot_map(spitzer_bootes_obs_indiv*combined_mask_indiv, title='CIBER obs * combined_mask')
-			plot_map(ciber_bootes_noise_models[bootes_fieldidx], title='CIBER noise model')
-			
-		for i in range(n_split):
-			print('Split '+str(i+1)+' of '+str(n_split)+'..')
+            print("simmap dc:", simmap_dc)
+            
+        else:
+            print('need observed run name')
+            return None
 
-			ciber_noise_realiz, snmaps = cbps_nm.cbps.noise_model_realization(inst, maplist_split_shape, ciber_bootes_noise_models[bootes_fieldidx], fft_obj=fft_objs[0],\
-												  read_noise=read_noise, photon_noise=photon_noise, shot_sigma_sb=shot_sigma_sb, adu_to_sb=True)
-			
-			if photon_noise:
-				print('adding photon noise to read noise realizations')
-				# plot_map(snmaps[0], title='snmaps[0]')
-				ciber_noise_realiz += snmaps
-			
-			if i==0 and plot:
-				plot_map(ciber_noise_realiz[0])
-				plot_map(gaussian_filter(ciber_noise_realiz[0], sigma=10))
-			
-			
-			if all_ff_ests_nofluc_both is not None:
-				# print('adding ')
-				ciber_noise_realiz += simmap_dc[bootes_fieldidx]
-				# print('all_ff_ests_nofluc_both[bootes_fieldidx][i] has shape:', all_ff_ests_nofluc_both[bootes_fieldidx][i%n_FF_realiz].shape)
-				ciber_noise_realiz /= all_ff_ests_nofluc_both[bootes_fieldidx][i%n_FF_realiz]
-				
-				if i==0:
-					plot_map(ciber_noise_realiz[0], title='added normalization and flat field error')
-				
-			unmasked_means = [np.mean(simmap[combined_mask_indiv==1]) for simmap in ciber_noise_realiz]
-			ciber_noise_realiz -= np.array([combined_mask_indiv*unmasked_mean for unmasked_mean in unmasked_means])
+    for bootes_fieldidx, bootes_ifield in enumerate(bootes_ifield_list):
 
-			fft_objs[1](combined_mask_indiv*ciber_noise_realiz*sterad_per_pix)
-			# cl2ds = np.array([fftshift(dentry*np.conj(dentry)).real for dentry in empty_aligned_objs[2]])
-			# count, mean_nl2d, M2_nl2d = update_meanvar(count, mean_nl2d, M2_nl2d, cl2ds/V/cbps_nm.cbps.cal_facs[inst]**2)
+        mean_nl2d, M2_nl2d = [np.zeros_like(ciber_bootes_noise_models[0]) for x in range(2)]
+        count = 0
 
+        if photon_noise:
+            field_nfr = cbps.field_nfrs[bootes_ifield]
+            print('field nfr for '+str(bootes_ifield)+' is '+str(field_nfr))
 
-			# all_masked_realiz = np.array([combined_mask_indiv*indiv_map for indiv_map in ciber_noise_realiz])
-			# for m, masked_realiz in enumerate(all_masked_realiz):
-			# 	meansub = np.mean(masked_realiz[masked_realiz!=0])
-			# 	if m==0:
-			# 		print('meansub[0] = ', meansub)
-			# 	all_masked_realiz[m][masked_realiz!=0] -= np.mean(masked_realiz[masked_realiz!=0])
+            shot_sigma_sb = cbps.compute_shot_sigma_map(inst, image=simmap_dc[bootes_fieldidx]*np.ones_like(ciber_bootes_noise_models[0]), nfr=field_nfr)
+            plot_map(shot_sigma_sb, title='shot sigma sb for CIBER noise x Spitzer')
+        else:
+            shot_sigma_sb = None
 
-			# if i==0:
-			# 	plot_map(all_masked_realiz[0], title='mean subtracted full noise realization')
-			
+        all_nl1ds_cross_spitzer = []
 
-			nl2ds_ciber_noise_spitzer_map = np.array([fftshift(dentry*np.conj(empty_aligned_objs_maps[2][0])).real for dentry in empty_aligned_objs[2]])
-			nl1ds_cross_spitzer = [azim_average_cl2d(nl2d/V, l2d, lbinedges=cbps_nm.cbps.Mkk_obj.binl, lbins=cbps_nm.cbps.Mkk_obj.midbin_ell)[1] for nl2d in nl2ds_ciber_noise_spitzer_map]
-			count, mean_nl2d, M2_nl2d = update_meanvar(count, mean_nl2d, M2_nl2d, nl2ds_ciber_noise_spitzer_map/V)
+        spitzer_bootes_obs_indiv = bootes_spitzer_maps[bootes_fieldidx]
+        combined_mask_indiv = combined_masks[bootes_fieldidx]
+
+        fft_objs_maps[1](np.array([combined_mask_indiv*spitzer_bootes_obs_indiv*sterad_per_pix]))
+
+        if plot:
+            plot_map(combined_mask_indiv, title='combined mask')
+            plot_map(spitzer_bootes_obs_indiv*combined_mask_indiv, title='CIBER obs * combined_mask')
+            plot_map(ciber_bootes_noise_models[bootes_fieldidx], title='CIBER noise model')
+
+        for i in range(n_split):
+            print('Split '+str(i+1)+' of '+str(n_split)+'..')
+
+            ciber_noise_realiz, snmaps = cbps.noise_model_realization(inst, maplist_split_shape, ciber_bootes_noise_models[bootes_fieldidx], fft_obj=fft_objs[0],\
+                                                  read_noise=read_noise, photon_noise=photon_noise, shot_sigma_sb=shot_sigma_sb, adu_to_sb=True)
+
+            if photon_noise:
+                print('adding photon noise to read noise realizations')
+                ciber_noise_realiz += snmaps
+
+            if i==0 and plot:
+                plot_map(ciber_noise_realiz[0])
+                plot_map(gaussian_filter(ciber_noise_realiz[0], sigma=10))
+
+            if all_ff_ests_nofluc_both is not None:
+                ciber_noise_realiz += simmap_dc[bootes_fieldidx]
+                ciber_noise_realiz /= all_ff_ests_nofluc_both[bootes_fieldidx][i%n_FF_realiz]
+
+                if i==0:
+                    plot_map(ciber_noise_realiz[0], title='added normalization and flat field error')
+
+            unmasked_means = [np.mean(simmap[combined_mask_indiv==1]) for simmap in ciber_noise_realiz]
+            ciber_noise_realiz -= np.array([combined_mask_indiv*unmasked_mean for unmasked_mean in unmasked_means])
+
+            fft_objs[1](combined_mask_indiv*ciber_noise_realiz*sterad_per_pix)
+
+            nl2ds_ciber_noise_spitzer_map = np.array([fftshift(dentry*np.conj(empty_aligned_objs_maps[2][0])).real for dentry in empty_aligned_objs[2]])
+            nl1ds_cross_spitzer = [azim_average_cl2d(nl2d/V, l2d, lbinedges=cbps.Mkk_obj.binl, lbins=cbps.Mkk_obj.midbin_ell)[1] for nl2d in nl2ds_ciber_noise_spitzer_map]
+            count, mean_nl2d, M2_nl2d = update_meanvar(count, mean_nl2d, M2_nl2d, nl2ds_ciber_noise_spitzer_map/V)
+
+            all_nl1ds_cross_spitzer.extend(nl1ds_cross_spitzer)
+
+        all_nl1ds_cross_spitzer = np.array(all_nl1ds_cross_spitzer)
+        all_nl1ds_cross_spitzer_both.append(all_nl1ds_cross_spitzer)
+
+        mean_nl2d, var_nl2d, svar_nl2d = finalize_meanvar(count, mean_nl2d, M2_nl2d)
+
+        plot_map(var_nl2d, title='var nl2d')
+        plot_map(mean_nl2d, title='mean nl2d')
+
+        if save:
+            if add_str is not None:
+                if bootes_fieldidx==0:
+                    add_str = '_'+add_str
+            else:
+                add_str = ''
+                
+            nl_save_fpath = base_path+'nl1ds_TM'+str(inst)+'_ifield'+str(bootes_ifield)+'_irac_ch'+str(irac_ch)+'_ciber_noise_spitzer_map'+add_str+'.npz'
+            
+            nl_save_fpath_both.append(nl_save_fpath)
+            print('saving Nl realizations to ', nl_save_fpath)
+            np.savez(nl_save_fpath, all_nl1ds_cross_spitzer=all_nl1ds_cross_spitzer, lb=lb, var_nl2d=var_nl2d, mean_nl2d=mean_nl2d)
+
+    if save:
+        return nl_save_fpath_both, lb, all_nl1ds_cross_spitzer_both
+    else:
+        return lb, all_nl1ds_cross_spitzer_both
 
 
-			# nl1ds_cross_spitzer = [get_power_spec(indiv_map, map_b=spitzer_bootes_obs_indiv, weights=None, lbinedges=cbps_nm.cbps.Mkk_obj.binl, lbins=cbps_nm.cbps.Mkk_obj.midbin_ell)[1] for indiv_map in all_masked_realiz]
+def estimate_spitzer_cross_auto_uncertainty(inst, nl2d_diff, combined_mask, \
+                                    nsims=500, n_split=10, cbps=None, cross_auto=False, map_A=None, map_B=None):
+    
+    if cbps is None:
+        cbps = CIBER_PS_pipeline()
+    
+    maplist_split_shape = (nsims//n_split, cbps.dimx, cbps.dimy)
+    empty_aligned_objs, fft_objs = construct_pyfftw_objs(3, maplist_split_shape)
+    
+    sterad_per_pix = (cbps.pixsize/3600/180*np.pi)**2
+    V = cbps.dimx*cbps.dimy*sterad_per_pix
+    count = 0
 
-			all_nl1ds_cross_spitzer.extend(nl1ds_cross_spitzer)
-			
-		all_nl1ds_cross_spitzer = np.array(all_nl1ds_cross_spitzer)
-		all_nl1ds_cross_spitzer_both.append(all_nl1ds_cross_spitzer)
+    mean_nl2d = np.zeros(nl2d_diff.shape)
+    M2_nl2d = np.zeros(nl2d_diff.shape)
+    
+    
+    for i in range(n_split):
+        print('Split '+str(i+1)+' of '+str(n_split)+'..')
+        if i==0:
+            plot_map(nl2d_diff, title='fft2 bootes')
+            plot_map(np.log10(np.abs(nl2d_diff)), title='log abs fft2 bootes')
 
-		mean_nl2d, var_nl2d, svar_nl2d = finalize_meanvar(count, mean_nl2d, M2_nl2d)
+        spitzer_noise_realiz, _ = cbps.noise_model_realization(inst, maplist_split_shape, nl2d_diff, fft_obj=fft_objs[0],\
+                                              read_noise=True, photon_noise=False, adu_to_sb=False, chisq=False)
 
-		plot_map(var_nl2d, title='var nl2d')
-		plot_map(mean_nl2d, title='mean nl2d')
-		
-		if save:
-			if add_str is not None:
-				if bootes_fieldidx==0:
-					add_str = '_'+add_str
-			else:
-				add_str = ''
-			nl_save_fpath = base_path+'ciber_meeting_030223/nl1ds_TM'+str(inst)+'_ifield'+str(bootes_ifield)+'_irac_ch'+str(irac_ch)+'_cibernoise_spitzer_cross'+add_str+'.npz'
-			nl_save_fpath_both.append(nl_save_fpath)
-			print('saving Nl realizations to ', nl_save_fpath)
-			np.savez(nl_save_fpath, all_nl1ds_cross_spitzer=all_nl1ds_cross_spitzer, lb=lb, var_nl2d=var_nl2d, mean_nl2d=mean_nl2d)
-			
-	if save:
-		return nl_save_fpath_both, lb, all_nl1ds_cross_spitzer_both
-	else:
-		return lb, all_nl1ds_cross_spitzer_both
+        spitzer_noise_realiz /= cbps.arcsec_pp_to_radian
+        
+        fft_objs[1](spitzer_noise_realiz*sterad_per_pix)
+        nl2ds = np.array([fftshift(dentry*np.conj(dentry)).real for dentry in empty_aligned_objs[2]])
+        count, mean_nl2d, M2_nl2d = update_meanvar(count, mean_nl2d, M2_nl2d, nl2ds/V/cbps.cal_facs[inst]**2)
+    
+    mean_nl2d, var_nl2d, svar_nl2d = finalize_meanvar(count, mean_nl2d, M2_nl2d)
+    spitz_fourier_weights = 1./var_nl2d
+    plot_map(spitz_fourier_weights, title='Fourier weights')
+    
+    return spitz_fourier_weights, var_nl2d
+
+
+def estimate_spitzer_fourier_weights(inst, nl2d_diff, combined_mask, \
+                                    nsims=500, n_split=10, cbps=None, cross_auto=False, maps_A=None, maps_B=None):
+    
+    if cbps is None:
+        cbps = CIBER_PS_pipeline()
+    
+    maplist_split_shape = (nsims//n_split, cbps.dimx, cbps.dimy)
+    empty_aligned_objs, fft_objs = construct_pyfftw_objs(3, maplist_split_shape)
+    
+    sterad_per_pix = (cbps.pixsize/3600/180*np.pi)**2
+    V = cbps.dimx*cbps.dimy*sterad_per_pix
+    count = 0
+
+    mean_nl2d = np.zeros(nl2d_diff.shape)
+    M2_nl2d = np.zeros(nl2d_diff.shape)
+    
+    
+    for i in range(n_split):
+        print('Split '+str(i+1)+' of '+str(n_split)+'..')
+        if i==0:
+            plot_map(nl2d_diff, title='fft2 bootes')
+            plot_map(np.log10(np.abs(nl2d_diff)), title='log abs fft2 bootes')
+
+        spitzer_noise_realiz, _ = cbps.noise_model_realization(inst, maplist_split_shape, nl2d_diff, fft_obj=fft_objs[0],\
+                                              read_noise=True, photon_noise=False, adu_to_sb=False, chisq=False)
+
+        spitzer_noise_realiz /= cbps.arcsec_pp_to_radian
+        
+        fft_objs[1](spitzer_noise_realiz*sterad_per_pix)
+        nl2ds = np.array([fftshift(dentry*np.conj(dentry)).real for dentry in empty_aligned_objs[2]])
+        count, mean_nl2d, M2_nl2d = update_meanvar(count, mean_nl2d, M2_nl2d, nl2ds/V)
+    
+    mean_nl2d, var_nl2d, svar_nl2d = finalize_meanvar(count, mean_nl2d, M2_nl2d)
+    spitz_fourier_weights = 1./var_nl2d
+    plot_map(spitz_fourier_weights, title='Fourier weights')
+    
+    return spitz_fourier_weights, var_nl2d
+
+
+def compute_spitzer_auto(inst, irac_ch, bootes_ifields, ciber_mask_tail, spitzer_string, \
+                        mask_string_mkk, compute_mkk=False, n_mkk_sims=200, n_mkk_split=4, pair_idxs=[[0, 1], [2, 3]], \
+                        apply_FW=False, compute_FW=False, n_FW_sims=500, n_FW_split=10):
+    
+    cbps = CIBER_PS_pipeline()
+
+    all_cl_spitzer, all_dcl_spitzer, all_std_nl1ds_nAnB, all_std_nl1ds_nAsB, all_std_nl1ds_nBsA = [[] for x in range(5)]
+    bootes_ciber_masks = []
+    # load ciber masks
+        
+    for idx, ifield in enumerate(bootes_ifields):
+        mask_fpath = 'data/fluctuation_data/TM'+str(inst)+'/masks/'+ciber_mask_tail+'/joint_mask_ifield'+str(ifield)+'_inst'+str(inst)+'_observed_'+ciber_mask_tail+'.fits'
+
+        full_mask = fits.open(mask_fpath)[1].data.astype(np.int)    
+        bootes_ciber_masks.append(full_mask)
+    
+    spitzer_regrid_maps, spitzer_regrid_masks, all_diff1, all_diff2, all_spitz_by_epoch = load_spitzer_bootes_maps(inst, irac_ch, bootes_ifields, spitzer_string)
+    combined_masks = [bootes_ciber_masks[idx]*spitzer_regrid_mask for idx, spitzer_regrid_mask in enumerate(spitzer_regrid_masks)]
+    
+    irac_lb, irac_bl = load_irac_bl(irac_ch)
+    
+    lb = cbps.Mkk_obj.midbin_ell
+    
+    interp_maskfn = scipy.interpolate.interp1d(np.log10(irac_lb), np.log10(irac_bl))
+    
+    cibermatch_bl = 10**interp_maskfn(np.log10(lb))
+
+    plt.figure()
+    plt.scatter(irac_lb, irac_bl)
+    plt.plot(irac_lb, 10**interp_maskfn(np.log10(irac_lb)), color='r')
+    plt.yscale('log')
+    plt.xscale('log')
+    plt.title('IRAC CH'+str(irac_ch)+' beam')
+    plt.xlabel('$\\ell$')
+    plt.ylabel('$B_{\\ell}$')
+    plt.xlim(100, 1e5)
+    plt.ylim(1e-2, 1e0)
+    plt.show()
+    
+    
+    for idx, ifield in enumerate(bootes_ifields):
+        
+        print('unmasked fraction for ifield', ifield,' is ', np.sum(combined_masks[idx])/float(1024**2))
+        plot_map(combined_masks[idx])
+
+        if compute_mkk:
+            Mkk = cbps.Mkk_obj.get_mkk_sim(combined_masks[idx], n_mkk_sims, n_split=n_mkk_split, store_Mkks=False)
+            inv_Mkk = compute_inverse_mkk(Mkk)
+            plot_mkk_matrix(inv_Mkk, inverse=True, symlogscale=True)
+            hdul = write_Mkk_fits(Mkk, inv_Mkk, ifield, inst, \
+                                 use_inst_mask=True, dat_type='ciber_spitzer_cross', mag_lim_AB=masking_maglim)
+
+            mkkpath = 'data/Spitzer/spitzer_ciber_mkk/mkk_maskonly_estimate_ifield'+str(ifield)+'_inst'+str(inst)+'_spitzunion_IRAC_CH'+str(irac_ch)+'_'+mask_string_mkk+'.fits'
+            hdul.writeto(mkkpath, overwrite=True)
+        else:
+#             mkkpath = 'data/Spitzer/spitzer_ciber_mkk/mkk_maskonly_estimate_ifield'+str(ifield)+'_inst'+str(inst)+'_spitzunion_IRAC_CH'+str(irac_ch)+'_'+mask_string_mkk+'.fits'
+            mkkpath = 'data/Spitzer/spitzer_ciber_mkk/mkk_maskonly_estimate_ifield'+str(ifield)+'_inst'+str(inst)+'_spitzunion_'+mask_string_mkk+'_IRAC_CH'+str(irac_ch)+'.fits'
+
+            inv_Mkk = fits.open(mkkpath)['inv_Mkk_'+str(ifield)].data
+            plot_mkk_matrix(inv_Mkk, inverse=True, symlogscale=True)
+
+
+        spitz_A = all_spitz_by_epoch[idx][0]*combined_masks[idx]
+        spitz_B = all_spitz_by_epoch[idx][1]*combined_masks[idx]
+        spitz_C = all_spitz_by_epoch[idx][2]*combined_masks[idx]
+        spitz_D = all_spitz_by_epoch[idx][3]*combined_masks[idx]
+        
+        all_spitz_maps = [spitz_A, spitz_B, spitz_C, spitz_D]
+
+        for epidx, spitz_map in enumerate(all_spitz_maps):
+            spitz_map[spitz_map != 0] -= np.mean(spitz_map[spitz_map != 0])
+
+#         lbm, cl_spitzer_masked_AB, clerr_spitz_AB = get_power_spec(spitz_A, map_b=spitz_B, lbinedges=cbps.Mkk_obj.binl, lbins=cbps.Mkk_obj.midbin_ell)
+#         lbm, cl_spitzer_masked_CD, clerr_spitz_CD = get_power_spec(spitz_C, map_b=spitz_C, lbinedges=cbps.Mkk_obj.binl, lbins=cbps.Mkk_obj.midbin_ell)
+        
+    
+        spitz_diff_1 = all_spitz_maps[pair_idxs[0][0]] - all_spitz_maps[pair_idxs[0][1]]
+        spitz_diff_2 = all_spitz_maps[pair_idxs[1][0]] - all_spitz_maps[pair_idxs[1][1]]
+        
+        l2d, nl2d_diff = compute_nl2d_spitzer_crossepoch_diffs(spitz_diff_1, spitz_diff_2, combined_masks[idx])
+        
+        # scale nl2d_diff to pair average
+        nl2d_diff /= 4.
+        
+        # mkk correct
+        nl2d_diff_orig = nl2d_diff.copy()
+
+        print('inv mkk diagonal is ', [inv_Mkk.transpose()[x, x] for x in range(inv_Mkk.shape[0])])
+
+        for bandidx in range(inv_Mkk.shape[0]):
+            lmin, lmax = cbps.Mkk_obj.binl[bandidx], cbps.Mkk_obj.binl[bandidx+1]
+            sp = np.where((l2d>=lmin) & (l2d<lmax))
+            nl2d_diff[sp] *= inv_Mkk.transpose()[bandidx, bandidx]
+
+        plot_map(nl2d_diff/nl2d_diff_orig, title='mkk corrected / original')
+        
+        plot_map(nl2d_diff, title='nl2d diff 1-2 x 3-4')
+        
+        nl2d_diff = np.abs(nl2d_diff)
+        
+        if compute_FW and apply_FW:
+#             spitz_FW = estimate_spitzer_fourier_weights(inst, nl2d_diff, combined_masks[idx], nsims=n_FW_sims, n_split=n_FW_split)
+            
+            fourier_weights, mean_nl2d_nAnB, mean_nl2d_nAsB,\
+                var_nl2d_nAsB, mean_nl2d_nBsA, var_nl2d_nBsA, \
+                    nl1ds_nAnB, nl1ds_nAsB, nl1ds_nBsA= cbps.estimate_cross_noise_ps(inst, inst, ifield, \
+                                                                                           nsims=n_FW_sims, n_split=n_FW_split, \
+                                                                                           mask=combined_masks[idx], apply_mask=True, \
+                                                                                           read_noise=True, noise_model=nl2d_diff, cross_noise_model=nl2d_diff, \
+                                                                                           photon_noise=False, image=all_spitz_maps[pair_idxs[0][0]], image_cross=all_spitz_maps[pair_idxs[0][1]],\
+                                                                                           inplace=False, show=True, spitzer=True)
+            
+            
+            std_nl1ds_nAnB = np.std(nl1ds_nAnB, axis=0)
+            std_nl1ds_nAsB = np.std(nl1ds_nAsB, axis=0)
+            std_nl1ds_nBsA = np.std(nl1ds_nBsA, axis=0)
+            
+            
+#             mean_nl2d_cross_total = mean_cl2d_cross + mean_nl2d_nAsB + mean_nl2d_nBsA
+            mean_nl2d_cross_total = mean_nl2d_nAsB + mean_nl2d_nBsA
+    
+            plot_map(mean_nl2d_cross_total, title='mean nl2d cross total')
+            lb, N_ell_est, N_ell_err = cbps.compute_noise_power_spectrum(inst, noise_Cl2D=mean_nl2d_cross_total.copy(), apply_FW=False, inplace=False, stderr=False)
+
+            spitz_FW=None
+            
+#             spitz_FW = 1./((1./fourier_weights_cross) + var_nl2d_nAsB + var_nl2d_nBsA)
+
+#             plot_map(mean_nl2d_cross_total, title='mean_nl2d_cross_total')
+#             plot_map(spitz_FW, title='fourier_weights_cross_total')
+
+#             lb, N_ell_est, N_ell_err = cbps.compute_noise_power_spectrum(inst, noise_Cl2D=mean_nl2d_cross_total.copy(), inplace=False, apply_FW=pscb_dict['apply_FW'], weights=spitz_FW)
+
+#             spitz_FW_AB, var_nl2d_AB = estimate_spitzer_cross_auto_uncertainty(inst, nl2d_diff, combined_masks[idx], nsims=n_FW_sims, n_split=n_FW_split, \
+#                                                                  map_A=all_spitz_maps[pair_idxs[0][0]], map_B=all_spitz_maps[pair_idxs[0][1]])
+            
+            np.savez('data/Spitzer/spitzer_auto_FW/spitzer_auto_FW_ifield'+str(ifield)+'_inst'+str(inst)+'_'+mask_string_mkk+'.npz', \
+                    spitz_FW=spitz_FW, N_ell_est=N_ell_est, N_ell_err=N_ell_err, std_nl1ds_nAnB=std_nl1ds_nAnB, \
+                    std_nl1ds_nAsB=std_nl1ds_nAsB, std_nl1ds_nBsA=std_nl1ds_nBsA)
+            
+        else:
+            spitz_FW_file = np.load('data/Spitzer/spitzer_auto_FW/spitzer_auto_FW_ifield'+str(ifield)+'_inst'+str(inst)+'_'+mask_string_mkk+'.npz')
+            N_ell_est=spitz_FW_file['N_ell_est']
+            N_ell_err=spitz_FW_file['N_ell_err']
+            std_nl1ds_nAnB = spitz_FW_file['std_nl1ds_nAnB']
+            std_nl1ds_nAsB = spitz_FW_file['std_nl1ds_nAsB']
+            std_nl1ds_nBsA = spitz_FW_file['std_nl1ds_nBsA']
+
+            spitz_FW = None
+
+            
+                
+        all_std_nl1ds_nAnB.append(std_nl1ds_nAnB)
+        all_std_nl1ds_nAsB.append(std_nl1ds_nAsB)
+        all_std_nl1ds_nBsA.append(std_nl1ds_nBsA)
+        
+        plot_map(nl2d_diff, title='spitzer difference 2d power spectrum')
+
+        avmap_AB = 0.5*(all_spitz_maps[pair_idxs[0][0]]+all_spitz_maps[pair_idxs[0][1]])
+        avmap_CD = 0.5*(all_spitz_maps[pair_idxs[1][0]]+all_spitz_maps[pair_idxs[1][1]])
+        
+        plot_map(avmap_AB, title='avmap_AB')
+        plot_map(avmap_CD, title='avmap_CD')
+        
+        print('avmap AB has mean of ', np.mean(avmap_AB))
+        print('avmap CD has mean of ', np.mean(avmap_CD))
+        
+        lbm, cl_spitzer_masked_AB_CD, clerr_spitz_AB_CD = get_power_spec(avmap_AB, map_b=avmap_CD,\
+                                                                   lbinedges=cbps.Mkk_obj.binl, lbins=lb, \
+                                                                  weights=None)        
+        
+        
+        print('lbm:', lbm)
+        prefac = lb*(lb+1)/(2*np.pi)
+        
+        average_cl_spitzer_auto = cl_spitzer_masked_AB_CD
+
+        average_cl_spitzer_auto_orig = average_cl_spitzer_auto.copy()
+        
+        average_cl_spitzer_auto = np.dot(inv_Mkk.transpose(), average_cl_spitzer_auto)
+        
+        average_dcl_spitzer_auto = np.sqrt(std_nl1ds_nAnB**2+std_nl1ds_nAsB**2 + std_nl1ds_nBsA**2)
+
+
+        print('Correcting for filtering transfer function..')
+        t_ell_av = np.load('data/transfer_function/t_ell_est_nsims=100.npz')['t_ell_av']
+        print('t_ell av:', t_ell_av)
+        average_cl_spitzer_auto /= t_ell_av
+        average_dcl_spitzer_auto /= t_ell_av
+
+        average_cl_spitzer_auto /= cibermatch_bl**2 # correcting by IRAC beam
+        average_dcl_spitzer_auto /= cibermatch_bl**2 # correcting by IRAC beam
+        
+        auto_knox_errors = np.sqrt(1./((2*lb+1)*cbps.Mkk_obj.delta_ell)) # factor of 1 in numerator since auto is a cross-epoch cross
+        fsky = 2*2/(41253.)    
+        auto_knox_errors /= np.sqrt(fsky)
+        auto_knox_errors *= np.abs(average_cl_spitzer_auto)
+        
+#         average_dcl_spitzer_auto = np.sqrt(average_dcl_spitzer_auto**2 + auto_knox_errors**2)
+        
+        plt.figure(figsize=(6,5))
+#             plt.errorbar(lbm, prefac*average_cl_spitzer_auto_orig, yerr=prefac*average_dcl_spitzer_auto, fmt='o', capsize=4, color='g', label='Spitzer cross epoch auto (pre noise sub)')
+        plt.errorbar(lb, prefac*average_cl_spitzer_auto, yerr=prefac*average_dcl_spitzer_auto, fmt='o', capsize=4, color='r', label='Spitzer cross epoch auto')
+#         plt.plot(lbm, prefac*av_nl1ds_spitzer, linestyle='dashed', color='r', label='Spitzer auto noise bias')
+        plt.legend()
+        plt.yscale('log')
+        plt.xscale('log')
+        plt.xlabel('$\\ell$', fontsize=14)
+        plt.ylabel('$D_{\\ell}$', fontsize=14)
+        plt.tick_params(labelsize=14)
+        plt.ylim(1e-5, 1e1)
+        plt.grid()
+        plt.show()
+        
+        all_cl_spitzer.append(average_cl_spitzer_auto)
+        all_dcl_spitzer.append(average_dcl_spitzer_auto)
+        
+    return lbm, all_cl_spitzer, all_dcl_spitzer, all_std_nl1ds_nAnB, all_std_nl1ds_nAsB, all_std_nl1ds_nBsA
+
 
 

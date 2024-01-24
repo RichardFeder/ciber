@@ -12,7 +12,7 @@ from sklearn import tree
 import os
 
 import config
-from cross_spectrum_analysis import *
+# from cross_spectrum_analysis import *
 from mkk_parallel import *
 from flat_field_est import *
 from masking_utils import *
@@ -245,6 +245,8 @@ class CIBER_PS_pipeline():
 	pixsize = 7. # arcseconds
 
 	pix_sr = (pixsize*pixsize/(3600**2))*(np.pi/180)**2
+	sterad_per_pix = (pixsize/3600/180*np.pi)**2
+
 	Npix = 2.03
 	inst_to_band = dict({1:'J', 2:'H'})
 	inst_to_trilegal_magstr = dict({1:'j_m', 2:'h_m'})
@@ -392,6 +394,33 @@ class CIBER_PS_pipeline():
 			self.inv_Mkk = inv_Mkk
 		else:
 			return Mkk_matrix, inv_Mkk
+
+	def correct_mkk_azim_cl2d(self, cl2d, inv_Mkk):
+		''' 
+		For the Spitzer noise model, we want to correct for the mask but in 2D Fourier space. This function does
+		it approximately by taking the 2D power spectrum and correcting the modes in each bandpower by the diagonal
+		of the inverse mkk matrix.
+		'''
+
+		cl2d_corr = cl2d.copy()
+		l2d = get_l2d(self.dimx, self.dimy, self.pixsize)
+
+		for bandidx in range(inv_Mkk.shape[0]):
+			lmin, lmax = self.Mkk_obj.binl[bandidx], self.Mkk_obj.binl[bandidx+1]
+			sp = np.where((l2d>=lmin) & (l2d<lmax))
+			cl2d_corr[sp] *= inv_Mkk.transpose()[bandidx, bandidx]
+
+		return cl2d_corr
+
+	def mean_sub_masked_image_per_quadrant(self, image, mask):
+
+		masked_image = image*mask
+		
+		for q in range(4):
+			mquad  = mask[self.x0s[q]:self.x1s[q], self.y0s[q]:self.y1s[q]].astype(int)
+			masked_image[self.x0s[q]:self.x1s[q], self.y0s[q]:self.y1s[q]][mquad==1] -= np.mean(masked_image[self.x0s[q]:self.x1s[q], self.y0s[q]:self.y1s[q]][mquad==1])
+
+		return masked_image
 
 	def knox_errors(self, C_ell, N_ell, use_beam_fac=True, B_ell=None, snr=False):
 		
@@ -1208,12 +1237,12 @@ class CIBER_PS_pipeline():
 
 		return None
 
-	def grab_noise_model_set(self, ifield_noise_list, inst, noise_model_base_path='data/fluctuation_data/', field_set_shape=None, verbose=False, noise_modl_type='full'):
+	def grab_noise_model_set(self, ifield_noise_list, inst, noise_model_base_path=None, verbose=False, noise_modl_type='full'):
 
 		if noise_model_base_path is None:
-			noise_model_base_path = 'data/fluctuation_data/TM'+str(inst)+'/noiseCl2D/'
-		if field_set_shape is None: 
-			field_set_shape = (len(ifield_noise_list), self.dimx, self.dimy)
+			noise_model_base_path = config.ciber_basepath+'data/fluctuation_data/TM'+str(inst)+'/noise_model/'
+
+		field_set_shape = (len(ifield_noise_list), self.dimx, self.dimy)
 
 		read_noise_models = np.zeros(field_set_shape)
 		for fieldidx, ifield in enumerate(ifield_noise_list):
@@ -1224,6 +1253,25 @@ class CIBER_PS_pipeline():
 		return read_noise_models
 
 		
+	def collect_ff_realiz_simp(self, fieldidx, inst, run_name, nmc_ff, datestr='112022', ff_min=None, ff_max=None, ff_est_dirpath=None):
+
+		all_ff_ests_nofluc = np.zeros((nmc_ff, self.dimx, self.dimy))
+
+		if ff_est_dirpath is None:
+			ff_est_dirpath = config.ciber_basepath+'data/ff_mc_ests/'+datestr+'/TM'+str(inst)+'/'
+
+		for ffidx in range(nmc_ff):
+			ff_file = np.load(ff_est_dirpath+'/'+run_name+'/ff_realization_estimate_ffidx'+str(ffidx)+'.npz')
+			ff_est = ff_file['ff_realization_estimates'][fieldidx]
+			if ff_min is not None and ff_max is not None:
+				ff_est[(ff_est > ff_max)] = 1.0
+				ff_est[(ff_est < ff_min)] = 1.0
+			all_ff_ests_nofluc[ffidx] = ff_est
+			if ffidx==0:
+				plot_map(all_ff_ests_nofluc[0], title='loaded MC ff estimate 0')
+
+		return all_ff_ests_nofluc
+
 	def collect_ff_realiz_estimates(self, fieldidx, run_name, fpath_dict, pscb_dict, config_dict, float_param_dict, datestr='112022', ff_min=None, ff_max=None):
 		all_ff_ests_nofluc = np.zeros((float_param_dict['nmc_ff'], self.dimx, self.dimy))
 		all_ff_ests_nofluc_cross = None 
@@ -2714,7 +2762,7 @@ class CIBER_PS_pipeline():
 		if gsmt_dict['with_inst_noise'] and gsmt_dict['load_noise_model']:
 			# noise_models = np.zeros_like(observed_ims)
 			field_set_shape = observed_ims.shape
-			noise_models = self.grab_noise_model_set(ifield_list, inst, field_set_shape=field_set_shape, noise_model_base_path=fpath_dict['read_noise_modl_base_path'], noise_modl_type=config_dict['noise_modl_type'])
+			noise_models = self.grab_noise_model_set(ifield_list, inst, noise_model_base_path=fpath_dict['read_noise_modl_base_path'], noise_modl_type=config_dict['noise_modl_type'])
 
 		
 		for fieldidx, ifield in enumerate(ifield_list):
@@ -2985,146 +3033,146 @@ def process_ciber_maps_perquad(cbps, ifield_list, inst, ciber_maps, masks, cross
 	return processed_ims, ff_estimates, masks
 
 def compute_delta_shot_noise_maskerrs(inst, magkey, ifield, datestr_trilegal, apply_mask_errs=True, mask_err_vs_mag_fpath=None, masking_maglim=17.5, simidx0=0, nsims=100):
-    
-    
-    cmock = ciber_mock()
-    cbps = CIBER_PS_pipeline()
-    base_path = config.exthdpath+'ciber_mocks/'
+	
+	
+	cmock = ciber_mock()
+	cbps = CIBER_PS_pipeline()
+	base_path = config.exthdpath+'ciber_mocks/'
 
-    all_ps_cl_true, all_ps_cl_werrs, all_frac_resid_ps = [[] for x in range(3)]
-    
-    
-    all_interp_fns_maskerrs = None
-    type_weights_bysel = None
-    
-    if apply_mask_errs and mask_err_vs_mag_fpath is not None:
-        mask_err_vs_mag_file = np.load(mask_err_vs_mag_fpath)
+	all_ps_cl_true, all_ps_cl_werrs, all_frac_resid_ps = [[] for x in range(3)]
+	
+	
+	all_interp_fns_maskerrs = None
+	type_weights_bysel = None
+	
+	if apply_mask_errs and mask_err_vs_mag_fpath is not None:
+		mask_err_vs_mag_file = np.load(mask_err_vs_mag_fpath)
 
-        mags = mask_err_vs_mag_file['mags']
-        mid_mags = mask_err_vs_mag_file['mid_mags']
-        labels = mask_err_vs_mag_file['labels']
-        mag_errs_vs_rms_list = mask_err_vs_mag_file['mag_errs_vs_rms_list']
+		mags = mask_err_vs_mag_file['mags']
+		mid_mags = mask_err_vs_mag_file['mid_mags']
+		labels = mask_err_vs_mag_file['labels']
+		mag_errs_vs_rms_list = mask_err_vs_mag_file['mag_errs_vs_rms_list']
 
-        type_weights_bysel = mask_err_vs_mag_file['type_weights_bysel']
+		type_weights_bysel = mask_err_vs_mag_file['type_weights_bysel']
 
-        all_interp_fns_maskerrs = []
-        for lidx, lab in enumerate(labels):
-            interp_mask_errs_fn = scipy.interpolate.interp1d(mid_mags, mag_errs_vs_rms_list[lidx])
-            all_interp_fns_maskerrs.append(interp_mask_errs_fn)
+		all_interp_fns_maskerrs = []
+		for lidx, lab in enumerate(labels):
+			interp_mask_errs_fn = scipy.interpolate.interp1d(mid_mags, mag_errs_vs_rms_list[lidx])
+			all_interp_fns_maskerrs.append(interp_mask_errs_fn)
 
 
-        plt.figure()
-        for lidx, lab in enumerate(labels):
-            plt.scatter(mid_mags, mag_errs_vs_rms_list[lidx], label=lab, color='C'+str(lidx))
-            plt.plot(mid_mags, all_interp_fns_maskerrs[lidx](mid_mags), color='C'+str(lidx))
-        plt.legend()
-        plt.show()
-    
-    
-    starcatcols = [magkey, 'x'+str(inst), 'y'+str(inst)]
-    galcatcols = ['m_app', 'x'+str(inst), 'y'+str(inst)]
+		plt.figure()
+		for lidx, lab in enumerate(labels):
+			plt.scatter(mid_mags, mag_errs_vs_rms_list[lidx], label=lab, color='C'+str(lidx))
+			plt.plot(mid_mags, all_interp_fns_maskerrs[lidx](mid_mags), color='C'+str(lidx))
+		plt.legend()
+		plt.show()
+	
+	
+	starcatcols = [magkey, 'x'+str(inst), 'y'+str(inst)]
+	galcatcols = ['m_app', 'x'+str(inst), 'y'+str(inst)]
 
-    
-    
-    for s, sim_idx in enumerate(np.arange(simidx0, nsims)):
-    
-        mock_trilegal_path = base_path+datestr_trilegal+'/trilegal/mock_trilegal_simidx'+str(sim_idx)+'_'+datestr_trilegal+'.fits'
-        mock_trilegal = fits.open(mock_trilegal_path)
-        mock_trilegal_cat = mock_trilegal['tracer_cat_'+str(ifield)].data    
+	
+	
+	for s, sim_idx in enumerate(np.arange(simidx0, nsims)):
+	
+		mock_trilegal_path = base_path+datestr_trilegal+'/trilegal/mock_trilegal_simidx'+str(sim_idx)+'_'+datestr_trilegal+'.fits'
+		mock_trilegal = fits.open(mock_trilegal_path)
+		mock_trilegal_cat = mock_trilegal['tracer_cat_'+str(ifield)].data    
 
-        star_cat_df = pd.DataFrame({magkey:mock_trilegal_cat[magkey].byteswap().newbyteorder(), 'y'+str(inst):mock_trilegal_cat['x'].byteswap().newbyteorder(), 'x'+str(inst):mock_trilegal_cat['y'].byteswap().newbyteorder()}, \
-                            columns=starcatcols)
-        
-        
-        print('mags:', np.array(star_cat_df[magkey]))
-        star_Iarr_full = cmock.mag_2_nu_Inu(np.array(star_cat_df[magkey]), band=inst-1)
-        cat_full = np.array([np.array(star_cat_df['x'+str(inst)]), np.array(star_cat_df['y'+str(inst)]), np.array(star_cat_df[magkey]), star_Iarr_full.value]).transpose()
-        print('cat full has shape ', cat_full.shape)
-        mag_mask = (cat_full[:,2] > masking_maglim)
-        cat_full = cat_full[mag_mask,:]
-        print('cat full now has shape ', cat_full.shape)
-    
-        star_srcmap_true_below_maglim = cmock.make_srcmap_temp_bank(ifield, 1, cat_full, flux_idx=3, n_fine_bin=10, nwide=17, load_precomp_tempbank=True, \
-                                            tempbank_dirpath=config.exthdpath+'ciber_fluctuation_data/TM1/subpixel_psfs/')
+		star_cat_df = pd.DataFrame({magkey:mock_trilegal_cat[magkey].byteswap().newbyteorder(), 'y'+str(inst):mock_trilegal_cat['x'].byteswap().newbyteorder(), 'x'+str(inst):mock_trilegal_cat['y'].byteswap().newbyteorder()}, \
+							columns=starcatcols)
+		
+		
+		print('mags:', np.array(star_cat_df[magkey]))
+		star_Iarr_full = cmock.mag_2_nu_Inu(np.array(star_cat_df[magkey]), band=inst-1)
+		cat_full = np.array([np.array(star_cat_df['x'+str(inst)]), np.array(star_cat_df['y'+str(inst)]), np.array(star_cat_df[magkey]), star_Iarr_full.value]).transpose()
+		print('cat full has shape ', cat_full.shape)
+		mag_mask = (cat_full[:,2] > masking_maglim)
+		cat_full = cat_full[mag_mask,:]
+		print('cat full now has shape ', cat_full.shape)
+	
+		star_srcmap_true_below_maglim = cmock.make_srcmap_temp_bank(ifield, 1, cat_full, flux_idx=3, n_fine_bin=10, nwide=17, load_precomp_tempbank=True, \
+											tempbank_dirpath=config.exthdpath+'ciber_fluctuation_data/TM1/subpixel_psfs/')
 #         plot_map(star_srcmap_true_below_maglim, title='star_srcmap_true_below_maglim')
-        lb, cl_star_true, clerr_star_true = get_power_spec(star_srcmap_true_below_maglim-np.mean(star_srcmap_true_below_maglim), lbinedges=cbps.Mkk_obj.binl, lbins=cbps.Mkk_obj.midbin_ell)
+		lb, cl_star_true, clerr_star_true = get_power_spec(star_srcmap_true_below_maglim-np.mean(star_srcmap_true_below_maglim), lbinedges=cbps.Mkk_obj.binl, lbins=cbps.Mkk_obj.midbin_ell)
 
-        if apply_mask_errs and all_interp_fns_maskerrs is not None:
+		if apply_mask_errs and all_interp_fns_maskerrs is not None:
 
-            orig_mags = np.array(star_cat_df[magkey])
-            mags_with_errors = perturb_mags_with_types(all_interp_fns_maskerrs, type_weights_bysel, orig_mags, mags)
-            star_cat_df[magkey] = mags_with_errors
-            
-            star_Iarr_werr = cmock.mag_2_nu_Inu(np.array(star_cat_df[magkey]), band=inst-1)
-            cat_full_werr = np.array([np.array(star_cat_df['x'+str(inst)]), np.array(star_cat_df['y'+str(inst)]), np.array(star_cat_df[magkey]), star_Iarr_werr.value]).transpose()
+			orig_mags = np.array(star_cat_df[magkey])
+			mags_with_errors = perturb_mags_with_types(all_interp_fns_maskerrs, type_weights_bysel, orig_mags, mags)
+			star_cat_df[magkey] = mags_with_errors
+			
+			star_Iarr_werr = cmock.mag_2_nu_Inu(np.array(star_cat_df[magkey]), band=inst-1)
+			cat_full_werr = np.array([np.array(star_cat_df['x'+str(inst)]), np.array(star_cat_df['y'+str(inst)]), np.array(star_cat_df[magkey]), star_Iarr_werr.value]).transpose()
 #             print('cat_full_werr has shape ', cat_full_werr.shape)
-            mag_mask_werr = (cat_full_werr[:,2] > masking_maglim)
-            cat_full_werr = cat_full_werr[mag_mask_werr,:]
+			mag_mask_werr = (cat_full_werr[:,2] > masking_maglim)
+			cat_full_werr = cat_full_werr[mag_mask_werr,:]
 #             print('cat full_werr now has shape ', cat_full_werr.shape)
 
-            star_srcmap_werr_below_maglim = cmock.make_srcmap_temp_bank(ifield, 1, cat_full_werr, flux_idx=3, n_fine_bin=10, nwide=17, load_precomp_tempbank=True, \
-                                                tempbank_dirpath=config.exthdpath+'ciber_fluctuation_data/TM1/subpixel_psfs/')
+			star_srcmap_werr_below_maglim = cmock.make_srcmap_temp_bank(ifield, 1, cat_full_werr, flux_idx=3, n_fine_bin=10, nwide=17, load_precomp_tempbank=True, \
+												tempbank_dirpath=config.exthdpath+'ciber_fluctuation_data/TM1/subpixel_psfs/')
 #             plot_map(star_srcmap_werr_below_maglim, title='star_srcmap_werr_below_maglim')
-            lb, cl_star_werr, clerr_star_werr = get_power_spec(star_srcmap_werr_below_maglim-np.mean(star_srcmap_werr_below_maglim), lbinedges=cbps.Mkk_obj.binl, lbins=cbps.Mkk_obj.midbin_ell)
+			lb, cl_star_werr, clerr_star_werr = get_power_spec(star_srcmap_werr_below_maglim-np.mean(star_srcmap_werr_below_maglim), lbinedges=cbps.Mkk_obj.binl, lbins=cbps.Mkk_obj.midbin_ell)
 
-            delta_cl_star_werr = cl_star_werr-cl_star_true
-            
-            print('fractional dcl is ', delta_cl_star_werr/cl_star_true)
-            
-        
-        # ---------------------- same but for galaxy catalogs -------------------- 
+			delta_cl_star_werr = cl_star_werr-cl_star_true
+			
+			print('fractional dcl is ', delta_cl_star_werr/cl_star_true)
+			
+		
+		# ---------------------- same but for galaxy catalogs -------------------- 
 
-        cib_file_mode='cib_with_tracer_with_dpoint'
-        midxdict = dict({'x':0, 'y':1, 'redshift':2, 'm_app':3, 'M_abs':4, 'Mh':5, 'Rvir':6})
-        mock_gal = fits.open(base_path+datestr+'/TM'+str(inst)+'/cib_realiz/'+cib_file_mode+'_5field_set'+str(sim_idx)+'_'+datestr+'_TM'+str(inst)+'.fits')
-        mock_gal_cat = mock_gal['tracer_cat_'+str(ifield)].data
-        
-        gal_cat = {'m_app':mock_gal_cat['m_app'].byteswap().newbyteorder(), 'y'+str(inst):mock_gal_cat['x'].byteswap().newbyteorder(), 'x'+str(inst):mock_gal_cat['y'].byteswap().newbyteorder()}
-        gal_cat_df = pd.DataFrame(gal_cat, columns = galcatcols) # check magnitude system of Helgason model
+		cib_file_mode='cib_with_tracer_with_dpoint'
+		midxdict = dict({'x':0, 'y':1, 'redshift':2, 'm_app':3, 'M_abs':4, 'Mh':5, 'Rvir':6})
+		mock_gal = fits.open(base_path+datestr+'/TM'+str(inst)+'/cib_realiz/'+cib_file_mode+'_5field_set'+str(sim_idx)+'_'+datestr+'_TM'+str(inst)+'.fits')
+		mock_gal_cat = mock_gal['tracer_cat_'+str(ifield)].data
+		
+		gal_cat = {'m_app':mock_gal_cat['m_app'].byteswap().newbyteorder(), 'y'+str(inst):mock_gal_cat['x'].byteswap().newbyteorder(), 'x'+str(inst):mock_gal_cat['y'].byteswap().newbyteorder()}
+		gal_cat_df = pd.DataFrame(gal_cat, columns = galcatcols) # check magnitude system of Helgason model
 
-        gal_Iarr_full = cmock.mag_2_nu_Inu(np.array(gal_cat_df['m_app']), band=inst-1)
-        gal_cat_full = np.array([np.array(gal_cat_df['x'+str(inst)]), np.array(gal_cat_df['y'+str(inst)]), np.array(gal_cat_df['m_app']), gal_Iarr_full]).transpose()
-        mag_mask = (gal_cat_full[:,2] > masking_maglim)
-        gal_cat_full = gal_cat_full[mag_mask,:]
+		gal_Iarr_full = cmock.mag_2_nu_Inu(np.array(gal_cat_df['m_app']), band=inst-1)
+		gal_cat_full = np.array([np.array(gal_cat_df['x'+str(inst)]), np.array(gal_cat_df['y'+str(inst)]), np.array(gal_cat_df['m_app']), gal_Iarr_full]).transpose()
+		mag_mask = (gal_cat_full[:,2] > masking_maglim)
+		gal_cat_full = gal_cat_full[mag_mask,:]
 #         print('gal_cat_full now has shape ', gal_cat_full.shape)
-    
-        gal_srcmap_true_below_maglim = cmock.make_srcmap_temp_bank(ifield, 1, gal_cat_full, flux_idx=3, n_fine_bin=10, nwide=17, load_precomp_tempbank=True, \
-                                            tempbank_dirpath=config.exthdpath+'ciber_fluctuation_data/TM1/subpixel_psfs/')
-        
+	
+		gal_srcmap_true_below_maglim = cmock.make_srcmap_temp_bank(ifield, 1, gal_cat_full, flux_idx=3, n_fine_bin=10, nwide=17, load_precomp_tempbank=True, \
+											tempbank_dirpath=config.exthdpath+'ciber_fluctuation_data/TM1/subpixel_psfs/')
+		
 #         plot_map(gal_srcmap_true_below_maglim, title='gal_srcmap_true_below_maglim')
-        lb, cl_gal_true, clerr_gal_true = get_power_spec(gal_srcmap_true_below_maglim-np.mean(star_srcmap_true_below_maglim), lbinedges=cbps.Mkk_obj.binl, lbins=cbps.Mkk_obj.midbin_ell)
+		lb, cl_gal_true, clerr_gal_true = get_power_spec(gal_srcmap_true_below_maglim-np.mean(star_srcmap_true_below_maglim), lbinedges=cbps.Mkk_obj.binl, lbins=cbps.Mkk_obj.midbin_ell)
 
-        if apply_mask_errs and interp_mask_errs_fn is not None:
+		if apply_mask_errs and interp_mask_errs_fn is not None:
 
-            gal_orig_mags = np.array(gal_cat_df['m_app'])
-            gal_mags_with_errors = perturb_mags_with_types(all_interp_fns_maskerrs, type_weights_bysel, gal_orig_mags, mags)
-            gal_mag_errs = gal_mags_with_errors-gal_orig_mags
+			gal_orig_mags = np.array(gal_cat_df['m_app'])
+			gal_mags_with_errors = perturb_mags_with_types(all_interp_fns_maskerrs, type_weights_bysel, gal_orig_mags, mags)
+			gal_mag_errs = gal_mags_with_errors-gal_orig_mags
 
-            gal_mags_with_errors[np.abs(gal_mag_errs) > 2] = gal_orig_mags[np.abs(gal_mag_errs) > 2]
-            gal_cat_df['m_app'] = gal_mags_with_errors
-            
-            gal_Iarr_werr = cmock.mag_2_nu_Inu(np.array(gal_cat_df['m_app']), band=inst-1)
-            gal_cat_werr = np.array([np.array(gal_cat_df['x'+str(inst)]), np.array(gal_cat_df['y'+str(inst)]), np.array(gal_cat_df['m_app']), gal_Iarr_werr]).transpose()
-            mag_mask = (gal_cat_werr[:,2] > masking_maglim)
-            gal_cat_werr = gal_cat_werr[mag_mask,:]
+			gal_mags_with_errors[np.abs(gal_mag_errs) > 2] = gal_orig_mags[np.abs(gal_mag_errs) > 2]
+			gal_cat_df['m_app'] = gal_mags_with_errors
+			
+			gal_Iarr_werr = cmock.mag_2_nu_Inu(np.array(gal_cat_df['m_app']), band=inst-1)
+			gal_cat_werr = np.array([np.array(gal_cat_df['x'+str(inst)]), np.array(gal_cat_df['y'+str(inst)]), np.array(gal_cat_df['m_app']), gal_Iarr_werr]).transpose()
+			mag_mask = (gal_cat_werr[:,2] > masking_maglim)
+			gal_cat_werr = gal_cat_werr[mag_mask,:]
 #             print('gal_cat_werr now has shape ', gal_cat_werr.shape)
 
-            gal_srcmap_werr_below_maglim = cmock.make_srcmap_temp_bank(ifield, 1, gal_cat_werr, flux_idx=3, n_fine_bin=10, nwide=17, load_precomp_tempbank=True, \
-                                                tempbank_dirpath=config.exthdpath+'ciber_fluctuation_data/TM1/subpixel_psfs/')
+			gal_srcmap_werr_below_maglim = cmock.make_srcmap_temp_bank(ifield, 1, gal_cat_werr, flux_idx=3, n_fine_bin=10, nwide=17, load_precomp_tempbank=True, \
+												tempbank_dirpath=config.exthdpath+'ciber_fluctuation_data/TM1/subpixel_psfs/')
 #             plot_map(gal_srcmap_werr_below_maglim, title='gal_srcmap_true_below_maglim')
-            lb, cl_gal_werr, clerr_gal_werr = get_power_spec(gal_srcmap_werr_below_maglim-np.mean(gal_srcmap_werr_below_maglim), lbinedges=cbps.Mkk_obj.binl, lbins=cbps.Mkk_obj.midbin_ell)
+			lb, cl_gal_werr, clerr_gal_werr = get_power_spec(gal_srcmap_werr_below_maglim-np.mean(gal_srcmap_werr_below_maglim), lbinedges=cbps.Mkk_obj.binl, lbins=cbps.Mkk_obj.midbin_ell)
 
-        all_ps_cl_true.append(cl_gal_true+cl_star_true)
-        all_ps_cl_werrs.append(cl_gal_werr+cl_star_werr)
-        
-        frac_resid_ps = (all_ps_cl_werrs[s]-all_ps_cl_true[s])/all_ps_cl_true[s]
-        
-        print('frac resid ps:', frac_resid_ps)
-        
-        all_frac_resid_ps.append(frac_resid_ps)
-            
-            
-    return lb, all_ps_cl_true, all_ps_cl_werrs, all_frac_resid_ps
+		all_ps_cl_true.append(cl_gal_true+cl_star_true)
+		all_ps_cl_werrs.append(cl_gal_werr+cl_star_werr)
+		
+		frac_resid_ps = (all_ps_cl_werrs[s]-all_ps_cl_true[s])/all_ps_cl_true[s]
+		
+		print('frac resid ps:', frac_resid_ps)
+		
+		all_frac_resid_ps.append(frac_resid_ps)
+			
+			
+	return lb, all_ps_cl_true, all_ps_cl_werrs, all_frac_resid_ps
 
 
 

@@ -149,6 +149,78 @@ def compute_field_averaged_power_spectrum(per_field_cls, per_field_dcls=None, pe
     
     return field_averaged_cl, field_averaged_std, cl_sumweights, per_field_cl_weights
 
+def compute_mock_covariance_matrix(lb, inst, all_mock_recov_ps, mock_all_field_averaged_cls, lmax=None, ifield_list = [4, 5, 6, 7, 8], save=False, \
+                                  mock_run_name=None, datestr='111323', plot=False, per_field=True):
+    
+    prefac = lb*(lb+1)/(2*np.pi)
+    lb_mask = (lb > lb[0])
+    if lmax is not None:
+        lb_mask *= (lb < lmax)
+    ndof = np.sum(lb_mask)
+    nsim = all_mock_recov_ps.shape[0]
+    
+    print('nsim = ', nsim)
+    
+    resid_data_matrix = np.zeros_like(all_mock_recov_ps)
+    resid_joint_data_matrix = np.zeros((nsim, ndof*resid_data_matrix.shape[1]))
+    all_cov_indiv_full, all_resid_data_matrices, all_corr_indiv_full = [[] for x in range(3)]
+    
+    print('resid_data_matrix has shape ', resid_data_matrix.shape)
+    print('resid_joint_data_matrix has shape ', resid_joint_data_matrix.shape)
+
+    
+    if per_field:
+    
+        for fieldidx, ifield in enumerate(ifield_list):    
+            for simidx in range(nsim):
+                resid_data_matrix[simidx, fieldidx] = all_mock_recov_ps[simidx, fieldidx] - mock_all_field_averaged_cls[simidx]
+
+                resid_joint_data_matrix[simidx, fieldidx*ndof:(fieldidx+1)*ndof] = resid_data_matrix[simidx, fieldidx, lb_mask]
+
+            resid_data_matrix_indiv = resid_data_matrix[:,fieldidx,:].copy()
+            resid_data_matrix_indiv -= np.mean(resid_data_matrix_indiv)
+            all_resid_data_matrices.append(resid_data_matrix_indiv)
+
+            cov_indiv_full = np.cov(resid_data_matrix_indiv.transpose())
+            all_cov_indiv_full.append(cov_indiv_full)
+
+            corr_indiv_full = np.corrcoef(resid_data_matrix_indiv.transpose())
+            all_corr_indiv_full.append(cov_indiv_full)
+
+            if plot:
+                plot_map(np.log10(cov_indiv_full), title='covariance', figsize=(4,4))
+                plot_map(corr_indiv_full, title='correlation', figsize=(4,4))
+
+                
+    else:
+        all_mock_recov_ps_reshape = (prefac*all_mock_recov_ps).reshape((1000, len(ifield_list)*all_mock_recov_ps.shape[2]))
+        print('all_mock_recov_ps_reshape has shape ', all_mock_recov_ps_reshape.shape)
+        cov_allfields = np.cov(all_mock_recov_ps_reshape.transpose())
+        corr_allfields = np.corrcoef(all_mock_recov_ps_reshape.transpose())
+        inv_cov_allfields = np.linalg.inv(cov_allfields)
+        
+        if plot:
+            plot_map(cov_allfields, title='cov allfields')
+            plot_map(corr_allfields, title='corr allfields')
+
+    if save and mock_run_name is not None:
+        save_dir = config.ciber_basepath+'data/ciber_mocks/'+datestr+'/TM'+str(inst)+'/covariance/'+mock_run_name+'/'
+        make_fpaths([save_dir])
+        
+        if per_field:
+        
+            save_fpath = save_dir+'/ciber_field_consistency_cov_matrices_TM'+str(inst)+'_'+mock_run_name+'.npz'
+
+            np.savez(save_fpath, lb=lb, all_cov_indiv_full=all_cov_indiv_full,\
+                     all_resid_data_matrices=all_resid_data_matrices,\
+                     resid_joint_data_matrix=resid_joint_data_matrix)
+        else:
+            save_fpath = save_dir+'/ciber_fullvec_cov_matrices_TM'+str(inst)+'_'+mock_run_name+'.npz'
+            
+            np.savez(save_fpath, lb=lb, cov_allfields=cov_allfields, corr_allfields=corr_allfields)
+
+    return lb_mask, all_cov_indiv_full, all_resid_data_matrices, resid_joint_data_matrix
+
 
 def get_power_spectrum_2d_epochav(map_a, map_b, pixsize=7., verbose=False):
     dimx, dimy = map_a.shape 
@@ -605,9 +677,9 @@ def compute_rms_subpatches(image, mask, npix_perside=16, pct=False):
     return all_mean, all_std, all_x, all_y, binned_std  
 
 
-
 def compute_fieldav_powerspectra(ifield_list, all_signal_ps, all_recov_ps, flatidx=8, apply_field_weights=True):
     # being used as of 12/6/22
+    # used for ensemble of mock power spectra
 
     print(all_signal_ps.shape, all_recov_ps.shape)
     
@@ -619,7 +691,6 @@ def compute_fieldav_powerspectra(ifield_list, all_signal_ps, all_recov_ps, flati
     all_field_averaged_cls = np.zeros((nsim, npsbin))
     
     for fieldidx, ifield in enumerate(ifield_list):
-        # recov_ps_dcl = np.std(all_recov_ps[:,fieldidx,:], axis=0)
         recov_ps_dcl = 0.5*(np.percentile(all_recov_ps[:,fieldidx,:], 84, axis=0)-np.percentile(all_recov_ps[:,fieldidx,:], 16, axis=0))
         all_field_cl_weights[fieldidx] = 1./recov_ps_dcl**2
     
@@ -683,26 +754,25 @@ def process_observed_powerspectra(cbps, datestr, ifield_list, inst, observed_run
         obs_clfile = np.load(sim_test_fpath_obs+observed_run_name+'/input_recovered_ps_estFF_simidx0_per_quadrant.npz')
         observed_recov_ps_per_quadant = obs_clfile['recovered_ps_est_per_quadrant']
         observed_recov_dcl_per_quadrant = obs_clfile['recovered_dcl_per_quadrant']
-        lb = obs_clfile['lb']
-
-
-
     else:
         obs_clfile = np.load(sim_test_fpath_obs+observed_run_name+'/input_recovered_ps_estFF_simidx0.npz')
         observed_recov_ps = obs_clfile['recovered_ps_est_nofluc']
         observed_recov_dcl_perfield = obs_clfile['recovered_dcl']
-        lb = obs_clfile['lb']
+    
+    lb = obs_clfile['lb']
 
     observed_field_average_cl = np.zeros((cbps.n_ps_bin))
     observed_field_average_dcl = np.zeros((cbps.n_ps_bin))
     
     if apply_field_weights:
-        for n in range(cbps.n_ps_bin):
-            mock_all_field_cl_weights[:,n] /= np.sum(mock_all_field_cl_weights[:,n])
-            observed_field_average_cl[n] = np.average(observed_recov_ps[:,n], weights = mock_all_field_cl_weights[:,n])
-            neff_indiv = compute_Neff(mock_all_field_cl_weights[:,n])
-            psvar_indivbin = np.sum(mock_all_field_cl_weights[:,n]*(observed_recov_ps[:,n] - observed_field_average_cl[n])**2)*neff_indiv/(neff_indiv-1.)
-            observed_field_average_dcl[n] = np.sqrt(psvar_indivbin/neff_indiv)
+
+        observed_field_average_cl, observed_field_average_dcl = compute_weighted_cl(observed_recov_ps, mock_all_field_cl_weights)
+        # for n in range(cbps.n_ps_bin):
+        #     mock_all_field_cl_weights[:,n] /= np.sum(mock_all_field_cl_weights[:,n])
+        #     observed_field_average_cl[n] = np.average(observed_recov_ps[:,n], weights = mock_all_field_cl_weights[:,n])
+        #     neff_indiv = compute_Neff(mock_all_field_cl_weights[:,n])
+        #     psvar_indivbin = np.sum(mock_all_field_cl_weights[:,n]*(observed_recov_ps[:,n] - observed_field_average_cl[n])**2)*neff_indiv/(neff_indiv-1.)
+        #     observed_field_average_dcl[n] = np.sqrt(psvar_indivbin/neff_indiv)
 
     else:
         observed_field_average_cl = np.mean(observed_recov_ps, axis=0)
@@ -739,24 +809,41 @@ def compute_sqrt_cl_errors(cl, dcl):
 
 
 
-def compute_weighted_cl(all_cl, all_clerr):
+# def compute_weighted_cl(all_cl, all_clerr):
     
-    all_cl = np.array(all_cl)
-    all_clerr = np.array(all_clerr)
+#     all_cl = np.array(all_cl)
+#     all_clerr = np.array(all_clerr)
     
-    variance = all_clerr**2
+#     variance = all_clerr**2
     
-    weights = 1./variance
+#     weights = 1./variance
     
-    cl_sumweights = np.sum(weights, axis=0)
+#     cl_sumweights = np.sum(weights, axis=0)
     
-    weighted_variance = 1./cl_sumweights
+#     weighted_variance = 1./cl_sumweights
     
-    field_averaged_std = np.sqrt(weighted_variance)
+#     field_averaged_std = np.sqrt(weighted_variance)
     
-    field_averaged_cl = np.nansum(weights*all_cl, axis=0)/cl_sumweights
+#     field_averaged_cl = np.nansum(weights*all_cl, axis=0)/cl_sumweights
     
-    return field_averaged_cl, field_averaged_std
+#     return field_averaged_cl, field_averaged_std
+
+    
+def compute_weighted_cl(indiv_cl, field_weights):
+    
+    n_ps_bin = len(indiv_cl[0])
+    field_average_cl, field_average_dcl = [np.zeros_like(indiv_cl[0]) for x in range(2)]
+    
+    for n in range(n_ps_bin):
+        field_weights[:,n] /= np.sum(field_weights[:,n])
+        field_average_cl[n] = np.average(indiv_cl[:,n], weights=field_weights[:,n])
+        neff_indiv = compute_Neff(field_weights[:,n])
+        
+        psvar_indivbin = np.sum(field_weights[:,n]*(indiv_ps[:,n] - field_average_cl[n])**2)*neff_indiv/(neff_indiv-1.)
+        field_average_dcl[n] = np.sqrt(psvar_indivbin/neff_indiv)
+        
+    return field_average_cl, field_average_dcl
+
 
 
 def ciber_ciber_rl_coefficient(obs_name_A, obs_name_B, obs_name_AB, startidx=1, endidx=-1):
@@ -774,7 +861,7 @@ def ciber_ciber_rl_coefficient(obs_name_A, obs_name_B, obs_name_AB, startidx=1, 
             cl_fpath_obs = config.ciber_basepath+'data/input_recovered_ps/cl_files/TM1_TM2_cross/cl_'+obs_name+'.npz'
             lb, observed_recov_ps, observed_recov_dcl_perfield,\
             observed_field_average_cl, observed_field_average_dcl,\
-                mock_all_field_cl_weights = load_weighted_cl_file_cross(cl_fpath_obs)
+                mock_all_field_cl_weights = load_weighted_cl_file(cl_fpath_obs)
 
         obs_fieldav_cls.append(observed_field_average_cl)
         obs_fieldav_dcls.append(observed_field_average_dcl)
