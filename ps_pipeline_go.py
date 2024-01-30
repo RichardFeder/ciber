@@ -81,7 +81,7 @@ def ciber_difference_spectrum(cbps, fpath_dict, config_dict, inst, ifieldA, ifie
     
     fieldidxA, fieldidxB = ifieldA-4, ifieldB-4
     
-    read_noise_models = cbps.grab_noise_model_set([ifieldA, ifieldB], inst, field_set_shape=((2, cbps.dimx, cbps.dimy)), noise_model_base_path=fpath_dict['read_noise_modl_base_path'], noise_modl_type=config_dict['noise_modl_type'])
+    read_noise_models = cbps.grab_noise_model_set([ifieldA, ifieldB], inst, noise_model_base_path=fpath_dict['read_noise_modl_base_path'], noise_modl_type=config_dict['noise_modl_type'])
     
     dc_template = cbps.load_dark_current_template(inst, verbose=True, inplace=False)
     
@@ -204,7 +204,8 @@ def ciber_difference_spectrum(cbps, fpath_dict, config_dict, inst, ifieldA, ifie
     return lb, processed_ps_nf, cl_proc_err, N_ell_est
 
 
-def set_up_filepaths_cbps(fpath_dict, inst, run_name, datestr, datestr_trilegal=None, data_type='mock', cross_inst=None, save_fpaths=True):
+def set_up_filepaths_cbps(fpath_dict, inst, run_name, datestr, datestr_trilegal=None, data_type='mock', cross_inst=None, save_fpaths=True, \
+	verbose=False):
 
 	mock_base_path = fpath_dict['ciber_mock_fpath']+datestr+'/'
 	trilegal_base_path = fpath_dict['ciber_mock_fpath']+datestr_trilegal+'/'
@@ -246,31 +247,36 @@ def set_up_filepaths_cbps(fpath_dict, inst, run_name, datestr, datestr_trilegal=
 	for b, base_name in enumerate(mock_info_path_names):
 		if fpath_dict[base_name] is None:
 			fpath_dict[base_name] = mock_base_path+tm_string+'/'+mock_info_path_dirnames[b]
-			print('setting '+base_name+' to '+fpath_dict[base_name])
+			if verbose:
+				print('setting '+base_name+' to '+fpath_dict[base_name])
 		list_of_dirpaths.append(fpath_dict[base_name])
 
 	for b, base_name in enumerate(base_path_names):
 		if fpath_dict[base_name] is None:
 			fpath_dict[base_name] = base_path+tm_string+'/'+base_path_dirnames[b]
-			print('setting '+base_name+' to '+fpath_dict[base_name])
+			if verbose:
+				print('setting '+base_name+' to '+fpath_dict[base_name])
 
 		list_of_dirpaths.append(fpath_dict[base_name])
 
 	for b, base_fluc in enumerate(base_fluc_names):
 		if fpath_dict[base_fluc] is None:
 			fpath_dict[base_fluc] = base_fluc_path+'TM'+str(inst)+'/'+base_fluc_dirnames[b]
-			print('setting '+base_fluc+' to '+fpath_dict[base_fluc])
+			if verbose:
+				print('setting '+base_fluc+' to '+fpath_dict[base_fluc])
 
 		if fpath_dict['cross_'+base_fluc] is None and cross_inst is not None:
 			fpath_dict['cross_'+base_fluc] = base_fluc_path+'TM'+str(cross_inst)+'/'+base_fluc_dirnames[b]
-			print('Setting cross_'+base_fluc+' to '+fpath_dict['cross_'+base_fluc])
+			if verbose:
+				print('Setting cross_'+base_fluc+' to '+fpath_dict['cross_'+base_fluc])
 			list_of_dirpaths.append(fpath_dict['cross_'+base_fluc])
 
 		list_of_dirpaths.append(fpath_dict[base_fluc])
 
 	if fpath_dict['tls_base_path'] is None:
 		fpath_dict['tls_base_path'] = base_path+'transfer_function/'
-		print('tls base path is ', fpath_dict['tls_base_path'])
+		if verbose:
+			print('tls base path is ', fpath_dict['tls_base_path'])
 		list_of_dirpaths.append(fpath_dict['tls_base_path'])
 
 	if fpath_dict['ff_est_dirpath'] is None:
@@ -278,9 +284,11 @@ def set_up_filepaths_cbps(fpath_dict, inst, run_name, datestr, datestr_trilegal=
 		if fpath_dict['ff_run_name'] is None:
 			fpath_dict['ff_run_name'] = run_name
 		fpath_dict['ff_est_dirpath'] += fpath_dict['ff_run_name']
-		print('ff_est_dirpath is ', fpath_dict['ff_est_dirpath'])
+		if verbose:
+			print('ff_est_dirpath is ', fpath_dict['ff_est_dirpath'])
 
-	print(list_of_dirpaths)
+	if verbose:
+		print(list_of_dirpaths)
 	if save_fpaths:
 		make_fpaths(list_of_dirpaths)
 
@@ -299,10 +307,10 @@ def return_default_cbps_dicts():
 					'iterate_grad_ff':True ,'mkk_ffest_hybrid':True, 'apply_sum_fluc_image_mask':False, 'same_int':False, 'same_dgl':True, 'use_ff_weights':True, 'plot_ff_error':False, 'load_ptsrc_cib':True, \
 					'load_trilegal':True , 'subtract_subthresh_stars':False, 'ff_bias_correct':True, 'save_ff_ests':True, 'plot_maps':True, \
 					 'draw_cib_setidxs':False, 'aug_rotate':False, 'noise_debias':True, 'load_noise_bias':False, 'transfer_function_correct':True, 'compute_transfer_function':False,\
-					  'save_intermediate_cls':True, 'verbose':True, 'show_plots':False, 'show_ps':True, 'save':True, 'bl_post':False, 'ff_sigma_clip':False, \
+					  'save_intermediate_cls':True, 'verbose':False, 'show_plots':False, 'show_ps':True, 'save':True, 'bl_post':False, 'ff_sigma_clip':False, \
 					  'per_quadrant':False, 'use_dc_template':True, 'ff_estimate_cross':False, 'map_photon_noise':False, 'zl_photon_noise':True, \
 					  'compute_ps_per_quadrant':False, 'apply_wen_cluster_mask':True, 'low_responsivity_blob_mask':True, \
-					  'pt_src_fferr':False, 'shut_off_plots':False, 'max_val_clip':False, 'point_src_ffnoise':False})
+					  'pt_src_ffnoise':False, 'shut_off_plots':False, 'max_val_clip':False, 'point_src_ffnoise':False})
 
 	float_param_dict = dict({'ff_min':0.5, 'ff_max':2.0, 'clip_sigma':5,'clip_sigma_ff':5, 'ff_stack_min':1, 'nmc_ff':10, \
 					  'theta_mag':0.01, 'niter':5, 'dgl_scale_fac':5, 'smooth_sigma':5, 'indiv_ifield':6,\
@@ -434,7 +442,8 @@ def run_cbps_pipeline(cbps, inst, nsims, run_name, ifield_list = None, \
 	# if masking_maglim_ff is not None:
 	# 	if masking_maglim_ff >= masking_maglim:
 	# 		print('loading point source maps for ff noise')
-	if pscb_dict['point_src_ffnoise']:
+	if pscb_dict['pt_src_ffnoise']:
+		print('Loading point source maps for FF noise terms')
 		ptsrcfile = fits.open(config.ciber_basepath+'data/fluctuation_data/TM'+str(inst)+'/point_src_maps_for_ffnoise/point_src_maps'+'_TM'+str(inst)+'_mmin='+str(masking_maglim)+'_mmax='+str(masking_maglim_ff)+'_merge.fits', overwrite=True)
 		point_src_comps_for_ff = np.zeros(field_set_shape)
 		# 		max_vals_ptsrc = np.zeros((len(ifield_list)))
@@ -572,20 +581,20 @@ def run_cbps_pipeline(cbps, inst, nsims, run_name, ifield_list = None, \
 	read_noise_models = [None for x in ifield_noise_list]
 	read_noise_models_per_quad = None
 	if pscb_dict['with_inst_noise']:
-		read_noise_models = cbps.grab_noise_model_set(ifield_noise_list, inst, field_set_shape=field_set_shape, noise_model_base_path=fpath_dict['read_noise_modl_base_path'], noise_modl_type=config_dict['noise_modl_type'])
+		read_noise_models = cbps.grab_noise_model_set(ifield_noise_list, inst, noise_model_base_path=fpath_dict['read_noise_modl_base_path'], noise_modl_type=config_dict['noise_modl_type'])
 		
 		if pscb_dict['compute_ps_per_quadrant']:
 			read_noise_models_per_quad = []
 			for q in range(4):
 
-				read_noise_models_indiv_quad = cbps.grab_noise_model_set(ifield_noise_list, inst, field_set_shape=(len(ifield_noise_list), 512, 512), \
+				read_noise_models_indiv_quad = cbps.grab_noise_model_set(ifield_noise_list, inst, \
 													noise_model_base_path=fpath_dict['read_noise_modl_base_path'], noise_modl_type=config_dict['noise_modl_type']+'_quad'+str(q))
 				read_noise_models_per_quad.append(read_noise_models_indiv_quad)
 
 
 		if ciber_cross_ciber: # cross
 			print('Loading read noise models for cross instrument TM', cross_inst)
-			read_noise_models_cross = cbps.grab_noise_model_set(ifield_noise_list, cross_inst, field_set_shape=field_set_shape, noise_model_base_path=fpath_dict['cross_read_noise_modl_base_path'])
+			read_noise_models_cross = cbps.grab_noise_model_set(ifield_noise_list, cross_inst, noise_model_base_path=fpath_dict['cross_read_noise_modl_base_path'])
 
 	if pscb_dict['transfer_function_correct']:
 
@@ -651,9 +660,9 @@ def run_cbps_pipeline(cbps, inst, nsims, run_name, ifield_list = None, \
 
 	# loop through simulations
 	for i in np.arange(config_dict['simidx0'], nsims):
-		pscb_dict['verbose'] = True
-		if i>10:
-			pscb_dict['verbose'] = True
+		# pscb_dict['verbose'] = True
+		# if i>10:
+		# 	pscb_dict['verbose'] = True
 
 		if pscb_dict['save_intermediate_cls']:
 			cls_inter, inter_labels = [], [] # each cl added will have a corresponding key
@@ -1036,6 +1045,13 @@ def run_cbps_pipeline(cbps, inst, nsims, run_name, ifield_list = None, \
 					if pscb_dict['show_plots'] and not pscb_dict['shut_off_plots']:
 						plot_map(ff_estimates[k], title='ff estimates k 894')
 						plot_map(processed_ims[k]*joint_maskos[k], title='masked im')
+
+						masked_sub = observed_ims[k]*joint_maskos[k]
+
+						masked_sub[masked_sub != 0] -= np.mean(masked_sub[masked_sub != 0])
+
+						plot_map(masked_sub, title='masked sub (observed_ims), 1045')
+
 						if ciber_cross_ciber:
 							plot_map(observed_ims_cross[k]*joint_maskos[k], title='masked im cross')
 
@@ -1440,7 +1456,7 @@ def run_cbps_pipeline(cbps, inst, nsims, run_name, ifield_list = None, \
 						maskobs[cbps.x0s[q]:cbps.x1s[q], cbps.y0s[q]:cbps.y1s[q]][mquad==1] -= np.mean(maskobs[cbps.x0s[q]:cbps.x1s[q], cbps.y0s[q]:cbps.y1s[q]][mquad==1])
 
 				else:
-					maskobs[target_mask==1]-=np.mean(maskobs[target_mask==1])
+					maskobs[maskobs!=0]-=np.mean(maskobs[maskobs!=0])
 				# if not pscb_dict['shut_off_plots']:
 				plot_map(maskobs, title='FF corrected, mean subtracted CIBER map ('+cbps.ciber_field_dict[ifield_list[fieldidx]]+')', hipct=99.999, lopct=0., cmap='bwr')
 

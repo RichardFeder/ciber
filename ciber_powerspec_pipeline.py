@@ -2343,9 +2343,15 @@ class CIBER_PS_pipeline():
 				
 				for q in range(4):
 					mquad  = mask[self.x0s[q]:self.x1s[q], self.y0s[q]:self.y1s[q]]
-					masked_image[self.x0s[q]:self.x1s[q], self.y0s[q]:self.y1s[q]][mquad==1] -= np.mean(masked_image[self.x0s[q]:self.x1s[q], self.y0s[q]:self.y1s[q]][mquad==1])
+					imquad = masked_image[self.x0s[q]:self.x1s[q], self.y0s[q]:self.y1s[q]]
+					masked_image[self.x0s[q]:self.x1s[q], self.y0s[q]:self.y1s[q]][imquad!=0] -= np.mean(masked_image[self.x0s[q]:self.x1s[q], self.y0s[q]:self.y1s[q]][imquad!=0])
+
+					# masked_image[self.x0s[q]:self.x1s[q], self.y0s[q]:self.y1s[q]][mquad==1] -= np.mean(masked_image[self.x0s[q]:self.x1s[q], self.y0s[q]:self.y1s[q]][mquad==1])
 					if cross_image is not None:
-						cross_masked_image[self.x0s[q]:self.x1s[q], self.y0s[q]:self.y1s[q]][mquad==1] -= np.mean(cross_masked_image[self.x0s[q]:self.x1s[q], self.y0s[q]:self.y1s[q]][mquad==1])
+
+						crossimquad = cross_masked_image[self.x0s[q]:self.x1s[q], self.y0s[q]:self.y1s[q]]
+						cross_masked_image[self.x0s[q]:self.x1s[q], self.y0s[q]:self.y1s[q]][crossimquad!=0] -= np.mean(cross_masked_image[self.x0s[q]:self.x1s[q], self.y0s[q]:self.y1s[q]][crossimquad!=0])
+						# cross_masked_image[self.x0s[q]:self.x1s[q], self.y0s[q]:self.y1s[q]][mquad==1] -= np.mean(cross_masked_image[self.x0s[q]:self.x1s[q], self.y0s[q]:self.y1s[q]][mquad==1])
 
 			else:
 

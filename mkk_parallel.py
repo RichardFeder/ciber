@@ -168,7 +168,6 @@ class Mkk_bare():
             
         self.pixlength_in_deg = self.pixsize/3600. # pixel angle measured in degrees
         self.ell_max = 2*180./self.pixlength_in_deg # maximum multipole determined by pixel size
-        print('ell max is ', self.ell_max)
         
         self.arcsec_pp_to_radian = self.pixlength_in_deg*(np.pi/180.) # conversion from arcsecond per pixel to radian per pixel
         
@@ -430,8 +429,9 @@ class Mkk_bare():
         return C_ell
     
     
-    def compute_ringmasks(self, sub_bins=False):        
-        print('Minimum ell_map value is '+str(np.min(self.ell_map)))
+    def compute_ringmasks(self, sub_bins=False, verbose=False):    
+        if verbose:    
+            print('Minimum ell_map value is '+str(np.min(self.ell_map)))
         
         self.correspond_bins = []
         
@@ -495,7 +495,8 @@ class Mkk_bare():
             self.ringmasks = ringmasks
             self.ringmask_sums = np.array([np.sum(ringmask) for ringmask in self.ringmasks])
         
-        print('self.correspond_bins is ', self.correspond_bins)
+        if verbose:
+            print('self.correspond_bins is ', self.correspond_bins)
 
 
     def compute_midbin_delta_ells(self):
@@ -513,12 +514,13 @@ class Mkk_bare():
         else:
             self.masked_weights = [fac*self.weights[ringmask] for ringmask in self.ringmasks]
     
-    def compute_masked_weight_sums(self, sub_bins=False):
+    def compute_masked_weight_sums(self, sub_bins=False, verbose=False):
         if sub_bins and self.n_fine_bins > 0:
             self.sub_masked_weight_sums = np.array([np.sum(self.weights[ringmask]) for ringmask in self.sub_ringmasks])
         else:   
             self.masked_weight_sums = np.array([np.sum(self.weights[ringmask]) for ringmask in self.ringmasks])
-            print('self.masked weight sums:', self.masked_weight_sums)
+            if verbose:
+                print('self.masked weight sums:', self.masked_weight_sums)
             
     def load_fourier_weights(self, weights):
         ''' Loads the fourier weights!'''
@@ -534,7 +536,7 @@ class Mkk_bare():
         else:
             self.binl = np.linspace(self.ell_min, self.ell_max, self.nbins+1)
                 
-    def get_ell_map(self, shift=True, pix_size=7.):
+    def get_ell_map(self, shift=True, pix_size=7., verbose=False):
 
         ''' this will take input map dimensions along with a pixel scale (in arcseconds) and compute the 
         corresponding multipole bins for the 2d map.'''
@@ -549,36 +551,41 @@ class Mkk_bare():
         ell_y = ifftshift(ell_y)
 
         self.ell_map = np.sqrt(ell_x**2 + ell_y**2)
-        
-        print('minimum/maximum ell is ', np.min(self.ell_map[np.nonzero(self.ell_map)]), np.max(self.ell_map))
+        if verbose:
+            print('minimum/maximum ell is ', np.min(self.ell_map[np.nonzero(self.ell_map)]), np.max(self.ell_map))
 
         if shift:
             self.ell_map = fftshift(self.ell_map)
             
 
     def precompute_mkk_quantities(self, precompute_all=False, ell_map=False, binl=False, weights=False, ringmasks=False,\
-                                masked_weight_sums=False, masked_weights=False, midbin_delta_ells=False, shift=True, sub_bins=False):
+                                masked_weight_sums=False, masked_weights=False, midbin_delta_ells=False, shift=True, sub_bins=False, \
+                                verbose=False):
         
         
         if ell_map or precompute_all:
-            print('Generating 2D ell map..')
+            if verbose:
+                print('Generating 2D ell map..')
             self.get_ell_map(shift=shift, pix_size=self.pixsize)
 
                  
         if binl or precompute_all:
-            print('Generating multipole bins..')
             self.compute_multipole_bins()
-            print('Multipole bin edges:', self.binl)
+            if verbose:
+                print('Generating multipole bins..')
+                print('Multipole bin edges:', self.binl)
                 
         if weights or precompute_all:
             # if no weights provided by user, weights are unity across image
             if self.weights is None:
-                print('No Fourier weights provided, setting to unity..')
+                if verbose:
+                    print('No Fourier weights provided, setting to unity..')
                 self.weights = np.ones((self.dimx, self.dimy))   
             
         if ringmasks or precompute_all:
             if self.ringmasks is None or sub_bins:
-                print('Computing Fourier ring masks..')
+                if verbose:
+                    print('Computing Fourier ring masks..')
                 self.compute_ringmasks(sub_bins=sub_bins)
               
         if masked_weights or precompute_all:
@@ -1070,10 +1077,10 @@ def estimate_mkk_ffest(cbps, nsims, masks, ifield_list=None, n_split=1, mean_nor
                 unmasked_means = np.array([np.mean(cbps.Mkk_obj.empty_aligned_objs[2][k,s].real[masks[k]==1.]) for s in range(nsims_perf)])                
                 cbps.Mkk_obj.empty_aligned_objs[2][k] -= np.array([masks[k]*unmasked_means[s] for s in range(nsims_perf)])
                 unmasked_means_sub = np.array([np.mean(cbps.Mkk_obj.empty_aligned_objs[2][k,s].real[masks[k]==1.]) for s in range(nsims_perf)])
-                if k==0 and i==0:
-                    print('unmasked mean pre sub:', unmasked_means)
-                    print('unmasked mean post subs', unmasked_means_sub)
-                    plot_map(cbps.Mkk_obj.empty_aligned_objs[2][k,0].real, title='cbps.Mkk_obj.empty_aligned_objs[2][k,0].real post mean sub')
+                # if k==0 and i==0:
+                #     print('unmasked mean pre sub:', unmasked_means)
+                #     print('unmasked mean post subs', unmasked_means_sub)
+                #     plot_map(cbps.Mkk_obj.empty_aligned_objs[2][k,0].real, title='cbps.Mkk_obj.empty_aligned_objs[2][k,0].real post mean sub')
 
                 # undo scaling of off fields to ff_estimate
                 for kp in notkrange:
