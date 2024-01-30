@@ -706,6 +706,8 @@ def read_in_hsc_swire_cat(cbps, catalog_basepath=None, convert_to_Vega=True):
     print('saving to ', save_fpath)
     hsc_filt.to_csv(save_fpath)
 
+    return hsc_filt
+
 def read_in_ukidss_cat(catalog_basepath, ifield):
     uk_path_dict = dict({'train':'ukidss_dr11_plus_UDS_12_7_20.csv', 4:'ukidss_dr11_plus_elat10_0_102220.csv', 5:'ukidss_dr11_plus_elat30_0_102220.csv', 8:'ukidss_dr11_plus_SWIRE_0_102220.csv'})
     Vega_to_AB = dict({'g':-0.08, 'r':0.16, 'i':0.37, 'z':0.54, 'y':0.634, 'J':0.91, 'H':1.39, 'K':1.85})
@@ -863,3 +865,78 @@ def unWISE_fluxes_to_mags_112822(fluxes, mode='AB'):
         AB[1,:] += 3.339
         
         return AB
+
+def compute_number_counts(inst, mag_min=17.0, mag_max=30.0, dm=0.5, apply_dm=True, plot=False):
+
+    
+    if inst==1:
+        counts_match_measurements = np.loadtxt('data/Jband_number_counts_vs_mag.csv', delimiter=',', dtype=float)
+        counts_match_helgason = np.loadtxt('data/on_curve_Jband.csv', delimiter=',', dtype=float)
+        
+        bandstr = 'J'
+#         lam = 1.25
+        lam = 1.05
+        Vega_to_AB = 0.91
+    else:
+        counts_match_measurements = np.loadtxt('data/hband_counts_permag.csv', delimiter=',', dtype=float)
+        counts_match_helgason = np.loadtxt('data/on_curve_Hband.csv', delimiter=',', dtype=float)
+        bandstr = 'H'
+#         lam =1.63
+        lam= 1.79
+        Vega_to_AB = 1.35
+    
+    mags_raw_meas = counts_match_measurements[:,0]
+    mags_raw_helgason = counts_match_helgason[:,0]
+
+    log_counts_meas = np.log10(counts_match_measurements[:,1])
+    log_counts_helgason = np.log10(counts_match_helgason[:,1])
+    
+
+    mags_sample = np.arange(mag_min, mag_max, dm) 
+    mags_sample += Vega_to_AB
+    
+    print('mags sample:', mags_sample)
+
+    interp_fn_meas = scipy.interpolate.interp1d(mags_raw_meas, log_counts_meas)
+    interp_fn_helgason = scipy.interpolate.interp1d(mags_raw_helgason, log_counts_helgason)
+
+    interp_log_counts_meas = interp_fn_meas(mags_sample)
+    interp_log_counts_helgason = interp_fn_helgason(mags_sample)
+    
+    if plot:
+        
+        mags_fine = np.linspace(np.min(mags_sample), np.max(mags_sample), 100)
+        
+        log_counts_fine_meas = interp_fn_meas(mags_fine)
+        log_counts_fine_helgason = interp_fn_helgason(mags_fine)
+
+        plt.figure(figsize=(5, 4))        
+        plt.plot(mags_fine, 10**log_counts_fine_meas, color='k', label='Direct galaxy counts (HFE)', linestyle='dashed')
+        plt.plot(mags_fine, 10**log_counts_fine_helgason, color='k', label='Helgason model best fit')
+        plt.xlabel(bandstr+'-band magnitude (AB)', fontsize=14)
+        plt.legend()
+        plt.grid(alpha=0.5)
+        plt.xlim(15, 22)
+        plt.ylabel('Number mag$^{-1}$ deg$^{-2}$', fontsize=14)
+        plt.yscale('log')
+#         plt.savefig('/Users/richardfeder/Downloads/direct_vs_helgason_TM'+str(inst)+'_counts.png', bbox_inches='tight', dpi=200)
+        plt.show()
+    
+    
+    nu_Inu = cmock.mag_2_nu_Inu(mags_sample, lam_eff=lam*1e-6*u.m)*cmock.pix_sr
+
+    nm_dm_meas = 10**(interp_log_counts_meas)
+    nm_dm_helgason = 10**(interp_log_counts_helgason)
+
+    nm_dm_persr_meas = nm_dm_meas/3.046e-4 # convert to sr-1
+    nm_dm_persr_helgason = nm_dm_helgason/3.046e-4 # convert to sr-1
+
+    if apply_dm:
+        nm_dm_persr_meas *= dm
+        nm_dm_persr_helgason *= dm
+
+    poisson_var_meas = np.sum(nm_dm_persr_meas*(nu_Inu**2))
+    poisson_var_helgason = np.sum(nm_dm_persr_helgason*(nu_Inu**2))
+
+    return poisson_var_meas.value, poisson_var_helgason.value
+

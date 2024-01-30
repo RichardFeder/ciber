@@ -23,11 +23,12 @@ class stack_obj():
         self.all_aper_flux = []
         self.all_aper_flux_unc = []
         
+        self.all_mean_predmag_Vega = []
         self.mmin_range = mmin_range
         self.dms = dms
         
         
-    def append_results(self, aper_flux, aper_flux_unc, mean_post, posx, posy, mean_flux, nsrc):
+    def append_results(self, aper_flux, aper_flux_unc, mean_post, posx, posy, mean_flux, nsrc, mean_predmag_Vega):
         
         self.all_aper_flux.append(aper_flux)
         self.all_aper_flux_unc.append(aper_flux_unc)
@@ -36,6 +37,7 @@ class stack_obj():
         self.all_posy.append(posy)
         self.all_mean_fluxes.append(mean_flux)
         self.all_nsrc.append(nsrc)
+        self.all_mean_predmag_Vega.append(mean_predmag_Vega)
 
 def stack_in_mag_bins_pred_flam(bootes_ifield, mask_base_path=None, catalog_basepath=None, \
                                mmin_range = [16.0, 16.5, 17.0, 17.5, 18.0], dx=4, mag_mask=15.0):
@@ -60,8 +62,6 @@ def stack_in_mag_bins_pred_flam(bootes_ifield, mask_base_path=None, catalog_base
     
     catalog_fpath_pred = catalog_basepath + 'mask_predict/mask_predict_unWISE_PS_fullmerge_'+fieldname+'_ukdebias.csv'
     catalog_fpath_flam = catalog_basepath + 'bootes_dr1_flamingos/flamingos_J_wxy_CIBER_ifield'+str(bootes_ifield)+'.csv'
-
-
     
     if bootes_ifield==6:
         xlim = [550, 900]
@@ -120,7 +120,7 @@ def stack_in_mag_bins_pred_flam(bootes_ifield, mask_base_path=None, catalog_base
         stack_obj_flam.append_results(weighted_aper_flux_flam, weighted_aper_unc_flam, mean_post_flam, posx_flam, posy_flam, mean_flux_flam, nsrc_flam)
 
     return stack_obj_pred, stack_obj_flam
-
+    
 def grab_flam_only_sources(bootes_ifield, catalog_basepath=None, mask_base_path=None, trim_edge=50, m_max_pred=18.5, m_max_flam=18.5, min_dr=2, \
                           mmin_range=None, m_min_start=15.0, dx=4, mask_frac_min=0.9):
     
@@ -274,11 +274,14 @@ def grab_flam_only_sources(bootes_ifield, catalog_basepath=None, mask_base_path=
 def calc_stacked_fluxes_new(cbps, inst, fieldidx_choose, mask_base_path, catalog_fpath, m_min, m_max, cat_type='predict', \
                        dx=5, trim_edge=50, mag_mask=15.0, bkg_rad=0.35, xlim=None, ylim=None, \
                        mask_tail = 'maglim_J_Vega_17.5_111323_ukdebias', mask_frac_min=0.9, \
-                       cat_x=None, cat_y=None, cat_mag=None, skip_nn=True):
+                       cat_x=None, cat_y=None, cat_mag=None, skip_nn=True, plot=False):
 
     
     # process ciber maps first
     ifield_list = [4, 5, 6, 7, 8]
+    
+    bandstr_dict = dict({1:'J', 2:'H'})
+    bandstr = bandstr_dict[inst]
     
     data_type='observed'
     config_dict, pscb_dict, float_param_dict, fpath_dict = return_default_cbps_dicts()
@@ -298,9 +301,10 @@ def calc_stacked_fluxes_new(cbps, inst, fieldidx_choose, mask_base_path, catalog
     flight_im -= dc_template*cbps.cal_facs[inst]
 
     bkg_mask = gen_bkg_mask(dx, bkg_rad=bkg_rad)
-    plot_map(bkg_mask, figsize=(4,4))
+    if plot:
+        plot_map(bkg_mask, figsize=(4,4))
     # load mask
-    mask_fpath = mask_base_path+'maglim_J_Vega_'+str(mag_mask)+'_111323_ukdebias/joint_mask_ifield'+str(ifield_choose)+'_inst'+str(inst)+'_observed_maglim_J_Vega_'+str(mag_mask)+'_111323_ukdebias.fits'
+    mask_fpath = mask_base_path+'maglim_'+bandstr+'_Vega_'+str(mag_mask)+'_111323_ukdebias/joint_mask_ifield'+str(ifield_choose)+'_inst'+str(inst)+'_observed_maglim_'+bandstr+'_Vega_'+str(mag_mask)+'_111323_ukdebias.fits'
     print('opening mask from ', mask_fpath)
     mask = fits.open(mask_fpath)[1].data
 
@@ -313,9 +317,9 @@ def calc_stacked_fluxes_new(cbps, inst, fieldidx_choose, mask_base_path, catalog
         cat_x = np.array(cat_df['x'+str(inst)])
         cat_y = np.array(cat_df['y'+str(inst)])
         if cat_type=='predict':
-            cat_mag = np.array(cat_df['J_Vega_predict'])
+            cat_mag = np.array(cat_df[bandstr+'_Vega_predict'])
         elif cat_type=='flamingos':
-            cat_mag = np.array(cat_df['J'])
+            cat_mag = np.array(cat_df[bandstr])
                 
         magmask = (cat_mag > m_min)*(cat_mag < m_max)*(cat_x > trim_edge)*(cat_x < 1023-trim_edge)*(cat_y > trim_edge)*(cat_y < 1023-trim_edge)
     
@@ -333,6 +337,8 @@ def calc_stacked_fluxes_new(cbps, inst, fieldidx_choose, mask_base_path, catalog
     cal_src_posx = cat_x[magmask]
     cal_src_posy = cat_y[magmask]
     
+    cal_src_predmag = cat_mag[magmask]
+    
     print('cal src posx has length ', len(cal_src_posx))
     
     all_postage_stamps, all_postage_stamps_mask, post_bool = grab_postage_stamps(inst, cal_src_posx, cal_src_posy, flight_im, mask, dx, mask_frac_min=mask_frac_min, \
@@ -342,7 +348,7 @@ def calc_stacked_fluxes_new(cbps, inst, fieldidx_choose, mask_base_path, catalog
     
     sum_counts = np.zeros_like(sum_post)
     
-    all_aper_flux, all_aper_var, all_aper_post = [[] for x in range(3)]
+    all_aper_flux, all_aper_var, all_aper_post, all_cat_predmags = [[] for x in range(4)]
 
     for n in range(len(all_postage_stamps)):
         if post_bool[n]==1:
@@ -352,6 +358,8 @@ def calc_stacked_fluxes_new(cbps, inst, fieldidx_choose, mask_base_path, catalog
             all_aper_post.append(aper_post)
             all_aper_flux.append(aper_flux)
             all_aper_var.append(aper_flux_var)
+            
+            all_cat_predmags.append(cal_src_predmag[n])
             
             indiv_post = all_postage_stamps[n]*all_postage_stamps_mask[n]
             sum_post += aper_post            
@@ -367,9 +375,72 @@ def calc_stacked_fluxes_new(cbps, inst, fieldidx_choose, mask_base_path, catalog
     
     weighted_aper_flux = np.nansum(np.array(all_aper_flux)*aper_flux_weights)/np.nansum(aper_flux_weights)
     weighted_aper_unc = np.sqrt(1./np.nansum(aper_flux_weights))
-        
-    plot_map(mean_post, figsize=(6,6), title='mean postage')
-    plot_map(std_post, figsize=(6,6), title='std_post')
+    
+    if plot:
+        plot_map(mean_post, figsize=(6,6), title='mean postage')
+        plot_map(std_post, figsize=(6,6), title='std_post')
         
     return mean_post, sum_post, std_post, sum_counts, np.sum(post_bool),\
-            cal_src_posx, cal_src_posy, weighted_aper_flux, weighted_aper_unc
+            cal_src_posx, cal_src_posy, weighted_aper_flux, weighted_aper_unc, all_cat_predmags
+
+
+
+
+def stack_in_mag_bins_pred(inst, ifield, mask_base_path=None, catalog_basepath=None, \
+                               mmin_range = [16.0, 16.5, 17.0, 17.5, 18.0], dx=4, mag_mask=15.0, \
+                          trim_edge= 50):
+    
+    cbps = CIBER_PS_pipeline()
+    fieldidx = ifield - 4
+    fieldname = cbps.ciber_field_dict[ifield]
+    mmin_range = np.array(mmin_range)
+    
+    xlim = [trim_edge, 1023-trim_edge]
+    ylim = [trim_edge, 1023-trim_edge]
+    
+    if mask_base_path is None:
+        mask_base_path = config.ciber_basepath+'data/fluctuation_data/TM'+str(inst)+'/masks/'
+
+    if catalog_basepath is None:
+        catalog_basepath = config.ciber_basepath+'data/catalogs/'
+        
+    catalog_fpath_pred = catalog_basepath + 'mask_predict/mask_predict_unWISE_PS_fullmerge_'+fieldname+'_ukdebias.csv'
+
+    dms = list(mmin_range[1:]-mmin_range[:-1])
+    dms.append(dms[-1])
+    dms = np.array(dms)
+    
+    stack_obj_pred = stack_obj(mmin_range=mmin_range, dms=dms)
+    
+    mag_mask = min(mag_mask, np.min(mmin_range))
+
+    for m, m_min in enumerate(mmin_range):
+        m_max = m_min + dms[m]
+
+        mean_post_pred, sum_post_pred, std_post_pred, sum_counts_pred,\
+            nsrc_pred, posx_pred, posy_pred, weighted_aper_flux_pred, weighted_aper_unc_pred, \
+                all_cat_predmags = calc_stacked_fluxes_new(cbps, inst, fieldidx, mask_base_path, catalog_fpath_pred, m_min, m_max, cat_type='predict', \
+                                                                                       xlim=xlim, ylim=ylim, mag_mask=mag_mask, dx=dx, mask_frac_min=0.9)
+
+    
+        # compute mean Vega flux expected from catalog
+        
+        all_cat_predmags_AB = np.array(all_cat_predmags)+cbps.Vega_to_AB[inst]
+        all_cat_predfluxdens = 10**(-0.4*(all_cat_predmags_AB-23.9))
+        
+        mean_predfluxdens = np.mean(all_cat_predfluxdens)
+        mean_predmag_Vega = -2.5*np.log10(mean_predfluxdens)+23.9 - cbps.Vega_to_AB[inst]
+    
+        std_post_pred[std_post_pred==0] = np.inf
+        
+        
+        invvar_pred = 1./std_post_pred**2
+        sumweights_pred = np.nansum(invvar_pred)
+#         mean_flux_pred = np.nansum(invvar_pred*mean_post_pred)/sumweights_pred
+        
+        mean_flux_pred = np.nansum(mean_post_pred)
+        
+        stack_obj_pred.append_results(weighted_aper_flux_pred, weighted_aper_unc_pred, mean_post_pred, posx_pred, posy_pred, mean_flux_pred, nsrc_pred, \
+                                     mean_predmag_Vega)
+
+    return stack_obj_pred

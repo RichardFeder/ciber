@@ -515,7 +515,8 @@ def predict_masking_magnitude_z_W1(mask_cat, J_mag_lim=17.5):
 
 
 def predict_masking_catalogs(ifield_list, catalog_basepath, tailstr, feature_names=None, max_depth=8, save=False, debias=False, \
-                                   color_list=None, mag_train_max=21, mag_train_min=0., dpos_max=1.0, trainstr=None):
+                                   color_list=None, mag_train_max=21, mag_train_min=0., dpos_max=1.0, trainstr=None, \
+                            apply_to_science_cats=False, test_cosmos15=False, catalog_fpath=None, save_training_sets=False):
     
     if feature_names is None:
         feature_names=['rMeanPSFMag', 'iMeanPSFMag', 'gMeanPSFMag', 'zMeanPSFMag', 'yMeanPSFMag', 'mag_W1', 'mag_W2']
@@ -526,14 +527,9 @@ def predict_masking_catalogs(ifield_list, catalog_basepath, tailstr, feature_nam
     
     if catalog_fpath is None:
         catalog_fpath = catalog_basepath+'crossmatch/UKIDSS_unWISE_PS_fullmerge/UKIDSS_unWISE_PS_fullmerge_dpos='+str(dpos_max)+'_UDS.csv'
-
+        
     merged_crossmatch_catalog = pd.read_csv(catalog_fpath)
     
-#     uds_merged_crossmatch_catalog = pd.read_csv(catalog_basepath+'crossmatch/UKIDSS_unWISE_PS_fullmerge/UKIDSS_unWISE_PS_fullmerge_dpos='+str(dpos_max)+'_UDS.csv')
-#     uds_merged_crossmatch_catalog = pd.read_csv(catalog_basepath+'crossmatch/UKIDSS_LS_fullmerge/UKIDSS_LS_fullmerge_dpos='+str(dpos_max)+'_UDS.csv')
-#     uds_merged_crossmatch_catalog = pd.read_csv(catalog_basepath+'COSMOS20/COSMOS20_grizy_JH_CH1CH2_Jlt22_Vega.csv')
-#     uds_merged_crossmatch_catalog = pd.read_csv(catalog_basepath+'COSMOS20/COSMOS15_rizy_JH_CH1CH2_Jlt22_Vega_aper3.csv')
-#     uds_merged_crossmatch_catalog = pd.read_csv(config.ciber_basepath+'data/catalogs/COSMOS20/COSMOS15_peterflag_Jlt22_rizy_JH_CH1CH2_Vega.csv')
 
     if color_list is not None:
         for c, comb in enumerate(color_list):
@@ -573,35 +569,150 @@ def predict_masking_catalogs(ifield_list, catalog_basepath, tailstr, feature_nam
     print('feature names:', feature_names)
     # now load science catalogs and make predictions
     predicted_catalogs = []
-    for fieldidx, ifield in enumerate(ifield_list):
+    
+    if test_cosmos15:
+        print('Applying model to predict COSMOS 15 sources')
+        c15_cat = pd.read_csv(catalog_basepath+'COSMOS15/COSMOS15_hjmcc_rizy_JH_CH1CH2_AB.csv')
         
-        fieldname = ciber_field_dict[ifield]
+#         color_list_c15 = [['z_AB', 'y_AB']] # labels are AB but subtracting after converting to Vega magnitudes
+        color_list_c15 = None
+        plt.figure()
+        plt.hist(c15_cat['J'], bins=np.linspace(14, 23, 20), histtype='step', label='J')
+        plt.hist(c15_cat['H'], bins=np.linspace(14, 23, 20), histtype='step', label='H')
+        plt.legend()
+        plt.yscale('log')
+        plt.show()
+        
+        print('c15 cat is originally', len(c15_cat))
+        c15_cat_cut = c15_cat.iloc[np.where((c15_cat['J'] < 22))]
+        print('after J cut c15 cat now has length ', len(c15_cat))
+        
+        feature_names_c15 = ['r_AB', 'i_AB', 'z_AB', 'y_AB', 'mag_CH1', 'mag_CH2']
+#         feature_names_c15 = ['r_AB', 'i_AB', 'z_AB', 'y_AB', 'mag_CH1']
+        
+        test_bands = ['J', 'H']
+        
+        Vega_to_AB_c15 = dict({'r_AB':0.16, 'i_AB':0.37, 'z_AB':0.54, 'y_AB':0.634, 'J':0.91, 'H':1.39, 'K':1.85, 'mag_CH1':2.699, 'mag_CH2':3.339})
 
-        merged_science_field_cat = pd.read_csv(catalog_basepath+'crossmatch/unWISE_PS_fullmerge/unWISE_PS_fullmerge_dpos=1.0_'+fieldname+'.csv')
-#         merged_crossmatch_unWISE_PS = pd.read_csv(catalog_basepath+'crossmatch/unWISE_PS_fullmerge/unWISE_PS_fullmerge_dpos=1.0_'+fieldname+'.csv')
-#         merged_crossmatch_unWISE_PS = pd.read_csv(catalog_basepath+'DECaLS/filt/decals_CIBER_ifield'+str(ifield)+'.csv')
-
-        if color_list is not None:
-            for c, comb in enumerate(color_list):
+        for name in feature_names_c15:
+            c15_cat_cut[name] -= Vega_to_AB_c15[name]
+        
+        for name in test_bands:
+            c15_cat_cut[name] -= Vega_to_AB_c15[name] 
+            
+                
+        if color_list_c15 is not None:
+            for c, comb in enumerate(color_list_c15):
                 color_label = comb[0]+'_'+comb[1]
-                color = merged_science_field_cat[comb[0]]-merged_science_field_cat[comb[1]]
-                merged_science_field_cat.insert(c+1, color_label, color, True)
-
-        features_merged_cat = feature_matrix_from_df(merged_science_field_cat, feature_names=feature_names, filter_nans=True)
-        predictions_J_CIBER_field = random_forest_J.predict(features_merged_cat)
-        merged_science_field_cat['J_Vega_predict'] = predictions_J_CIBER_field
+                color = c15_cat_cut[comb[0]]-c15_cat_cut[comb[1]]
+                c15_cat_cut.insert(c+1, color_label, color, True)
+                feature_names_c15.append(color_label)
+            
+            
+        plt.figure()
+        plt.hist(c15_cat['J'], bins=np.linspace(14, 23, 20), histtype='step', label='J')
+        plt.hist(c15_cat['H'], bins=np.linspace(14, 23, 20), histtype='step', label='H')
         
-        predictions_H_CIBER_field = random_forest_H.predict(features_merged_cat)
-        merged_science_field_cat['H_Vega_predict'] = predictions_H_CIBER_field
+        plt.hist(c15_cat_cut['J'], bins=np.linspace(14, 23, 20), histtype='step', label='J Vega')
+        plt.hist(c15_cat_cut['H'], bins=np.linspace(14, 23, 20), histtype='step', label='H Vega')
         
-        if save:
-            print('saving merged catalog..')
-            merged_science_field_cat.to_csv(catalog_basepath+'mask_predict/mask_predict_LS_fullmerge_'+fieldname+'_'+tailstr+'.csv')
+        plt.legend()
+        plt.yscale('log')
+        plt.show()
+        
+        features_c15_test = feature_matrix_from_df(c15_cat_cut, feature_names=feature_names_c15, filter_nans=True)
+        
+        predictions_J_C15 = random_forest_J.predict(features_c15_test)
+        c15_cat_cut['J_Vega_predict'] = predictions_J_C15
+        
+        predictions_H_C15 = random_forest_H.predict(features_c15_test)
+        c15_cat_cut['H_Vega_predict'] = predictions_H_C15
+        
+        mmin, mmax = 15, 21
+        plt.figure(figsize=(7, 3))
+        plt.subplot(1,2,1)
+        plt.scatter(c15_cat_cut['J'], c15_cat_cut['J_Vega_predict'], alpha=0.1, color='C0', s=5)
+#         plt.scatter(c15_cat_cut['J'], c15_cat_cut['J_Vega_predict'], c=c15_cat_cut['i_AB'], s=5, vmin=15, vmax=25)
+#         plt.scatter(c15_cat_cut['J'], c15_cat_cut['J_Vega_predict'], c=c15_cat_cut['z_AB']-c15_cat_cut['y_AB'], s=5, vmax=5)
+#         plt.scatter(c15_cat_cut['J'], c15_cat_cut['J_Vega_predict'], c=c15_cat_cut['redshift'], s=5, vmax=5)
 
-        predicted_catalogs.append(merged_science_field_cat)
+#         plt.axvline(16.0, label='2MASS depth', color='b', linestyle='dashed')
+
+#         cbar = plt.colorbar()
+#         cbar.set_label('z - y', fontsize=12)
+        plt.xlim(mmin, mmax)
+        plt.ylim(mmin, mmax)
+        plt.plot(np.linspace(mmin, mmax, 100), np.linspace(mmin, mmax, 100), linestyle='dashed', color='r')
+        
+        plt.text(mmin+0.25, mmax-1.0, 'UDS training set\nCOSMOS15 test set', fontsize=12, bbox=dict({'facecolor':'white', 'alpha':0.5, 'edgecolor':'None'}))
+        plt.xlabel('$J_{true}$ [COSMOS 15]', fontsize=12)
+        plt.ylabel('$J_{predict}$', fontsize=12)
+        plt.grid(alpha=0.5)
+        plt.subplot(1,2,2)
+        plt.scatter(c15_cat_cut['H'], c15_cat_cut['H_Vega_predict'], alpha=0.1, color='C0', s=5)
+#         plt.scatter(c15_cat_cut['H'], c15_cat_cut['H_Vega_predict'], c=c15_cat_cut['i_AB'], s=5, vmin=15, vmax=25)
+#         plt.scatter(c15_cat_cut['H'], c15_cat_cut['H_Vega_predict'], c=c15_cat_cut['z_AB']-c15_cat_cut['y_AB'], s=5, vmax=5)
+#         plt.scatter(c15_cat_cut['H'], c15_cat_cut['H_Vega_predict'], c=c15_cat_cut['redshift'], s=5, vmax=5)
+
+#         plt.axvline(15.0, label='2MASS depth', color='b', linestyle='dashed')
+    
+#         cbar = plt.colorbar()
+#         cbar.set_label('z - y', fontsize=12)
+        plt.xlim(mmin, mmax)
+        plt.ylim(mmin, mmax)
+        plt.plot(np.linspace(mmin, mmax, 100), np.linspace(mmin, mmax, 100), linestyle='dashed', color='r')
+        plt.grid(alpha=0.5)
+
+        plt.xlabel('$H_{true}$ [COSMOS 15]', fontsize=12)
+        plt.ylabel('$H_{predict}$', fontsize=12)
+        plt.tight_layout()
+        plt.savefig('figures/train_uds_test_C15_meas_vs_predicted_JH_012924.png', bbox_inches='tight', dpi=300)
+        plt.show()
+        
+        # convert back to AB magnitudes
+        print('converting back to AB magnitudes')
+        for name in feature_names_c15:
+            c15_cat_cut[name] += Vega_to_AB_c15[name]
+        
+        for name in test_bands:
+            c15_cat_cut[name] += Vega_to_AB_c15[name] 
+            
+        c15_cat_cut['J_Vega_predict'] += Vega_to_AB_c15['J']
+        c15_cat_cut['H_Vega_predict'] += Vega_to_AB_c15['H']
+        
+        # save predicted COSMOS catalogs
+        
+        c15_cat_cut.to_csv(catalog_basepath+'mask_predict/mask_predict_C15test_'+tailstr+'_AB.csv')
+    
+    if apply_to_science_cats:
+        for fieldidx, ifield in enumerate(ifield_list):
+
+            fieldname = ciber_field_dict[ifield]
+
+            merged_science_field_cat = pd.read_csv(catalog_basepath+'crossmatch/unWISE_PS_fullmerge/unWISE_PS_fullmerge_dpos=1.0_'+fieldname+'.csv')
+    #         merged_crossmatch_unWISE_PS = pd.read_csv(catalog_basepath+'crossmatch/unWISE_PS_fullmerge/unWISE_PS_fullmerge_dpos=1.0_'+fieldname+'.csv')
+    #         merged_crossmatch_unWISE_PS = pd.read_csv(catalog_basepath+'DECaLS/filt/decals_CIBER_ifield'+str(ifield)+'.csv')
+
+            if color_list is not None:
+                for c, comb in enumerate(color_list):
+                    color_label = comb[0]+'_'+comb[1]
+                    color = merged_science_field_cat[comb[0]]-merged_science_field_cat[comb[1]]
+                    merged_science_field_cat.insert(c+1, color_label, color, True)
+
+            features_merged_cat = feature_matrix_from_df(merged_science_field_cat, feature_names=feature_names, filter_nans=True)
+            predictions_J_CIBER_field = random_forest_J.predict(features_merged_cat)
+            merged_science_field_cat['J_Vega_predict'] = predictions_J_CIBER_field
+
+            predictions_H_CIBER_field = random_forest_H.predict(features_merged_cat)
+            merged_science_field_cat['H_Vega_predict'] = predictions_H_CIBER_field
+
+            if save:
+                print('saving merged catalog..')
+                merged_science_field_cat.to_csv(catalog_basepath+'mask_predict/mask_predict_LS_fullmerge_'+fieldname+'_'+tailstr+'.csv')
+
+            predicted_catalogs.append(merged_science_field_cat)
         
     return predicted_catalogs
-
 
 
 

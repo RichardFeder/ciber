@@ -67,6 +67,14 @@ from plotting_fns import *
 #                              ifield_list=[4, 5, 6, 7, 8], use_ciber_wcs=True, nside_deg=4, \
 #                             plot=True):
 
+def compute_rlx_unc_comps(cl_auto_a, cl_auto_b, cl_cross_ab, dcl_auto_a, dcl_auto_b, dcl_cross_ab):
+
+    term1 = (1./(cl_auto_a*cl_auto_b))
+    term2 = (dcl_cross_ab**2 + (cl_cross_ab*dcl_auto_a/(2*cl_auto_a))**2 + (cl_cross_ab*dcl_auto_b/(2*cl_auto_b))**2)
+
+    rlx_unc = np.sqrt(term1*term2)
+    return rlx_unc
+
 def compute_snr(average, errors):
     ''' Given some array of values and errors on those values, this function computes the signal to noise ratio (SNR) in each bin as well as
         the summed SNR over elements''' 

@@ -1198,52 +1198,52 @@ def make_calibration_catalog(ifield, catalog_basepath=None, save=False):
     
     for x in range(len(twomass_ra)):
     
-    dra = twomass_ra[x]-panstarrs_ra
-    ddec = twomass_dec[x]-panstarrs_dec
-    
-    dr = np.sqrt(dra**2+ddec**2)*3600
-    
-    whichmin = np.where((dr<2.0))[0]
-    
-    if len(whichmin) == 0:
-        continue
-    
-    if len(whichmin) > 1:
+        dra = twomass_ra[x]-panstarrs_ra
+        ddec = twomass_dec[x]-panstarrs_dec
+        
+        dr = np.sqrt(dra**2+ddec**2)*3600
+        
+        whichmin = np.where((dr<2.0))[0]
+        
+        if len(whichmin) == 0:
+            continue
+        
+        if len(whichmin) > 1:
 
-        mags_g = ps_g[whichmin]
-        mags_r = ps_r[whichmin]
-        mags_i = ps_i[whichmin]
-        mags_z = ps_g[whichmin]
-        mags_y = ps_y[whichmin]
-        
-        flux_g = 10**(-0.4*(mags_g-23.9))
-        flux_r = 10**(-0.4*(mags_r-23.9))    
-        flux_i = 10**(-0.4*(mags_i-23.9))
-        flux_z = 10**(-0.4*(mags_z-23.9))
-        flux_y = 10**(-0.4*(mags_y-23.9))
-        
-        sumflux_g = np.sum(flux_g[mags_g != -99.])
-        sumflux_r = np.sum(flux_r[mags_r != -99.])
-        sumflux_i = np.sum(flux_i[mags_i != -99.])
-        sumflux_z = np.sum(flux_z[mags_z != -99.])
-        sumflux_y = np.sum(flux_y[mags_y != -99.])
-        
-        calibration_cat[x,9] = -2.5*np.log10(sumflux_g)+23.9
-        calibration_cat[x,10] = -2.5*np.log10(sumflux_r)+23.9
-        calibration_cat[x,11] = -2.5*np.log10(sumflux_i)+23.9
-        calibration_cat[x,12] = -2.5*np.log10(sumflux_z)+23.9
-        calibration_cat[x,13] = -2.5*np.log10(sumflux_y)+23.9
-        
-    else:
-        
-        calibration_cat[x,9] = ps_g[whichmin[0]]
-        calibration_cat[x,10] = ps_r[whichmin[0]]
-        calibration_cat[x,11] = ps_i[whichmin[0]]
-        calibration_cat[x,12] = ps_z[whichmin[0]]
-        calibration_cat[x,13] = ps_y[whichmin[0]]
-        
-    bins = 20
-        
+            mags_g = ps_g[whichmin]
+            mags_r = ps_r[whichmin]
+            mags_i = ps_i[whichmin]
+            mags_z = ps_g[whichmin]
+            mags_y = ps_y[whichmin]
+            
+            flux_g = 10**(-0.4*(mags_g-23.9))
+            flux_r = 10**(-0.4*(mags_r-23.9))    
+            flux_i = 10**(-0.4*(mags_i-23.9))
+            flux_z = 10**(-0.4*(mags_z-23.9))
+            flux_y = 10**(-0.4*(mags_y-23.9))
+            
+            sumflux_g = np.sum(flux_g[mags_g != -99.])
+            sumflux_r = np.sum(flux_r[mags_r != -99.])
+            sumflux_i = np.sum(flux_i[mags_i != -99.])
+            sumflux_z = np.sum(flux_z[mags_z != -99.])
+            sumflux_y = np.sum(flux_y[mags_y != -99.])
+            
+            calibration_cat[x,9] = -2.5*np.log10(sumflux_g)+23.9
+            calibration_cat[x,10] = -2.5*np.log10(sumflux_r)+23.9
+            calibration_cat[x,11] = -2.5*np.log10(sumflux_i)+23.9
+            calibration_cat[x,12] = -2.5*np.log10(sumflux_z)+23.9
+            calibration_cat[x,13] = -2.5*np.log10(sumflux_y)+23.9
+            
+        else:
+            
+            calibration_cat[x,9] = ps_g[whichmin[0]]
+            calibration_cat[x,10] = ps_r[whichmin[0]]
+            calibration_cat[x,11] = ps_i[whichmin[0]]
+            calibration_cat[x,12] = ps_z[whichmin[0]]
+            calibration_cat[x,13] = ps_y[whichmin[0]]
+            
+        bins = 20
+            
     plt.figure()
     plt.hist(calibration_cat[:,6], bins=bins, histtype='step', label='J')
     plt.hist(calibration_cat[:,7], bins=bins, histtype='step', label='H')

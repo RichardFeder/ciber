@@ -13,6 +13,20 @@ from ps_tests import *
 from numerical_routines import *
 
 
+def plot_mean_posts_magbins(sopred, bandstr, return_fig=True):
+    f = plt.figure(figsize=(10, 5))
+    for m in range(len(sopred.mmin_range)):
+
+        plt.subplot(1, len(sopred.mmin_range), m+1)
+        plt.imshow(sopred.all_mean_post[m])
+        plt.title(bandstr+'$\\in$['+str(sopred.mmin_range[m])+','+str(sopred.mmin_range[m]+sopred.dms[m])+']\n$N_{src}$='+str(int(sopred.all_nsrc[m])), fontsize=12)
+        plt.colorbar(pad=0.04, fraction=0.046)
+
+    plt.tight_layout()
+    plt.show()
+    
+    if return_fig:
+        return f
 
 def plot_spitzer_auto(inst, irac_ch, lb, spitzer_auto_cl, spitzer_auto_clerr, all_cl_spitzer, all_clerr_spitzer, return_fig=True):
     
@@ -1160,7 +1174,7 @@ def create_multipanel_figure(images, names, colormap):
             vmax = np.percentile(image, 84)
             vmin = np.percentile(image, 16)
         else:
-            vmax = np.percentile(image, 95)  # Adjust percentile values as needed
+            vmax = np.percentile(image, 95)   # Adjust percentile values as needed
         
         im = ax.imshow(image, cmap=colormap[i], vmin=vmin, vmax=vmax)
 #         ax.set_title(name)
@@ -1173,7 +1187,6 @@ def create_multipanel_figure(images, names, colormap):
         ax.text(0.95, 0.95, name, transform=ax.transAxes,
                 fontsize=12, ha='right', va='top', bbox=dict({'facecolor':'white', 'alpha':0.8, 'edgecolor':None}))
         
-            
         # Add colorbar with units
         cbar = plt.colorbar(im, ax=ax, orientation='vertical', pad=0.04, fraction=0.046)
         
