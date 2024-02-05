@@ -7,6 +7,8 @@ import astropy.wcs as wcs
 from astropy import units as u
 from astropy.coordinates import SkyCoord
 from astropy.coordinates import match_coordinates_sky
+import astropy
+from astropy.convolution import Gaussian2DKernel
 from scipy.ndimage import gaussian_filter
 from sklearn import tree
 import os
@@ -23,6 +25,19 @@ from filtering_utils import calculate_plane, fit_gradient_to_map
 
 # from ps_pipeline_go import update_dicts
 # from ciber_noise_data_utils import iter_sigma_clip_mask, sigma_clip_maskonly
+
+# ciber_data_file_utils.py
+# def load_regrid_lens_map(inst, ifield, cmblens_mode, base_path=None):
+# def load_regrid_dgl_map(inst, ifield, dgl_mode, base_path=None, p = 0.0184):
+# def load_isl_rms(isl_rms_fpath, masking_maglim, nfield):
+
+# numerical_routines.py
+# def randn_skew_fast(N=None, shape=None, alpha=0.0, loc=0.0, scale=1.0):
+# def generate_rand_skew_layered(skew_upsamp, realiz_shape, skew_max=8, plot=False):
+# def iterative_gradient_ff_solve_bulk(orig_images, niter=3, masks=None, weights_ff=None, plot=False, ff_stack_min=2, masks_ffest=None):
+# def mean_sub_masked_image(image, mask):
+# def compute_fourier_weights(cl2d_all, stdpower=2, mode='mean'):
+
 
 ''' 
 
@@ -48,15 +63,9 @@ def update_dicts(list_of_dicts, kwargs, verbose=False):
 				indiv_dict[key] = value 
 	return list_of_dicts 
 
-# numerical_routines.py
-# def mean_sub_masked_image(image, mask):
-# def compute_fourier_weights(cl2d_all, stdpower=2, mode='mean'):
-
 def verbprint(verbose, text):
 	if verbose:
 		print(text)
-
-
 
 def additional_masks(cbps, mask, inst, ifield,\
 					 low_responsivity_blob_mask=False, apply_wen_cluster_mask=False,\
@@ -77,11 +86,6 @@ def additional_masks(cbps, mask, inst, ifield,\
 
 	return mask
 
-# ciber_data_file_utils.py
-# def load_regrid_lens_map(inst, ifield, cmblens_mode, base_path=None):
-# def load_regrid_dgl_map(inst, ifield, dgl_mode, base_path=None, p = 0.0184):
-# def load_isl_rms(isl_rms_fpath, masking_maglim, nfield):
-
 
 
 def stack_masks_ffest(all_masks, ff_stack_min):
@@ -95,11 +99,100 @@ def stack_masks_ffest(all_masks, ff_stack_min):
 
 	return all_masks, stack_masks
 
-# numerical_routines.py
-# def randn_skew_fast(N=None, shape=None, alpha=0.0, loc=0.0, scale=1.0):
-# def generate_rand_skew_layered(skew_upsamp, realiz_shape, skew_max=8, plot=False):
 
-# def iterative_gradient_ff_solve_bulk(orig_images, niter=3, masks=None, weights_ff=None, plot=False, ff_stack_min=2, masks_ffest=None):
+def generate_ptsrc_map_for_ffnoise(inst, mag_min, mag_max, ifield_list=[4, 5, 6, 7, 8], save=True, twomass_cutoff_mag=15.0, merge_cats=False):
+	
+	magkey_dict = dict({1:'j_m', 2:'h_m'})
+	
+	if inst==1:
+		bandstr = 'J'
+	else:
+		bandstr = 'H'
+	
+	cbps_nm = CIBER_NoiseModel()
+	cmock = ciber_mock()
+
+	config_dict, pscb_dict, float_param_dict, fpath_dict = return_default_cbps_dicts()
+	ciber_mock_fpath = config.exthdpath+'ciber_mocks/'
+	fpath_dict, list_of_dirpaths, base_path, trilegal_base_path = set_up_filepaths_cbps(fpath_dict, inst, 'test', '112022',\
+																					datestr_trilegal='112022', data_type='observed', \
+																				   save_fpaths=True)
+	
+	base_fluc_path = config.ciber_basepath+'data/'
+	tempbank_dirpath = base_fluc_path+'fluctuation_data/TM'+str(inst)+'/subpixel_psfs/'
+	catalog_basepath = base_fluc_path+'catalogs/'
+	bls_fpath = base_fluc_path+'fluctuation_data/TM'+str(inst)+'/beam_correction/bl_est_postage_stamps_TM'+str(inst)+'_081121.npz'
+	
+	all_twomass_cats = []
+	
+	all_maps = []
+	
+	prim = fits.PrimaryHDU()
+	
+	hdul = [prim]
+	
+	for fieldidx, ifield in enumerate(ifield_list):
+		field_name = cbps_nm.cbps.ciber_field_dict[ifield]
+		twomass_cat = pd.read_csv(catalog_basepath+'2MASS/filt/2MASS_filt_rdflag_wxy_'+field_name+'_Jlt17.5.csv')
+		all_twomass_cats.append(twomass_cat)
+		
+		twomass_x = np.array(all_twomass_cats[fieldidx]['x'+str(inst)])
+		twomass_y = np.array(all_twomass_cats[fieldidx]['y'+str(inst)])
+		twomass_mag = np.array(all_twomass_cats[fieldidx][magkey_dict[inst]]) # magkey    
+		
+		if merge_cats:
+			twomass_magcut = (twomass_mag < twomass_cutoff_mag)*(twomass_mag > mag_min)
+		else:
+			twomass_magcut = (twomass_mag < mag_max)*(twomass_mag > mag_min)
+		
+		twomass_magcut = (twomass_mag < twomass_cutoff_mag)*(twomass_mag > mag_min)
+		
+
+		twomass_x_sel = twomass_x[twomass_magcut]
+		twomass_y_sel = twomass_y[twomass_magcut]
+		twomass_mag_sel = twomass_mag[twomass_magcut]
+		
+		twomass_mag_sel_AB = twomass_mag_sel+cmock.Vega_to_AB[inst]
+		I_arr_full = cmock.mag_2_nu_Inu(twomass_mag_sel_AB, inst-1)
+		full_tracer_cat = np.array([twomass_x_sel, twomass_y_sel, twomass_mag_sel_AB, I_arr_full])
+
+		bright_src_map = cmock.make_srcmap_temp_bank(ifield, inst, full_tracer_cat.transpose(), flux_idx=-1, load_precomp_tempbank=True, \
+													tempbank_dirpath=tempbank_dirpath)
+		
+		
+		if merge_cats:
+			mask_cat_unWISE_PS = pd.read_csv(catalog_basepath+'mask_predict/mask_predict_unWISE_PS_fullmerge_'+field_name+'_ukdebias.csv')
+			faint_cat_x = np.array(mask_cat_unWISE_PS['x'+str(inst)])
+			faint_cat_y = np.array(mask_cat_unWISE_PS['y'+str(inst)])
+			faint_cat_mag = np.array(mask_cat_unWISE_PS[bandstr+'_Vega_predict'])
+			faint_magcut = (faint_cat_mag < 19.0)*(faint_cat_mag > twomass_cutoff_mag)
+
+			faint_x_sel = faint_cat_x[faint_magcut]
+			faint_y_sel = faint_cat_y[faint_magcut]
+			faint_mag_sel = faint_cat_mag[faint_magcut]
+			faint_mag_sel_AB = faint_mag_sel+cmock.Vega_to_AB[inst]
+
+			
+			I_arr_faint = cmock.mag_2_nu_Inu(faint_mag_sel_AB, inst-1)
+			full_tracer_cat = np.array([faint_x_sel, faint_y_sel, faint_mag_sel_AB, I_arr_faint])
+
+			faint_src_map = cmock.make_srcmap_temp_bank(ifield, inst, full_tracer_cat.transpose(), flux_idx=-1, load_precomp_tempbank=True, \
+														tempbank_dirpath=tempbank_dirpath)
+
+			bright_src_map += faint_src_map
+		
+		all_maps.append(bright_src_map)
+		imhdu = fits.ImageHDU(bright_src_map, name='ifield'+str(ifield))
+		imhdu.header['maxval'] = np.max(bright_src_map)        
+		hdul.append(imhdu)
+		
+	hdulist = fits.HDUList(hdul)
+	
+	if save:
+		hdulist.writeto(base_fluc_path+'fluctuation_data/TM'+str(inst)+'/point_src_maps_for_ffnoise/point_src_maps'+'_TM'+str(inst)+'_mmin='+str(mag_min)+'_mmax='+str(mag_max)+'_merge.fits', overwrite=True)
+		
+	return all_maps
+
 
 def iterative_gradient_ff_solve(orig_images, niter=3, masks=None, weights_ff=None, plot=False, ff_stack_min=1, masks_ffest=None):
 	
@@ -2247,7 +2340,8 @@ class CIBER_PS_pipeline():
   
 	def compute_processed_power_spectrum(self, inst, bare_bones=False, mask=None, N_ell=None, B_ell=None, inv_Mkk=None,\
 										 image=None, cross_image=None, ff_bias_correct=None, FF_image=None, verbose=False, \
-										 FW_image=None, tl_regrid=None, max_val_after_sub=None, **kwargs):
+										 FW_image=None, tl_regrid=None, max_val_after_sub=None, \
+										 unsharp_mask=False, unsharp_pct=95, unsharp_sigma=1.0, **kwargs):
 		
 		''' 
 		Computes processed power spectrum for input map/mask/etc.
@@ -2384,6 +2478,18 @@ class CIBER_PS_pipeline():
 				weights = self.FW_image # this feeds Fourier weights into get_power_spec, which uses them with Cl2D
 			
 		# plot_map(masked_image, title='masked image right before get power spec', cmap='Greys', hipct=99.9, lopct=1)
+
+
+		if unsharp_mask:
+			print('Applying unsharp masking, pct, sigma = ', unsharp_pct, unsharp_sigma)
+			kernel = Gaussian2DKernel(x_stddev=unsharp_sigma)
+			conv_image = astropy.convolution.convolve(masked_image, kernel, mask=(masked_image==0))
+			
+			plot_map(conv_image, title='conv image')
+			conv_mask = (conv_image < np.nanpercentile(conv_image, unsharp_pct))
+			masked_image *= conv_mask
+			masked_image[masked_image != 0] -= np.mean(masked_image[masked_image!=0])
+
 
 		if max_val_after_sub is not None:
 			print('cutting all values > ', max_val_after_sub)

@@ -13,6 +13,75 @@ from ps_tests import *
 from numerical_routines import *
 
 
+def plot_mock_fieldav_cl_recovery_vs_magnitude(inst, mag_lims, cl_files, include_frac_err=False, startidx=1, endidx=-1, \
+                                 return_fig=True, colors=None, ylim=None, textstr=None, textxpos=None, textypos=None, addstr=None, dl_l=False):
+    inst_to_bandstr = dict({1:'J', 2:'H'})
+    lamdict = dict({1:1.1, 2:1.8})
+    band = inst_to_bandstr[inst]
+    
+    if textstr is None:
+        
+        textstr = 'CIBER '+str(lamdict[inst])+' $\\mu$m\nMock data'
+        
+    if addstr is not None:
+        textstr += '\n'+addstr
+    
+    power_maglim_obs = []
+    
+    if colors is None:
+        colors = ['C'+str(x) for x in range(len(cl_files))]
+        
+    if include_frac_err:
+        fig, ax = plt.subplots(figsize=(6, 8), sharex=True, nrows=2, gridspec_kw={'height_ratios': [1, 0.3]})
+        plt.subplots_adjust(hspace=0.06)
+
+    else:
+        fig = plt.figure(figsize=(6, 5))
+        
+    for m, mag_lim in enumerate(mag_lims):
+    
+        lb, mock_mean_input_ps, mock_all_field_averaged_cls,\
+                mock_all_field_cl_weights, all_mock_recov_ps, all_mock_signal_ps = load_weighted_cl_file(cl_files[m], mode='mock')
+
+        prefac = lb*(lb+1)/(2*np.pi)
+        
+        if dl_l:
+            prefac = lb/(2*np.pi)
+
+        mean_recov_ps_fieldav = np.mean(mock_all_field_averaged_cls, axis=0)
+        
+        std_recov_ps_fieldav = 0.5*(np.percentile(mock_all_field_averaged_cls, 84, axis=0)-np.percentile(mock_all_field_averaged_cls, 16, axis=0))
+
+        plt.errorbar(lb[:endidx], (prefac*mean_recov_ps_fieldav)[:endidx], yerr=(prefac*std_recov_ps_fieldav)[:endidx], zorder=4-m, label='$'+str(band)+'<$'+str(mag_lim), color='C'+str(m), fmt='o', capsize=3, markersize=4)
+    
+        plt.plot(lb, (prefac*np.mean(mock_mean_input_ps, axis=0)), color=colors[m], linestyle='dashed', alpha=0.5)
+
+
+    plt.xscale('log')
+    plt.yscale('log')
+    
+    plt.text(textxpos, textypos, textstr, fontsize=18)
+    plt.legend(loc=4, ncol=2, fontsize=12)
+    plt.grid(alpha=0.3, color='grey')
+    plt.xlabel('$\\ell$', fontsize=16)
+    if dl_l:
+        plt.ylabel('$D_{\\ell}/\\ell$', fontsize=16)
+    else:
+        plt.ylabel('$D_{\\ell}$ [nW$^2$ m$^{-4}$ sr$^{-2}$]', fontsize=16)
+        
+    plt.xlim(1.5e2, 1e5)
+    plt.tick_params(labelsize=14)
+    
+    if ylim is not None:
+        plt.ylim(ylim[0], ylim[1])
+        
+            
+    plt.show()
+    
+    if return_fig:
+        return fig
+
+
 def plot_mean_posts_magbins(sopred, bandstr, return_fig=True):
     f = plt.figure(figsize=(10, 5))
     for m in range(len(sopred.mmin_range)):
@@ -294,7 +363,9 @@ def single_panel_observed_ps_results(inst, masking_maglim, lb, observed_field_av
 
 
 def make_figure_cross_spec_vs_masking_magnitude(inst=1, cross_inst=2, maglim_J=[17.5, 18.0, 18.5, 19.0], \
-                                               maglim_H=[17.0, 17.5, 18.0, 18.5], observed_run_names_cross=None, return_fig=True, show=True, startidx=1, endidx=-1):
+                                               maglim_H=[17.0, 17.5, 18.0, 18.5], observed_run_names_cross=None,\
+                                             return_fig=True, show=True, startidx=1, endidx=-1, colors=None, \
+                                             load_igl_isl_pred=False):
 
     if observed_run_names_cross is None:
         observed_run_names_cross = ['ciber_cross_ciber_perquad_regrid_Jlt'+str(maglim_J[j])+'_Hlt'+str(maglim_H[j])+'_111923' for j in range(len(maglim_J))]
@@ -302,13 +373,29 @@ def make_figure_cross_spec_vs_masking_magnitude(inst=1, cross_inst=2, maglim_J=[
     obs_labels = ['$J<'+str(maglim_J[m])+'\\times H<'+str(maglim_H[m])+'$' for m in range(len(maglim_J))]
     obs_fieldav_cross_cl, obs_fieldav_cross_dcl = [], []    
     obs_colors = ['indigo', 'darkviolet', 'mediumorchid', 'plum']
+
+    if load_igl_isl_pred:
+
+        all_cl_cross_pred_vs_mag = []
+        idxmatch = []
+        
+        igl_isl_pred_fpath = config.ciber_basepath+'data/cl_predictions/COSMOS15/cross/cl_predictions_cross_J_HCH1CH2.npz'
+        igl_isl_pred = np.load(igl_isl_pred_fpath)
+        m_min_J_pred = igl_isl_pred['m_min_J_list']
+
+        print('igl isl pred has shape ', igl_isl_pred['all_clx_J'].shape)
+        
+        all_clx_J = igl_isl_pred['all_clx_J']
+
+        lb_pred = igl_isl_pred['lb']
+        pf_pred = igl_isl_pred['pf']
     
     cl_base_path = config.ciber_basepath+'data/input_recovered_ps/cl_files/'
     for obs_name in observed_run_names_cross:
         cl_fpath_obs = cl_base_path+'TM'+str(inst)+'_TM'+str(cross_inst)+'_cross/cl_'+obs_name+'.npz'
         lb, observed_recov_ps, observed_recov_dcl_perfield,\
         observed_field_average_cl, observed_field_average_dcl,\
-            mock_all_field_cl_weights = load_weighted_cl_file_cross(cl_fpath_obs)
+            mock_all_field_cl_weights = load_weighted_cl_file(cl_fpath_obs)
 
         obs_fieldav_cross_cl.append(observed_field_average_cl)
         obs_fieldav_cross_dcl.append(observed_field_average_dcl)
@@ -316,7 +403,19 @@ def make_figure_cross_spec_vs_masking_magnitude(inst=1, cross_inst=2, maglim_J=[
     fig = plt.figure(figsize=(6,5))
     prefac = lb*(lb+1)/(2*np.pi)
     for m, maglim in enumerate(maglim_J):
-        plt.errorbar(lb[startidx:endidx], (prefac*obs_fieldav_cross_cl[m])[startidx:endidx], yerr=(prefac*obs_fieldav_cross_dcl[m])[startidx:endidx], label=obs_labels[m], fmt='o', capthick=1.5, color='C'+str(m+1), capsize=3, markersize=4, linewidth=2.)
+        
+        if colors is not None:
+            color = colors[m]
+        else:
+            color = 'C'+str(m+1)
+        
+        if load_igl_isl_pred:
+            if maglim in m_min_J_pred and maglim > 16.0:
+                idx = np.where((m_min_J_pred==maglim))[0][0]
+                print(idx, m_min_J_pred[idx], maglim)
+                plt.plot(lb_pred, pf_pred*all_clx_J[idx, 0], linestyle='dashed', color=color, alpha=0.4)
+
+        plt.errorbar(lb[startidx:endidx], (prefac*obs_fieldav_cross_cl[m])[startidx:endidx], yerr=(prefac*obs_fieldav_cross_dcl[m])[startidx:endidx], label=obs_labels[m], fmt='o', capthick=1.5, color=color, capsize=3, markersize=4, linewidth=2.)
 
     plt.xlim(2e2, 1e5)
     plt.yscale('log')
@@ -325,31 +424,39 @@ def make_figure_cross_spec_vs_masking_magnitude(inst=1, cross_inst=2, maglim_J=[
     plt.xlabel('$\\ell$', fontsize=16)
     plt.ylabel('$D_{\\ell}$ [nW$^2$ m$^{-4}$ sr$^{-2}$]', fontsize=18)
     plt.grid(alpha=0.5, color='grey')
-    plt.ylim(1e-2, 1e6)
+    plt.ylim(1e-1, 1e6)
     plt.text(250, 4e4, 'CIBER 1.1 $\\mu$m $\\times$ 1.8 $\\mu$m\nObserved data', fontsize=16)
 
     bbox_dict = dict({'facecolor':'white', 'alpha':0.8, 'edgecolor':'None', 'pad':0.})
 
     plt.legend(fontsize=10, loc=4, ncol=2, framealpha=1., bbox_to_anchor=[0.9, 1.0])
 
+    plt.text(9e3, 5e-1, '- - COSMOS 2015\n     predictions', color=colors[m], fontsize=14)
     if show:
         plt.show()
     if return_fig:
         return fig
 
-def make_figure_cross_corrcoeff_ciber_ciber_vs_mag(maglim_J = [17.5, 18.0, 18.5, 19.0], maglim_H = [17.0, 17.5, 18.0, 18.5], show=True, return_fig=True, \
-                                                  verbose=False, observed_run_names_cross=None):
+def make_figure_cross_corrcoeff_ciber_ciber_vs_mag(maglim_J = [12.0, 13.0, 14.0, 15.0, 16.0, 17.0, 17.5, 18.0], show=True, return_fig=True, \
+                                                  verbose=False, observed_run_names_cross=None, alpha=0.5):
     
     if observed_run_names_cross is None:
-        observed_run_names_cross = ['ciber_cross_ciber_perquad_regrid_071023_Jlt'+str(maglim_J[j])+'_Hlt'+str(maglim_H[j])+'_withcrossnoise' for j in range(len(maglim_J))]
-    obs_colors = ['indigo', 'darkviolet', 'mediumorchid', 'plum']
+        observed_run_names_cross = ['ciber_cross_ciber_perquad_regrid_Jlt'+str(maglim_J[j])+'_Hlt'+str(maglim_J[j]-0.5)+'_111923' for j in range(len(maglim_J))]
+
     all_r_TM, all_sigma_r_TM = [], []
+    
+    colors = plt.cm.PuRd(np.linspace(0.2, 1,len(maglim_J)))
 
     for o, obs_name_AB in enumerate(observed_run_names_cross):
     
-        obs_name_A = 'observed_Jlim_Vega_'+str(maglim_J[o])+'_Hlim_Vega_'+str(maglim_H[o])+'_070723'
+        maglim_H = maglim_J[o] - 0.5
+        
+        obs_name_A = 'observed_Jlt'+str(maglim_J[o])+'_Hlt'+str(maglim_H)+'_111323_ukdebias' # union mask        
         obs_name_B = obs_name_A
-        lb, r_TM, sigma_r_TM = ciber_ciber_rl_coefficient(obs_name_A, obs_name_B, obs_name_AB)
+    
+        print(obs_name_A, obs_name_B, obs_name_AB)
+    
+        lb, r_TM, sigma_r_TM, obs_fieldav_cls, obs_fieldav_dcls = ciber_ciber_rl_coefficient(obs_name_A, obs_name_B, obs_name_AB)
         all_r_TM.append(r_TM)
         all_sigma_r_TM.append(sigma_r_TM)
         
@@ -357,7 +464,7 @@ def make_figure_cross_corrcoeff_ciber_ciber_vs_mag(maglim_J = [17.5, 18.0, 18.5,
             print('r_TM:', r_TM)
             print('sigma_r_TM:', sigma_r_TM)
         
-    fig = plt.figure(figsize=(6,5))
+    fig = plt.figure(figsize=(5, 4))
 
     for obs_idx in range(len(all_r_TM)):
 
@@ -369,34 +476,36 @@ def make_figure_cross_corrcoeff_ciber_ciber_vs_mag(maglim_J = [17.5, 18.0, 18.5,
         if verbose:
             print('weighted variance for lb < 2000:', weighted_variance)
 
-        plt.subplot(2,2,obs_idx+1)
-        plt.errorbar(lb[1:-1], all_r_TM[obs_idx][1:-1], yerr=all_sigma_r_TM[obs_idx][1:-1], fmt='o', capsize=3, color=obs_colors[obs_idx], \
-                    label='$J<'+str(maglim_J[obs_idx])+'\\times H<$'+str(maglim_H[obs_idx]), markersize=4, capthick=1.5, alpha=0.8)
-        plt.xscale('log')
-        plt.ylim(-0.1, 1.25)
-        bbox_dict = dict({'facecolor':'white', 'alpha':0.9, 'edgecolor':'k', 'linewidth':0.5})
-        plt.text(1000, 1.05, '$J<'+str(maglim_J[obs_idx])+'\\times H<$'+str(maglim_H[obs_idx]), fontsize=12, color=obs_colors[obs_idx], bbox=bbox_dict)
-        if obs_idx > 1:
-            plt.xlabel('$\\ell$', fontsize=14)
-        if obs_idx==0 or obs_idx==2:
-            plt.ylabel('$r_{\\ell} = C_{\\ell}^{1.1\\times1.8}/\\sqrt{C_{\\ell}^{1.1}C_{\\ell}^{1.8}}$', fontsize=12)
-        plt.tick_params(labelsize=11)
+        plt.scatter(lb[1:-1], all_r_TM[obs_idx][1:-1], color=colors[obs_idx], \
+                    label='$J<'+str(maglim_J[obs_idx])+'\\times H<$'+str(maglim_J[obs_idx]-0.5), s=8)
 
-        if obs_idx==1 or obs_idx==3:
-            plt.yticks([0.0, 0.25, 0.5, 0.75, 1.0, 1.25], ['', '', '', '', '', ''])
-        plt.grid()
-    plt.tight_layout()
+        plt.errorbar(lb[1:-1], all_r_TM[obs_idx][1:-1], yerr=all_sigma_r_TM[obs_idx][1:-1], fmt='o', capsize=2.5, color=colors[obs_idx], \
+                    markersize=4, capthick=1.5, alpha=alpha)
+    plt.xscale('log')
+    plt.ylim(-0.1, 1.5)
+    bbox_dict = dict({'facecolor':'white', 'alpha':0.9, 'edgecolor':'k', 'linewidth':0.5})
+    plt.xlabel('$\\ell$', fontsize=14)
+    plt.ylabel('$r_{\\ell} = C_{\\ell}^{1.1\\times1.8}/\\sqrt{C_{\\ell}^{1.1}C_{\\ell}^{1.8}}$', fontsize=12)
+    plt.tick_params(labelsize=11)
+
+    if obs_idx==1 or obs_idx==3:
+        plt.yticks([0.0, 0.25, 0.5, 0.75, 1.0, 1.25], ['', '', '', '', '', ''])
+    plt.grid(alpha=0.3)
+    
+    plt.legend(ncol=2, bbox_to_anchor=[1.0, 1.36])
+
     if show:
         plt.show()
     if return_fig:
         return fig
-
 
 def plot_ciber_x_ciber_ps(ifield_list, lb, all_cl1d_obs, all_nl1d_unc, field_weights,\
                           startidx=1, endidx=-1, return_fig=True, flatidx=7):
     
     
     f = plt.figure(figsize=(6,5))
+
+    prefac = lb*(lb+1)/(2*np.pi)
     
     for fieldidx, ifield in enumerate(ifield_list):
         plt.errorbar(lb[startidx:endidx], (prefac*all_cl1d_obs[fieldidx])[startidx:endidx], yerr=(prefac*all_nl1d_unc[fieldidx])[startidx:endidx], label=cbps.ciber_field_dict[ifield], fmt='.', color='C'+str(fieldidx), alpha=0.3, capsize=4, markersize=10)
@@ -432,9 +541,10 @@ def plot_ciber_x_ciber_ps(ifield_list, lb, all_cl1d_obs, all_nl1d_unc, field_wei
         return weighted_cross_average_cl, weighted_cross_average_dcl
 
 
-def plot_bandpowers_vs_magnitude(cbps, inst, mag_lims, binned_obs_fieldav, igl_isl_vs_maglim, igl_vs_maglim,\
+def plot_bandpowers_vs_magnitude(cbps, inst, mag_lims, prefac_binned, binned_obs_fieldav, binned_obs_fieldav_dcl, igl_isl_vs_maglim, igl_vs_maglim=None,\
                                  nbp=12, nrow=3, ncol=4, mode='diff', idx0=0, return_fig=True, show=True, \
-                                xticks=[11, 13, 15, 17, 19]):
+                                xticks=[11, 13, 15, 17, 19], binned_obs_fieldav_list=None, binned_obs_fieldav_dcl_list=None,\
+                                 labels=None, colors=None, obs_color='b', igl_isl_color='grey', obs_label=None):
             
     if inst==1:
         if mode=='diff':
@@ -446,6 +556,7 @@ def plot_bandpowers_vs_magnitude(cbps, inst, mag_lims, binned_obs_fieldav, igl_i
         if mode=='diff':
             textypos = 20
         else:
+            
             textypos = 100
             
         bandstr = '$H_{lim}$'
@@ -461,6 +572,9 @@ def plot_bandpowers_vs_magnitude(cbps, inst, mag_lims, binned_obs_fieldav, igl_i
         textxpos = mag_lims[1]
     else:
         textxpos = mag_lims[0]
+        
+        if binned_obs_fieldav_list is not None:
+            textxpos -= 0.5
 
     fig = plt.figure(figsize=(9, 6))
     
@@ -472,18 +586,36 @@ def plot_bandpowers_vs_magnitude(cbps, inst, mag_lims, binned_obs_fieldav, igl_i
         if mode=='diff':
             delta_obs_fieldav = binned_obs_fieldav[:-1,idx]-binned_obs_fieldav[1:,idx]
             delta_igl_isl = igl_isl_vs_maglim[:-1,idx]-igl_isl_vs_maglim[1:,idx]
-            delta_igl = igl_vs_maglim[:-1,idx]-igl_vs_maglim[1:,idx]
-
-            plt.errorbar(mag_lims[1:], prefac_binned[idx]*delta_obs_fieldav, color='k', fmt='o-', capsize=2, markersize=3, zorder=10)
-            plt.plot(mag_lims[1:], prefac_binned[idx]*delta_igl_isl, color='b', marker='.')
-            plt.plot(mag_lims[1:], prefac_binned[idx]*delta_igl, color='r', marker='.')
+            
+            plt.errorbar(mag_lims[1:], prefac_binned[idx]*delta_obs_fieldav, color=obs_color, label=obs_label, fmt='o-', capsize=2, markersize=3, zorder=10)
+            plt.plot(mag_lims[1:], prefac_binned[idx]*delta_igl_isl, color=igl_isl_color, marker='.')
+            
+            if igl_vs_maglim is not None:
+                delta_igl = igl_vs_maglim[:-1,idx]-igl_vs_maglim[1:,idx]
+                plt.plot(mag_lims[1:], prefac_binned[idx]*delta_igl, color='r', marker='.')
 
         else:
-            plt.errorbar(mag_lims, prefac_binned[idx]*binned_obs_fieldav[:,idx], yerr=prefac_binned[idx]*binned_obs_fieldav_dcl[:,idx], color='k', fmt='o-', capsize=2, markersize=3, zorder=10)
-            plt.plot(mag_lims, prefac_binned[idx]*igl_isl_vs_maglim[:,idx], color='b', marker='.')
-            plt.plot(mag_lims, prefac_binned[idx]*igl_vs_maglim[:,idx], color='r', marker='.')
+            
+            if binned_obs_fieldav_list is not None:
+                
+                if colors is None:
+                    colors = ['C'+str(x) for x in range(len(binned_obs_fieldav_list))]
+                    
+                for x in range(len(binned_obs_fieldav_list)):
+                    plt.errorbar(mag_lims, prefac_binned[idx]*binned_obs_fieldav_list[x][:,idx], yerr=prefac_binned[idx]*binned_obs_fieldav_dcl_list[x][:,idx], color=colors[x], label=labels[x], fmt='o-', capsize=2, markersize=3, zorder=10)
+                    
+            else:
+                plt.errorbar(mag_lims, prefac_binned[idx]*binned_obs_fieldav[:,idx], yerr=prefac_binned[idx]*binned_obs_fieldav_dcl[:,idx], label=obs_label, color=obs_color, fmt='o-', capsize=2, markersize=3, zorder=10)
+                plt.plot(mag_lims, prefac_binned[idx]*igl_isl_vs_maglim[:,idx], color=igl_isl_color, marker='.', label='IGL + ISL prediction')
+                
+                if igl_vs_maglim is not None:
+                    plt.plot(mag_lims, prefac_binned[idx]*igl_vs_maglim[:,idx], color='r', marker='.')
             
         plt.yscale('log')
+        
+        if idx==0:
+            plt.legend(bbox_to_anchor=[3.8, 1.5], fontsize=12, ncol=3)
+        
         
         if idx > 7:
             
@@ -497,7 +629,13 @@ def plot_bandpowers_vs_magnitude(cbps, inst, mag_lims, binned_obs_fieldav, igl_i
             plt.xticks(xticks, ['' for x in range(len(xticks))])
 
         if idx in [0, 4, 8]:
-            plt.ylabel('$\Delta(D_{\\ell}/\\ell)$', fontsize=12)
+            if mode=='diff':
+                plt.ylabel('$\Delta(D_{\\ell}/\\ell)$', fontsize=12)
+            else:
+                plt.ylabel('$D_{\\ell}/\\ell$', fontsize=12)
+            
+        else:
+            plt.yticks([1e-3, 1e-1, 1e1, 1e3], ['', '', '', ''])
             
         plt.grid(alpha=0.5)
 
@@ -513,12 +651,13 @@ def plot_bandpowers_vs_magnitude(cbps, inst, mag_lims, binned_obs_fieldav, igl_i
             else:
                 plt.ylim(5e-5, 1e3)
             
-    plt.tight_layout()
+#     plt.tight_layout()
     if show:
         plt.show()
             
     if return_fig:
         return fig
+
 
 
 def plot_ciber_field_consistency_test(inst, lb, observed_recov_ps, all_mock_signal_ps, mock_all_field_cl_weights, \

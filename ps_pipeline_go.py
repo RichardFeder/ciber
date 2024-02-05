@@ -310,12 +310,13 @@ def return_default_cbps_dicts():
 					  'save_intermediate_cls':True, 'verbose':False, 'show_plots':False, 'show_ps':True, 'save':True, 'bl_post':False, 'ff_sigma_clip':False, \
 					  'per_quadrant':False, 'use_dc_template':True, 'ff_estimate_cross':False, 'map_photon_noise':False, 'zl_photon_noise':True, \
 					  'compute_ps_per_quadrant':False, 'apply_wen_cluster_mask':True, 'low_responsivity_blob_mask':True, \
-					  'pt_src_ffnoise':False, 'shut_off_plots':False, 'max_val_clip':False, 'point_src_ffnoise':False})
+					  'pt_src_ffnoise':False, 'shut_off_plots':False, 'max_val_clip':False, 'point_src_ffnoise':False, 'unsharp_mask':False})
 
 	float_param_dict = dict({'ff_min':0.5, 'ff_max':2.0, 'clip_sigma':5,'clip_sigma_ff':5, 'ff_stack_min':1, 'nmc_ff':10, \
 					  'theta_mag':0.01, 'niter':5, 'dgl_scale_fac':5, 'smooth_sigma':5, 'indiv_ifield':6,\
 					  'nfr_same':25, 'J_bright_Bl':11, 'J_faint_Bl':17.5, 'n_FW_sims':500, 'n_FW_split':10, \
-					  'ell_norm_blest':5000, 'n_realiz_t_ell':100, 'nitermax':5, 'n_cib_isl_sims':100})
+					  'ell_norm_blest':5000, 'n_realiz_t_ell':100, 'nitermax':5, 'n_cib_isl_sims':100, \
+					  'unsharp_pct':95, 'unsharp_sigma':1.0, 'noise_modl_rescale_fac':None})
 
 	fpath_dict = dict({'ciber_mock_fpath':config.ciber_basepath+'data/ciber_mocks/', \
 						'sim_test_fpath':config.ciber_basepath+'data/input_recovered_ps/sim_tests_030122/', \
@@ -583,6 +584,10 @@ def run_cbps_pipeline(cbps, inst, nsims, run_name, ifield_list = None, \
 	if pscb_dict['with_inst_noise']:
 		read_noise_models = cbps.grab_noise_model_set(ifield_noise_list, inst, noise_model_base_path=fpath_dict['read_noise_modl_base_path'], noise_modl_type=config_dict['noise_modl_type'])
 		
+		if float_param_dict['noise_modl_rescale_fac'] is not None:
+			print('Artificially scaling read noise models by ', float_param_dict['noise_modl_rescale_fac'])
+			read_noise_models *= float_param_dict['noise_modl_rescale_fac']
+
 		if pscb_dict['compute_ps_per_quadrant']:
 			read_noise_models_per_quad = []
 			for q in range(4):
@@ -840,7 +845,17 @@ def run_cbps_pipeline(cbps, inst, nsims, run_name, ifield_list = None, \
 							joint_maskos[fieldidx] *= sigclip
 
 							plot_map(observed_ims[fieldidx]*joint_maskos[fieldidx], cmap='Greys_r', title='masked image line 699 , ifield '+str(ifield))
-					inv_Mkk_fpath = mode_couple_base_dir+'/'+mask_tail+'/mkk_'+mkk_type+'_ifield'+str(ifield)+'_observed_'+mask_tail+'.fits'
+					
+					if fpath_dict['mkk_ffest_mask_tail'] is None:
+
+						mkk_ffest_mask_tail = mask_tail
+					else:
+						mkk_ffest_mask_tail = fpath_dict['mkk_ffest_mask_tail']
+
+					inv_Mkk_fpath = mode_couple_base_dir+'/'+mkk_ffest_mask_tail+'/mkk_'+mkk_type+'_ifield'+str(ifield)+'_observed_'+mkk_ffest_mask_tail+'.fits'
+
+					# inv_Mkk_fpath = mode_couple_base_dir+'/'+mask_tail+'/mkk_'+mkk_type+'_ifield'+str(ifield)+'_observed_'+mask_tail+'.fits'
+					print('loading inv Mkk from ', inv_Mkk_fpath)
 					inv_Mkks.append(fits.open(inv_Mkk_fpath)['inv_Mkk_'+str(ifield)].data)
 
 					if pscb_dict['compute_ps_per_quadrant']:
@@ -1289,8 +1304,14 @@ def run_cbps_pipeline(cbps, inst, nsims, run_name, ifield_list = None, \
 														  mc_ff_estimates = None, mc_ff_estimates_cross=None, gradient_filter=pscb_dict['gradient_filter'], \
 														  inplace=False, show=False)
 
+
+						# plt.figure()
+						
+
 						plot_map(np.log10(fourier_weights_cross), title='log10 fourier_weights_cross')
 						plot_map(mean_cl2d_cross, title='log10 mean_nl2d_cross')
+
+						var_nl2d_total = var_nl2d_nAsB+var_nl2d_nBsA
 
 						mean_nl2d_cross_total = mean_cl2d_cross + mean_nl2d_nAsB + mean_nl2d_nBsA
 						fourier_weights_cross = 1./((1./fourier_weights_cross) + var_nl2d_nAsB + var_nl2d_nBsA)
@@ -1299,6 +1320,8 @@ def run_cbps_pipeline(cbps, inst, nsims, run_name, ifield_list = None, \
 						plot_map(fourier_weights_cross, title='fourier_weights_cross_total')
 
 						lb, N_ell_est, N_ell_err = cbps.compute_noise_power_spectrum(inst, noise_Cl2D=mean_nl2d_cross_total.copy(), inplace=False, apply_FW=pscb_dict['apply_FW'], weights=fourier_weights_cross)
+
+
 
 						plt.figure()
 						prefac = lb*(lb+1)/(2*np.pi)
@@ -1386,7 +1409,7 @@ def run_cbps_pipeline(cbps, inst, nsims, run_name, ifield_list = None, \
 							print('Overwriting existing noise model bias file..')
 
 						if ciber_cross_ciber:
-							np.savez(noisemodl_fpath, fourier_weights_nofluc=fourier_weights_cross, mean_cl2d_nofluc=mean_nl2d_cross_total, nl_estFF_nofluc=N_ell_est)
+							np.savez(noisemodl_fpath, fourier_weights_nofluc=fourier_weights_cross, mean_cl2d_nofluc=mean_nl2d_cross_total, nl_estFF_nofluc=N_ell_est, var_cl2d=)
 						else:
 							np.savez(noisemodl_fpath, fourier_weights_nofluc=fourier_weights_nofluc, mean_cl2d_nofluc=mean_cl2d_nofluc, nl_estFF_nofluc=N_ell_est)
 							
@@ -1484,7 +1507,8 @@ def run_cbps_pipeline(cbps, inst, nsims, run_name, ifield_list = None, \
 												apply_FW=pscb_dict['apply_FW'], verbose=verb, noise_debias=pscb_dict['noise_debias'], \
 											 FF_correct=FF_correct, FW_image=fourier_weights_nofluc, FF_image=ff_estimates[fieldidx],\
 												 gradient_filter=gradient_filter, save_intermediate_cls=pscb_dict['save_intermediate_cls'], N_ell=N_ells_est[fieldidx], \
-												 per_quadrant=pscb_dict['per_quadrant'], max_val_after_sub=max_val_after_sub)
+												 per_quadrant=pscb_dict['per_quadrant'], max_val_after_sub=max_val_after_sub, \
+												 unsharp_mask=pscb_dict['unsharp_mask'], unsharp_pct=float_param_dict['unsharp_pct'], unsharp_sigma=float_param_dict['unsharp_sigma'])
 
 				final_masked_images[fieldidx] = masked_image
 

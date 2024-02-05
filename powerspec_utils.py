@@ -67,6 +67,56 @@ from plotting_fns import *
 #                              ifield_list=[4, 5, 6, 7, 8], use_ciber_wcs=True, nside_deg=4, \
 #                             plot=True):
 
+
+
+def calc_binned_ps_vs_mag(mag_lims, ifield_list, obs_fieldav_cl, obs_fieldav_dcl, pf, observed_recov_dcl_perfield=None,\
+                          power_maglim_isl_igl=None, nbp=12):
+
+    nmag = len(mag_lims)
+    binned_obs_fieldav, binned_obs_fieldav_dcl, igl_isl_vs_maglim = [np.zeros((nmag, nbp)) for x in range(3)]
+    if observed_recov_dcl_perfield is not None:
+        binned_obs_perfield, binned_obs_perfield_dcl = [np.zeros((nmag, len(ifield_list), nbp)) for x in range(2)]
+
+    prefac_binned = np.zeros((nbp))
+    
+    for magidx, maglim in enumerate(mag_lims):
+        for idx in range(nbp):
+
+            if idx==0:
+                prefac_binned[idx] = pf[2*idx+1]
+                binned_obs_fieldav[magidx,idx] = obs_fieldav_cl[2*idx+1]
+                binned_obs_fieldav_dcl[magidx,idx] = obs_fieldav_dcl[2*idx+1]
+
+                if observed_recov_dcl_perfield is not None:
+                    for fieldidx, ifield in enumerate(ifield_list):
+                        binned_obs_perfield[magidx,fieldidx,idx] = observed_recov_ps[fieldidx,2*idx+1]
+                        binned_obs_perfield_dcl[magidx,fieldidx,idx] = observed_recov_dcl_perfield[fieldidx,2*idx+1]
+
+
+                if power_maglim_isl_igl is not None:
+                    igl_isl_vs_maglim[magidx,idx] = power_maglim_isl_igl[2*idx+1]
+
+            else:
+
+                prefac_binned[idx] = np.sqrt(pf[2*idx]*pf[2*idx+1])
+
+                binned_obs_fieldav[magidx,idx] = 0.5*(obs_fieldav_cl[2*idx]+obs_fieldav_cl[2*idx+1])
+                binned_obs_fieldav_dcl[magidx,idx] = np.sqrt(obs_fieldav_dcl[2*idx]**2 + obs_fieldav_dcl[2*idx+1]**2)/np.sqrt(2)
+
+                if observed_recov_dcl_perfield is not None:
+                    for fieldidx, ifield in enumerate(ifield_list):
+                        binned_obs_perfield[magidx,fieldidx,idx] = 0.5*(observed_recov_ps[fieldidx,2*idx]+observed_recov_ps[fieldidx,2*idx+1])
+                        binned_obs_perfield_dcl[magidx,fieldidx,idx] = np.sqrt(observed_recov_dcl_perfield[fieldidx,2*idx]**2 + observed_recov_dcl_perfield[fieldidx,2*idx+1]**2)/np.sqrt(2)
+
+                if power_maglim_isl_igl is not None:
+                    igl_isl_vs_maglim[magidx,idx] = 0.5*(power_maglim_isl_igl[2*idx] + power_maglim_isl_igl[2*idx+1])
+
+
+
+    return prefac_binned, binned_obs_fieldav, binned_obs_fieldav_dcl,\
+                binned_obs_perfield, binned_obs_perfield_dcl, igl_isl_vs_maglim 
+
+
 def compute_rlx_unc_comps(cl_auto_a, cl_auto_b, cl_cross_ab, dcl_auto_a, dcl_auto_b, dcl_cross_ab):
 
     term1 = (1./(cl_auto_a*cl_auto_b))
@@ -157,13 +207,19 @@ def compute_field_averaged_power_spectrum(per_field_cls, per_field_dcls=None, pe
     
     return field_averaged_cl, field_averaged_std, cl_sumweights, per_field_cl_weights
 
-def compute_mock_covariance_matrix(lb, inst, all_mock_recov_ps, mock_all_field_averaged_cls, lmax=None, ifield_list = [4, 5, 6, 7, 8], save=False, \
-                                  mock_run_name=None, datestr='111323', plot=False, per_field=True):
+def compute_mock_covariance_matrix_new(lb, inst, all_mock_recov_ps, mock_all_field_averaged_cls, lmax=None, ifield_list = [4, 5, 6, 7, 8], save=False, \
+                                  mock_run_name=None, datestr='111323', plot=False, per_field=True, startidx=None):
     
     prefac = lb*(lb+1)/(2*np.pi)
-    lb_mask = (lb > lb[0])
+
     if lmax is not None:
-        lb_mask *= (lb < lmax)
+        lb_mask = (lb < lmax)
+    else:
+        lb_mask = np.ones_like(lb)
+        
+    if startidx is not None:
+        lb_mask *= (lb >= lb[startidx])
+        
     ndof = np.sum(lb_mask)
     nsim = all_mock_recov_ps.shape[0]
     
@@ -228,7 +284,6 @@ def compute_mock_covariance_matrix(lb, inst, all_mock_recov_ps, mock_all_field_a
             np.savez(save_fpath, lb=lb, cov_allfields=cov_allfields, corr_allfields=corr_allfields)
 
     return lb_mask, all_cov_indiv_full, all_resid_data_matrices, resid_joint_data_matrix
-
 
 def get_power_spectrum_2d_epochav(map_a, map_b, pixsize=7., verbose=False):
     dimx, dimy = map_a.shape 
@@ -847,12 +902,10 @@ def compute_weighted_cl(indiv_cl, field_weights):
         field_average_cl[n] = np.average(indiv_cl[:,n], weights=field_weights[:,n])
         neff_indiv = compute_Neff(field_weights[:,n])
         
-        psvar_indivbin = np.sum(field_weights[:,n]*(indiv_ps[:,n] - field_average_cl[n])**2)*neff_indiv/(neff_indiv-1.)
+        psvar_indivbin = np.sum(field_weights[:,n]*(indiv_cl[:,n] - field_average_cl[n])**2)*neff_indiv/(neff_indiv-1.)
         field_average_dcl[n] = np.sqrt(psvar_indivbin/neff_indiv)
         
     return field_average_cl, field_average_dcl
-
-
 
 def ciber_ciber_rl_coefficient(obs_name_A, obs_name_B, obs_name_AB, startidx=1, endidx=-1):
 
@@ -861,15 +914,16 @@ def ciber_ciber_rl_coefficient(obs_name_A, obs_name_B, obs_name_AB, startidx=1, 
     inst_list = [1, 2]
     for clidx, obs_name in enumerate([obs_name_A, obs_name_B, obs_name_AB]):
         if clidx<2:
+            
             cl_fpath_obs = config.ciber_basepath+'data/input_recovered_ps/cl_files/TM'+str(inst_list[clidx])+'/cl_'+obs_name+'.npz'
             lb, observed_recov_ps, observed_recov_dcl_perfield,\
-            observed_field_average_cl, observed_field_average_dcl,\
-                mock_all_field_cl_weights = load_weighted_cl_file(cl_fpath_obs)     
+                observed_field_average_cl, observed_field_average_dcl,\
+                    mock_all_field_cl_weights = load_weighted_cl_file(cl_fpath_obs)     
         else:
             cl_fpath_obs = config.ciber_basepath+'data/input_recovered_ps/cl_files/TM1_TM2_cross/cl_'+obs_name+'.npz'
             lb, observed_recov_ps, observed_recov_dcl_perfield,\
-            observed_field_average_cl, observed_field_average_dcl,\
-                mock_all_field_cl_weights = load_weighted_cl_file(cl_fpath_obs)
+                observed_field_average_cl, observed_field_average_dcl,\
+                    mock_all_field_cl_weights = load_weighted_cl_file(cl_fpath_obs)
 
         obs_fieldav_cls.append(observed_field_average_cl)
         obs_fieldav_dcls.append(observed_field_average_dcl)
@@ -878,8 +932,7 @@ def ciber_ciber_rl_coefficient(obs_name_A, obs_name_B, obs_name_AB, startidx=1, 
 
     sigma_r_TM = np.sqrt((1./(obs_fieldav_cls[0]*obs_fieldav_cls[1]))*(obs_fieldav_dcls[2]**2 + (obs_fieldav_cls[2]*obs_fieldav_dcls[0]/(2*obs_fieldav_cls[0]))**2+(obs_fieldav_cls[2]*obs_fieldav_dcls[1]/(2*obs_fieldav_cls[1]))**2))
 
-    return lb, r_TM, sigma_r_TM
-
+    return lb, r_TM, sigma_r_TM, obs_fieldav_cls, obs_fieldav_dcls
 
 
 def compute_sim_corrected_fieldaverage(recovered_ps_by_field, input_ps_by_field, lb, obs_idx=0, compute_field_weights=True, \
