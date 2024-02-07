@@ -9,6 +9,7 @@ import astropy.wcs as wcs
 import config
 from ciber_powerspec_pipeline import *
 from ps_pipeline_go import *
+from ciber_sb_calibration_tools import *
 from scipy.optimize import curve_fit
 
 class stack_obj():
@@ -22,13 +23,13 @@ class stack_obj():
         self.all_posy = []
         self.all_aper_flux = []
         self.all_aper_flux_unc = []
-        
-        self.all_mean_predmag_Vega = []
+        # self.all_mean_predmag_Vega = []
+        self.all_mean_predmag_AB = []
         self.mmin_range = mmin_range
         self.dms = dms
         
         
-    def append_results(self, aper_flux, aper_flux_unc, mean_post, posx, posy, mean_flux, nsrc, mean_predmag_Vega):
+    def append_results(self, aper_flux, aper_flux_unc, mean_post, posx, posy, mean_flux, nsrc, mean_predmag_AB):
         
         self.all_aper_flux.append(aper_flux)
         self.all_aper_flux_unc.append(aper_flux_unc)
@@ -37,7 +38,8 @@ class stack_obj():
         self.all_posy.append(posy)
         self.all_mean_fluxes.append(mean_flux)
         self.all_nsrc.append(nsrc)
-        self.all_mean_predmag_Vega.append(mean_predmag_Vega)
+        # self.all_mean_predmag_Vega.append(mean_predmag_Vega)
+        self.all_mean_predmag_AB.append(mean_predmag_AB)
 
 def stack_in_mag_bins_pred_flam(bootes_ifield, mask_base_path=None, catalog_basepath=None, \
                                mmin_range = [16.0, 16.5, 17.0, 17.5, 18.0], dx=4, mag_mask=15.0):
@@ -336,13 +338,12 @@ def calc_stacked_fluxes_new(cbps, inst, fieldidx_choose, mask_base_path, catalog
     
     cal_src_posx = cat_x[magmask]
     cal_src_posy = cat_y[magmask]
-    
     cal_src_predmag = cat_mag[magmask]
     
     print('cal src posx has length ', len(cal_src_posx))
-    
+    neighbor_mask = (cat_mag < m_max+0.2)
     all_postage_stamps, all_postage_stamps_mask, post_bool = grab_postage_stamps(inst, cal_src_posx, cal_src_posy, flight_im, mask, dx, mask_frac_min=mask_frac_min, \
-                                                                                skip_nn=skip_nn)        
+                                                                                skip_nn=skip_nn, neighbor_src_posx=cat_x[neighbor_mask], neighbor_src_posy=cat_y[neighbor_mask])        
         
     sum_post = np.zeros_like(all_postage_stamps[0])
     
@@ -384,11 +385,9 @@ def calc_stacked_fluxes_new(cbps, inst, fieldidx_choose, mask_base_path, catalog
             cal_src_posx, cal_src_posy, weighted_aper_flux, weighted_aper_unc, all_cat_predmags
 
 
-
-
 def stack_in_mag_bins_pred(inst, ifield, mask_base_path=None, catalog_basepath=None, \
                                mmin_range = [16.0, 16.5, 17.0, 17.5, 18.0], dx=4, mag_mask=15.0, \
-                          trim_edge= 50):
+                          trim_edge= 50, mask_frac_min=0.95):
     
     cbps = CIBER_PS_pipeline()
     fieldidx = ifield - 4
@@ -420,27 +419,90 @@ def stack_in_mag_bins_pred(inst, ifield, mask_base_path=None, catalog_basepath=N
         mean_post_pred, sum_post_pred, std_post_pred, sum_counts_pred,\
             nsrc_pred, posx_pred, posy_pred, weighted_aper_flux_pred, weighted_aper_unc_pred, \
                 all_cat_predmags = calc_stacked_fluxes_new(cbps, inst, fieldidx, mask_base_path, catalog_fpath_pred, m_min, m_max, cat_type='predict', \
-                                                                                       xlim=xlim, ylim=ylim, mag_mask=mag_mask, dx=dx, mask_frac_min=0.9)
+                                                                                       xlim=xlim, ylim=ylim, mag_mask=mag_mask, dx=dx, mask_frac_min=mask_frac_min)
 
     
-        # compute mean Vega flux expected from catalog
-        
+        # compute mean AB flux expected from catalog
         all_cat_predmags_AB = np.array(all_cat_predmags)+cbps.Vega_to_AB[inst]
         all_cat_predfluxdens = 10**(-0.4*(all_cat_predmags_AB-23.9))
+
         
         mean_predfluxdens = np.mean(all_cat_predfluxdens)
-        mean_predmag_Vega = -2.5*np.log10(mean_predfluxdens)+23.9 - cbps.Vega_to_AB[inst]
+        mean_predmag_AB = -2.5*np.log10(mean_predfluxdens)+23.9
     
         std_post_pred[std_post_pred==0] = np.inf
         
         
         invvar_pred = 1./std_post_pred**2
         sumweights_pred = np.nansum(invvar_pred)
-#         mean_flux_pred = np.nansum(invvar_pred*mean_post_pred)/sumweights_pred
         
         mean_flux_pred = np.nansum(mean_post_pred)
-        
+
         stack_obj_pred.append_results(weighted_aper_flux_pred, weighted_aper_unc_pred, mean_post_pred, posx_pred, posy_pred, mean_flux_pred, nsrc_pred, \
-                                     mean_predmag_Vega)
+                                     mean_predmag_AB)
 
     return stack_obj_pred
+
+def ciber_stack_flux_prediction_test(inst, ifield_list = [4, 5, 6, 7, 8])
+
+    mmin_range_Vega = np.array([16.0, 16.5, 17.0, 17.5, 18.0])+0.1
+
+    if inst==2:
+        mmin_range -= 0.5
+
+    bandstr_dict = dict({1:'J', 2:'H'})
+    bandstr = bandstr_dict[inst]
+    lam_effs = np.array([1.05, 1.79])*1e-6*u.m # effective wavelength for bands
+
+    nu_effs = const.c/lam_effs
+
+    print('nu efs:', nu_effs)
+
+    all_mean_post_fluxes, all_mean_post_fluxdens, \ 
+        all_stack_mag_Vega_eff, all_stack_mag_AB_eff, \ 
+            allfield_meanpredmag_AB = [[] for x in range(5)]
+
+    
+
+    # defined for specific magnitude bins used in default
+    color_corr_dict = dict({1:np.array([0.84530903, 0.84347368, 0.84613712, 0.853497, 0.85937481]), \
+                            2:np.array([1.0951691,  1.11242438, 1.14006154, 1.16856026, 1.19206676])})
+
+    std_color_corr_dict = dict({1:np.array([0.07766909, 0.0359452,  0.04860506, 0.03304105, 0.03791485]), \
+                            2:np.array([0.03891492, 0.04843235, 0.06048847, 0.06128753, 0.07497544])})
+
+    for fieldidx, ifield in enumerate(ifield_list):
+
+        sopred = stack_in_mag_bins_pred(inst, ifield, mmin_range=mmin_range_Vega, dx=3, trim_edge=50, mask_frac_min=0.9)
+
+        print('all pred mag AB is ', sopred.all_mean_predmag_AB)
+
+        mean_predflux = 10**(-0.4*(np.array(sopred.all_mean_predmag_AB)-23.9))
+
+        mean_ciber_predflux = mean_predflux*color_corr_dict[inst]
+        mean_ciber_predmag_AB = -2.5*np.log10(mean_ciber_predflux)+23.9
+        allfield_meanpredmag_AB.append(np.array(sopred.all_mean_predmag_AB))
+        
+        postfig = plot_mean_posts_magbins(sopred, bandstr)
+    #     postfig.savefig('figures/stack_pred/mean_posts_in_magbins_TM'+str(inst)+'_ifield'+str(ifield)+'.png', bbox_inches='tight', dpi=300)
+        # convert fluxes from nW m-2 to W m-2 Hz-1
+        specific_flux = 1e-9*np.array(sopred.all_mean_fluxes)*cbps.pix_sr / nu_effs[inst-1].value
+
+        # convert to Jansky
+        specific_flux *= 1e26
+
+        # then to microJansky
+        specific_flux_uJy = specific_flux * 1e6
+
+        # color correction to UVISTA wavelength
+        specific_flux_uJy /= color_corr_dict[inst]
+
+        # AB magnitude
+        stack_mag_eff = -2.5*np.log10(specific_flux_uJy)+23.9
+
+        all_stack_mag_AB_eff.append(stack_mag_eff)
+        
+    return mmin_range_Vega, allfield_meanpredmag_AB, all_stack_mag_AB_eff
+
+
+

@@ -1188,7 +1188,6 @@ def compute_residual_source_shot_noise(mag_lim_list, inst, ifield_list, datestr,
 		return isl_sb_rms
 	elif mode=='cib':
 		return None
-
 	 
 def calc_cosmos15_shotnoise(inst, cat_df, mag_min=17.0, mag_max=30.0, aeff=1.37, bandstr=None, bandstr_cut=None):
 	

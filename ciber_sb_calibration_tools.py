@@ -696,7 +696,7 @@ def gen_bkg_mask(dx, bkg_rad=0.3):
     return bkg_mask.astype(int)
 
 def grab_postage_stamps(inst, cal_src_posx, cal_src_posy, flight_im, mask, dx, neighbor_cat=None, mask_frac_min=None, bkg_mask=None, plot=False, \
-                       skip_nn=True):
+                       skip_nn=True, neighbor_src_posx=None, neighbor_src_posy=None):
     
     nx = 2*dx+1
     npix_post = nx**2
@@ -720,8 +720,13 @@ def grab_postage_stamps(inst, cal_src_posx, cal_src_posy, flight_im, mask, dx, n
         mask_post = mask[x0:x1, y0:y1]
         
         if skip_nn:
-            dxp = cal_src_posx-cal_src_posx[n]
-            dyp = cal_src_posy-cal_src_posy[n]
+
+            if neighbor_src_posx is not None and neighbor_src_posy is not None:
+                dxp = neighbor_src_posx-cal_src_posx[n]
+                dyp = neighbor_src_posy-cal_src_posy[n]        
+            else:        
+                dxp = cal_src_posx-cal_src_posx[n]
+                dyp = cal_src_posy-cal_src_posy[n]
 
             dr = np.sqrt(dxp**2+dyp**2)
 
