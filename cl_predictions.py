@@ -15,405 +15,405 @@ from ciber_mocks import *
 
 
 def save_cl_predictions(inst, ifield_list, mag_lims, power_maglim_isl_igl, power_maglim_igl, keywd='meas'):
-    save_fpaths = []
-    for x in range(len(mag_lims)):
-        save_fpath = config.ciber_basepath+'data/cl_predictions/TM'+str(inst)+'/igl_isl_pred_mlim='+str(mag_lims[x])+'_'+keywd+'.npz'
-        np.savez(save_fpath, isl_igl=power_maglim_isl_igl[x], igl=power_maglim_igl[x])
-        save_fpaths.append(save_fpath)
-        
-    return save_fpaths
+	save_fpaths = []
+	for x in range(len(mag_lims)):
+		save_fpath = config.ciber_basepath+'data/cl_predictions/TM'+str(inst)+'/igl_isl_pred_mlim='+str(mag_lims[x])+'_'+keywd+'.npz'
+		np.savez(save_fpath, isl_igl=power_maglim_isl_igl[x], igl=power_maglim_igl[x])
+		save_fpaths.append(save_fpath)
+		
+	return save_fpaths
 
 def make_binned_coverage_mask_and_mkk(posx, posy, catalog_mode, nx=None, ny=None, n_mkk_sim=100, n_split=2, \
-                                     cl_pred_basepath=None, save=False, addstr=None, hitmin=0, nreg=None):
-        
-    cbps = CIBER_PS_pipeline(dimx=nx, dimy=ny, n_ps_bin=23)
-    cmock = ciber_mock(nx=nx, ny=ny)
-    
-    if cl_pred_basepath is None:
-        cl_pred_basepath = config.ciber_basepath+'data/cl_predictions/'
-            
-    if nreg is None:
-        nreg = nx+1
-            
-    H, xedges, yedges = np.histogram2d(posx, posy, bins=[np.linspace(0, nx, nreg), np.linspace(0, ny, nreg)])
-    
-    
-    coverage_mask = (H > hitmin)
-    print('coverage mask ', np.sum(coverage_mask)/float(coverage_mask.shape[0]*coverage_mask.shape[1]))
+									 cl_pred_basepath=None, save=False, addstr=None, hitmin=0, nreg=None):
+		
+	cbps = CIBER_PS_pipeline(dimx=nx, dimy=ny, n_ps_bin=23)
+	cmock = ciber_mock(nx=nx, ny=ny)
+	
+	if cl_pred_basepath is None:
+		cl_pred_basepath = config.ciber_basepath+'data/cl_predictions/'
+			
+	if nreg is None:
+		nreg = nx+1
+			
+	H, xedges, yedges = np.histogram2d(posx, posy, bins=[np.linspace(0, nx, nreg), np.linspace(0, ny, nreg)])
+	
+	
+	coverage_mask = (H > hitmin)
+	print('coverage mask ', np.sum(coverage_mask)/float(coverage_mask.shape[0]*coverage_mask.shape[1]))
 
-    coverage_mask_fullres = np.array(Image.fromarray(coverage_mask).resize((nx, ny)))
-    coverage_mask_fullres[coverage_mask_fullres < 0.5] = 0
-    coverage_mask_fullres[coverage_mask_fullres >= 0.5] = 1
-    
-    plt.figure()
-    plt.title('Coverage mask (coarse)')
-    plt.imshow(coverage_mask, origin='lower')
-    plt.colorbar()
-    plt.show()
-    
-    plt.figure()
-    plt.title('Coverage mask (upsampled)')
-    plt.imshow(coverage_mask_fullres, origin='lower')
-    plt.colorbar()
-    plt.show()
-    
-    plt.figure()
-    plt.hist(H.ravel(), bins=np.linspace(-0.5, 9.5, 10))
-    plt.yscale('log')
-    plt.xlabel('Nsrc per pixel')
-    plt.show()
+	coverage_mask_fullres = np.array(Image.fromarray(coverage_mask).resize((nx, ny)))
+	coverage_mask_fullres[coverage_mask_fullres < 0.5] = 0
+	coverage_mask_fullres[coverage_mask_fullres >= 0.5] = 1
+	
+	plt.figure()
+	plt.title('Coverage mask (coarse)')
+	plt.imshow(coverage_mask, origin='lower')
+	plt.colorbar()
+	plt.show()
+	
+	plt.figure()
+	plt.title('Coverage mask (upsampled)')
+	plt.imshow(coverage_mask_fullres, origin='lower')
+	plt.colorbar()
+	plt.show()
+	
+	plt.figure()
+	plt.hist(H.ravel(), bins=np.linspace(-0.5, 9.5, 10))
+	plt.yscale('log')
+	plt.xlabel('Nsrc per pixel')
+	plt.show()
 
 
-    av_Mkk = cbps.Mkk_obj.get_mkk_sim(coverage_mask_fullres, n_mkk_sim, n_split=n_split)
-    inv_Mkk = compute_inverse_mkk(av_Mkk)
-    
-    if save:
-        save_fpath = cl_pred_basepath+catalog_mode+'/Mkk_file_'+catalog_mode+'_coverage'
-        if addstr is not None:
-            save_fpath += '_'+addstr
+	av_Mkk = cbps.Mkk_obj.get_mkk_sim(coverage_mask_fullres, n_mkk_sim, n_split=n_split)
+	inv_Mkk = compute_inverse_mkk(av_Mkk)
+	
+	if save:
+		save_fpath = cl_pred_basepath+catalog_mode+'/Mkk_file_'+catalog_mode+'_coverage'
+		if addstr is not None:
+			save_fpath += '_'+addstr
 
-        save_fpath += '.npz'
-        print('saving to ', save_fpath)
-        inv_Mkk = save_mkks(save_fpath, av_Mkk=av_Mkk, return_inv_Mkk=True, mask=coverage_mask_fullres, \
-                           midbin_ell=cbps.Mkk_obj.midbin_ell, bins=cbps.Mkk_obj.binl)
+		save_fpath += '.npz'
+		print('saving to ', save_fpath)
+		inv_Mkk = save_mkks(save_fpath, av_Mkk=av_Mkk, return_inv_Mkk=True, mask=coverage_mask_fullres, \
+						   midbin_ell=cbps.Mkk_obj.midbin_ell, bins=cbps.Mkk_obj.binl)
 
-        return av_Mkk, inv_Mkk, coverage_mask, save_fpath
+		return av_Mkk, inv_Mkk, coverage_mask, save_fpath
 
-    return av_Mkk, inv_Mkk, coverage_mask
+	return av_Mkk, inv_Mkk, coverage_mask
 	
 def preprocess_c15_catalog(catalog_fpath=None, ramin=149.4, ramax=150.8, decmin=1.5, decmax=2.9, save=False, \
-                          binned_coverage_mask_mkk=False, nreg=None):
+						  binned_coverage_mask_mkk=False, nreg=None):
 
-    if catalog_fpath is None:
-        catalog_fpath = '../spherex/inhouse_code/data/COSMOS2015_Laigle_v1.1.fits'
-        
-    c15_cat = fits.open(catalog_fpath)
-    
-    c15_dat = c15_cat[1].data
+	if catalog_fpath is None:
+		catalog_fpath = '../spherex/inhouse_code/data/COSMOS2015_Laigle_v1.1.fits'
+		
+	c15_cat = fits.open(catalog_fpath)
+	
+	c15_dat = c15_cat[1].data
 
-    c15_ra = np.array(c15_dat['ALPHA_J2000'])
-    c15_dec = np.array(c15_dat['DELTA_J2000'])
-    c15_flag_hjmcc = np.array(c15_dat['FLAG_HJMCC']) # in UltraVISTA region (i.e., with NIR photometry)
-    c15_flag_capak = np.array(c15_dat['FLAG_PETER'])
-    c15_type = np.array(c15_dat['TYPE'])
-    
-    c15_r_AB = -2.5*np.log10(c15_dat['r_FLUX_APER3'])+23.9
-    c15_i_AB = -2.5*np.log10(c15_dat['ip_FLUX_APER3'])+23.9
-    c15_z_AB = -2.5*np.log10(c15_dat['zp_FLUX_APER3'])+23.9
-    c15_y_AB = -2.5*np.log10(c15_dat['Y_FLUX_APER3'])+23.9
-    c15_J_AB = -2.5*np.log10(c15_dat['J_FLUX_APER3'])+23.9
-    c15_H_AB = -2.5*np.log10(c15_dat['H_FLUX_APER3'])+23.9
-    c15_CH1_AB = -2.5*np.log10(c15_dat['SPLASH_1_FLUX'])+23.9
-    c15_CH2_AB = -2.5*np.log10(c15_dat['SPLASH_2_FLUX'])+23.9
-    
-    c15_redshift = np.array(c15_dat['PHOTOZ'])
-    
-    deg_2_pix = 3600/7.
-    c15_x = (c15_ra-ramin)*deg_2_pix # convert to arcseconds and then CIBER pixels
-    c15_y = (c15_dec-decmin)*deg_2_pix # convert to arcseconds and then CIBER pixels
-    
-    c15_catalog = np.array([c15_ra, c15_dec, c15_x, c15_y, c15_J_AB, \
-                           c15_H_AB, c15_CH1_AB, c15_CH2_AB, c15_type, c15_r_AB, c15_i_AB, c15_z_AB, c15_y_AB, c15_redshift]).transpose()
-    
-    c15mask = (c15_flag_hjmcc==0)*(c15_ra > ramin)*(c15_ra < ramax)*(c15_dec > decmin)*(c15_dec < decmax)
-    c15mask *= (c15_flag_capak==0)
+	c15_ra = np.array(c15_dat['ALPHA_J2000'])
+	c15_dec = np.array(c15_dat['DELTA_J2000'])
+	c15_flag_hjmcc = np.array(c15_dat['FLAG_HJMCC']) # in UltraVISTA region (i.e., with NIR photometry)
+	c15_flag_capak = np.array(c15_dat['FLAG_PETER'])
+	c15_type = np.array(c15_dat['TYPE'])
+	
+	c15_r_AB = -2.5*np.log10(c15_dat['r_FLUX_APER3'])+23.9
+	c15_i_AB = -2.5*np.log10(c15_dat['ip_FLUX_APER3'])+23.9
+	c15_z_AB = -2.5*np.log10(c15_dat['zp_FLUX_APER3'])+23.9
+	c15_y_AB = -2.5*np.log10(c15_dat['Y_FLUX_APER3'])+23.9
+	c15_J_AB = -2.5*np.log10(c15_dat['J_FLUX_APER3'])+23.9
+	c15_H_AB = -2.5*np.log10(c15_dat['H_FLUX_APER3'])+23.9
+	c15_CH1_AB = -2.5*np.log10(c15_dat['SPLASH_1_FLUX'])+23.9
+	c15_CH2_AB = -2.5*np.log10(c15_dat['SPLASH_2_FLUX'])+23.9
+	
+	c15_redshift = np.array(c15_dat['PHOTOZ'])
+	
+	deg_2_pix = 3600/7.
+	c15_x = (c15_ra-ramin)*deg_2_pix # convert to arcseconds and then CIBER pixels
+	c15_y = (c15_dec-decmin)*deg_2_pix # convert to arcseconds and then CIBER pixels
+	
+	c15_catalog = np.array([c15_ra, c15_dec, c15_x, c15_y, c15_J_AB, \
+						   c15_H_AB, c15_CH1_AB, c15_CH2_AB, c15_type, c15_r_AB, c15_i_AB, c15_z_AB, c15_y_AB, c15_redshift]).transpose()
+	
+	c15mask = (c15_flag_hjmcc==0)*(c15_ra > ramin)*(c15_ra < ramax)*(c15_dec > decmin)*(c15_dec < decmax)
+	c15mask *= (c15_flag_capak==0)
 
-    c15 = c15_catalog[c15mask,:]
-    
-    
-    x_min, x_max = np.min(c15[:,2]), np.max(c15[:,2])
-    y_min, y_max = np.min(c15[:,3]), np.max(c15[:,3])
+	c15 = c15_catalog[c15mask,:]
+	
+	
+	x_min, x_max = np.min(c15[:,2]), np.max(c15[:,2])
+	y_min, y_max = np.min(c15[:,3]), np.max(c15[:,3])
 
-    nx = int(x_max - x_min)
-    ny = int(y_max - y_min)
-    
-    sqdim = min(nx, ny)
-    
-    c15[:,2] -= x_min
-    c15[:,3] -= y_min
-    
-    sqmask = (c15[:,2] < sqdim)*(c15[:,3] < sqdim)
-    c15 = c15[sqmask,:]
+	nx = int(x_max - x_min)
+	ny = int(y_max - y_min)
+	
+	sqdim = min(nx, ny)
+	
+	c15[:,2] -= x_min
+	c15[:,3] -= y_min
+	
+	sqmask = (c15[:,2] < sqdim)*(c15[:,3] < sqdim)
+	c15 = c15[sqmask,:]
 
-    c15_x_sel = c15[:,2]
-    c15_y_sel = c15[:,3]
+	c15_x_sel = c15[:,2]
+	c15_y_sel = c15[:,3]
 
-    plt.figure()
-    plt.hist(c15[:,4], bins=np.linspace(10, 25, 30))
-    plt.yscale('log')
-    plt.xlabel('J band magnitude')
-    plt.show()
+	plt.figure()
+	plt.hist(c15[:,4], bins=np.linspace(10, 25, 30))
+	plt.yscale('log')
+	plt.xlabel('J band magnitude')
+	plt.show()
 
-    plt.figure(figsize=(8, 8))
-    plt.title('COSMOS 2015', fontsize=14)
-    plt.scatter(c15[:,2], c15[:,3], s=2, color='k', alpha=0.02)
-    plt.xlabel('x [CIBER pixels]', fontsize=14)
-    plt.xlabel('y [CIBER pixels]', fontsize=14)
-    plt.grid()
-    plt.show()
-    
-    
-    full_df_allbands = pd.DataFrame({'x':c15_x_sel, 'y':c15_y_sel, 'r_AB':c15[:,9], \
-                                     'i_AB':c15[:,10], 'z_AB':c15[:,11], 'y_AB':c15[:,12],\
-                                     'J': c15[:,4], 'H':c15[:,5], 'mag_CH1':c15[:,6], 'mag_CH2':c15[:,7], 'type':c15[:,8], 'redshift':c15[:,13]})
-    
-    if save:
-        save_fpath = config.ciber_basepath+'data/catalogs/COSMOS15/COSMOS15_hjmcc_rizy_JH_CH1CH2_AB.csv'
+	plt.figure(figsize=(8, 8))
+	plt.title('COSMOS 2015', fontsize=14)
+	plt.scatter(c15[:,2], c15[:,3], s=2, color='k', alpha=0.02)
+	plt.xlabel('x [CIBER pixels]', fontsize=14)
+	plt.xlabel('y [CIBER pixels]', fontsize=14)
+	plt.grid()
+	plt.show()
+	
+	
+	full_df_allbands = pd.DataFrame({'x':c15_x_sel, 'y':c15_y_sel, 'r_AB':c15[:,9], \
+									 'i_AB':c15[:,10], 'z_AB':c15[:,11], 'y_AB':c15[:,12],\
+									 'J': c15[:,4], 'H':c15[:,5], 'mag_CH1':c15[:,6], 'mag_CH2':c15[:,7], 'type':c15[:,8], 'redshift':c15[:,13]})
+	
+	if save:
+		save_fpath = config.ciber_basepath+'data/catalogs/COSMOS15/COSMOS15_hjmcc_rizy_JH_CH1CH2_AB.csv'
 
-        print('Saving catalog to ', save_fpath)
-        full_df_allbands.to_csv(save_fpath)
+		print('Saving catalog to ', save_fpath)
+		full_df_allbands.to_csv(save_fpath)
 
-        
-    if binned_coverage_mask_mkk:
-        av_Mkk, inv_Mkk, coverage_mask, save_fpath = make_binned_coverage_mask_and_mkk(c15_x_sel, c15_y_sel, 'COSMOS15',\
-                                                                               nx=sqdim, ny=sqdim, addstr='peter_hjmcc', save=save, nreg=nreg)
-    
-        
-    return full_df_allbands
+		
+	if binned_coverage_mask_mkk:
+		av_Mkk, inv_Mkk, coverage_mask, save_fpath = make_binned_coverage_mask_and_mkk(c15_x_sel, c15_y_sel, 'COSMOS15',\
+																			   nx=sqdim, ny=sqdim, addstr='peter_hjmcc', save=save, nreg=nreg)
+	
+		
+	return full_df_allbands
 
 def predict_auto_cross_cl_C15(m_min_J_list, m_min_H_list, inst=1, include_IRAC_mask=False, maglim_IRAC=18., m_max=28, \
-                             inv_Mkk_fpath=None, mkk_correct=True, catalog_fpath=None, cl_pred_basepath=None, \
-                             ifield_choose=4, addstr=None, save=True, filter_type=None):
-    
-    if cl_pred_basepath is None:
-        cl_pred_basepath = config.ciber_basepath+'data/cl_predictions/'
-    
-    if catalog_fpath is None:
-        catalog_fpath = config.ciber_basepath+'data/catalogs/COSMOS15/COSMOS15_hjmcc_JH_CH1CH2_AB.csv'
-        
-    cosmos_catalog = pd.read_csv(catalog_fpath)
-    cosmos_xpos = np.array(cosmos_catalog['x'])
-    cosmos_ypos = np.array(cosmos_catalog['y'])
-    cosmos_J_mag = np.array(cosmos_catalog['J'])
-    cosmos_H_mag = np.array(cosmos_catalog['H'])
-    cosmos_CH1_mag = np.array(cosmos_catalog['mag_CH1'])
-    cosmos_CH2_mag = np.array(cosmos_catalog['mag_CH2'])
-    
-    if filter_type is not None:
-        cosmos_type = np.array(cosmos_catalog['type'])
-    
-    mag_list = [cosmos_J_mag, cosmos_H_mag, cosmos_CH1_mag, cosmos_CH2_mag]
-    
-    magstr_list = ['J', 'H', 'CH1', 'CH2']
+							 inv_Mkk_fpath=None, mkk_correct=True, catalog_fpath=None, cl_pred_basepath=None, \
+							 ifield_choose=4, addstr=None, save=True, filter_type=None):
+	
+	if cl_pred_basepath is None:
+		cl_pred_basepath = config.ciber_basepath+'data/cl_predictions/'
+	
+	if catalog_fpath is None:
+		catalog_fpath = config.ciber_basepath+'data/catalogs/COSMOS15/COSMOS15_hjmcc_JH_CH1CH2_AB.csv'
+		
+	cosmos_catalog = pd.read_csv(catalog_fpath)
+	cosmos_xpos = np.array(cosmos_catalog['x'])
+	cosmos_ypos = np.array(cosmos_catalog['y'])
+	cosmos_J_mag = np.array(cosmos_catalog['J'])
+	cosmos_H_mag = np.array(cosmos_catalog['H'])
+	cosmos_CH1_mag = np.array(cosmos_catalog['mag_CH1'])
+	cosmos_CH2_mag = np.array(cosmos_catalog['mag_CH2'])
+	
+	if filter_type is not None:
+		cosmos_type = np.array(cosmos_catalog['type'])
+	
+	mag_list = [cosmos_J_mag, cosmos_H_mag, cosmos_CH1_mag, cosmos_CH2_mag]
+	
+	magstr_list = ['J', 'H', 'CH1', 'CH2']
 
-    lameffs = [1.05, 1.79, 3.6, 4.5]
-    
-    Vega_to_AB = dict({'g':-0.08, 'r':0.16, 'i':0.37, 'z':0.54, 'y':0.634, 'J':0.91, 'H':1.39, 'K':1.85, \
-                      'CH1':2.699, 'CH2':3.339})
-    
+	lameffs = [1.05, 1.79, 3.6, 4.5]
+	
+	Vega_to_AB = dict({'g':-0.08, 'r':0.16, 'i':0.37, 'z':0.54, 'y':0.634, 'J':0.91, 'H':1.39, 'K':1.85, \
+					  'CH1':2.699, 'CH2':3.339})
+	
 
-    mkkobj = np.load(inv_Mkk_fpath)
+	mkkobj = np.load(inv_Mkk_fpath)
 
-    inv_Mkk = mkkobj['inverse_Mkk']
-    mask = np.array(mkkobj['mask']).astype(int)
-    print('mask :', mask)
-    plot_map(mask, figsize=(5,5), title='coverage mask')
+	inv_Mkk = mkkobj['inverse_Mkk']
+	mask = np.array(mkkobj['mask']).astype(int)
+	print('mask :', mask)
+	plot_map(mask, figsize=(5,5), title='coverage mask')
 
-    npsbin = inv_Mkk.shape[0]
-    nx = mask.shape[0]    
-    
-    print('npsbin, nx', npsbin, nx)
+	npsbin = inv_Mkk.shape[0]
+	nx = mask.shape[0]    
+	
+	print('npsbin, nx', npsbin, nx)
 
-    cmock = ciber_mock(nx=nx, ny=nx)
-    cbps = CIBER_PS_pipeline(dimx=nx, dimy=nx, n_ps_bin=npsbin)
-    
-    n_ps_save = len(m_min_J_list)
-    
-    subpixel_psf_dirpath = config.ciber_basepath+'data/fluctuation_data/TM'+str(inst)+'/subpixel_psfs/'
-    psfbank = np.load(subpixel_psf_dirpath+'psf_temp_bank_inst1_ifield4.npz')
-    psf_postage_stamps = psfbank['psf_temp_bank']
-    
-    lb, mean_bl, bls = cbps.compute_beam_correction_posts(ifield_choose, inst, psf_postage_stamps=psf_postage_stamps)    
+	cmock = ciber_mock(nx=nx, ny=nx)
+	cbps = CIBER_PS_pipeline(dimx=nx, dimy=nx, n_ps_bin=npsbin)
+	
+	n_ps_save = len(m_min_J_list)
+	
+	subpixel_psf_dirpath = config.ciber_basepath+'data/fluctuation_data/TM'+str(inst)+'/subpixel_psfs/'
+	psfbank = np.load(subpixel_psf_dirpath+'psf_temp_bank_inst1_ifield4.npz')
+	psf_postage_stamps = psfbank['psf_temp_bank']
+	
+	lb, mean_bl, bls = cbps.compute_beam_correction_posts(ifield_choose, inst, psf_postage_stamps=psf_postage_stamps)    
 
-    print('mean bl:', mean_bl)
-    all_clautos = np.zeros((n_ps_save, len(lameffs), npsbin))
-    all_clx_J, all_clx_H, all_rlx_J, all_rlx_H = [np.zeros((n_ps_save, len(lameffs)-1, npsbin)) for x in range(4)]
+	print('mean bl:', mean_bl)
+	all_clautos = np.zeros((n_ps_save, len(lameffs), npsbin))
+	all_clx_J, all_clx_H, all_rlx_J, all_rlx_H = [np.zeros((n_ps_save, len(lameffs)-1, npsbin)) for x in range(4)]
 
-    all_clautos_unc = np.zeros((n_ps_save, len(lameffs), npsbin))
-    all_clx_J_unc, all_clx_H_unc, all_rlx_J_unc, all_rlx_H_unc = [np.zeros((n_ps_save, len(lameffs)-1, npsbin)) for x in range(4)]
-    
-    
+	all_clautos_unc = np.zeros((n_ps_save, len(lameffs), npsbin))
+	all_clx_J_unc, all_clx_H_unc, all_rlx_J_unc, all_rlx_H_unc = [np.zeros((n_ps_save, len(lameffs)-1, npsbin)) for x in range(4)]
+	
+	
 #     all_clx_H = np.zeros((n_ps_save, len(lameffs)-1, npsbin))
 
-    which_crossidx_J = [1, 2, 3]
-    which_crossidx_H = [2, 3]
-    
+	which_crossidx_J = [1, 2, 3]
+	which_crossidx_H = [2, 3]
+	
 #     all_clauto_J, all_clauto_H, all_clauto_CH1, all_clauto_CH2, \
 #         all_clx_JH, all_clx_J_CH1, all_clx_J_CH2, all_clx_H_CH1,\
 #             all_clx_H_CH2, all_clx_CH1_CH2 = [np.zeros((n_ps_save, npsbin)) for x in range(10)]
-    
-    
-    for magidx in range(len(m_min_J_list)):
-        
-        src_maps = []
+	
+	
+	for magidx in range(len(m_min_J_list)):
+		
+		src_maps = []
 
-        magmask_J = (cosmos_J_mag-Vega_to_AB['J'] > m_min_J_list[magidx])*(cosmos_J_mag-Vega_to_AB['J'] < m_max)
-        magmask_H = (cosmos_H_mag-Vega_to_AB['H'] > m_min_H_list[magidx])*(cosmos_H_mag-Vega_to_AB['H'] < m_max)
-        
-        magmask = magmask_J*magmask_H
+		magmask_J = (cosmos_J_mag-Vega_to_AB['J'] > m_min_J_list[magidx])*(cosmos_J_mag-Vega_to_AB['J'] < m_max)
+		magmask_H = (cosmos_H_mag-Vega_to_AB['H'] > m_min_H_list[magidx])*(cosmos_H_mag-Vega_to_AB['H'] < m_max)
+		
+		magmask = magmask_J*magmask_H
 
-        if include_IRAC_mask:
-            print('adding IRAC mask L < '+str(maglim_IRAC))
-            magmask *= (cosmos_CH1_mag-Vega_to_AB['CH1'] > maglim_IRAC)
-            
-        if filter_type is not None:
-            
-            filtmask = (cosmos_type==filter_type) # 0 for galaxies, 1 for stars
-            
-            magmask *= filtmask
-        # loop through bands
-        
-        for lidx, lam in enumerate(lameffs):
-            I_arr = cmock.mag_2_nu_Inu(mag_list[lidx], band=None, lam_eff=lam*1e-6*u.m)
-            I_arr[np.isnan(I_arr)] = 0.
-            mock_cat = np.array([cosmos_xpos[magmask], cosmos_ypos[magmask], mag_list[lidx][magmask], I_arr[magmask]]).transpose()
-            
-            sourcemap = cmock.make_srcmap_temp_bank(ifield_choose, 1, mock_cat, flux_idx=-1, n_fine_bin=10, nwide=17,tempbank_dirpath=subpixel_psf_dirpath, load_precomp_tempbank=True)
-            sourcemap *= mask
-            
-            if magidx==0:
-                plot_map(sourcemap, figsize=(6,6), title='source map lam = '+str(lam))
-            sourcemap[mask != 0] -= np.mean(sourcemap[mask != 0])
-            src_maps.append(sourcemap)
+		if include_IRAC_mask:
+			print('adding IRAC mask L < '+str(maglim_IRAC))
+			magmask *= (cosmos_CH1_mag-Vega_to_AB['CH1'] > maglim_IRAC)
+			
+		if filter_type is not None:
+			
+			filtmask = (cosmos_type==filter_type) # 0 for galaxies, 1 for stars
+			
+			magmask *= filtmask
+		# loop through bands
+		
+		for lidx, lam in enumerate(lameffs):
+			I_arr = cmock.mag_2_nu_Inu(mag_list[lidx], band=None, lam_eff=lam*1e-6*u.m)
+			I_arr[np.isnan(I_arr)] = 0.
+			mock_cat = np.array([cosmos_xpos[magmask], cosmos_ypos[magmask], mag_list[lidx][magmask], I_arr[magmask]]).transpose()
+			
+			sourcemap = cmock.make_srcmap_temp_bank(ifield_choose, 1, mock_cat, flux_idx=-1, n_fine_bin=10, nwide=17,tempbank_dirpath=subpixel_psf_dirpath, load_precomp_tempbank=True)
+			sourcemap *= mask
+			
+			if magidx==0:
+				plot_map(sourcemap, figsize=(6,6), title='source map lam = '+str(lam))
+			sourcemap[mask != 0] -= np.mean(sourcemap[mask != 0])
+			src_maps.append(sourcemap)
 
-            # auto power spectra
-            lb, clauto, clerr_auto = get_power_spec(sourcemap, \
-                                         lbinedges=cbps.Mkk_obj.binl, lbins=cbps.Mkk_obj.midbin_ell)
-            
-            cl_proc = np.dot(inv_Mkk.transpose(), clauto)
-            clerr_proc = clerr_auto * np.diagonal(inv_Mkk)
-            
-            cl_proc /= mean_bl**2
+			# auto power spectra
+			lb, clauto, clerr_auto = get_power_spec(sourcemap, \
+										 lbinedges=cbps.Mkk_obj.binl, lbins=cbps.Mkk_obj.midbin_ell)
+			
+			cl_proc = np.dot(inv_Mkk.transpose(), clauto)
+			clerr_proc = clerr_auto * np.diagonal(inv_Mkk)
+			
+			cl_proc /= mean_bl**2
 
-            all_clautos[magidx, lidx] = cl_proc
-            all_clautos_unc[magidx, lidx] = clerr_proc
-            
-        
-        for lidx, crossidx_J in enumerate(which_crossidx_J):
-            # J x {H, CH1, CH2}
-            lb, clcross, clerr_cross = get_power_spec(src_maps[0], map_b=src_maps[crossidx_J], \
-                             lbinedges=cbps.Mkk_obj.binl, lbins=cbps.Mkk_obj.midbin_ell)
+			all_clautos[magidx, lidx] = cl_proc
+			all_clautos_unc[magidx, lidx] = clerr_proc
+			
+		
+		for lidx, crossidx_J in enumerate(which_crossidx_J):
+			# J x {H, CH1, CH2}
+			lb, clcross, clerr_cross = get_power_spec(src_maps[0], map_b=src_maps[crossidx_J], \
+							 lbinedges=cbps.Mkk_obj.binl, lbins=cbps.Mkk_obj.midbin_ell)
 
-            clx_proc = np.dot(inv_Mkk.transpose(), clcross)
-            clx_proc /= mean_bl**2
-            
-            clx_err_proc = clerr_cross * np.diagonal(inv_Mkk)
-            clx_err_proc /= mean_bl**2
-            all_clx_J[magidx, lidx] = clx_proc
-            all_clx_J_unc[magidx, lidx] = clx_err_proc
-            
-            
-            
-            # cross correlation coefficients
-            
-            rlx_J = clx_proc / np.sqrt(all_clautos[magidx,0]*all_clautos[magidx, crossidx_J])
-            all_rlx_J[magidx, lidx] = rlx_J
-                
-            rlx_J_unc = compute_rlx_unc_comps(all_clautos[magidx, 0], all_clautos[magidx, crossidx_J], clx_proc, all_clautos_unc[magidx,0], all_clautos_unc[magidx, crossidx_J], clx_err_proc)
-            all_rlx_J_unc[magidx, lidx] = rlx_J_unc
-            
-        for lidx, crossidx_H in enumerate(which_crossidx_H):
-            # H x {CH1, CH2}
-            lb, clcross, clerr_cross = get_power_spec(src_maps[1], map_b=src_maps[crossidx_H], \
-                             lbinedges=cbps.Mkk_obj.binl, lbins=cbps.Mkk_obj.midbin_ell)
+			clx_proc = np.dot(inv_Mkk.transpose(), clcross)
+			clx_proc /= mean_bl**2
+			
+			clx_err_proc = clerr_cross * np.diagonal(inv_Mkk)
+			clx_err_proc /= mean_bl**2
+			all_clx_J[magidx, lidx] = clx_proc
+			all_clx_J_unc[magidx, lidx] = clx_err_proc
+			
+			
+			
+			# cross correlation coefficients
+			
+			rlx_J = clx_proc / np.sqrt(all_clautos[magidx,0]*all_clautos[magidx, crossidx_J])
+			all_rlx_J[magidx, lidx] = rlx_J
+				
+			rlx_J_unc = compute_rlx_unc_comps(all_clautos[magidx, 0], all_clautos[magidx, crossidx_J], clx_proc, all_clautos_unc[magidx,0], all_clautos_unc[magidx, crossidx_J], clx_err_proc)
+			all_rlx_J_unc[magidx, lidx] = rlx_J_unc
+			
+		for lidx, crossidx_H in enumerate(which_crossidx_H):
+			# H x {CH1, CH2}
+			lb, clcross, clerr_cross = get_power_spec(src_maps[1], map_b=src_maps[crossidx_H], \
+							 lbinedges=cbps.Mkk_obj.binl, lbins=cbps.Mkk_obj.midbin_ell)
 
-            clx_proc = np.dot(inv_Mkk.transpose(), clcross)
-            clx_proc /= mean_bl**2
-            
-            clx_err_proc = clerr_cross * np.diagonal(inv_Mkk)
-            clx_err_proc /= mean_bl**2
-            
-            all_clx_H[magidx, lidx] = clx_proc
-            all_clx_H_unc[magidx, lidx] = clx_err_proc
-            
-            # cross correlation coefficients
-            rlx_H = clx_proc / np.sqrt(all_clautos[magidx,1]*all_clautos[magidx, crossidx_H])
-            all_rlx_H[magidx, lidx] = rlx_H
-            
-            rlx_H_unc = compute_rlx_unc_comps(all_clautos[magidx, 1], all_clautos[magidx, crossidx_H], clx_proc, all_clautos_unc[magidx,1], all_clautos_unc[magidx, crossidx_H], clx_err_proc)
-            all_rlx_H_unc[magidx, lidx] = rlx_H_unc
-            
-            
-    pf = lb*(lb+1)/(2*np.pi)
-    
-    plt.figure(figsize=(8, 6))
-    for lidx in range(4):
-        plt.subplot(2,2,lidx+1)
-        
-        for magidx in range(len(m_min_J_list)):
-            
-            plt.errorbar(lb, pf*all_clautos[magidx, lidx], yerr=pf*all_clautos_unc[magidx, lidx], fmt='o')
-            
-        plt.xscale('log')
-        plt.yscale('log')
-        plt.xlabel('$\\ell$')
-        plt.ylabel('$D_{\\ell}$')
-        plt.grid(alpha=0.5)
-            
-    plt.tight_layout()
-    plt.show()
-    
-    plt.figure(figsize=(9, 6))
-    
-    
-    for lidx, crossidx_J in enumerate(which_crossidx_J):
-        plt.subplot(2, 3, lidx+1)
-        plt.title('J $\\times$ '+magstr_list[crossidx_J], fontsize=12)
+			clx_proc = np.dot(inv_Mkk.transpose(), clcross)
+			clx_proc /= mean_bl**2
+			
+			clx_err_proc = clerr_cross * np.diagonal(inv_Mkk)
+			clx_err_proc /= mean_bl**2
+			
+			all_clx_H[magidx, lidx] = clx_proc
+			all_clx_H_unc[magidx, lidx] = clx_err_proc
+			
+			# cross correlation coefficients
+			rlx_H = clx_proc / np.sqrt(all_clautos[magidx,1]*all_clautos[magidx, crossidx_H])
+			all_rlx_H[magidx, lidx] = rlx_H
+			
+			rlx_H_unc = compute_rlx_unc_comps(all_clautos[magidx, 1], all_clautos[magidx, crossidx_H], clx_proc, all_clautos_unc[magidx,1], all_clautos_unc[magidx, crossidx_H], clx_err_proc)
+			all_rlx_H_unc[magidx, lidx] = rlx_H_unc
+			
+			
+	pf = lb*(lb+1)/(2*np.pi)
+	
+	plt.figure(figsize=(8, 6))
+	for lidx in range(4):
+		plt.subplot(2,2,lidx+1)
+		
+		for magidx in range(len(m_min_J_list)):
+			
+			plt.errorbar(lb, pf*all_clautos[magidx, lidx], yerr=pf*all_clautos_unc[magidx, lidx], fmt='o')
+			
+		plt.xscale('log')
+		plt.yscale('log')
+		plt.xlabel('$\\ell$')
+		plt.ylabel('$D_{\\ell}$')
+		plt.grid(alpha=0.5)
+			
+	plt.tight_layout()
+	plt.show()
+	
+	plt.figure(figsize=(9, 6))
+	
+	
+	for lidx, crossidx_J in enumerate(which_crossidx_J):
+		plt.subplot(2, 3, lidx+1)
+		plt.title('J $\\times$ '+magstr_list[crossidx_J], fontsize=12)
 
-        for magidx in range(len(m_min_J_list)):
-            plt.errorbar(lb, all_rlx_J[magidx, lidx], yerr=all_rlx_J_unc[magidx, lidx], fmt='o', color='C'+str(magidx))
-        
-        plt.xscale('log')
-        plt.ylim(-0.2, 1.1)
-    
-    
-    for lidx, crossidx_H in enumerate(which_crossidx_H):
-        
-        plt.subplot(2,3, 4+lidx)
-        
-        plt.title('H $\\times$ '+magstr_list[crossidx_H], fontsize=12)
-        for magidx in range(len(m_min_J_list)):
+		for magidx in range(len(m_min_J_list)):
+			plt.errorbar(lb, all_rlx_J[magidx, lidx], yerr=all_rlx_J_unc[magidx, lidx], fmt='o', color='C'+str(magidx))
+		
+		plt.xscale('log')
+		plt.ylim(-0.2, 1.1)
+	
+	
+	for lidx, crossidx_H in enumerate(which_crossidx_H):
+		
+		plt.subplot(2,3, 4+lidx)
+		
+		plt.title('H $\\times$ '+magstr_list[crossidx_H], fontsize=12)
+		for magidx in range(len(m_min_J_list)):
 #             plt.plot(lb, all_rlx_H[magidx, lidx], color='C'+str(magidx))
-            plt.errorbar(lb, all_rlx_H[magidx, lidx], yerr=all_rlx_H_unc[magidx, lidx], fmt='o', color='C'+str(magidx))
+			plt.errorbar(lb, all_rlx_H[magidx, lidx], yerr=all_rlx_H_unc[magidx, lidx], fmt='o', color='C'+str(magidx))
 
-        plt.xscale('log')
-        plt.ylim(-0.2, 1.1)
-    
-    plt.tight_layout()
-    plt.show()
-    
-    if save:
-        
-        save_fpath_auto = cl_pred_basepath+'COSMOS15/cl_predictions_auto_JH_CH1CH2'
-        save_fpath_cross_J = cl_pred_basepath+'COSMOS15/cl_predictions_cross_J_HCH1CH2'
-        save_fpath_cross_H = cl_pred_basepath+'COSMOS15/cl_predictions_cross_H_CH1CH2'
-        
-        if addstr is not None:
-            save_fpath_auto += '_'+addstr
-            save_fpath_cross_J += '_'+addstr
-            save_fpath_cross_H += '_'+addstr
+		plt.xscale('log')
+		plt.ylim(-0.2, 1.1)
+	
+	plt.tight_layout()
+	plt.show()
+	
+	if save:
+		
+		save_fpath_auto = cl_pred_basepath+'COSMOS15/cl_predictions_auto_JH_CH1CH2'
+		save_fpath_cross_J = cl_pred_basepath+'COSMOS15/cl_predictions_cross_J_HCH1CH2'
+		save_fpath_cross_H = cl_pred_basepath+'COSMOS15/cl_predictions_cross_H_CH1CH2'
+		
+		if addstr is not None:
+			save_fpath_auto += '_'+addstr
+			save_fpath_cross_J += '_'+addstr
+			save_fpath_cross_H += '_'+addstr
 
-        save_fpath_auto += '.npz'
-        save_fpath_cross_J += '.npz'
-        save_fpath_cross_H += '.npz'
+		save_fpath_auto += '.npz'
+		save_fpath_cross_J += '.npz'
+		save_fpath_cross_H += '.npz'
 
-        print('saving auto spectra to ', save_fpath_auto)
-        
-        np.savez(save_fpath_auto, m_min_J_list=m_min_J_list, m_min_H_list=m_min_H_list, include_IRAC_mask=include_IRAC_mask, \
-                maglim_IRAC=maglim_IRAC, all_clautos=all_clautos, all_clautos_unc=all_clautos_unc, lameffs=lameffs, lb=lb, pf=pf)
-        
-        print('saving J x spectra to ', save_fpath_cross_J)
+		print('saving auto spectra to ', save_fpath_auto)
+		
+		np.savez(save_fpath_auto, m_min_J_list=m_min_J_list, m_min_H_list=m_min_H_list, include_IRAC_mask=include_IRAC_mask, \
+				maglim_IRAC=maglim_IRAC, all_clautos=all_clautos, all_clautos_unc=all_clautos_unc, lameffs=lameffs, lb=lb, pf=pf)
+		
+		print('saving J x spectra to ', save_fpath_cross_J)
 
-        np.savez(save_fpath_cross_J, m_min_J_list=m_min_J_list, m_min_H_list=m_min_H_list, include_IRAC_mask=include_IRAC_mask, \
-            maglim_IRAC=maglim_IRAC, all_clx_J=all_clx_J, all_rlx_J=all_rlx_J, all_clx_J_unc=all_clx_J_unc, all_rlx_J_unc=all_rlx_J_unc, cross_idxs=crossidx_J, lameffs=lameffs, lb=lb, pf=pf)
+		np.savez(save_fpath_cross_J, m_min_J_list=m_min_J_list, m_min_H_list=m_min_H_list, include_IRAC_mask=include_IRAC_mask, \
+			maglim_IRAC=maglim_IRAC, all_clx_J=all_clx_J, all_rlx_J=all_rlx_J, all_clx_J_unc=all_clx_J_unc, all_rlx_J_unc=all_rlx_J_unc, cross_idxs=crossidx_J, lameffs=lameffs, lb=lb, pf=pf)
 
-        print('saving H x spectra to ', save_fpath_cross_H)
+		print('saving H x spectra to ', save_fpath_cross_H)
 
-        np.savez(save_fpath_cross_H, m_min_J_list=m_min_J_list, m_min_H_list=m_min_H_list, include_IRAC_mask=include_IRAC_mask, \
-            maglim_IRAC=maglim_IRAC, all_clx_H=all_clx_H, all_rlx_H=all_rlx_H, all_clx_H_unc=all_clx_H_unc, all_rlx_H_unc=all_rlx_H_unc, cross_idxs=crossidx_H, lameffs=lameffs, lb=lb, pf=pf)
+		np.savez(save_fpath_cross_H, m_min_J_list=m_min_J_list, m_min_H_list=m_min_H_list, include_IRAC_mask=include_IRAC_mask, \
+			maglim_IRAC=maglim_IRAC, all_clx_H=all_clx_H, all_rlx_H=all_rlx_H, all_clx_H_unc=all_clx_H_unc, all_rlx_H_unc=all_rlx_H_unc, cross_idxs=crossidx_H, lameffs=lameffs, lb=lb, pf=pf)
 
-    
-    return all_clautos, all_clx_J, all_clx_H, lameffs, lb, pf 
+	
+	return all_clautos, all_clx_J, all_clx_H, lameffs, lb, pf 
 
 
 def ukidss_uds_cl_predict_JH(m_min_J_list, m_min_H_list, dimx=450, m_max = 28, psf_inst=1, ifield_choose=4, \
@@ -758,128 +758,128 @@ def simulate_deep_cats_correlation_coeff_cosmos(m_min_J_list, m_min_H_list, inst
 
 
 def cl_predictions_vs_magcut(inst, ifield_list=[4, 5, 6, 7, 8], mag_lims=None, mag_cut_cat = 15.0, nsim=10, ifield_choose=4, \
-                            load_igl_pred=False):
-    
-    if mag_lims is None:
-        if inst==1:
-            mag_lims = [13.0, 14.0, 15.0, 16.0, 16.5, 17.0, 17.5, 18.0, 18.5]
-        elif inst==2:
-            mag_lims = [14.0, 15.0, 16.0, 16.5, 17.0, 17.5, 18.0]
-            
-    magkey_dict = dict({1:'j_m', 2:'h_m'})
+							load_igl_pred=False):
+	
+	if mag_lims is None:
+		if inst==1:
+			mag_lims = [13.0, 14.0, 15.0, 16.0, 16.5, 17.0, 17.5, 18.0, 18.5]
+		elif inst==2:
+			mag_lims = [14.0, 15.0, 16.0, 16.5, 17.0, 17.5, 18.0]
+			
+	magkey_dict = dict({1:'j_m', 2:'h_m'})
 
-    cmock = ciber_mock()
-    cbps_nm = CIBER_NoiseModel()
-    
-    config_dict, pscb_dict, float_param_dict, fpath_dict = return_default_cbps_dicts()
-    
-    ciber_mock_fpath = config.ciber_basepath+'data/ciber_mocks/'
-    fpath_dict, list_of_dirpaths, base_path, trilegal_base_path = set_up_filepaths_cbps(fpath_dict, inst, 'test', '112022',\
-                                                                                    datestr_trilegal='112022', data_type='observed', \
-                                                                                   save_fpaths=True)
-    
+	cmock = ciber_mock()
+	cbps_nm = CIBER_NoiseModel()
+	
+	config_dict, pscb_dict, float_param_dict, fpath_dict = return_default_cbps_dicts()
+	
+	ciber_mock_fpath = config.ciber_basepath+'data/ciber_mocks/'
+	fpath_dict, list_of_dirpaths, base_path, trilegal_base_path = set_up_filepaths_cbps(fpath_dict, inst, 'test', '112022',\
+																					datestr_trilegal='112022', data_type='observed', \
+																				   save_fpaths=True)
+	
 
-    all_cls_add = np.zeros((len(mag_lims), len(cbps_nm.cbps.Mkk_obj.midbin_ell)))
-    base_fluc_path = config.ciber_basepath+'data/'
-    tempbank_dirpath = base_fluc_path+'fluctuation_data/TM'+str(inst)+'/subpixel_psfs/'
-    catalog_basepath = base_fluc_path+'catalogs/'
-    bls_fpath = base_fluc_path+'fluctuation_data/TM'+str(inst)+'/beam_correction/bl_est_postage_stamps_TM'+str(inst)+'_081121.npz'
-    B_ells = np.load(bls_fpath)['B_ells_post']
-    all_twomass_cats = []
-    
-    for fieldidx, ifield in enumerate(ifield_list):
-        field_name = cbps_nm.cbps.ciber_field_dict[ifield]
-        twomass_cat = pd.read_csv(catalog_basepath+'2MASS/filt/2MASS_filt_rdflag_wxy_'+field_name+'_Jlt17.5.csv')
-        all_twomass_cats.append(twomass_cat)
+	all_cls_add = np.zeros((len(mag_lims), len(cbps_nm.cbps.Mkk_obj.midbin_ell)))
+	base_fluc_path = config.ciber_basepath+'data/'
+	tempbank_dirpath = base_fluc_path+'fluctuation_data/TM'+str(inst)+'/subpixel_psfs/'
+	catalog_basepath = base_fluc_path+'catalogs/'
+	bls_fpath = base_fluc_path+'fluctuation_data/TM'+str(inst)+'/beam_correction/bl_est_postage_stamps_TM'+str(inst)+'_081121.npz'
+	B_ells = np.load(bls_fpath)['B_ells_post']
+	all_twomass_cats = []
+	
+	for fieldidx, ifield in enumerate(ifield_list):
+		field_name = cbps_nm.cbps.ciber_field_dict[ifield]
+		twomass_cat = pd.read_csv(catalog_basepath+'2MASS/filt/2MASS_filt_rdflag_wxy_'+field_name+'_Jlt17.5.csv')
+		all_twomass_cats.append(twomass_cat)
 
-    
-    power_maglim_isl_igl, power_maglim_igl = [], []
-    
-    for magidx, mag_lim in enumerate(mag_lims):
-        
-        if mag_lim <= mag_cut_cat:
+	
+	power_maglim_isl_igl, power_maglim_igl = [], []
+	
+	for magidx, mag_lim in enumerate(mag_lims):
+		
+		if mag_lim <= mag_cut_cat:
 
-            all_maps, all_masks = [], []
+			all_maps, all_masks = [], []
 
-            for fieldidx, ifield in enumerate(ifield_list):
-                
-                maskInst_fpath = base_fluc_path+'fluctuation_data/TM'+str(inst)+'/masks/maskInst_102422/field'+str(ifield)+'_TM'+str(inst)+'_maskInst_102422.fits'
-                mask_inst = fits.open(maskInst_fpath)['maskInst'].data # 10/24/22
+			for fieldidx, ifield in enumerate(ifield_list):
+				
+				maskInst_fpath = base_fluc_path+'fluctuation_data/TM'+str(inst)+'/masks/maskInst_102422/field'+str(ifield)+'_TM'+str(inst)+'_maskInst_102422.fits'
+				mask_inst = fits.open(maskInst_fpath)['maskInst'].data # 10/24/22
 
-                twomass_x = np.array(all_twomass_cats[fieldidx]['x'+str(inst)])
-                twomass_y = np.array(all_twomass_cats[fieldidx]['y'+str(inst)])
-                twomass_mag = np.array(all_twomass_cats[fieldidx][magkey_dict[inst]]) # magkey                
-                twomass_magcut = (twomass_mag < mag_cut_cat)*(twomass_mag > mag_lim)
+				twomass_x = np.array(all_twomass_cats[fieldidx]['x'+str(inst)])
+				twomass_y = np.array(all_twomass_cats[fieldidx]['y'+str(inst)])
+				twomass_mag = np.array(all_twomass_cats[fieldidx][magkey_dict[inst]]) # magkey                
+				twomass_magcut = (twomass_mag < mag_cut_cat)*(twomass_mag > mag_lim)
 
-                twomass_x_sel = twomass_x[twomass_magcut]
-                twomass_y_sel = twomass_y[twomass_magcut]
-                twomass_mag_sel = twomass_mag[twomass_magcut]
+				twomass_x_sel = twomass_x[twomass_magcut]
+				twomass_y_sel = twomass_y[twomass_magcut]
+				twomass_mag_sel = twomass_mag[twomass_magcut]
 
-                # convert back to AB mag for generating map 
-                twomass_mag_sel_AB = twomass_mag_sel+cmock.Vega_to_AB[inst]
-                I_arr_full = cmock.mag_2_nu_Inu(twomass_mag_sel_AB, inst-1)
-                full_tracer_cat = np.array([twomass_x_sel, twomass_y_sel, twomass_mag_sel_AB, I_arr_full])
+				# convert back to AB mag for generating map 
+				twomass_mag_sel_AB = twomass_mag_sel+cmock.Vega_to_AB[inst]
+				I_arr_full = cmock.mag_2_nu_Inu(twomass_mag_sel_AB, inst-1)
+				full_tracer_cat = np.array([twomass_x_sel, twomass_y_sel, twomass_mag_sel_AB, I_arr_full])
 
-                bright_src_map = cmock.make_srcmap_temp_bank(ifield, inst, full_tracer_cat.transpose(), flux_idx=-1, load_precomp_tempbank=True, \
-                                                            tempbank_dirpath=tempbank_dirpath)
+				bright_src_map = cmock.make_srcmap_temp_bank(ifield, inst, full_tracer_cat.transpose(), flux_idx=-1, load_precomp_tempbank=True, \
+															tempbank_dirpath=tempbank_dirpath)
 
-                all_maps.append(bright_src_map)
-                all_masks.append(mask_inst)
-                
-            cls_indiv = []
-            for idx, indiv in enumerate(all_maps):
-                lb, clb, clerr = get_power_spec(all_maps[idx]-np.mean(all_maps[idx]), lbinedges=cbps_nm.cbps.Mkk_obj.binl, lbins=cbps_nm.cbps.Mkk_obj.midbin_ell)
-                cls_indiv.append(clb/B_ells[idx]**2)
-                
-            av_clb = np.mean(np.array(cls_indiv), axis=0)
-            all_cls_add[magidx] = av_clb
-            
-        all_cl, all_cl_igl = [], []
-        
-        if load_igl_pred:
-            meas_pred = np.load('data/poisson_gal_TM'+str(inst)+'_meas_vs_helgason.npz')
-            meas_pred_mags = meas_pred['mag_mins']
-            poissonvars_meas = meas_pred['poissonvars_meas']
-            print('maglim is ', mag_lim)
-            whichmatch = np.where((np.array(meas_pred_mags)==mag_lim))[0]
-            print('which match :', whichmatch, meas_pred_mags)
-            poissonvar_choose = poissonvars_meas[whichmatch]
-            
-        for cib_setidx in range(nsim):
-            perfield_cl = []
-            for fieldidx, ifield in enumerate(ifield_list):
-                cib_cl_file = fits.open(fpath_dict['cib_resid_ps_path']+'/cls_cib_vs_maglim_ifield'+str(ifield)+'_inst'+str(inst)+'_simidx'+str(cib_setidx)+'_Vega_magcut.fits')
-                isl_cl_file = fits.open(fpath_dict['isl_resid_ps_path']+'/cls_isl_vs_maglim_ifield'+str(ifield)+'_inst'+str(inst)+'_simidx'+str(cib_setidx)+'_Vega_magcut.fits')
+				all_maps.append(bright_src_map)
+				all_masks.append(mask_inst)
+				
+			cls_indiv = []
+			for idx, indiv in enumerate(all_maps):
+				lb, clb, clerr = get_power_spec(all_maps[idx]-np.mean(all_maps[idx]), lbinedges=cbps_nm.cbps.Mkk_obj.binl, lbins=cbps_nm.cbps.Mkk_obj.midbin_ell)
+				cls_indiv.append(clb/B_ells[idx]**2)
+				
+			av_clb = np.mean(np.array(cls_indiv), axis=0)
+			all_cls_add[magidx] = av_clb
+			
+		all_cl, all_cl_igl = [], []
+		
+		if load_igl_pred:
+			meas_pred = np.load('data/poisson_gal_TM'+str(inst)+'_meas_vs_helgason.npz')
+			meas_pred_mags = meas_pred['mag_mins']
+			poissonvars_meas = meas_pred['poissonvars_meas']
+			print('maglim is ', mag_lim)
+			whichmatch = np.where((np.array(meas_pred_mags)==mag_lim))[0]
+			print('which match :', whichmatch, meas_pred_mags)
+			poissonvar_choose = poissonvars_meas[whichmatch]
+			
+		for cib_setidx in range(nsim):
+			perfield_cl = []
+			for fieldidx, ifield in enumerate(ifield_list):
+				cib_cl_file = fits.open(fpath_dict['cib_resid_ps_path']+'/cls_cib_vs_maglim_ifield'+str(ifield)+'_inst'+str(inst)+'_simidx'+str(cib_setidx)+'_Vega_magcut.fits')
+				isl_cl_file = fits.open(fpath_dict['isl_resid_ps_path']+'/cls_isl_vs_maglim_ifield'+str(ifield)+'_inst'+str(inst)+'_simidx'+str(cib_setidx)+'_Vega_magcut.fits')
 
-                if mag_lim <= mag_cut_cat:
-                    perfield_cl.append(cib_cl_file['cls_cib'].data['cl_maglim_'+str(mag_cut_cat)] + isl_cl_file['cls_isl'].data['cl_maglim_'+str(mag_cut_cat)] + cls_indiv[fieldidx])
-                else:
-                    
-                    if load_igl_pred:
-                        igl_isl = isl_cl_file['cls_isl'].data['cl_maglim_'+str(mag_lim)]
-                        igl_isl += poissonvar_choose
-                        
-                        perfield_cl.append(igl_isl)
-                    else:
-                        perfield_cl.append(cib_cl_file['cls_cib'].data['cl_maglim_'+str(mag_lim)] + isl_cl_file['cls_isl'].data['cl_maglim_'+str(mag_lim)])
+				if mag_lim <= mag_cut_cat:
+					perfield_cl.append(cib_cl_file['cls_cib'].data['cl_maglim_'+str(mag_cut_cat)] + isl_cl_file['cls_isl'].data['cl_maglim_'+str(mag_cut_cat)] + cls_indiv[fieldidx])
+				else:
+					
+					if load_igl_pred:
+						igl_isl = isl_cl_file['cls_isl'].data['cl_maglim_'+str(mag_lim)]
+						igl_isl += poissonvar_choose
+						
+						perfield_cl.append(igl_isl)
+					else:
+						perfield_cl.append(cib_cl_file['cls_cib'].data['cl_maglim_'+str(mag_lim)] + isl_cl_file['cls_isl'].data['cl_maglim_'+str(mag_lim)])
 
-            perfield_cl = np.array(perfield_cl)
-            all_cl.append(np.mean(perfield_cl, axis=0))
-                
+			perfield_cl = np.array(perfield_cl)
+			all_cl.append(np.mean(perfield_cl, axis=0))
+				
 #             cib_cl_file_magcutcat = fits.open(fpath_dict['cib_resid_ps_path']+'/cls_cib_vs_maglim_ifield'+str(ifield_choose)+'_inst'+str(inst)+'_simidx'+str(cib_setidx)+'_Vega_magcut.fits')
 #             isl_cl_file_magcutcat = fits.open(fpath_dict['isl_resid_ps_path']+'/cls_isl_vs_maglim_ifield'+str(ifield_choose)+'_inst'+str(inst)+'_simidx'+str(cib_setidx)+'_Vega_magcut.fits')
 #             if mag_lim <= mag_cut_cat:
 #                 all_cl.append(cib_cl_file['cls_cib'].data['cl_maglim_'+str(mag_cut_cat)] + isl_cl_file['cls_isl'].data['cl_maglim_'+str(mag_cut_cat)] + av_clb)
 #             else:
 #                 all_cl.append(cib_cl_file['cls_cib'].data['cl_maglim_'+str(mag_lim)] + isl_cl_file['cls_isl'].data['cl_maglim_'+str(mag_lim)])
-            
-            all_cl_igl.append(cib_cl_file['cls_cib'].data['cl_maglim_'+str(mag_lim)])
-            
-        power_maglim_isl_igl.append(np.mean(all_cl, axis=0))
-        power_maglim_igl.append(np.mean(all_cl_igl, axis=0))
-            
-            
-    return power_maglim_isl_igl, power_maglim_igl
+			
+			all_cl_igl.append(cib_cl_file['cls_cib'].data['cl_maglim_'+str(mag_lim)])
+			
+		power_maglim_isl_igl.append(np.mean(all_cl, axis=0))
+		power_maglim_igl.append(np.mean(all_cl_igl, axis=0))
+			
+			
+	return power_maglim_isl_igl, power_maglim_igl
 def compute_cross_shot_noise_trilegal(mag_lim_list, inst, cross_inst, ifield_list, datestr, fpath_dict, mode='isl', mag_lim_list_cross=None, \
 									 simidx0=0, nsims=100, ifield_plot=4, save=True, ciberdir='.', ciber_mock_fpath=None, convert_Vega_to_AB=True, simstr=None):
 	
@@ -1191,6 +1191,8 @@ def compute_residual_source_shot_noise(mag_lim_list, inst, ifield_list, datestr,
 	 
 def calc_cosmos15_shotnoise(inst, cat_df, mag_min=17.0, mag_max=30.0, aeff=1.37, bandstr=None, bandstr_cut=None):
 	
+
+	cmock = ciber_mock()
 	if inst==1:
 		if bandstr is None:
 			bandstr = 'J'

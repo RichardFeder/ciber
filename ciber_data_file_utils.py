@@ -156,7 +156,7 @@ def load_regrid_lens_map(inst, ifield, cmblens_mode, base_path=None):
 
 ''' File directory structure '''
 
-def init_mocktest_fpaths(ciber_mock_fpath, run_name):
+def init_mocktest_fpaths(ciber_mock_fpath, run_name, verbose=False):
     ff_fpath = ciber_mock_fpath+'030122/ff_realizations/'+run_name+'/'
     noisemod_fpath = ciber_mock_fpath +'030122/noise_models_sim/'+run_name+'/'
     input_recov_ps_fpath = 'data/input_recovered_ps/sim_tests_030122/'+run_name+'/'
@@ -167,17 +167,19 @@ def init_mocktest_fpaths(ciber_mock_fpath, run_name):
             print('making directory path for ', fpath)
             os.makedirs(fpath)
         else:
-            print(fpath, 'already exists')
+            if verbose:
+                print(fpath, 'already exists')
 
     return ff_fpath, noisemod_fpath, input_recov_ps_fpath
 
-def make_fpaths(fpaths):
+def make_fpaths(fpaths, verbose=False):
     for fpath in fpaths:
         if not os.path.isdir(fpath):
             print('making directory path for ', fpath)
             os.makedirs(fpath)
         else:
-            print(fpath, 'already exists')
+            if verbose:
+                print(fpath, 'already exists')
 
 '''---------------------- Data file formatting and saving ----------------------'''
 
@@ -229,9 +231,13 @@ def write_Mkk_fits(Mkk, inv_Mkk, ifield, inst, cross_inst=None, sim_idx=None, ge
     return hdul
 
 def write_regrid_proc_file(masked_proc, ifield, inst, regrid_to_inst, mask_tail=None,\
-                           dat_type='observed', mag_lim=None, mag_lim_cross=None, obs_level=None):
+                           dat_type='observed', mag_lim=None, mag_lim_cross=None, obs_level=None, masked_proc_orig=None):
     hdum = fits.ImageHDU(masked_proc, name='proc_regrid_'+str(ifield))
+
+    if masked_proc_orig is not None:
+        hdu_orig = fits.ImageHDU(masked_proc_orig, name='proc_orig_'+str(ifield))
     hdup = fits.PrimaryHDU()
+
     hdup.header['ifield'] = ifield
     hdup.header['inst'] = inst
     hdup.header['regrid_to_inst'] = regrid_to_inst
@@ -247,7 +253,11 @@ def write_regrid_proc_file(masked_proc, ifield, inst, regrid_to_inst, mask_tail=
     if obs_level is not None:
         hdup.header['obs_level'] = obs_level
 
-    hdul = fits.HDUList([hdup, hdum])
+    hdulist = [hdup, hdum]
+    if masked_proc_orig is not None:
+        hdulist.append(hdu_orig)
+
+    hdul = fits.HDUList(hdulist)
     
     return hdul
 

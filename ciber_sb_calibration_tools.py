@@ -512,50 +512,64 @@ def calc_mean_adu_coarse(flight_im, mask, nregion, xspace, yspace, plot=False, m
             
     return mean_adu_coarse
 
-def load_calib_catalog(inst, ifield, m_min=11, m_max=14.5, spline_k=3, trim_edge=50, interp_mode='flux'):
+def load_calib_catalog(inst, ifield, m_min=11, m_max=14.5, spline_k=3, trim_edge=50, interp_mode='flux', plot=False, \
+                        cross_inst=None, m_min_cross=None, m_max_cross=None):
     
-    calibration_cat = np.load('data/calibration_src_catalog_ifield'+str(ifield)+'.npz')['calibration_cat']
+
+    calibration_cat = np.load(config.ciber_basepath+'data/catalogs/calibration_catalogs/calibration_src_catalog_ifield'+str(ifield)+'.npz')['calibration_cat']
     
+    magdict = dict({1:6, 2:7})
+    Vega_to_AB = dict({1:0.91, 2:1.39})
+
     ciber_lam = [1.05, 1.79]
     if inst==1:
-        magidx = 6
+        # magidx = 6
         xidx, yidx = 2, 3
-        Vega_to_AB = 0.91
+        # Vega_to_AB = 0.91
     elif inst==2:
-        magidx = 7
+        # magidx = 7
         xidx, yidx = 4, 5
-        Vega_to_AB = 1.39
+        # Vega_to_AB = 1.39
+
+    magidx = magdict[inst]    
+    calib_mag_ref = calibration_cat[:,magidx]-Vega_to_AB[inst]
+
+    if cross_inst is not None:
+        magidx_cross = magdict[cross_inst]
+        calib_mag_cross_ref = calibration_cat[:,magidx_cross]-Vega_to_AB[cross_inst]
         
-    calib_mag_ref = calibration_cat[:,magidx]-Vega_to_AB
-    
     cal_posmask = (calibration_cat[:,xidx] > trim_edge)*(calibration_cat[:,xidx] < 1024-trim_edge)*(calibration_cat[:,yidx] > trim_edge)*(calibration_cat[:,yidx] < 1024-trim_edge)
     cal_magmask = (calib_mag_ref > m_min)*(calib_mag_ref < m_max)
-    
-    
-    
+
+    if cross_inst is not None:
+        cal_magmask *= (calib_mag_cross_ref > m_min_cross)*(calib_mag_cross_ref < m_max_cross)
+
     which_sel = np.where(cal_posmask*cal_magmask)[0]
     
     calmags = calib_mag_ref[which_sel]
+
+    if cross_inst is not None:
+        calmags_cross = calib_mag_cross_ref[which_sel]
+    else:
+        calmags_cross = None
 
     calibration_cat_sel = calibration_cat[which_sel, :]
     cal_x = calibration_cat_sel[:,xidx]
     cal_y = calibration_cat_sel[:,yidx]
     
-    plt.figure()
-    plt.hist(calibration_cat_sel[:,magidx], bins=np.linspace(10, 15, 20))
-    plt.yscale('log')
-    plt.show()
-    
-    plt.figure()
-    plt.scatter(cal_x, cal_y)
-    plt.show()
+    if plot:
+        plt.figure()
+        plt.hist(calibration_cat_sel[:,magidx], bins=np.linspace(10, 15, 20))
+        plt.yscale('log')
+        plt.show()
+        
+        plt.figure()
+        plt.scatter(cal_x, cal_y)
+        plt.show()
     
 #     print('cal sel has shape ', calibration_cat_sel.shape)
     
-
-    
-    ciber_fluxes = np.zeros((len(cal_x), 2))
-    
+    ciber_fluxes, ciber_twom_flux_ratio = [np.zeros((len(cal_x), 2)) for x in range(2)]
     nbands = np.zeros(len(cal_x))
 #     lamvec = np.array([1.25, 1.63, 2.2]) # grizy, JHK
 #     lamvec = np.array([0.49, 0.62, 0.75, 0.87, 0.96, 1.25, 1.63]) # grizy, JHK
@@ -567,8 +581,6 @@ def load_calib_catalog(inst, ifield, m_min=11, m_max=14.5, spline_k=3, trim_edge
     
     for i in range(calibration_cat_sel.shape[0]):
         magvec = np.array(list(calibration_cat_sel[i,9:])+list(calibration_cat_sel[i,6:9]))
-#         magvec = np.array(list(calibration_cat_sel[i,9:])+list(calibration_cat_sel[i,6:8]))
-
         fluxvec = 10**(-0.4*(magvec-23.9))
         whichgood = (~np.isinf(fluxvec))*(~np.isnan(fluxvec))*(magvec >5.)
 
@@ -578,7 +590,6 @@ def load_calib_catalog(inst, ifield, m_min=11, m_max=14.5, spline_k=3, trim_edge
             datavec = magvec[whichgood]
             
         nbands[i] = len(datavec)
-        
         
         if nbands[i] < 2:
             all_splines.append(None)
@@ -590,19 +601,14 @@ def load_calib_catalog(inst, ifield, m_min=11, m_max=14.5, spline_k=3, trim_edge
             sed_spline = scipy.interpolate.UnivariateSpline(lamvec[whichgood], datavec, k=spline_k)
               
 #         if len(fluxvec[whichgood])<4:
-            
-
 #             if len(fluxvec[whichgood])==3:
 #                 print(lamvec[whichgood])
 #                 sed_spline = scipy.interpolate.UnivariateSpline(lamvec[whichgood], fluxvec[whichgood], k=1)
-
 #             elif len(fluxvec[whichgood])==2:
 #                 sed_spline = scipy.interpolate.UnivariateSpline(lamvec[whichgood], fluxvec[whichgood], k=1)
-
 #             else:
 #                 all_splines.append(None)
 #                 continue
-        
 #         else:
 #     #         print(lamvec[whichgood], fluxvec[whichgood])
 #             sed_spline = scipy.interpolate.UnivariateSpline(lamvec[whichgood], fluxvec[whichgood], k=spline_k)
@@ -610,13 +616,14 @@ def load_calib_catalog(inst, ifield, m_min=11, m_max=14.5, spline_k=3, trim_edge
         all_splines.append(sed_spline)
     
     
-    
         if interp_mode=='flux':
             ciber_fluxes[i,:] = sed_spline(ciber_lam)
         elif interp_mode=='mag':
             ciber_fluxes[i,:] = 10**(-0.4*(sed_spline(ciber_lam)-23.9))
+
+        ciber_twom_flux_ratio[i,inst-1] = ciber_fluxes[i,inst-1]/fluxvec[magidx-1]
             
-        if i < 3:
+        if i < 3 and plot:
             plt.figure()
             plt.scatter(lamvec[whichgood], datavec, color='k')
             plt.plot(finelam, sed_spline(finelam), color='r')
@@ -635,7 +642,7 @@ def load_calib_catalog(inst, ifield, m_min=11, m_max=14.5, spline_k=3, trim_edge
             plt.show()
             
     
-    return cal_x, cal_y, ciber_fluxes, all_splines, calmags, nbands
+    return cal_x, cal_y, ciber_fluxes, all_splines, calmags, calmags_cross, nbands, ciber_twom_flux_ratio
 
 
 def calc_pred_flux(cbps, flux_dens, lam_eff, bandpass_corr=None):

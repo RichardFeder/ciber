@@ -443,7 +443,7 @@ def stack_in_mag_bins_pred(inst, ifield, mask_base_path=None, catalog_basepath=N
 
     return stack_obj_pred
 
-def ciber_stack_flux_prediction_test(inst, ifield_list = [4, 5, 6, 7, 8])
+def ciber_stack_flux_prediction_test(inst, ifield_list = [4, 5, 6, 7, 8]):
 
     mmin_range_Vega = np.array([16.0, 16.5, 17.0, 17.5, 18.0])+0.1
 
@@ -458,8 +458,8 @@ def ciber_stack_flux_prediction_test(inst, ifield_list = [4, 5, 6, 7, 8])
 
     print('nu efs:', nu_effs)
 
-    all_mean_post_fluxes, all_mean_post_fluxdens, \ 
-        all_stack_mag_Vega_eff, all_stack_mag_AB_eff, \ 
+    all_mean_post_fluxes, all_mean_post_fluxdens, \
+        all_stack_mag_Vega_eff, all_stack_mag_AB_eff, \
             allfield_meanpredmag_AB = [[] for x in range(5)]
 
     
