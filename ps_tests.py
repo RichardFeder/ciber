@@ -19,7 +19,7 @@ from plotting_fns import *
 
 
 def mock_consistency_chistat(lb, all_mock_recov_ps, mock_all_field_cl_weights, ifield_list = [4, 5, 6, 7, 8], lmax=10000, mode='chi2', all_cov_indiv_full=None, \
-                            cov_joint=None):
+                            cov_joint=None, startidx=1):
     ''' 
     mode either 'chi2' or 'chi'
     
@@ -27,7 +27,7 @@ def mock_consistency_chistat(lb, all_mock_recov_ps, mock_all_field_cl_weights, i
     
     # lbmask_chistat = (lb < lmax)*(lb > lb[0])
             
-    lbmask_chistat = (lb < lmax)
+    lbmask_chistat = (lb < lmax)*(lb >= lb[startidx])
     if all_cov_indiv_full is not None:
         print('all cov indiv shape ', np.array(all_cov_indiv_full).shape)
 
@@ -65,7 +65,6 @@ def mock_consistency_chistat(lb, all_mock_recov_ps, mock_all_field_cl_weights, i
             resid_joint = np.array(resid_joint)
             
             chistat_joint_mockstd = np.multiply(resid_joint, np.dot(inv_cov_joint, resid_joint.transpose()))      
-
             
         for fieldidx, ifield in enumerate(ifield_list):
             
@@ -95,3 +94,4 @@ def mock_consistency_chistat(lb, all_mock_recov_ps, mock_all_field_cl_weights, i
             
             
     return chistat_perfield, pte_perfield, all_chistat_largescale
+

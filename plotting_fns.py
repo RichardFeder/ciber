@@ -11,7 +11,405 @@ import matplotlib.patches as mpatches
 from ciber_data_file_utils import *
 from ps_tests import *
 from numerical_routines import *
+from powerspec_utils import *
+# from ciber_powerspec_pipeline import CIBER_PS_pipeline
+from mpl_toolkits.axes_grid1.inset_locator import inset_axes
 
+
+def plot_ciber_field_consistency_test(inst, lb, observed_recov_ps, observed_field_average_cl, all_mock_recov_ps, all_mock_signal_ps, mock_all_field_cl_weights, \
+                                      lmax=10000, startidx=1, endidx=None, mode='chi2', \
+                                    ybound=5, mock_run_name=None, datestr='111323', ifield_list = [4, 5, 6, 7, 8], \
+                                         mod_ratio=4):
+    
+    ciber_field_dict = dict({4:'elat10', 5:'elat30', 6:'Bootes B', 7:'Bootes A', 8:'SWIRE'})
+
+    all_chistat = []
+    
+    lamdict = dict({1:1.1, 2:1.8})
+    lbmask_chistat = (lb < lmax)*(lb >= lb[startidx])
+
+    if mode=='chi2':
+        observed_chi2_red = []
+    
+    prefac = lb*(lb+1)/(2*np.pi)
+    
+    if mock_run_name is not None:
+        
+        cov_fpath = config.ciber_basepath+'data/ciber_mocks/'+datestr+'/TM'+str(inst)+'/covariance/'+mock_run_name+'/ciber_field_consistency_cov_matrices_TM'+str(inst)+'_'+mock_run_name+'.npz'
+
+        cov_dat = np.load(cov_fpath)
+        all_resid_data_matrices = cov_dat['all_resid_data_matrices']
+        resid_joint_data_matrix = cov_dat['resid_joint_data_matrix']
+        cov_joint = np.cov(resid_joint_data_matrix.transpose())
+        
+        corr_joint = np.corrcoef(resid_joint_data_matrix.transpose())
+        
+        all_cov_indiv_full = [np.cov(all_resid_data_matrices[fieldidx,:,lbmask_chistat]) for fieldidx in range(len(ifield_list))]
+        all_cov_indiv_full = np.array(all_cov_indiv_full)
+        
+        all_corr_indiv_full = [np.corrcoef(all_resid_data_matrices[fieldidx,:,lbmask_chistat]) for fieldidx in range(len(ifield_list))]
+        all_corr_indiv_full = np.array(all_corr_indiv_full)
+        
+    else:
+        all_cov_indiv_full = None
+        cov_joint = None
+        
+#     plot_map(corr_joint)
+#     for x in range(len(all_corr_indiv_full)):
+#         plot_map(all_corr_indiv_full[x], title=x)
+    
+                
+    all_inv_cov_indiv_lbmask, all_inv_cov_indiv_mod = [np.zeros_like(all_cov_indiv_full) for x in range(2)]
+    if all_cov_indiv_full is not None:
+        
+        all_cov_indiv_mod = all_cov_indiv_full.copy()
+        
+        
+        for fieldidx, ifield in enumerate(ifield_list):
+            
+            mean_cl_obs = observed_recov_ps[fieldidx]
+            std_recov_mock_ps = np.std(all_mock_recov_ps[:,fieldidx], axis=0)
+            mean_input_mock_ps = np.mean(all_mock_signal_ps[:,fieldidx], axis=0)
+            ratio_obs_mock = (observed_field_average_cl/mean_input_mock_ps)[lbmask_chistat]
+        
+            gtr_unity_mask = (np.abs(ratio_obs_mock) > mod_ratio)
+            
+#             gtr_unity_mask *= (lb[lbmask_chistat] < 2000)
+            which_gtr_unity = np.where(gtr_unity_mask)[0]
+            
+            for which in which_gtr_unity:
+                all_cov_indiv_mod[fieldidx, which, :] *= ratio_obs_mock[which]
+                all_cov_indiv_mod[fieldidx, :, which] *= ratio_obs_mock[which]
+            
+            print('condition number on indiv is ', np.linalg.cond(all_cov_indiv_full[fieldidx]))
+            all_inv_cov_indiv_lbmask[fieldidx] = np.linalg.inv(all_cov_indiv_full[fieldidx])
+            all_inv_cov_indiv_mod[fieldidx] = np.linalg.inv(all_cov_indiv_mod[fieldidx])
+            
+    chistat_perfield_mock, pte_perfield_mock, all_chistat_largescale = mock_consistency_chistat(lb, all_mock_recov_ps, mock_all_field_cl_weights, lmax=lmax,\
+                                                                                                mode=mode, all_cov_indiv_full=all_cov_indiv_full,                                                                                          cov_joint=None, startidx=startidx)
+    f = plt.figure(figsize=(10, 7))
+
+    for fieldidx, ifield in enumerate(ifield_list):
+        ax = f.add_subplot(2,3,fieldidx+1)
+            
+        mean_cl_obs = observed_recov_ps[fieldidx]
+        std_recov_mock_ps = np.std(all_mock_recov_ps[:,fieldidx], axis=0)
+        mean_input_mock_ps = np.mean(all_mock_signal_ps[:,fieldidx], axis=0)
+        ratio_obs_mock = (observed_field_average_cl/mean_input_mock_ps)
+        
+        which_gtr_unity = (np.abs(ratio_obs_mock) > mod_ratio)
+        which_gtr_unity *= (lb < 2000)
+        
+        std_recov_mock_ps[which_gtr_unity] *= np.sqrt(ratio_obs_mock[which_gtr_unity])
+        
+        print('ratio obs mock', ratio_obs_mock)
+        
+        tot_std_ps = np.sqrt(std_recov_mock_ps**2)
+        plt.axhline(0, linestyle='dashed', color='k', linewidth=2)
+        plt.axvline(lmax, color='k', linestyle='dashed', linewidth=1.5)
+
+        frac_cl_field = ((mean_cl_obs-observed_field_average_cl)/observed_field_average_cl)[startidx:endidx]
+        plt.errorbar(lb[startidx:endidx], frac_cl_field, yerr=(tot_std_ps/observed_field_average_cl)[startidx:endidx],\
+                     label=ciber_field_dict[ifield], fmt='.', color='C'+str(fieldidx), zorder=2, alpha=1.0,\
+                     capthick=2, capsize=3, linewidth=2, markersize=5)
+
+        resid = observed_field_average_cl-mean_cl_obs
+
+        if mode=='chi2':
+            if all_cov_indiv_full is not None:
+                chistat_mean_cl_mockstd = np.multiply(resid[lbmask_chistat].transpose(), np.dot(all_inv_cov_indiv_mod[fieldidx], resid[lbmask_chistat]))
+            else:
+                chistat_mean_cl_mockstd = resid**2/(tot_std_ps**2)
+        elif mode=='chi':
+            chistat_mean_cl_mockstd = resid/tot_std_ps
+        
+        all_chistat.append(chistat_mean_cl_mockstd)
+
+        if all_cov_indiv_full is not None:
+            chistat_largescale = np.array(all_chistat[fieldidx])
+        else:
+            chistat_largescale = np.array(all_chistat[fieldidx])[lbmask_chistat]
+            
+        ndof = len(lb[lbmask_chistat])
+        if mode=='chi2':
+            chi2_red = np.sum(chistat_largescale)/ndof
+            observed_chi2_red.append(chi2_red)
+            chistat_info_string = '$\\chi^2/N_{dof}$: '+str(np.round(np.sum(chistat_largescale), 1))+'/'+str(ndof)+' ('+str(np.round(chi2_red, 2))+')'
+        elif mode=='chi':
+            chistat_info_string = '$\\chi/N_{dof}$: '+str(np.round(np.sum(chistat_largescale), 1))+'/'+str(ndof)
+            
+            
+        if startidx > 0:
+            plt.axvline(0.5*(lb[startidx]+lb[startidx-1]), color='k', linestyle='dashed', linewidth=1.5)
+        else:
+            plt.axvline(0.7*lb[0], color='k', linestyle='dashed', linewidth=1.5)
+
+        bbox_dict = dict({'facecolor':'white', 'alpha':0.8, 'edgecolor':'None', 'pad':0.})
+        
+        plt.text(3e2, ybound*0.5, ciber_field_dict[ifield]+', '+str(lamdict[inst])+' $\\mu$m\n'+chistat_info_string, color='C'+str(fieldidx), fontsize=11, \
+            bbox=bbox_dict)
+            
+        plt.tick_params(labelsize=12)
+        if fieldidx==0 or fieldidx==3:
+            plt.ylabel('Fractional deviation $\\Delta C_{\\ell}/\\langle \\hat{C}_{\\ell}\\rangle$', fontsize=12)
+        plt.xlabel('$\\ell$', fontsize=16)
+        plt.grid(alpha=0.2, color='grey')
+
+        plt.xscale('log')
+        plt.ylim(-ybound, ybound)
+        
+        
+        axin = inset_axes(ax, 
+                width="45%", # width = 30% of parent_bbox
+                height=0.75, # height : 1 inch
+                loc=4, borderpad=1.6)
+            
+        chistat_mock = all_chistat_largescale[fieldidx]
+        chistat_mock /= ndof
+        chistat_order_idx = np.argsort(chistat_mock)
+
+        if mode=='chi2':
+            bins = np.linspace(0, 4, 30)
+        elif mode=='chi':
+            bins = np.linspace(-2, 2, 30)
+            
+        plt.hist(chistat_mock, bins=bins, linewidth=1, histtype='stepfilled', color='k', alpha=0.2, label=ciber_field_dict[ifield])
+        plt.axvline(np.median(chistat_mock), color='k', alpha=0.5)
+
+        if mode=='chi2':
+            pte = 1.-(np.digitize(observed_chi2_red[fieldidx], chistat_mock[chistat_order_idx])/len(chistat_mock))
+            plt.axvline(chi2_red, color='C'+str(fieldidx), linestyle='solid', linewidth=2, label='Observed data')
+            axin.set_xlabel('$\\chi^2_{red}$', fontsize=10)
+
+        elif mode=='chi':
+            pte = 1.-(np.digitize(np.sum(chistat_largescale)/ndof, chistat_mock[chistat_order_idx])/len(chistat_mock))
+            plt.axvline(np.sum(chistat_largescale)/ndof, color='C'+str(fieldidx), linestyle='solid', linewidth=2, label='Observed data')
+            axin.set_xlabel('$\\chi_{red}$', fontsize=10)
+
+        axin.xaxis.set_label_position('top')
+        
+        if mode=='chi2':
+            plt.xticks([0, 1, 2, 3, 4], [0, 1, 2, 3, 4])
+            plt.xlim(0, 4)
+            xpos_inset_text = 1.5
+        else:
+            plt.xticks([-1, 0, 1], [-1, 0, 1])
+            plt.xlim(-1.5, 1.5)
+            xpos_inset_text = -1.4
+
+        axin.tick_params(labelsize=8,bottom=True, top=True, labelbottom=True, labeltop=False)
+        plt.yticks([], [])
+        hist = np.histogram(chistat_mock, bins=bins)
+        
+        plt.text(xpos_inset_text, 0.8*np.max(hist[0]), 'Mocks', color='grey', fontsize=9, bbox=bbox_dict)
+        plt.text(xpos_inset_text, 0.6*np.max(hist[0]), 'PTE='+str(np.round(pte, 2)), color='C'+str(fieldidx), fontsize=9, bbox=bbox_dict)
+            
+    plt.tight_layout()
+    plt.show()
+    
+    return f
+
+
+def plot_cov_corr_matrices_mock_perfield(inst, lb, all_mock_recov_ps, ifield_list=[4, 5, 6, 7, 8], mode='corr'):
+    
+    ciber_field_dict = dict({4:'elat10', 5:'elat30', 6:'Bootes B', 7:'Bootes A', 8:'SWIRE'})
+    lamdict = dict({1:1.1, 2:1.8})
+    lam = lamdict[inst]
+    
+    all_cov_indiv, all_corr_indiv = [], []
+    
+    prefac = lb*(lb+1)/(2*np.pi)
+    
+    fig = plt.figure(figsize=(10,6))
+    
+    for fieldidx, ifield in enumerate(ifield_list):
+        all_mock_recov_ps_indiv = all_mock_recov_ps[:,fieldidx,:]
+
+        plt.subplot(2,3,fieldidx+1)
+
+        cov_indiv = np.cov(all_mock_recov_ps_indiv.transpose())
+        corr_indiv = np.corrcoef(all_mock_recov_ps_indiv.transpose())
+        all_cov_indiv.append(cov_indiv)
+        all_corr_indiv.append(corr_indiv)
+        
+        print('condition number of indiv covariance matrix is ', np.linalg.cond(cov_indiv))
+        
+        if mode=='cov':
+            plt.title('Covariance: '+ciber_field_dict[ifield]+', '+str(lam)+' $\\mu$m', fontsize=12)
+            plt.imshow(cov_indiv, norm=matplotlib.colors.SymLogNorm(linthresh=1, vmax=1e3), origin='lower')
+
+        elif mode=='corr':
+            plt.title('Correlation: '+ciber_field_dict[ifield]+', '+str(lam)+' $\\mu$m', fontsize=12)
+            plt.imshow(corr_indiv, vmin=-1, vmax=1, origin='lower', cmap='bwr')
+            
+        plt.colorbar(fraction=0.046, pad=0.04)
+        
+        if fieldidx==0 or fieldidx==3:
+            plt.ylabel('Bandpower index', fontsize=12)
+        if fieldidx > 2:
+            plt.xlabel('Bandpower index', fontsize=12)
+    plt.tight_layout()
+    plt.show()
+    
+    return fig, all_corr_indiv, all_cov_indiv
+
+
+def plot_corr_matrix_full(inst, lb, all_mock_recov_ps, ifield_list=[4, 5, 6, 7, 8], title=None, title_fs=16):
+
+    ciber_field_dict = dict({4:'elat10', 5:'elat30', 6:'Bootes B', 7:'Bootes A', 8:'SWIRE'})
+    lamdict = dict({1:1.1, 2:1.8})
+    lam = lamdict[inst]
+    
+    prefac = lb*(lb+1)/(2*np.pi)
+    
+    nmock = all_mock_recov_ps.shape[0]
+    
+    all_mock_recov_ps_reshape = (prefac*all_mock_recov_ps).reshape((nmock, len(ifield_list)*all_mock_recov_ps.shape[2]))
+
+    cov_full = np.cov(all_mock_recov_ps_reshape.transpose())
+    corr_full = np.corrcoef(all_mock_recov_ps_reshape.transpose())
+    
+    fig = plt.figure(figsize=(7,7))
+
+    if title is not None:
+        plt.title(title, fontsize=title_fs)
+
+    plt.imshow(corr_full, vmin=-1, vmax=1, origin='lower', cmap='bwr')
+    plt.colorbar(fraction=0.046, pad=0.04)
+    xticks = np.array([0., 25., 50., 75., 100., 125.])
+    xticks -= 0.5
+
+    plt.xticks(xticks, ['', '', '', '', '', ''])
+    plt.yticks(xticks, ['', '', '', '', '', ''])
+    
+    for tickidx, xtick in enumerate(xticks[:-1]):
+        plt.text(0.5*(xticks[tickidx]+xticks[tickidx+1])-8, -5, ciber_field_dict[ifield_list[tickidx]], fontsize=14, color='k')
+        plt.text(-5, 0.5*(xticks[tickidx]+xticks[tickidx+1])-6, ciber_field_dict[ifield_list[tickidx]], fontsize=14, color='k', rotation='vertical')
+
+        if tickidx > 0:
+            plt.axhline(xtick, linewidth=0.5, color='k')
+            plt.axvline(xtick, linewidth=0.5, color='k')
+
+    plt.tight_layout()
+    plt.show()
+    
+    return fig, corr_full, cov_full
+
+def compare_field_average_to_mocks(lb, observed_field_average_cl, observed_field_average_dcl,\
+                                   mock_all_field_averaged_cls, mock_mean_input_ps, \
+                                  startidx=0, endidx=-1):
+
+    
+    field_average_error = mock_all_field_averaged_cls - mock_mean_input_ps
+    field_average_frac_error = (mock_all_field_averaged_cls - mock_mean_input_ps)/mock_mean_input_ps
+
+    median_frac_err = np.median(field_average_frac_error, axis=0)
+    std_frac_err = 0.5*(np.percentile(np.abs(field_average_error), 84, axis=0)-np.percentile(np.abs(field_average_error), 16, axis=0))
+
+    frac_err = field_average_error/mock_mean_input_ps
+
+    median_fieldav_err = np.median(np.abs(field_average_error), axis=0)
+
+    prefac = lb*(lb+1)/(2*np.pi)
+    
+    fig = plt.figure(figsize=(6, 5))
+    
+    plt.errorbar(lb[startidx:endidx], prefac[startidx:endidx]*observed_field_average_cl[startidx:endidx], yerr=prefac[startidx:endidx]*np.median(np.abs(field_average_error), axis=0)[startidx:endidx], label='Field average (observed)', fmt='o',\
+                         capthick=1.5, zorder=10, color='r', capsize=3, markersize=5, linewidth=2.)
+    plt.plot(lb, prefac*np.mean(mock_mean_input_ps, axis=0), color='k', linestyle='dashed', zorder=10, label='Mean input mock sky')
+    
+    plt.plot(lb[startidx:endidx], prefac[startidx:endidx]*observed_field_average_dcl[startidx:endidx], linestyle='solid', color='r', label='Field average uncertainty\n(from field scatter)')
+    plt.plot(lb[startidx:endidx], prefac[startidx:endidx]*np.mean(np.abs(field_average_error), axis=0)[startidx:endidx], color='k', linewidth=1.5, label='Mean absolute mock error')
+
+    
+    lb_mask_science = (lb > 400)*(lb < 2000)
+    snrs_mock = observed_field_average_cl[lb_mask_science]/np.std(mock_all_field_averaged_cls, axis=0)[lb_mask_science]
+    snrs_science_sv = observed_field_average_cl[lb_mask_science]/np.mean(np.abs(field_average_error), axis=0)[lb_mask_science]
+
+    snr_tot_mock = np.sqrt(np.sum(snrs_mock**2))
+    snr_tot_sv = np.sqrt(np.sum(snrs_science_sv**2))
+
+    print('snr tot with uncertainty from mocks is ', snr_tot_mock)
+    print('snr tot with uncertainty from field field scatter is ', snr_tot_sv)
+
+    plt.xscale('log')
+    plt.yscale("log")
+
+    plt.ylim(1e-2, 1e4)
+    plt.tick_params(labelsize=12)
+    plt.xlim(150, 1.2e5)
+
+    plt.xlabel('$\\ell$', fontsize=16)
+    plt.ylabel('$D_{\\ell}$ [nW$^2$ m$^{-4}$ sr$^{-2}$]', fontsize=16)
+
+    plt.grid()
+    plt.legend(fontsize=10, loc=2, framealpha=0.95)
+    plt.tight_layout()
+
+    plt.show()
+    
+    return fig, median_fieldav_err, median_frac_err, std_frac_err
+
+def plot_mock_recovery_multipanel(inst, lb, all_mock_recov_ps, all_mock_signal_ps, \
+                                mock_all_field_averaged_cls, masking_maglim=None, ifield_list=[4, 5, 6, 7, 8]):
+    
+    ciber_field_dict = dict({4:'elat10', 5:'elat30', 6:'Bootes B', 7:'Bootes A', 8:'SWIRE'})
+
+    lamdict = dict({1:1.1, 2:1.8})
+    bandstr_dict = dict({1:'J', 2:'H'})
+    lam = lamdict[inst]
+    bandstr = bandstr_dict[inst]
+    
+    if masking_maglim is None:
+        if inst==1:
+            masking_maglim = 17.5
+        elif inst==2:
+            masking_maglim = 17.0
+    
+    prefac = lb*(lb+1)/(2*np.pi)
+    
+    fig, ax = plt.subplots(figsize=(6, 7), sharex=True, nrows=2, gridspec_kw={'height_ratios': [1, 0.4]})
+    plt.subplots_adjust(hspace=0.06)
+
+    for fieldidx, ifield in enumerate(ifield_list):
+        
+        std_mock_err = 0.5*(np.percentile(all_mock_recov_ps[:,fieldidx,:], 84, axis=0)-np.percentile(all_mock_recov_ps[:,fieldidx,:], 16, axis=0))
+        ax[0].errorbar(lb, (prefac*np.mean(all_mock_recov_ps[:,fieldidx,:], axis=0)), yerr=prefac*std_mock_err, label=ciber_field_dict[ifield], fmt='.', color='C'+str(fieldidx), alpha=0.5, capsize=3, markersize=6)
+        ax[1].errorbar(lb, np.mean(all_mock_recov_ps[:,fieldidx,:], axis=0)/np.mean(all_mock_signal_ps[:,fieldidx,:], axis=0), yerr=std_mock_err/np.mean(all_mock_signal_ps[:,fieldidx,:], axis=0), label=ciber_field_dict[ifield], fmt='.', color='C'+str(fieldidx), alpha=0.5, capsize=3, markersize=6)
+
+    ax[0].plot(lb, prefac*np.mean(all_mock_signal_ps, axis=(0, 1)), color='grey', linewidth=2, linestyle='dashed', label='Input sky')
+
+    
+    print('ratio ', np.mean(mock_all_field_averaged_cls, axis=0)/np.mean(all_mock_signal_ps, axis=(0, 1)))
+    
+    std_mock_err_av = 0.5*(np.percentile(mock_all_field_averaged_cls, 84, axis=0)-np.percentile(mock_all_field_averaged_cls, 16, axis=0))
+    ax[1].errorbar(lb, np.mean(mock_all_field_averaged_cls, axis=0)/np.mean(all_mock_signal_ps, axis=(0, 1)), yerr=std_mock_err_av/np.mean(all_mock_signal_ps, axis=(0, 1)), zorder=5, color='k', fmt='o', capsize=3, capthick=2, markersize=4, label='Field average', alpha=0.8)
+    ax[0].errorbar(lb, prefac*np.mean(mock_all_field_averaged_cls, axis=0), yerr=prefac*std_mock_err_av, zorder=6, color='k', fmt='o', capsize=3, capthick=2, markersize=4, label='Field average')
+
+    ax[0].set_xlim(1.5e2, 1e5)
+    ax[0].set_yscale('log')
+    ax[0].set_xscale('log')
+    ax[0].tick_params(labelsize=14)
+    ax[1].set_xlabel('$\\ell$', fontsize=16)
+    ax[1].tick_params(labelsize=12)
+    ax[1].set_ylabel('$C_{\\ell}^{out}/C_{\\ell}^{in}-1$', fontsize=14)
+    ax[1].set_ylim(-1.0, 3.0)
+
+    ax[0].set_ylabel('$D_{\\ell}$ [nW$^2$ m$^{-4}$ sr$^{-2}$]', fontsize=16)
+    ax[0].grid(alpha=0.3, color='grey')
+    ax[1].grid(color='grey', alpha=0.3)
+    ax[1].axhline(1.0, color='grey', alpha=0.3, linestyle='dashed')
+    ax[0].set_ylim(1e-2, 5e3)
+    yticks = [-0.5, 0.0, 0.5, 1.0, 1.5, 2.0, 2.5]
+    yticks_plot = np.array(yticks)-1.
+    ax[1].set_yticks(yticks, yticks_plot)
+    
+    ax[0].text(2e2, 2e2, 'CIBER '+str(lam)+' $\\mu$m\nMock data\nMask $'+bandstr+'<'+str(masking_maglim)+'$', fontsize=16)
+    ax[0].legend(fontsize=10, loc=4, ncol=1, facecolor='white').set_zorder(10)
+
+    plt.show()
+
+    return fig
 
 def plot_mock_fieldav_cl_recovery_vs_magnitude(inst, mag_lims, cl_files, include_frac_err=False, startidx=1, endidx=-1, \
                                  return_fig=True, colors=None, ylim=None, textstr=None, textxpos=None, textypos=None, addstr=None, dl_l=False):
@@ -264,8 +662,9 @@ def plot_indiv_ps_results_fftest(lb, list_of_recovered_cls, cls_truth=None, n_sk
     if return_fig:
         return f
 
-def single_panel_observed_ps_results(inst, masking_maglim, lb, observed_field_average_cl, observed_recov_ps, field_average_error, all_mock_recov_ps, \
-                                     ifield_list = [4, 5, 6, 7, 8], include_dgl_ul=True, include_igl_helgason=True,\
+
+def single_panel_observed_ps_results(inst, masking_maglim, lb, observed_field_average_cl, observed_recov_ps, median_fieldav_err, all_mock_recov_ps, \
+                                    include_dgl_ul=True, include_igl_helgason=True, include_c15_snpred=False, \
                                      include_z14=False, rescale_Z14=False, fac=None, include_perfield=True, startidx=0, endidx=-1, show=True, \
                                     return_fig=True, zcolor='grey', xlim=[1.5e2, 1e5], ylim=[1e-2, 4e3], textpos=[2e2, 2e2], \
                                     obs_labels=['4th flight field average'], obs_colors=['k'], figsize=(6,5), zorders=None):
@@ -273,6 +672,11 @@ def single_panel_observed_ps_results(inst, masking_maglim, lb, observed_field_av
     lam_dict = dict({1:1.1, 2:1.8})
     lam_dict_z14 = dict({1:1.1, 2:1.6})
     bandstr_dict = dict({1:'J', 2:'H'})
+    ifield_list = [4, 5, 6, 7, 8]
+
+    ciber_field_dict = dict({4:'elat10', 5:'elat30', 6:'Bootes B', 7:'Bootes A', 8:'SWIRE'})
+    
+    bandstr = bandstr_dict[inst]
         
     prefac = lb[startidx:endidx]*(lb[startidx:endidx]+1)/(2*np.pi)
        
@@ -282,7 +686,11 @@ def single_panel_observed_ps_results(inst, masking_maglim, lb, observed_field_av
         for fieldidx, ifield in enumerate(ifield_list):
             std_recov_mock_ps = 0.5*(np.percentile(all_mock_recov_ps[:,fieldidx,:], 84, axis=0)-np.percentile(all_mock_recov_ps[:,fieldidx,:], 16, axis=0))
 
-            plt.errorbar(lb[startidx:endidx], prefac*observed_recov_ps[fieldidx,startidx:endidx], yerr=prefac*std_recov_mock_ps[startidx:endidx], label=cbps.ciber_field_dict[ifield], fmt='.', color='C'+str(fieldidx), alpha=0.3, capsize=4, markersize=10)
+            print('std recov mock ps:', std_recov_mock_ps.shape)
+            print('observed recov ps:', observed_recov_ps.shape)
+            print(fieldidx, startidx, endidx)
+            print(ciber_field_dict[ifield])
+            plt.errorbar(lb[startidx:endidx], prefac*observed_recov_ps[fieldidx,startidx:endidx], yerr=prefac*std_recov_mock_ps[startidx:endidx], label=ciber_field_dict[ifield], fmt='.', color='C'+str(fieldidx), alpha=0.3, capsize=4, markersize=10)
             
     if len(np.array(observed_field_average_cl).shape)==2:
         for obs_idx, obs_cl in enumerate(observed_field_average_cl):
@@ -290,12 +698,9 @@ def single_panel_observed_ps_results(inst, masking_maglim, lb, observed_field_av
                          label=obs_labels[obs_idx], fmt='o', capthick=1.5, color=obs_colors[obs_idx], capsize=3, markersize=4, linewidth=2., \
                         zorder=zorders[obs_idx])
     else:     
-        plt.errorbar(lb[startidx:endidx], prefac*observed_field_average_cl[startidx:endidx], yerr=(prefac)*np.median(np.abs(field_average_error), axis=0)[startidx:endidx], label=obs_labels[0], fmt='o', capthick=1.5, color='k', capsize=3, markersize=4, linewidth=2.)
+        plt.errorbar(lb[startidx:endidx], prefac*observed_field_average_cl[startidx:endidx], yerr=(prefac)*median_fieldav_err[startidx:endidx], label=obs_labels[0], fmt='o', capthick=1.5, color='k', capsize=3, markersize=4, linewidth=2.)
 
-        np.savez('/Users/richardfeder/Downloads/CIBER_TM'+str(inst)+'_auto_ps_120523.npz', lb=lb, observed_field_average_cl=observed_field_average_cl, \
-                prefac=prefac, clerr = np.median(np.abs(field_average_error), axis=0))
-        
-        
+
     if include_dgl_ul:
     
         dgl_auto_pred = np.load(config.ciber_basepath+'data/fluctuation_data/TM'+str(inst)+'/dgl_tracer_maps/sfd_clean/dgl_auto_constraints_TM'+str(inst)+'_sfd_clean_053023.npz')
@@ -303,7 +708,13 @@ def single_panel_observed_ps_results(inst, masking_maglim, lb, observed_field_av
         best_ps_fit_av = dgl_auto_pred['best_ps_fit_av']
         AC_A1 = dgl_auto_pred['AC_A1']
         dAC_sq = dgl_auto_pred['dAC_sq']
-
+        
+        
+        lb_extend = [4000, 6000, 10000, 20000]
+        ps_extend = best_ps_fit_av[-1]*(np.array(lb_extend)/lb_modl[-1])**(-1.2)
+        best_ps_fit_av = np.array(list(best_ps_fit_av) + list(ps_extend))
+        lb_modl = np.array(list(lb_modl) + list(lb_extend))
+        
         plt.plot(lb_modl, best_ps_fit_av*AC_A1**2, color='k', label='DGL', linestyle='solid')
         plt.fill_between(lb_modl, best_ps_fit_av*(AC_A1**2-dAC_sq), best_ps_fit_av*(AC_A1**2+dAC_sq), color='k', alpha=0.2)
         plt.fill_between(lb_modl, best_ps_fit_av*(AC_A1**2-2*dAC_sq), best_ps_fit_av*(AC_A1**2+2*dAC_sq), color='k', alpha=0.1)
@@ -322,21 +733,32 @@ def single_panel_observed_ps_results(inst, masking_maglim, lb, observed_field_av
         isl_igl = np.load(config.ciber_basepath+'data/cl_predictions/TM'+str(inst)+'/igl_isl_pred_mlim='+str(masking_maglim)+'_meas.npz')['isl_igl']
         plt.plot(lb, prefac_full*isl_igl, linestyle='dashdot', color='grey', label='IGL+ISL')
 
+        
+    if include_c15_snpred:
+        
+        c15_ccorr = np.load(config.ciber_basepath+'data/cl_predictions/color_corr_vs_'+bandstr+'_min_cosmos15.npz')
+        mmin_range_cc = c15_ccorr['mmin_list']
+        all_pv_c15 = c15_ccorr['all_pv_c15']
+        
+        lb_pred = np.array([50, 100]+list(lb))
+        pf_pred = lb_pred*(lb_pred+1)/(2*np.pi)
+        which_cc_match = np.where((mmin_range_cc==masking_maglim))[0][0]
+
+        plt.plot(lb_pred, (pf_pred*all_pv_c15[which_cc_match]), linestyle='dashed', color='k', label='Predicted $C_{\\ell}^{SN}$\n(IGL+ISL)')
+
+        
+        
     if include_z14:
         zemcov_auto = np.loadtxt(config.ciber_basepath+'/data/zemcov14_ps/ciber_'+str(lam_dict_z14[inst])+'x'+str(lam_dict_z14[inst])+'_dCl.txt', skiprows=8)
         zemcov_lb = zemcov_auto[:,0]
-        
+                
         if rescale_Z14:
-            if fac is None:
-                if inst==1:
-                    fac = 1.6
-                else:
-                    fac = 2.09
+            if inst==1:
+                fac = 1.6
             else:
-                fac = 1
+                fac = 2.09
+        
         plt.plot(zemcov_lb, zemcov_auto[:,1]*fac**2, label='Zemcov+14', marker='.', color=zcolor, alpha=0.3)
-        
-        
         plt.fill_between(zemcov_lb, (zemcov_auto[:,1]-zemcov_auto[:,2])*fac**2, (zemcov_auto[:,1]+zemcov_auto[:,3])*fac**2, color=zcolor, alpha=0.15)
 
 
@@ -374,6 +796,12 @@ def make_figure_cross_spec_vs_masking_magnitude(inst=1, cross_inst=2, maglim_J=[
     obs_fieldav_cross_cl, obs_fieldav_cross_dcl = [], []    
     obs_colors = ['indigo', 'darkviolet', 'mediumorchid', 'plum']
 
+    if load_snpred:
+
+        snpred = np.load(config.ciber_basepath+'data/cl_predictions/snpred_color_corr_vs_mag_JH_cosmos15.npz')
+        all_pv_JH = snpred['all_pv_JH']
+        mmin_J_pv = snpred['mmin_J_list']
+
     if load_igl_isl_pred:
 
         all_cl_cross_pred_vs_mag = []
@@ -408,6 +836,21 @@ def make_figure_cross_spec_vs_masking_magnitude(inst=1, cross_inst=2, maglim_J=[
             color = colors[m]
         else:
             color = 'C'+str(m+1)
+
+
+        if load_snpred:
+
+            if maglim_J < 15.0:
+                pv_cross = None
+            else:
+                which_pv = np.where((mmin_J_pv==maglim_J))[0][0]
+                pv_cross = all_pv_JH[which_pv]
+
+            if pv_cross is not None:
+                lb_sn = np.array([50., 100.]+list(lb))
+                pf_sn = lb_sn*(lb_sn+1)/(2*np.pi)
+                plt.plot(lb_sn, pf_sn*pv_cross, color=color, linestyle='dashed')
+                
         
         if load_igl_isl_pred:
             if maglim in m_min_J_pred and maglim > 16.0:
@@ -438,7 +881,8 @@ def make_figure_cross_spec_vs_masking_magnitude(inst=1, cross_inst=2, maglim_J=[
         return fig
 
 def make_figure_cross_corrcoeff_ciber_ciber_vs_mag(maglim_J = [12.0, 13.0, 14.0, 15.0, 16.0, 17.0, 17.5, 18.0], show=True, return_fig=True, \
-                                                  verbose=False, observed_run_names_cross=None, alpha=0.5):
+                                                  verbose=False, observed_run_names_cross=None, observed_run_names_auto=None, alpha=0.5, ylim=None, \
+                                                  startidx=1, endidx=-1, bbox_to_anchor =[1.0, 1.36], yticks=[0.0, 0.25, 0.5, 0.75, 1.0, 1.25]):
     
     if observed_run_names_cross is None:
         observed_run_names_cross = ['ciber_cross_ciber_perquad_regrid_Jlt'+str(maglim_J[j])+'_Hlt'+str(maglim_J[j]-0.5)+'_111923' for j in range(len(maglim_J))]
@@ -451,7 +895,11 @@ def make_figure_cross_corrcoeff_ciber_ciber_vs_mag(maglim_J = [12.0, 13.0, 14.0,
     
         maglim_H = maglim_J[o] - 0.5
         
-        obs_name_A = 'observed_Jlt'+str(maglim_J[o])+'_Hlt'+str(maglim_H)+'_111323_ukdebias' # union mask        
+        if observed_run_names_auto is not None:
+            obs_name_A = observed_run_names_auto[o]
+        else:
+            obs_name_A = 'observed_Jlt'+str(maglim_J[o])+'_Hlt'+str(maglim_H)+'_111323_ukdebias' # union mask        
+        
         obs_name_B = obs_name_A
     
         print(obs_name_A, obs_name_B, obs_name_AB)
@@ -476,23 +924,27 @@ def make_figure_cross_corrcoeff_ciber_ciber_vs_mag(maglim_J = [12.0, 13.0, 14.0,
         if verbose:
             print('weighted variance for lb < 2000:', weighted_variance)
 
-        plt.scatter(lb[1:-1], all_r_TM[obs_idx][1:-1], color=colors[obs_idx], \
+        plt.scatter(lb[startidx:endidx], all_r_TM[obs_idx][startidx:endidx], color=colors[obs_idx], \
                     label='$J<'+str(maglim_J[obs_idx])+'\\times H<$'+str(maglim_J[obs_idx]-0.5), s=8)
 
-        plt.errorbar(lb[1:-1], all_r_TM[obs_idx][1:-1], yerr=all_sigma_r_TM[obs_idx][1:-1], fmt='o', capsize=2.5, color=colors[obs_idx], \
+        plt.errorbar(lb[startidx:endidx], all_r_TM[obs_idx][startidx:endidx], yerr=all_sigma_r_TM[obs_idx][startidx:endidx], fmt='o', capsize=2.5, color=colors[obs_idx], \
                     markersize=4, capthick=1.5, alpha=alpha)
     plt.xscale('log')
-    plt.ylim(-0.1, 1.5)
+    if ylim is not None:
+        plt.ylim(ylim[0], ylim[1])
+    else:
+        plt.ylim(-0.1, 1.5)
     bbox_dict = dict({'facecolor':'white', 'alpha':0.9, 'edgecolor':'k', 'linewidth':0.5})
     plt.xlabel('$\\ell$', fontsize=14)
     plt.ylabel('$r_{\\ell} = C_{\\ell}^{1.1\\times1.8}/\\sqrt{C_{\\ell}^{1.1}C_{\\ell}^{1.8}}$', fontsize=12)
     plt.tick_params(labelsize=11)
 
+    ticks = ['' for x in range(len(yticks))]
     if obs_idx==1 or obs_idx==3:
-        plt.yticks([0.0, 0.25, 0.5, 0.75, 1.0, 1.25], ['', '', '', '', '', ''])
+        plt.yticks(yticks, ticks)
     plt.grid(alpha=0.3)
     
-    plt.legend(ncol=2, bbox_to_anchor=[1.0, 1.36])
+    plt.legend(ncol=2, bbox_to_anchor=bbox_to_anchor)
 
     if show:
         plt.show()
@@ -503,12 +955,14 @@ def plot_ciber_x_ciber_ps(ifield_list, lb, all_cl1d_obs, all_nl1d_unc, field_wei
                           startidx=1, endidx=-1, return_fig=True, flatidx=7):
     
     
+    ciber_field_dict = dict({4:'elat10', 5:'elat30', 6:'Bootes B', 7:'Bootes A', 8:'SWIRE'})
+
     f = plt.figure(figsize=(6,5))
 
     prefac = lb*(lb+1)/(2*np.pi)
     
     for fieldidx, ifield in enumerate(ifield_list):
-        plt.errorbar(lb[startidx:endidx], (prefac*all_cl1d_obs[fieldidx])[startidx:endidx], yerr=(prefac*all_nl1d_unc[fieldidx])[startidx:endidx], label=cbps.ciber_field_dict[ifield], fmt='.', color='C'+str(fieldidx), alpha=0.3, capsize=4, markersize=10)
+        plt.errorbar(lb[startidx:endidx], (prefac*all_cl1d_obs[fieldidx])[startidx:endidx], yerr=(prefac*all_nl1d_unc[fieldidx])[startidx:endidx], label=ciber_field_dict[ifield], fmt='.', color='C'+str(fieldidx), alpha=0.3, capsize=4, markersize=10)
 
     mean_cl_cross = np.mean(all_cl1d_obs, axis=0)
     std_cl_cross = np.std(all_cl1d_obs, axis=0)/np.sqrt(5)
@@ -651,173 +1105,11 @@ def plot_bandpowers_vs_magnitude(cbps, inst, mag_lims, prefac_binned, binned_obs
             else:
                 plt.ylim(5e-5, 1e3)
             
-#     plt.tight_layout()
     if show:
         plt.show()
             
     if return_fig:
         return fig
-
-
-
-def plot_ciber_field_consistency_test(inst, lb, observed_recov_ps, all_mock_signal_ps, mock_all_field_cl_weights, \
-                                      lmax=10000, startidx=1, endidx=None, mode='chi2', \
-                                    ybound=5, observed_run_name=None):
-    
-    ciber_field_dict = dict({4:'elat10', 5:'elat30',6:'BootesB', 7:'BootesA', 8:'SWIRE', 'train':'UDS'})
-
-
-    ifield_list = [4, 5, 6, 7, 8]
-    all_chistat = []
-    
-    lbmask_chistat = (lb < lmax)*(lb >= lb[startidx])
-
-    if mode=='chi2':
-        observed_chi2_red = []
-    
-    f = plt.figure(figsize=(10, 7))
-    prefac = lb*(lb+1)/(2*np.pi)
-    
-    if observed_run_name is not None:
-        all_resid_data_matrices = np.load('/Users/richardfeder/Downloads/ciber_field_consistency_cov_matrices_TM'+str(inst)+'_'+observed_run_name+'.npz')['all_resid_data_matrices']
-        resid_joint_data_matrix = np.load('/Users/richardfeder/Downloads/ciber_field_consistency_cov_matrices_TM'+str(inst)+'_'+observed_run_name+'.npz')['resid_joint_data_matrix']
-        
-        cov_joint = np.cov(resid_joint_data_matrix.transpose())
-        
-        all_cov_indiv_full = [np.cov(all_resid_data_matrices[fieldidx,:,lbmask_chistat]) for fieldidx in range(len(ifield_list))]
-        all_cov_indiv_full = np.array(all_cov_indiv_full)
-        
-    else:
-        all_cov_indiv_full = None
-        cov_joint = None
-        
-    all_inv_cov_indiv_lbmask = np.zeros_like(all_cov_indiv_full)
-    if all_cov_indiv_full is not None:
-        for fieldidx, ifield in enumerate(ifield_list):
-            all_inv_cov_indiv_lbmask[fieldidx] = np.linalg.inv(all_cov_indiv_full[fieldidx])
-        
-    chistat_perfield_mock, pte_perfield_mock, all_chistat_largescale = mock_consistency_chistat(lb, all_mock_recov_ps, mock_all_field_cl_weights, lmax=lmax, mode=mode, all_cov_indiv_full=all_cov_indiv_full, \
-                                                                                               cov_joint=None)
-
-    for fieldidx, ifield in enumerate(ifield_list):
-        ax = f.add_subplot(2,3,fieldidx+1)
-            
-            
-        mean_cl_obs = observed_recov_ps[fieldidx]
-        std_recov_mock_ps = np.std(all_mock_recov_ps[:,fieldidx], axis=0)
-        tot_std_ps = np.sqrt(std_recov_mock_ps**2)
-        plt.axhline(0, linestyle='dashed', color='k', linewidth=2)
-        plt.axvline(lmax, color='k', linestyle='dashed', linewidth=1.5)
-
-        plt.errorbar(lb[startidx:endidx], ((mean_cl_obs-observed_field_average_cl)/observed_field_average_cl)[startidx:endidx], yerr=(tot_std_ps/observed_field_average_cl)[startidx:endidx],\
-                     label=ciber_field_dict[ifield], fmt='.', color='C'+str(fieldidx), zorder=2, alpha=1.0,\
-                     capthick=2, capsize=3, linewidth=2, markersize=5)
-
-        resid = observed_field_average_cl-mean_cl_obs
-
-        if mode=='chi2':
-            if all_cov_indiv_full is not None:
-            
-                chistat_mean_cl_mockstd = np.multiply(resid[lbmask_chistat].transpose(), np.dot(all_inv_cov_indiv_lbmask[fieldidx], resid[lbmask_chistat]))
-            else:
-            
-                chistat_mean_cl_mockstd = resid**2/(tot_std_ps**2)
-        elif mode=='chi':
-            chistat_mean_cl_mockstd = resid/tot_std_ps
-        
-        all_chistat.append(chistat_mean_cl_mockstd)
-
-        if all_cov_indiv_full is not None:
-            
-            chistat_largescale = np.array(all_chistat[fieldidx])
-            print('chistat large scale:', chistat_largescale)
-
-        else:
-            chistat_largescale = np.array(all_chistat[fieldidx])[lbmask_chistat]
-            
-        ndof = len(lb[lbmask_chistat])
-        if mode=='chi2':
-            chi2_red = np.sum(chistat_largescale)/ndof
-            observed_chi2_red.append(chi2_red)
-            chistat_info_string = '$\\chi^2:$'+str(np.round(np.sum(chistat_largescale), 1))+'/'+str(ndof)+' ('+str(np.round(chi2_red, 2))+')'
-        elif mode=='chi':
-            chistat_info_string = '$\\chi:$'+str(np.round(np.sum(chistat_largescale), 1))+'/'+str(ndof)
-            
-            
-        if startidx > 0:
-            plt.axvline(0.5*(lb[startidx]+lb[startidx-1]), color='k', linestyle='dashed', linewidth=1.5)
-        else:
-            plt.axvline(0.7*lb[0], color='k', linestyle='dashed', linewidth=1.5)
-
-        bbox_dict = dict({'facecolor':'white', 'alpha':0.8, 'edgecolor':'None', 'pad':0.})
-        plt.text(3e2, ybound*0.5, 'TM'+str(inst)+', '+ciber_field_dict[ifield]+'\nObserved data\n'+chistat_info_string, color='C'+str(fieldidx), fontsize=11, \
-            bbox=bbox_dict)
-            
-        plt.tick_params(labelsize=12)
-        if fieldidx==0 or fieldidx==3:
-            plt.ylabel('Fractional deviation $\\Delta C_{\\ell}/\\langle \\hat{C}_{\\ell}\\rangle$', fontsize=12)
-        plt.xlabel('$\\ell$', fontsize=16)
-        plt.grid(alpha=0.2, color='grey')
-
-        plt.xscale('log')
-        plt.ylim(-ybound, ybound)
-        
-        
-        axin = inset_axes(ax, 
-                width="45%", # width = 30% of parent_bbox
-                height=0.75, # height : 1 inch
-                loc=4, borderpad=1.6)
-            
-        
-        chistat_mock = all_chistat_largescale[fieldidx]
-        chistat_mock /= ndof
-            
-        chistat_order_idx = np.argsort(chistat_mock)
-        if mode=='chi2':
-            bins = np.linspace(0, 4, 30)
-        elif mode=='chi':
-            bins = np.linspace(-2, 2, 30)
-            
-        plt.hist(chistat_mock, bins=bins, linewidth=1, histtype='stepfilled', color='k', alpha=0.2, label=ciber_field_dict[ifield])
-        plt.axvline(np.median(chistat_mock), color='k', alpha=0.5)
-        print(np.median(chistat_mock), 'median chi squared')
-
-        if mode=='chi2':
-            pte = 1.-(np.digitize(observed_chi2_red[fieldidx], chistat_mock[chistat_order_idx])/len(chistat_mock))
-            plt.axvline(chi2_red, color='C'+str(fieldidx), linestyle='solid', linewidth=2, label='Observed data')
-            axin.set_xlabel('$\\chi^2_{red}$', fontsize=10)
-
-        elif mode=='chi':
-            pte = 1.-(np.digitize(np.sum(chistat_largescale)/ndof, chistat_mock[chistat_order_idx])/len(chistat_mock))
-            plt.axvline(np.sum(chistat_largescale)/ndof, color='C'+str(fieldidx), linestyle='solid', linewidth=2, label='Observed data')
-            axin.set_xlabel('$\\chi_{red}$', fontsize=10)
-
-        axin.xaxis.set_label_position('top')
-        
-        if mode=='chi2':
-            plt.xticks([0, 1, 2, 3, 4], [0, 1, 2, 3, 4])
-            plt.xlim(0, 4)
-            xpos_inset_text = 1.5
-
-        else:
-            plt.xticks([-1, 0, 1], [-1, 0, 1])
-            plt.xlim(-1.5, 1.5)
-            xpos_inset_text = -1.4
-
-        
-        axin.tick_params(labelsize=8,bottom=True, top=True, labelbottom=True, labeltop=False)
-
-        plt.yticks([], [])
-        
-        hist = np.histogram(chistat_mock, bins=bins)
-        
-        plt.text(xpos_inset_text, 0.8*np.max(hist[0]), 'Mocks', color='grey', fontsize=9, bbox=bbox_dict)
-        plt.text(xpos_inset_text, 0.6*np.max(hist[0]), 'PTE='+str(np.round(pte, 2)), color='C'+str(fieldidx), fontsize=9, bbox=bbox_dict)
-            
-    plt.tight_layout()
-    plt.show()
-    
-    return f
 
 
 def plot_nframe_difference(cl_diffs_flight, cl_diffs_shotnoise, ifield_list, cl_elat30=None, ifield_elat30=5, nframe=10, show=True, return_fig=True, \

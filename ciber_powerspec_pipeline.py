@@ -12,6 +12,8 @@ from astropy.convolution import Gaussian2DKernel
 from scipy.ndimage import gaussian_filter
 from sklearn import tree
 import os
+from reproject import reproject_interp
+from reproject import reproject_adaptive
 
 import config
 # from cross_spectrum_analysis import *
@@ -20,6 +22,7 @@ from flat_field_est import *
 from masking_utils import *
 from powerspec_utils import *
 from ciber_mocks import *
+# from cross_spectrum import regrid_arrays_by_quadrant
 from numerical_routines import *
 from filtering_utils import calculate_plane, fit_gradient_to_map
 
@@ -46,6 +49,72 @@ It contains data processing routines and the basic steps going from flight image
 estimates of CIBER auto- and cross-power spectra. 
 
 '''
+
+
+def regrid_arrays_by_quadrant(map1, ifield, inst0=1, inst1=2, quad_list=['A', 'B', 'C', 'D'], \
+							 xoff=[0,0,512,512], yoff=[0,512,0,512], astr_map0_hdrs=None, astr_map1_hdrs=None,\
+							  indiv_map0_hdr=None, indiv_map1_hdr=None, astr_dir=None, plot=True, order=0, conserve_flux=False):
+	
+	''' 
+	Used for regridding maps from one imager to another. For the CIBER1 imagers the 
+	astrometric solution is computed for each quadrant separately, so this function iterates
+	through the quadrants when constructing the full regridded images. 
+	
+	Parameters
+	----------
+	
+	Returns
+	-------
+	
+	'''
+
+	if astr_dir is None:
+		astr_dir = '../../ciber/data/'
+
+	ciber_field_dict = dict({4:'elat10', 5:'elat30',6:'BootesB', 7:'BootesA', 8:'SWIRE', 'train':'UDS'})
+
+	map1_regrid, map1_fp_regrid = [np.zeros_like(map1) for x in range(2)]
+
+	fieldname = ciber_field_dict[ifield]
+	
+	map1_quads = [map1[yoff[iquad]:yoff[iquad]+512, xoff[iquad]:xoff[iquad]+512] for iquad in range(len(quad_list))]
+	
+	if astr_map0_hdrs is None and indiv_map0_hdr is None:
+		print('loading WCS for inst = ', inst0)
+		astr_map0_hdrs = load_quad_hdrs(ifield, inst0, base_path=astr_dir, halves=False)
+	if astr_map1_hdrs is None and indiv_map1_hdr is None:
+		print('loading WCS for inst = ', inst1)
+		astr_map1_hdrs = load_quad_hdrs(ifield, inst1, base_path=astr_dir, halves=False)
+
+	for iquad, quad in enumerate(quad_list):
+		
+		run_sum_footprint, sum_array = [np.zeros_like(map1_quads[0]) for x in range(2)]
+
+		# reproject each quadrant of second imager onto first imager
+		if indiv_map0_hdr is None:
+			for iquad2, quad2 in enumerate(quad_list):
+				input_data = (map1_quads[iquad2], astr_map1_hdrs[iquad2])
+
+				if conserve_flux:
+					array, footprint = reproject_adaptive(input_data, astr_map0_hdrs[iquad], (512, 512), conserve_flux=True)
+				else:
+					array, footprint = reproject_interp(input_data, astr_map0_hdrs[iquad], (512, 512), order=order, roundtrip_coords=True)
+
+				array[np.isnan(array)] = 0.
+				footprint[np.isnan(footprint)] = 0.
+
+				run_sum_footprint += footprint 
+				sum_array[run_sum_footprint < 2] += array[run_sum_footprint < 2]
+				run_sum_footprint[run_sum_footprint > 1] = 1
+
+		if plot:
+			plot_map(sum_array, title='sum array')
+			plot_map(run_sum_footprint, title='sum footprints')
+		
+		map1_regrid[yoff[iquad]:yoff[iquad]+512, xoff[iquad]:xoff[iquad]+512] = sum_array
+		map1_fp_regrid[yoff[iquad]:yoff[iquad]+512, xoff[iquad]:xoff[iquad]+512] = run_sum_footprint
+
+	return map1_regrid, map1_fp_regrid
 
 def noisemodlpdf_Z14(chi2_draw, div_fac=2.83):
 
@@ -609,7 +678,7 @@ class CIBER_PS_pipeline():
 								 photon_noise=True, shot_sigma_sb=None, cross_shot_sigma_sb=None, \
 								 simmap_dc=None, simmap_dc_cross=None, image=None, image_cross=None, \
 								  mc_ff_estimates = None, mc_ff_estimates_cross=None, gradient_filter=False, \
-								  verbose=False, inplace=True, show=False, spitzer=False):
+								  verbose=False, inplace=True, show=False, spitzer=False, per_quadrant=False, regrid_cross=False):
 
 		maplist_split_shape = (nsims//n_split, self.dimx, self.dimy)
 		sterad_per_pix = (self.pixsize/3600/180*np.pi)**2
@@ -652,14 +721,23 @@ class CIBER_PS_pipeline():
 
 		if image is not None and image_cross is not None:
 
-			plot_map(image, title='image')
-			plot_map(image_cross, title='image cross')
 			masked_image = image*mask
-			masked_image[mask==1] -= np.mean(masked_image[mask==1])
-
 			masked_cross_image = image_cross*mask 
-			masked_cross_image[mask==1] -= np.mean(masked_cross_image[mask==1])
 
+			if per_quadrant:
+				for q in range(4):
+					imquad = masked_image[self.x0s[q]:self.x1s[q], self.y0s[q]:self.y1s[q]]
+					imquad_cross = masked_cross_image[self.x0s[q]:self.x1s[q], self.y0s[q]:self.y1s[q]]
+
+					masked_image[self.x0s[q]:self.x1s[q], self.y0s[q]:self.y1s[q]][imquad != 0] -= np.mean(imquad[imquad!=0])
+					masked_cross_image[self.x0s[q]:self.x1s[q], self.y0s[q]:self.y1s[q]][imquad_cross != 0] -= np.mean(imquad_cross[imquad_cross!=0])
+
+			else:
+				masked_image[masked_image!=0] -= np.mean(masked_image[masked_image!=0])
+				masked_cross_image[masked_cross_image!=0] -= np.mean(masked_cross_image[masked_cross_image!=0])
+
+			plot_map(masked_image, title='image')
+			plot_map(masked_cross_image, title='image cross')
 
 			print('masked image has mean ', np.mean(masked_image))
 			print('masked cross image has mean ', np.mean(masked_cross_image))
@@ -680,6 +758,12 @@ class CIBER_PS_pipeline():
 			dotgrad, Xgrad, mask_rav = precomp_gradient_dat(self.dimx, self.dimy, mask=mask) # precomputed quantities for faster gradient subtraction
 
 	
+		if regrid_cross:
+			astr_dir = config.ciber_basepath+'data/'
+
+			astr_map0_hdrs = load_quad_hdrs(ifield, inst, base_path=astr_dir, halves=False)
+			astr_map1_hdrs = load_quad_hdrs(ifield, cross_inst, base_path=astr_dir, halves=False)
+
 
 		for i in range(n_split):
 			print('Split '+str(i+1)+' of '+str(n_split)+'..')
@@ -721,8 +805,19 @@ class CIBER_PS_pipeline():
 				nmc = len(mc_ff_estimates)
 				simmaps /= mc_ff_estimates[i%nmc]
 				nmc_cross = len(mc_ff_estimates_cross)
-				simmaps_cross /= np.rot(mc_ff_estimates_cross[i%nmc_cross], 3)
+				simmaps_cross /= np.rot90(mc_ff_estimates_cross[i%nmc_cross], 3)
 
+
+			if regrid_cross:
+
+				for simidx in range(len(simmaps)):
+					noise_regrid, _ = regrid_arrays_by_quadrant(simmaps[simidx], ifield, inst0=inst, inst1=cross_inst, \
+															 plot=False, astr_dir=astr_dir, astr_map0_hdrs=astr_map0_hdrs, \
+															 astr_map1_hdrs=astr_map1_hdrs)
+
+					if simidx==0:
+						plot_map(noise_regrid, title='noise regrid')
+					simmaps[simidx] = noise_regrid
 
 			if gradient_filter:
 				verbprint(True, 'Gradient filtering image in the noiiiise bias..')
@@ -757,7 +852,9 @@ class CIBER_PS_pipeline():
 			fft_objs_cross[1](simmaps_cross*sterad_per_pix)
 			cl2ds = np.array([fftshift(dentry*np.conj(dentry_cross)).real for dentry, dentry_cross in zip(empty_aligned_objs[2], empty_aligned_objs_cross[2])])
 			count, mean_nl2d, M2_nl2d = update_meanvar(count, mean_nl2d, M2_nl2d, cl2ds/V/(self.cal_facs[inst]*self.cal_facs[cross_inst]))
-			nl1ds = [azim_average_cl2d(nl2d/V/(self.cal_facs[inst]*self.cal_facs[cross_inst]), l2d, lbinedges=self.Mkk_obj.binl, lbins=self.Mkk_obj.midbin_ell)[1] for nl2d in cl2ds]
+			# nl1ds = [azim_average_cl2d(nl2d/V/(self.cal_facs[inst]*self.cal_facs[cross_inst]), l2d, lbinedges=self.Mkk_obj.binl, lbins=self.Mkk_obj.midbin_ell)[1] for nl2d in cl2ds]
+			nl1ds = [azim_average_cl2d(nl2d/V, l2d, lbinedges=self.Mkk_obj.binl, lbins=self.Mkk_obj.midbin_ell)[1] for nl2d in cl2ds]
+
 			nl1ds_nAnB.extend(nl1ds)
 
 			nl2ds_noiseA_sigB = np.array([fftshift(dentry*np.conj(empty_aligned_objs_maps[2][1])).real for dentry in empty_aligned_objs[2]])
@@ -765,7 +862,9 @@ class CIBER_PS_pipeline():
 			if spitzer: # lose one factor of cal_facs since spitzer maps do not have this
 				nl1ds = [azim_average_cl2d(nl2d/V/(self.cal_facs[inst]), l2d, lbinedges=self.Mkk_obj.binl, lbins=self.Mkk_obj.midbin_ell)[1] for nl2d in nl2ds_noiseA_sigB]
 			else:
-				nl1ds = [azim_average_cl2d(nl2d/V/(self.cal_facs[inst]*self.cal_facs[cross_inst]), l2d, lbinedges=self.Mkk_obj.binl, lbins=self.Mkk_obj.midbin_ell)[1] for nl2d in nl2ds_noiseA_sigB]
+				# nl1ds = [azim_average_cl2d(nl2d/V/(self.cal_facs[inst]*self.cal_facs[cross_inst]), l2d, lbinedges=self.Mkk_obj.binl, lbins=self.Mkk_obj.midbin_ell)[1] for nl2d in nl2ds_noiseA_sigB]
+				nl1ds = [azim_average_cl2d(nl2d/V, l2d, lbinedges=self.Mkk_obj.binl, lbins=self.Mkk_obj.midbin_ell)[1] for nl2d in nl2ds_noiseA_sigB]
+			
 			nl1ds_nAsB.extend(nl1ds)
 			count_nAsB, mean_nl2d_nAsB, M2_nl2d_nAsB = update_meanvar(count_nAsB, mean_nl2d_nAsB, M2_nl2d_nAsB, nl2ds_noiseA_sigB/V/(self.cal_facs[inst]*self.cal_facs[cross_inst]))
 			
@@ -775,7 +874,9 @@ class CIBER_PS_pipeline():
 			if spitzer:
 				nl1ds = [azim_average_cl2d(nl2d/V/(self.cal_facs[inst]), l2d, lbinedges=self.Mkk_obj.binl, lbins=self.Mkk_obj.midbin_ell)[1] for nl2d in nl2ds_noiseB_sigA]
 			else:
-				nl1ds = [azim_average_cl2d(nl2d/V/(self.cal_facs[inst]*self.cal_facs[cross_inst]), l2d, lbinedges=self.Mkk_obj.binl, lbins=self.Mkk_obj.midbin_ell)[1] for nl2d in nl2ds_noiseB_sigA]
+				# nl1ds = [azim_average_cl2d(nl2d/V/(self.cal_facs[inst]*self.cal_facs[cross_inst]), l2d, lbinedges=self.Mkk_obj.binl, lbins=self.Mkk_obj.midbin_ell)[1] for nl2d in nl2ds_noiseB_sigA]
+				nl1ds = [azim_average_cl2d(nl2d/V, l2d, lbinedges=self.Mkk_obj.binl, lbins=self.Mkk_obj.midbin_ell)[1] for nl2d in nl2ds_noiseB_sigA]
+
 			nl1ds_nBsA.extend(nl1ds)
 
 
@@ -788,7 +889,11 @@ class CIBER_PS_pipeline():
 		plot_map(mean_nl2d_nBsA, title='nBsA')
 
 		fourier_weights = 1./var_nl2d
-		
+
+		nl1ds_nAnB = np.array(nl1ds_nAnB)
+		nl1ds_nAsB = np.array(nl1ds_nAsB)
+		nl1ds_nBsA = np.array(nl1ds_nBsA)
+
 		if show:
 
 			plt.figure(figsize=(8,8))
@@ -801,31 +906,34 @@ class CIBER_PS_pipeline():
 
 			prefac = lb*(lb+1)/(2*np.pi)
 
-			nl1ds_nAnB = np.array(nl1ds_nAnB)
 			plt.figure()
 			plt.title('nAnB')
 			for nl in nl1ds_nAnB:
 				plt.plot(lb, prefac*nl, color='grey', alpha=0.1)
 			plt.errorbar(lb, prefac*np.mean(nl1ds_nAnB, axis=0), yerr=prefac*np.std(nl1ds_nAnB, axis=0), color='r')
 			plt.xscale('log')
+			plt.ylabel('$N_{\\ell}$ [nW$^2$ m$^{-4}$ sr$^{-2}$]', fontsize=14)
+			plt.xlabel('$\\ell$', fontsize=14)
 			plt.show()
 
-			nl1ds_nAsB = np.array(nl1ds_nAsB)
 			plt.figure()
 			plt.title('nl1ds_nAsB')
 			for nl in nl1ds_nAsB:
 				plt.plot(lb, prefac*nl, color='grey', alpha=0.1)
 			plt.errorbar(lb, prefac*np.mean(nl1ds_nAsB, axis=0), yerr=prefac*np.std(nl1ds_nAsB, axis=0), color='r')
+			plt.ylabel('$N_{\\ell}$ [nW$^2$ m$^{-4}$ sr$^{-2}$]', fontsize=14)
+			plt.xlabel('$\\ell$', fontsize=14)
 			plt.xscale('log')
 			plt.show()
 
-			nl1ds_nBsA = np.array(nl1ds_nBsA)
 			plt.figure()
 			plt.title('nl1ds_nBsA')
 			for nl in nl1ds_nBsA:
 				plt.plot(lb, prefac*nl, color='grey', alpha=0.1)
 			plt.errorbar(lb, prefac*np.mean(nl1ds_nBsA, axis=0), yerr=prefac*np.std(nl1ds_nBsA, axis=0), color='r')
 			plt.xscale('log')
+			plt.ylabel('$N_{\\ell}$ [nW$^2$ m$^{-4}$ sr$^{-2}$]', fontsize=14)
+			plt.xlabel('$\\ell$', fontsize=14)
 			plt.show()
 
 		
@@ -1048,8 +1156,8 @@ class CIBER_PS_pipeline():
 					print('adding point source x FF error noise component..')
 					point_src_comp_ff = (point_src_comp /mc_ff_estimates[i%nmc])-point_src_comp
 
-					# if i==0:
-					# 	plot_map(point_src_comp_ff, title='FF errors x point source')
+					if i==0:
+						plot_map(point_src_comp_ff, title='FF errors x point source')
 
 					simmaps += point_src_comp_ff
 
@@ -1387,11 +1495,14 @@ class CIBER_PS_pipeline():
 		else:
 			all_ff_ests_nofluc_cross = np.zeros((float_param_dict['nmc_ff'], self.dimx, self.dimy))
 
-			ff_est_dirpath = 'data/ff_mc_ests/'+datestr+'/TM'+str(inst)+'/'
-			ff_est_dirpath_cross = 'data/ff_mc_ests/'+datestr+'/TM'+str(cross_inst)+'/'
+			ff_est_dirpath = config.ciber_basepath+'data/ff_mc_ests/'+datestr+'/TM1/'
+			ff_est_dirpath_cross = config.ciber_basepath+'data/ff_mc_ests/'+datestr+'/TM2/'
+
+			# ff_est_dirpath = 'data/ff_mc_ests/'+datestr+'/TM'+str(inst)+'/'
+			# ff_est_dirpath_cross = 'data/ff_mc_ests/'+datestr+'/TM'+str(cross_inst)+'/'
 
 			for ffidx in range(float_param_dict['nmc_ff']):
-				ff_filepath = ff_est_dirpath+'/'+run_name+'/ff_realization_estimate_ffidx'+str(ffidx)+'.npz'
+				ff_filepath = ff_est_dirpath+'/'+fpath_dict['ffest_run_name']+'/ff_realization_estimate_ffidx'+str(ffidx)+'.npz'
 				ff_file = np.load(ff_filepath)
 				all_ff_ests_nofluc[ffidx] = ff_file['ff_realization_estimates'][fieldidx]
 				ff_filepath_cross = ff_est_dirpath_cross+'/'+fpath_dict['ffest_run_name_cross']+'/ff_realization_estimate_ffidx'+str(ffidx)+'.npz'
@@ -2925,6 +3036,12 @@ class CIBER_PS_pipeline():
 				else:
 					diff_realization = self.generate_custom_sky_clustering(inst, dgl_scale_fac=float_param_dict['dgl_scale_fac'], ifield=ifield, gen_ifield=float_param_dict['indiv_ifield'])
 				diff_realizations[fieldidx] = diff_realization
+
+				print('adding ell-2 PS')
+				scalefac = dict({1:1e4, 2:5e4})
+				ihl = self.generate_custom_sky_clustering(inst, dgl_scale_fac=scalefac[inst], power_law_idx=-2.0)
+
+				diff_realizations[fieldidx] += ihl
 
 				if gsmt_dict['show_plots'] and fieldidx==0:
 					plot_map(diff_realization, title='diff_realization, ifield'+str(ifield))

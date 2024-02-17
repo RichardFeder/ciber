@@ -23,6 +23,149 @@ import healpy as hp
 import scipy.io
 
 
+def calc_reproj_tl(inst, ifield_list, mask_tail, cross_inst=2, order=None, conserve_flux=False):
+    cbps = CIBER_PS_pipeline()
+
+    # load masked maps before and after regridding
+    
+    tl_regrid, tl_regrid_orig = [np.zeros((len(ifield_list), cbps.n_ps_bin)) for x in range(2)]
+    
+    proc_regrid_basepath = config.ciber_basepath+'data/fluctuation_data/TM'+str(inst)+'_TM'+str(cross_inst)+'_cross/proc_regrid/'
+    
+    proc_regrid_basepath += mask_tail+'/'
+    
+    for fieldidx, ifield in enumerate(ifield_list):
+        
+        proc_fpath = proc_regrid_basepath+'proc_regrid_TM'+str(cross_inst)+'_to_TM'+str(inst)+'_ifield'+str(ifield)+'_'+mask_tail
+        
+        if order is not None:
+            proc_fpath += '_order='+str(order)
+        if conserve_flux:
+            proc_fpath += '_conserve_flux'
+        proc_fpath +='.fits'
+        
+        mask_base_path = config.ciber_basepath+'data/fluctuation_data/TM'+str(inst)+'/masks/'
+        mask_fpath = mask_base_path+'/'+mask_tail+'/joint_mask_ifield'+str(ifield)+'_inst'+str(inst)+'_observed_'+mask_tail+'.fits'
+        mask_native = fits.open(mask_fpath)[1].data
+        
+        plot_map(mask_native)
+
+        
+        proc = fits.open(proc_fpath)
+        masked_ciber_orig = proc['proc_orig_'+str(ifield)].data
+        masked_ciber_regrid = proc['proc_regrid_'+str(ifield)].data
+        
+        
+        
+        ciber_regrid_to_orig, _ = regrid_arrays_by_quadrant(masked_ciber_regrid, ifield, inst0=cross_inst, inst1=inst, \
+                                                     plot=False, astr_dir=config.ciber_basepath+'data/', order=1, conserve_flux=conserve_flux)
+
+        plot_map(ciber_regrid_to_orig, title='regrid')
+        plot_map(masked_ciber_orig, title='before regridding')
+        plot_map(ciber_regrid_to_orig-masked_ciber_orig)
+        
+#         print('mean of regrid is ', np.mean(ciber_regrid))
+        
+        
+#         masked_ciber_regrid *= mask_native
+        
+#         masked_ciber_regrid[masked_ciber_regrid != 0] -= np.mean(masked_ciber_regrid[masked_ciber_regrid != 0])
+
+        plot_map(masked_ciber_orig, title='orig ifield '+str(ifield))
+        plot_map(masked_ciber_regrid, title='orig ifield '+str(ifield))
+
+        lb, cl_orig, _ = get_power_spec(masked_ciber_orig, lbinedges=cbps.Mkk_obj.binl, lbins=cbps.Mkk_obj.midbin_ell)
+
+        lb, cl_regrid_tm2_to_tm1, _ = get_power_spec(masked_ciber_regrid, lbinedges=cbps.Mkk_obj.binl, lbins=cbps.Mkk_obj.midbin_ell)
+
+        lb, cl_regrid_backto_tm2, _ = get_power_spec(ciber_regrid_to_orig, lbinedges=cbps.Mkk_obj.binl, lbins=cbps.Mkk_obj.midbin_ell)
+        
+        
+        tl_regrid_orig[fieldidx] = cl_regrid_backto_tm2/cl_orig
+        
+        tl_regrid[fieldidx] = cl_regrid_tm2_to_tm1/cl_orig
+        
+        
+    plt.figure()
+    for fieldidx, ifield in enumerate(ifield_list):
+        
+        plt.plot(lb, tl_regrid[fieldidx], label=cbps.ciber_field_dict[ifield])
+        
+    plt.plot(lb, np.mean(tl_regrid, axis=0), color='k', label='Field average')
+    
+    plt.plot(lb, np.mean(tl_regrid_orig, axis=0), color='r', label='back to orig')
+        
+    plt.xscale('log')
+    plt.ylim(-0.2, 1.1)
+    plt.legend(loc=3)
+    plt.show()
+    
+    return lb, tl_regrid, tl_regrid_orig
+
+
+def calculate_transfer_function_regridding(ifield_list, inst_orig=2, inst_map=1, include_dgl=True, nsims=10):
+    
+    cbps = CIBER_PS_pipeline()
+
+#     if flight_dat_base_path is None:
+#         flight_dat_base_path=config.exthdpath+'noise_model_validation_data/'
+    
+    # load original maps without regridding
+    
+    orig_masks, regrid_masks = [], []
+    t_ell_all = np.zeros((len(ifield_list), nsims, cbps.n_ps_bin))
+    t_ell_avs = np.zeros((len(ifield_list), cbps.n_ps_bin))
+
+    cl_pivot_fac_gen = grab_cl_pivot_fac(4, inst_orig, dimx=cbps.dimx, dimy=cbps.dimy)
+
+    for fieldidx, ifield in enumerate(ifield_list):
+
+        # load original maps without regridding
+
+        for setidx in range(nsims):
+            
+            _, _, ciber_im = generate_diffuse_realization(cbps.dimx, cbps.dimy, power_law_idx=0.0, scale_fac=3e8)
+            
+            lb, cl_orig, clerr_orig = get_power_spec(ciber_im-np.mean(ciber_im), lbinedges=cbps.Mkk_obj.binl, lbins=cbps.Mkk_obj.midbin_ell)
+            
+            if include_dgl:
+                dgl_realization = cbps.generate_custom_sky_clustering(inst_orig, dgl_scale_fac=50, gen_ifield=5, cl_pivot_fac_gen=cl_pivot_fac_gen)
+                ciber_im += dgl_realization 
+
+#             plot_map(ciber_im, title='clustering realization')
+            
+            ciber_im_regrid, ciber_fp_regrid = regrid_arrays_by_quadrant(ciber_im, ifield, inst0=1, inst1=2, astr_dir='../../ciber/data/', plot=False)
+            
+#             plot_map(ciber_im_regrid, title='regridded clustering realization')
+            ciber_im_regrid[np.isnan(ciber_im_regrid)] = 0.
+            ciber_im_regrid[np.isinf(ciber_im_regrid)] = 0.
+            
+            ciber_im_regrid[ciber_im_regrid!=0] -= np.mean(ciber_im_regrid[ciber_im_regrid!=0])
+            
+            lb, cl_regrid, clerr_regrid = get_power_spec(ciber_im_regrid, lbinedges=cbps.Mkk_obj.binl, lbins=cbps.Mkk_obj.midbin_ell)
+            t_ell_indiv =  cl_regrid/cl_orig
+            if setidx < 2:
+                plot_map(ciber_fp_regrid, title='footprint')
+                plot_map(gaussian_filter(ciber_im, sigma=20), title='clustering realization')
+                plot_map(gaussian_filter(ciber_im_regrid, sigma=20), title='regridded clustering realization')
+                print('t_ell indiv:', t_ell_indiv)
+            t_ell_all[fieldidx, setidx, :] =t_ell_indiv
+            
+        t_ell_avs[fieldidx] = np.mean(t_ell_all, axis=0)
+        
+    print('t_ell_avs:', t_ell_avs)
+    
+    plt.figure()
+    for fieldidx, ifield in enumerate(ifield_list):
+        plt.plot(lb, t_ell_avs[fieldidx])
+    plt.xscale('log')
+    plt.ylim(-0.05, 1.05)
+    
+    plt.show()
+    
+    return t_ell_avs
+      
+
 def convert_MJysr_to_nWm2sr(lam_micron):
     
     lam_angstrom = lam_micron*1e4
@@ -121,7 +264,7 @@ def regrid_iris_by_quadrant(fieldname, inst=1, quad_list=['A', 'B', 'C', 'D'], \
 
 def proc_cibermap_regrid(cbps, inst, regrid_to_inst, mask_tail, ifield_list=[4, 5, 6, 7, 8], datestr='112022', \
                         niter=5, nitermax=1, sig=5, ff_min=0.5, ff_max=1.5, astr_dir='../../ciber/data/', \
-                        save=True, mask_tail_ffest=None):
+                        save=True, mask_tail_ffest=None, order=0, conserve_flux=False):
     
     config_dict, pscb_dict, float_param_dict, fpath_dict = return_default_cbps_dicts()
 
@@ -197,10 +340,16 @@ def proc_cibermap_regrid(cbps, inst, regrid_to_inst, mask_tail, ifield_list=[4, 
         
         obs_level = np.mean(processed_ims[fieldidx][masks[fieldidx]==1])
         print('obs level:', obs_level)
-        
+
+        masked_obs = processed_ims[fieldidx]*masks[fieldidx]
+
         for q in range(4):
-            mquad = masks[fieldidx][cbps.x0s[q]:cbps.x1s[q], cbps.y0s[q]:cbps.y1s[q]]
-            processed_ims[fieldidx][cbps.x0s[q]:cbps.x1s[q], cbps.y0s[q]:cbps.y1s[q]][mquad==1] -= np.mean(processed_ims[fieldidx][cbps.x0s[q]:cbps.x1s[q], cbps.y0s[q]:cbps.y1s[q]][mquad==1])
+
+            obs_quad = masked_obs[cbps.x0s[q]:cbps.x1s[q], cbps.y0s[q]:cbps.y1s[q]]
+            processed_ims[fieldidx][cbps.x0s[q]:cbps.x1s[q], cbps.y0s[q]:cbps.y1s[q]][obs_quad!=0] -= np.mean(obs_quad[obs_quad!=0])
+
+            # mquad = masks[fieldidx][cbps.x0s[q]:cbps.x1s[q], cbps.y0s[q]:cbps.y1s[q]]
+            # processed_ims[fieldidx][cbps.x0s[q]:cbps.x1s[q], cbps.y0s[q]:cbps.y1s[q]][mquad==1] -= np.mean(processed_ims[fieldidx][cbps.x0s[q]:cbps.x1s[q], cbps.y0s[q]:cbps.y1s[q]][mquad==1])
 
         masked_proc = processed_ims[fieldidx]*masks[fieldidx]
         plot_map(masked_proc, cmap='bwr')
@@ -208,7 +357,7 @@ def proc_cibermap_regrid(cbps, inst, regrid_to_inst, mask_tail, ifield_list=[4, 
         all_masked_proc.append(masked_proc)
     
         ciber_regrid, ciber_fp_regrid = regrid_arrays_by_quadrant(masked_proc, ifield, inst0=regrid_to_inst, inst1=inst, \
-                                                             plot=False, astr_dir=astr_dir)
+                                                             plot=False, astr_dir=astr_dir, order=order, conserve_flux=conserve_flux)
     
         plot_map(ciber_regrid, title='regrid')
         plot_map(masked_proc, title='before regridding')
@@ -224,9 +373,13 @@ def proc_cibermap_regrid(cbps, inst, regrid_to_inst, mask_tail, ifield_list=[4, 
                 proc_regrid_basepath += mask_tail+'/'
                 make_fpaths([proc_regrid_basepath])
             
-            regrid_fpath = proc_regrid_basepath+'proc_regrid_TM'+str(inst)+'_to_TM'+str(regrid_to_inst)+'_ifield'+str(ifield)+'_'+mask_tail+'.fits'
+            regrid_fpath = proc_regrid_basepath+'proc_regrid_TM'+str(inst)+'_to_TM'+str(regrid_to_inst)+'_ifield'+str(ifield)+'_'+mask_tail
+            regrid_fpath += '_order='+str(order)
+            if conserve_flux:
+                regrid_fpath += '_conserve_flux'
+            regrid_fpath += '.fits'
             hdul = write_regrid_proc_file(ciber_regrid, ifield, inst, regrid_to_inst, mask_tail=mask_tail, \
-                                         obs_level=obs_level)
+                                         obs_level=obs_level, masked_proc_orig=masked_proc)
             print('saving to ', regrid_fpath)
             hdul.writeto(regrid_fpath, overwrite=True)
         
@@ -282,83 +435,83 @@ def regrid_tm2_to_tm1_science_fields(ifield_list=[4,5,6,7,8], inst0=1, inst1=2, 
         
     return regrid_ims, save_paths
 
-def regrid_arrays_by_quadrant(map1, ifield, inst0=1, inst1=2, quad_list=['A', 'B', 'C', 'D'], \
-                             xoff=[0,0,512,512], yoff=[0,512,0,512], astr_map0_hdrs=None, astr_map1_hdrs=None, indiv_map0_hdr=None, indiv_map1_hdr=None, astr_dir=None, \
-                             plot=True, order=0):
+# def regrid_arrays_by_quadrant(map1, ifield, inst0=1, inst1=2, quad_list=['A', 'B', 'C', 'D'], \
+#                              xoff=[0,0,512,512], yoff=[0,512,0,512], astr_map0_hdrs=None, astr_map1_hdrs=None, indiv_map0_hdr=None, indiv_map1_hdr=None, astr_dir=None, \
+#                              plot=True, order=0):
     
-    ''' 
-    Used for regridding maps from one imager to another. For the CIBER1 imagers the 
-    astrometric solution is computed for each quadrant separately, so this function iterates
-    through the quadrants when constructing the full regridded images. 
+#     ''' 
+#     Used for regridding maps from one imager to another. For the CIBER1 imagers the 
+#     astrometric solution is computed for each quadrant separately, so this function iterates
+#     through the quadrants when constructing the full regridded images. 
     
-    Parameters
-    ----------
+#     Parameters
+#     ----------
     
-    Returns
-    -------
+#     Returns
+#     -------
     
-    '''
+#     '''
 
-    if astr_dir is None:
-        astr_dir = '../../ciber/data/'
+#     if astr_dir is None:
+#         astr_dir = '../../ciber/data/'
 
-    ciber_field_dict = dict({4:'elat10', 5:'elat30',6:'BootesB', 7:'BootesA', 8:'SWIRE', 'train':'UDS'})
+#     ciber_field_dict = dict({4:'elat10', 5:'elat30',6:'BootesB', 7:'BootesA', 8:'SWIRE', 'train':'UDS'})
 
-    map1_regrid, map1_fp_regrid = [np.zeros_like(map1) for x in range(2)]
+#     map1_regrid, map1_fp_regrid = [np.zeros_like(map1) for x in range(2)]
 
-    fieldname = ciber_field_dict[ifield]
+#     fieldname = ciber_field_dict[ifield]
     
-    map1_quads = [map1[yoff[iquad]:yoff[iquad]+512, xoff[iquad]:xoff[iquad]+512] for iquad in range(len(quad_list))]
+#     map1_quads = [map1[yoff[iquad]:yoff[iquad]+512, xoff[iquad]:xoff[iquad]+512] for iquad in range(len(quad_list))]
     
-    if astr_map0_hdrs is None and indiv_map0_hdr is None:
-        print('loading WCS for inst = ', inst0)
-        astr_map0_hdrs = load_quad_hdrs(ifield, inst0, base_path=astr_dir, halves=False)
-    if astr_map1_hdrs is None and indiv_map1_hdr is None:
-        print('loading WCS for inst = ', inst1)
-        astr_map1_hdrs = load_quad_hdrs(ifield, inst1, base_path=astr_dir, halves=False)
+#     if astr_map0_hdrs is None and indiv_map0_hdr is None:
+#         print('loading WCS for inst = ', inst0)
+#         astr_map0_hdrs = load_quad_hdrs(ifield, inst0, base_path=astr_dir, halves=False)
+#     if astr_map1_hdrs is None and indiv_map1_hdr is None:
+#         print('loading WCS for inst = ', inst1)
+#         astr_map1_hdrs = load_quad_hdrs(ifield, inst1, base_path=astr_dir, halves=False)
 
-    # if astr_map0_hdrs is None and indiv_map0_hdr is None:
-    #     astr_map0_hdrs = [fits.open(astr_dir+'inst'+str(inst0)+'/'+fieldname+'_'+quad+'_astr.fits')[0].header for quad in quad_list]
-    # if astr_map1_hdrs is None and indiv_map1_hdr is None:
-    #     astr_map1_hdrs = [fits.open(astr_dir+'inst'+str(inst1)+'/'+fieldname+'_'+quad+'_astr.fits')[0].header for quad in quad_list]
-    # loop over quadrants of first imager
+#     # if astr_map0_hdrs is None and indiv_map0_hdr is None:
+#     #     astr_map0_hdrs = [fits.open(astr_dir+'inst'+str(inst0)+'/'+fieldname+'_'+quad+'_astr.fits')[0].header for quad in quad_list]
+#     # if astr_map1_hdrs is None and indiv_map1_hdr is None:
+#     #     astr_map1_hdrs = [fits.open(astr_dir+'inst'+str(inst1)+'/'+fieldname+'_'+quad+'_astr.fits')[0].header for quad in quad_list]
+#     # loop over quadrants of first imager
     
-    for iquad, quad in enumerate(quad_list):
+#     for iquad, quad in enumerate(quad_list):
         
-        # arrays, footprints = [], []
-        run_sum_footprint, sum_array = [np.zeros_like(map1_quads[0]) for x in range(2)]
+#         # arrays, footprints = [], []
+#         run_sum_footprint, sum_array = [np.zeros_like(map1_quads[0]) for x in range(2)]
 
-        # reproject each quadrant of second imager onto first imager
-        if indiv_map0_hdr is None:
-            for iquad2, quad2 in enumerate(quad_list):
-                input_data = (map1_quads[iquad2], astr_map1_hdrs[iquad2])
-                array, footprint = reproject_interp(input_data, astr_map0_hdrs[iquad], (512, 512), order=order)
+#         # reproject each quadrant of second imager onto first imager
+#         if indiv_map0_hdr is None:
+#             for iquad2, quad2 in enumerate(quad_list):
+#                 input_data = (map1_quads[iquad2], astr_map1_hdrs[iquad2])
+#                 array, footprint = reproject_interp(input_data, astr_map0_hdrs[iquad], (512, 512), order=order)
 
-                array[np.isnan(array)] = 0.
-                footprint[np.isnan(footprint)] = 0.
+#                 array[np.isnan(array)] = 0.
+#                 footprint[np.isnan(footprint)] = 0.
 
-                run_sum_footprint += footprint 
-                sum_array[run_sum_footprint < 2] += array[run_sum_footprint < 2]
-                run_sum_footprint[run_sum_footprint > 1] = 1
+#                 run_sum_footprint += footprint 
+#                 sum_array[run_sum_footprint < 2] += array[run_sum_footprint < 2]
+#                 run_sum_footprint[run_sum_footprint > 1] = 1
 
-                # arrays.append(array)
-                # footprints.append(footprint)
+#                 # arrays.append(array)
+#                 # footprints.append(footprint)
        
-        # sumarray = np.nansum(arrays, axis=0)
-        # sumfootprints = np.nansum(footprints, axis=0)
+#         # sumarray = np.nansum(arrays, axis=0)
+#         # sumfootprints = np.nansum(footprints, axis=0)
 
-        if plot:
-            plot_map(sum_array, title='sum array')
-            plot_map(run_sum_footprint, title='sum footprints')
+#         if plot:
+#             plot_map(sum_array, title='sum array')
+#             plot_map(run_sum_footprint, title='sum footprints')
         
-        # print('number of pixels with > 1 footprint', np.sum((sumfootprints==2)))
-        # map1_regrid[yoff[iquad]:yoff[iquad]+512, xoff[iquad]:xoff[iquad]+512] = sumarray
-        # map1_fp_regrid[yoff[iquad]:yoff[iquad]+512, xoff[iquad]:xoff[iquad]+512] = sumfootprints
+#         # print('number of pixels with > 1 footprint', np.sum((sumfootprints==2)))
+#         # map1_regrid[yoff[iquad]:yoff[iquad]+512, xoff[iquad]:xoff[iquad]+512] = sumarray
+#         # map1_fp_regrid[yoff[iquad]:yoff[iquad]+512, xoff[iquad]:xoff[iquad]+512] = sumfootprints
 
-        map1_regrid[yoff[iquad]:yoff[iquad]+512, xoff[iquad]:xoff[iquad]+512] = sum_array
-        map1_fp_regrid[yoff[iquad]:yoff[iquad]+512, xoff[iquad]:xoff[iquad]+512] = run_sum_footprint
+#         map1_regrid[yoff[iquad]:yoff[iquad]+512, xoff[iquad]:xoff[iquad]+512] = sum_array
+#         map1_fp_regrid[yoff[iquad]:yoff[iquad]+512, xoff[iquad]:xoff[iquad]+512] = run_sum_footprint
 
-    return map1_regrid, map1_fp_regrid
+#     return map1_regrid, map1_fp_regrid
 
 def ciber_x_ciber_regrid_all_masks(cbps, inst, cross_inst, cross_union_mask_tail, mask_tail, mask_tail_cross, ifield_list=[4,5,6,7,8], astr_base_path='data/', \
                                   base_fluc_path = 'data/fluctuation_data/', save=True, cross_mask=None, cross_inst_only=False, plot=False, plot_quad=False):

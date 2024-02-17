@@ -67,6 +67,60 @@ from plotting_fns import *
 #                              ifield_list=[4, 5, 6, 7, 8], use_ciber_wcs=True, nside_deg=4, \
 #                             plot=True):
 
+def gather_fiducial_auto_ps_results(inst, nsim_mock=None, observed_run_name=None, mock_run_name=None,\
+                                    mag_lim=None, ifield_list=[4, 5, 6, 7, 8], flatidx=0, \
+                                   datestr_obs='111323', datestr_mock='112022', lmax_cov=10000, \
+                                   save_cov=True, startidx=1):
+    
+    cbps = CIBER_PS_pipeline()
+    bandstr_dict = dict({1:'J', 2:'H'})
+    maglim_default = dict({1:17.5, 2:17.0})
+    
+    bandstr = bandstr_dict[inst]
+    
+    if mag_lim is None:
+        mag_lim = maglim_default[inst]
+        
+    if observed_run_name is None:
+        observed_run_name = 'observed_'+bandstr+'lt'+str(mag_lim)+'_012524_ukdebias'
+        
+    if mock_run_name is None:
+        if mag_lim <= 15:
+            mock_mode = 'maskmkk'
+        else:
+            mock_mode = 'mkkffest'
+        mock_run_name = 'mock_'+str(bandstr)+'lt'+str(mag_lim)+'_121823_'+mock_mode+'_perquad'
+#         mock_run_name += '_ellm2clus'
+
+    
+    lb, observed_recov_ps, observed_recov_dcl_perfield, observed_field_average_cl, observed_field_average_dcl,\
+        mock_mean_input_ps, mock_all_field_averaged_cls, mock_all_field_cl_weights, \
+            all_mock_recov_ps, all_mock_signal_ps = process_observed_powerspectra(cbps, datestr_obs, ifield_list, inst, \
+                                                                                    observed_run_name, mock_run_name, nsim_mock, \
+                                                                                 flatidx=flatidx, apply_field_weights=True, \
+                                                                                 datestr_mock=datestr_mock) 
+    
+    
+    obs_dict = dict({'lb':lb, 'observed_run_name':observed_run_name, 'mag_lim':mag_lim, 'observed_recov_ps':observed_recov_ps, 'observed_recov_dcl_perfield':observed_recov_dcl_perfield, \
+                    'observed_field_average_cl':observed_field_average_cl, 'observed_field_average_dcl':observed_field_average_dcl})
+    
+    mock_dict = dict({'mock_run_name':mock_run_name, 'mock_mean_input_ps':mock_mean_input_ps, 'mock_all_field_averaged_cls':mock_all_field_averaged_cls, \
+                     'mock_all_field_cl_weights':mock_all_field_cl_weights, 'all_mock_recov_ps':all_mock_recov_ps, 'all_mock_signal_ps':all_mock_signal_ps})
+    
+    lb_mask, all_cov_indiv_full,\
+        all_resid_data_matrices,\
+            resid_joint_data_matrix = compute_mock_covariance_matrix(lb, inst, all_mock_recov_ps, mock_all_field_averaged_cls, \
+                                                                    lmax=lmax_cov, save=save_cov, mock_run_name=mock_run_name, plot=False, startidx=startidx)
+
+    cov_dict = dict({'lb_mask':lb_mask, 'all_cov_indiv_full':all_cov_indiv_full, 'all_resid_data_matrices':all_resid_data_matrices, \
+                    'resid_joint_data_matrix':resid_joint_data_matrix})
+    
+    if save_cov:
+        cl_fpath = save_weighted_mock_cl_file(lb, inst, mock_run_name, mock_mean_input_ps, mock_all_field_averaged_cls, mock_all_field_cl_weights, all_mock_recov_ps, \
+                        all_mock_signal_ps)
+        
+    
+    return obs_dict, mock_dict, cov_dict, cl_fpath
 
 
 def calc_binned_ps_vs_mag(mag_lims, ifield_list, obs_fieldav_cl, obs_fieldav_dcl, pf, observed_recov_dcl_perfield=None,\
@@ -207,8 +261,9 @@ def compute_field_averaged_power_spectrum(per_field_cls, per_field_dcls=None, pe
     
     return field_averaged_cl, field_averaged_std, cl_sumweights, per_field_cl_weights
 
-def compute_mock_covariance_matrix_new(lb, inst, all_mock_recov_ps, mock_all_field_averaged_cls, lmax=None, ifield_list = [4, 5, 6, 7, 8], save=False, \
+def compute_mock_covariance_matrix(lb, inst, all_mock_recov_ps, mock_all_field_averaged_cls, lmax=None, ifield_list = [4, 5, 6, 7, 8], save=False, \
                                   mock_run_name=None, datestr='111323', plot=False, per_field=True, startidx=None):
+    
     
     prefac = lb*(lb+1)/(2*np.pi)
 
