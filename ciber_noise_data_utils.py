@@ -16,11 +16,50 @@ from datetime import datetime
 
 from mkk_parallel import *
 from plotting_fns import plot_map
-# from cross_spectrum_analysis import *
 from ciber_data_file_utils import *
 
-# def write_noise_model_fits(noise_model, ifield, inst, pixsize=7., photon_eps=None, \
-#                   dat_type=None):
+
+def compute_rms_subpatches_new(image, mask, npix_perside=16, pct=False):
+    ''' Compute RMS in small subpatches for comparison with photon noise level expected.'''
+    all_std, all_mean = [], []
+    dimx, dimy = image.shape[0], image.shape[1]
+    
+    binned_std = np.zeros_like(image)
+    
+    ndiv = dimx//npix_perside
+    print('ndiv = ', ndiv)
+    all_x, all_y = [], []
+    
+    for nx in range(ndiv-1):
+        if nx%50==0:
+            print('nx = ', nx)
+        for ny in range(ndiv-1):
+            
+            impatch = image[nx*npix_perside:(nx+1)*npix_perside, ny*npix_perside:(ny+1)*npix_perside]
+            maskpatch = mask[nx*npix_perside:(nx+1)*npix_perside, ny*npix_perside:(ny+1)*npix_perside]
+            
+            if np.sum((maskpatch==1)) > 0.9*npix_perside**2:
+                all_mean.append(np.median(impatch[maskpatch==1]))
+                if pct:
+                    all_std.append(0.5*(np.nanpercentile(impatch[maskpatch==1], 84)-np.nanpercentile(impatch[maskpatch==1], 16)))
+                else:
+                    all_std.append(np.std(impatch[maskpatch==1]))
+                all_x.append((nx+0.5)*npix_perside)
+                all_y.append((ny+0.5)*npix_perside)
+                
+                binned_std[nx*npix_perside:(nx+1)*npix_perside, ny*npix_perside:(ny+1)*npix_perside] = np.std(impatch[maskpatch==1])
+                
+    return all_mean, all_std, all_x, all_y, binned_std  
+
+def compute_gf_rms(mean_sb, tinteg, nfr, g2):
+    return np.sqrt((1.2*mean_sb/(g2*tinteg))*((nfr**2+1)/(nfr**2-1)))
+
+def calculate_current_noise(iphot, tinteg, dqcds=10., t0=1.78):
+    return np.sqrt((iphot/tinteg)+dqcds**2*(6*t0/tinteg**3))
+
+def calculate_current_noise2(iphot, tinteg, dqcds=10., t0=1.78):
+    gfphot = compute_gf_rms(iphot, tinteg, int(tinteg/t0), 1)
+    return np.sqrt(gfphot**2+dqcds**2*(6*t0/tinteg**3))
 
 def chop_up_masks(sigmap, nside=5, ravel=False, show=False, verbose=True):
     

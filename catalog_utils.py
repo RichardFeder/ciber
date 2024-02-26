@@ -940,3 +940,50 @@ def compute_number_counts(inst, mag_min=17.0, mag_max=30.0, dm=0.5, apply_dm=Tru
 
     return poisson_var_meas.value, poisson_var_helgason.value
 
+
+
+def get_2MASS_slopes(inst, ifield):
+    ''' was used in early versions of surface brightness calibration to assess color dependence of results '''
+    base_fluc_path = config.exthdpath+'ciber_fluctuation_data/'
+    catalog_basepath = base_fluc_path+'catalogs/'
+    field_name = cbps.ciber_field_dict[ifield]
+    twomass_cat = pd.read_csv(catalog_basepath+'2MASS/filt/2MASS_filt_rdflag_wxy_'+field_name+'_Jlt17.5.csv')
+    
+    twomass_J = np.array(twomass_cat['j_m'])
+    twomass_H = np.array(twomass_cat['h_m'])
+    twomass_K = np.array(twomass_cat['k_m'])
+    
+    # convert to AB mags
+    
+    twomass_J_AB = twomass_J + cbps.Vega_to_AB[1]
+    twomass_H_AB = twomass_H + cbps.Vega_to_AB[2]
+    twomass_K_AB = twomass_K + 1.85
+    
+    twomass_J_mask = (twomass_J_AB < 15)*(twomass_J_AB > 12)
+    
+    twomass_J_flux = 10**(-0.4*(twomass_J_AB-23.9))
+    twomass_H_flux = 10**(-0.4*(twomass_H_AB-23.9))
+    twomass_K_flux = 10**(-0.4*(twomass_K_AB-23.9))
+    
+    print(np.sum(twomass_J_mask))
+    
+    plt.figure(figsize=(10, 5))
+    for x in range(len(twomass_J_AB)):
+        if twomass_J_mask[x]:
+            plt.plot([1.2, 1.6, 2.2], [twomass_J_flux[x], twomass_H_flux[x], twomass_K_flux[x]], marker='.', color='k', alpha=0.01)
+    plt.yscale('log')
+
+    plt.show()
+    
+    plt.figure()
+    plt.scatter((twomass_J_AB-twomass_H_AB)[twomass_J_mask], (twomass_H_AB-twomass_K_AB)[twomass_J_mask], s=10, c=twomass_J_AB[twomass_J_mask])
+    cbar = plt.colorbar(label='$J_{AB}$')
+#     cbar.ax.tick_params()
+#     cbar.('$J_{AB}$')
+    plt.xlim(-0.3, 0.3)
+    plt.ylim(-0.7, 0.0)
+    plt.xlabel('J-H', fontsize=16)
+    plt.ylabel('H-K', fontsize=16)
+    plt.grid(alpha=0.5)
+    plt.show()
+

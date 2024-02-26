@@ -81,95 +81,109 @@ def make_binned_coverage_mask_and_mkk(posx, posy, catalog_mode, nx=None, ny=None
 
 	return av_Mkk, inv_Mkk, coverage_mask
 	
-def preprocess_c15_catalog(catalog_fpath=None, ramin=149.4, ramax=150.8, decmin=1.5, decmax=2.9, save=False, \
-						  binned_coverage_mask_mkk=False, nreg=None):
+def preprocess_c15_catalog(catalog_fpath=None, radec_cut=True, ramin=149.4, ramax=150.8, decmin=1.5, decmax=2.9, save=False, \
+                          binned_coverage_mask_mkk=False, nreg=None, capak_mask=False):
 
-	if catalog_fpath is None:
-		catalog_fpath = '../spherex/inhouse_code/data/COSMOS2015_Laigle_v1.1.fits'
-		
-	c15_cat = fits.open(catalog_fpath)
-	
-	c15_dat = c15_cat[1].data
+    if catalog_fpath is None:
+        catalog_fpath = '../spherex/inhouse_code/data/COSMOS2015_Laigle_v1.1.fits'
+        
+    c15_cat = fits.open(catalog_fpath)
+    
+    c15_dat = c15_cat[1].data
 
-	c15_ra = np.array(c15_dat['ALPHA_J2000'])
-	c15_dec = np.array(c15_dat['DELTA_J2000'])
-	c15_flag_hjmcc = np.array(c15_dat['FLAG_HJMCC']) # in UltraVISTA region (i.e., with NIR photometry)
-	c15_flag_capak = np.array(c15_dat['FLAG_PETER'])
-	c15_type = np.array(c15_dat['TYPE'])
-	
-	c15_r_AB = -2.5*np.log10(c15_dat['r_FLUX_APER3'])+23.9
-	c15_i_AB = -2.5*np.log10(c15_dat['ip_FLUX_APER3'])+23.9
-	c15_z_AB = -2.5*np.log10(c15_dat['zp_FLUX_APER3'])+23.9
-	c15_y_AB = -2.5*np.log10(c15_dat['Y_FLUX_APER3'])+23.9
-	c15_J_AB = -2.5*np.log10(c15_dat['J_FLUX_APER3'])+23.9
-	c15_H_AB = -2.5*np.log10(c15_dat['H_FLUX_APER3'])+23.9
-	c15_CH1_AB = -2.5*np.log10(c15_dat['SPLASH_1_FLUX'])+23.9
-	c15_CH2_AB = -2.5*np.log10(c15_dat['SPLASH_2_FLUX'])+23.9
-	
-	c15_redshift = np.array(c15_dat['PHOTOZ'])
-	
-	deg_2_pix = 3600/7.
-	c15_x = (c15_ra-ramin)*deg_2_pix # convert to arcseconds and then CIBER pixels
-	c15_y = (c15_dec-decmin)*deg_2_pix # convert to arcseconds and then CIBER pixels
-	
-	c15_catalog = np.array([c15_ra, c15_dec, c15_x, c15_y, c15_J_AB, \
-						   c15_H_AB, c15_CH1_AB, c15_CH2_AB, c15_type, c15_r_AB, c15_i_AB, c15_z_AB, c15_y_AB, c15_redshift]).transpose()
-	
-	c15mask = (c15_flag_hjmcc==0)*(c15_ra > ramin)*(c15_ra < ramax)*(c15_dec > decmin)*(c15_dec < decmax)
-	c15mask *= (c15_flag_capak==0)
+    c15_ra = np.array(c15_dat['ALPHA_J2000'])
+    c15_dec = np.array(c15_dat['DELTA_J2000'])
+    c15_flag_hjmcc = np.array(c15_dat['FLAG_HJMCC']) # in UltraVISTA region (i.e., with NIR photometry)
+    c15_flag_capak = np.array(c15_dat['FLAG_PETER'])
+    c15_type = np.array(c15_dat['TYPE'])
+    
+    c15_r_AB = -2.5*np.log10(c15_dat['r_FLUX_APER3'])+23.9
+    c15_i_AB = -2.5*np.log10(c15_dat['ip_FLUX_APER3'])+23.9
+    c15_z_AB = -2.5*np.log10(c15_dat['zp_FLUX_APER3'])+23.9
+    c15_y_AB = -2.5*np.log10(c15_dat['Y_FLUX_APER3'])+23.9
+    c15_J_AB = -2.5*np.log10(c15_dat['J_FLUX_APER3'])+23.9
+    c15_H_AB = -2.5*np.log10(c15_dat['H_FLUX_APER3'])+23.9
+    
+    c15_Ks_AB = -2.5*np.log10(c15_dat['Ks_FLUX_APER3'])+23.9
+    c15_CH1_AB = -2.5*np.log10(c15_dat['SPLASH_1_FLUX'])+23.9
+    c15_CH2_AB = -2.5*np.log10(c15_dat['SPLASH_2_FLUX'])+23.9
+    
+    c15_redshift = np.array(c15_dat['PHOTOZ'])
+    
+    deg_2_pix = 3600/7.
+    c15_x = (c15_ra-ramin)*deg_2_pix # convert to arcseconds and then CIBER pixels
+    c15_y = (c15_dec-decmin)*deg_2_pix # convert to arcseconds and then CIBER pixels
+    
+    c15_catalog = np.array([c15_ra, c15_dec, c15_x, c15_y, c15_J_AB, \
+                           c15_H_AB, c15_CH1_AB, c15_CH2_AB, c15_type, c15_r_AB, c15_i_AB, c15_z_AB, c15_y_AB, c15_redshift, c15_Ks_AB]).transpose()
+    
+    c15mask = (c15_flag_hjmcc==0) # in UVISTA region
+    
+    if radec_cut:
+        c15mask *= (c15_ra > ramin)*(c15_ra < ramax)*(c15_dec > decmin)*(c15_dec < decmax)
+    
+    if capak_mask:
+        c15mask *= (c15_flag_capak==0)
 
-	c15 = c15_catalog[c15mask,:]
-	
-	
-	x_min, x_max = np.min(c15[:,2]), np.max(c15[:,2])
-	y_min, y_max = np.min(c15[:,3]), np.max(c15[:,3])
+    c15 = c15_catalog[c15mask,:]
+    
+    if radec_cut:
+        x_min, x_max = np.min(c15[:,2]), np.max(c15[:,2])
+        y_min, y_max = np.min(c15[:,3]), np.max(c15[:,3])
 
-	nx = int(x_max - x_min)
-	ny = int(y_max - y_min)
-	
-	sqdim = min(nx, ny)
-	
-	c15[:,2] -= x_min
-	c15[:,3] -= y_min
-	
-	sqmask = (c15[:,2] < sqdim)*(c15[:,3] < sqdim)
-	c15 = c15[sqmask,:]
+        nx = int(x_max - x_min)
+        ny = int(y_max - y_min)
 
-	c15_x_sel = c15[:,2]
-	c15_y_sel = c15[:,3]
+        sqdim = min(nx, ny)
 
-	plt.figure()
-	plt.hist(c15[:,4], bins=np.linspace(10, 25, 30))
-	plt.yscale('log')
-	plt.xlabel('J band magnitude')
-	plt.show()
+        c15[:,2] -= x_min
+        c15[:,3] -= y_min
 
-	plt.figure(figsize=(8, 8))
-	plt.title('COSMOS 2015', fontsize=14)
-	plt.scatter(c15[:,2], c15[:,3], s=2, color='k', alpha=0.02)
-	plt.xlabel('x [CIBER pixels]', fontsize=14)
-	plt.xlabel('y [CIBER pixels]', fontsize=14)
-	plt.grid()
-	plt.show()
-	
-	
-	full_df_allbands = pd.DataFrame({'x':c15_x_sel, 'y':c15_y_sel, 'r_AB':c15[:,9], \
-									 'i_AB':c15[:,10], 'z_AB':c15[:,11], 'y_AB':c15[:,12],\
-									 'J': c15[:,4], 'H':c15[:,5], 'mag_CH1':c15[:,6], 'mag_CH2':c15[:,7], 'type':c15[:,8], 'redshift':c15[:,13]})
-	
-	if save:
-		save_fpath = config.ciber_basepath+'data/catalogs/COSMOS15/COSMOS15_hjmcc_rizy_JH_CH1CH2_AB.csv'
+        sqmask = (c15[:,2] < sqdim)*(c15[:,3] < sqdim)
+        c15 = c15[sqmask,:]
+        
+        
+    c15_x_sel = c15[:,2]
+    c15_y_sel = c15[:,3]
 
-		print('Saving catalog to ', save_fpath)
-		full_df_allbands.to_csv(save_fpath)
+    plt.figure()
+    plt.hist(c15[:,4], bins=np.linspace(10, 25, 30))
+    plt.yscale('log')
+    plt.xlabel('J band magnitude')
+    plt.show()
 
-		
-	if binned_coverage_mask_mkk:
-		av_Mkk, inv_Mkk, coverage_mask, save_fpath = make_binned_coverage_mask_and_mkk(c15_x_sel, c15_y_sel, 'COSMOS15',\
-																			   nx=sqdim, ny=sqdim, addstr='peter_hjmcc', save=save, nreg=nreg)
-	
-		
-	return full_df_allbands
+    plt.figure(figsize=(8, 8))
+    plt.title('COSMOS 2015', fontsize=14)
+    plt.scatter(c15[:,2], c15[:,3], s=2, color='k', alpha=0.02)
+    plt.xlabel('x [CIBER pixels]', fontsize=14)
+    plt.xlabel('y [CIBER pixels]', fontsize=14)
+    plt.grid()
+    plt.show()
+    
+    
+    full_df_allbands = pd.DataFrame({'x':c15_x_sel, 'y':c15_y_sel, 'r_AB':c15[:,9], \
+                                     'i_AB':c15[:,10], 'z_AB':c15[:,11], 'y_AB':c15[:,12],\
+                                     'J': c15[:,4], 'H':c15[:,5], 'mag_CH1':c15[:,6], 'mag_CH2':c15[:,7], 'type':c15[:,8], 'redshift':c15[:,13], \
+                                    'Ks':c15[:,14]})
+    
+    if save:
+        tailstr = 'COSMOS15_rizy_JHKs_CH1CH2_AB_hjmcc'
+        if capak_mask:
+            tailstr += '_capak'
+        
+        save_fpath = config.ciber_basepath+'data/catalogs/COSMOS15/'+tailstr+'.csv'
+
+        print('Saving catalog to ', save_fpath)
+        full_df_allbands.to_csv(save_fpath)
+
+        
+    if binned_coverage_mask_mkk:
+        av_Mkk, inv_Mkk, coverage_mask, save_fpath = make_binned_coverage_mask_and_mkk(c15_x_sel, c15_y_sel, 'COSMOS15',\
+                                                                               nx=sqdim, ny=sqdim, addstr='peter_hjmcc', save=save, nreg=nreg)
+    
+        
+    return full_df_allbands
+
 
 def predict_auto_cross_cl_C15(m_min_J_list, m_min_H_list, inst=1, include_IRAC_mask=False, maglim_IRAC=18., m_max=28, \
 							 inv_Mkk_fpath=None, mkk_correct=True, catalog_fpath=None, cl_pred_basepath=None, \

@@ -230,6 +230,72 @@ def write_Mkk_fits(Mkk, inv_Mkk, ifield, inst, cross_inst=None, sim_idx=None, ge
     hdul = fits.HDUList([hdup, hdum, hduim])
     return hdul
 
+
+def write_regrid_spitzer_proc_file(ifield, inst, irac_ch, sdwfs_epoch_diffs=None, sdwfs_epoch_av=None, \
+                                     grad_sub=True, save=True, tailstr=None):
+    if spitzer_basepath is None and save:
+        spitzer_basepath = config.ciber_basepath+'data/Spitzer/spitzer_regrid/proc/TM'+str(inst)+'/IRAC_CH'+str(irac_ch)+'/'
+    
+    hdup = fits.PrimaryHDU()
+    hdup.header['ifield'] = ifield
+    hdup.header['inst'] = inst
+    hdup.header['irac_ch'] = irac_ch
+    hdup.header['grad_sub'] = grad_sub
+    hdulist = [hdup]
+
+    if sdwfs_epoch_diffs is not None:
+
+        for diffidx in np.arange(2):
+            hdum = fits.HDUImage(sdwfs_epoch_diffs[diffidx], name='diff'+str(diffidx))
+            hdulist.append(hdum)
+
+    if sdwfs_epoch_av is not None:
+        hdum = fits.HDUImage(sdwfs_epoch_diffs[diffidx], name='epoch_av')
+
+
+    hdul = fits.HDUList(hdulist)
+
+    if save:
+        save_fpath = spitzer_basepath + 'spitzer_regrid_TM'+str(inst)+'_IRAC_CH'+str(irac_ch)+'_ifield'+str(ifield)
+        if tailstr is not None:
+            save_fpath += '_'+tailstr
+        hdul.writeto(save_fpath+'.fits', overwrite=True)
+
+
+def write_regrid_spitzer_raw_file(ifield, inst, irac_ch, spitzer_regrid_per_epoch=None, spitzer_regrid_epoch_av=None, \
+                            spitzer_basepath=None, save=True, tailstr=None):
+
+    if spitzer_basepath is None and save:
+        spitzer_basepath = config.ciber_basepath+'data/Spitzer/spitzer_regrid/raw/TM'+str(inst)+'/IRAC_CH'+str(irac_ch)+'/'
+    
+    hdup = fits.PrimaryHDU()
+    hdup.header['ifield'] = ifield
+    hdup.header['inst'] = inst
+    hdup.header['irac_ch'] = irac_ch
+
+    hdulist = [hdup]
+
+    if spitzer_regrid_per_epoch is not None:
+        for epochidx in range(4):
+            hdum = fits.ImageHDU(spitzer_regrid_per_epoch[epochidx], name='regrid_epoch_'+str(epochidx))
+            hdulist.append(hdum)
+
+    if spitzer_regrid_epoch_av is not None:
+        hdum = fits.ImageHDU(spitzer_regrid_epoch_av, name='regrid_epoch_av')
+        hdulist.append(hdum)
+
+    hdul = fits.HDUList(hdulist)
+
+    if save:
+        save_fpath = spitzer_basepath + 'spitzer_regrid_TM'+str(inst)+'_IRAC_CH'+str(irac_ch)+'_ifield'+str(ifield)
+        if tailstr is not None:
+            save_fpath += '_'+tailstr
+        hdul.writeto(save_fpath+'.fits', overwrite=True)
+
+        return save_fpath, hdul
+    else:
+        return hdul
+
 def write_regrid_proc_file(masked_proc, ifield, inst, regrid_to_inst, mask_tail=None,\
                            dat_type='observed', mag_lim=None, mag_lim_cross=None, obs_level=None, masked_proc_orig=None):
     hdum = fits.ImageHDU(masked_proc, name='proc_regrid_'+str(ifield))

@@ -18,6 +18,19 @@ def linear_func_nointercept(x, m):
 def linear_func(x, m, b):
     return m*x + b
 
+def get_vega_zp_linfit():
+    
+    lambda2mass = [1.235, 1.662, 2.159]
+    vega2mass = [1594, 1024, 666.7]
+
+    a, b = np.polyfit(lambda2mass, vega2mass, 1)
+    
+    return a, b
+
+def extrap_vega_zp(lam):
+    a, b = get_vega_zp_linfit()
+    return a*lam + b
+
 def calc_stacked_fluxes(cbps, inst, fieldidx_choose, mask_base_path, catalog_fpath, m_min, m_max, cat_type='predict', \
                        dx=5, trim_edge=50, mag_mask=15.0, bkg_rad=0.35, xlim=None, ylim=None, \
                        mask_tail = 'maglim_J_Vega_17.5_111323_ukdebias'):
@@ -134,6 +147,7 @@ def calc_stacked_fluxes(cbps, inst, fieldidx_choose, mask_base_path, catalog_fpa
 def compare_with_zl_predictions_slope(inst, ifield_list, mask_base_path, mask_tail, dx=6, nregion=5, dimx=1024, average_g1g2_over_fields=False, \
                                      zl_vals=None, iter_clip=False, nsig=5, niter=2, with_jack=False, savefig=False, include_ffcorr=False):
     
+    cbps = CIBER_PS_pipeline()
     xspace = np.linspace(0, dimx, nregion+1).astype(int)
     yspace = np.linspace(0, dimx, nregion+1).astype(int)
     
@@ -863,8 +877,7 @@ def ciber_sb_cal(inst, ifield, mask_base_path, mask_tail, dx=6, bkg_rad=0.3, m_m
     else:
         neighbor_cat = None
         
-        
-    cal_src_posx, cal_src_posy, pred_ciber_flux_densities, sed_modls, calmags, nbands = load_calib_catalog(inst, ifield, m_min=m_min, m_max=m_max, spline_k=spline_k, \
+    cal_src_posx, cal_src_posy, pred_ciber_flux_densities, sed_modls, calmags, _, nbands, _ = load_calib_catalog(inst, ifield, m_min=m_min, m_max=m_max, spline_k=spline_k, \
                                                                                                           interp_mode=interp_mode)
         
     print('nbands has shape ', nbands.shape)
@@ -884,7 +897,7 @@ def ciber_sb_cal(inst, ifield, mask_base_path, mask_tail, dx=6, bkg_rad=0.3, m_m
         
         if post_bool[n]==1:
                 
-            aper_flux, aper_flux_var, bkg_level, bkg_var = aper_phot(all_postage_stamps[n], all_postage_stamps_mask[n], bkg_mask, mode='mean', plot=False)
+            aper_flux, aper_flux_var, bkg_level, bkg_var, _ = aper_phot(all_postage_stamps[n], all_postage_stamps_mask[n], bkg_mask, mode='mean', plot=False)
 
             bandpass_corr = compute_bandpass_correction(ciber_filt_lam, ciber_filt_T, sed_modls[n], lam_eff, interp_mode=interp_mode)
             
@@ -1069,16 +1082,12 @@ def ciber_sb_cal(inst, ifield, mask_base_path, mask_tail, dx=6, bkg_rad=0.3, m_m
     plt.ylabel('weights')
     plt.show()
         
-    plt.figure(figsize=(5,4))
-    plt.title('TM'+str(inst)+', ifield '+str(ifield))
-#     plt.errorbar(all_pred_fluxes[~snr_mask], -1.*all_measured_fluxes[~snr_mask], yerr=np.sqrt(all_var_measured_fluxes)[~snr_mask], color='r', fmt='o', markersize=3, alpha=0.3)
-#     plt.errorbar(all_pred_fluxes[snr_mask], -1.*all_measured_fluxes[snr_mask], yerr=np.sqrt(all_var_measured_fluxes)[snr_mask], c=all_nbands.ravel()[snr_mask], fmt='o', markersize=3, alpha=0.1)
-#     plt.scatter(all_pred_fluxes[snr_mask], -1.*all_measured_fluxes[snr_mask], c=all_nbands.ravel()[snr_mask], s=5, alpha=0.3)
+
+    fig = plt.figure(figsize=(5,4))
+    plt.title('$\\lambda=$'+str(lam_eff)+' $\\mu$m, '+cbps.ciber_field_dict[ifield])
+    # plt.title('TM'+str(inst)+', ifield '+str(ifield))
     plt.errorbar(sel_pred_fluxes, -1.*sel_measured_fluxes, yerr=np.sqrt(sel_var_measured_fluxes), color='k', fmt='o', markersize=2, alpha=0.4)
-#     plt.errorbar(all_pred_fluxes[use_mask], -1.*all_measured_fluxes[use_mask], yerr=np.sqrt(all_var_measured_fluxes)[use_mask], color='k', fmt='o', markersize=3, alpha=0.1)
-#     plt.errorbar(all_pred_fluxes, -1.*all_measured_fluxes, yerr=np.sqrt(all_var_measured_fluxes), color='k', fmt='o', markersize=3, alpha=0.1)
-#     plt.colorbar()
-    
+
     if inst==1:
         whichfmin = [5000, 10000, 30000]
     else:
@@ -1088,15 +1097,9 @@ def ciber_sb_cal(inst, ifield, mask_base_path, mask_tail, dx=6, bkg_rad=0.3, m_m
     for fidx, fmin in enumerate(whichfmin):
         
         which_above_fmin = (sel_pred_fluxes > fmin)
-        print(np.sum((sel_var_measured_fluxes[which_above_fmin]==0)))
         popt, pcov = curve_fit(linear_func_nointercept, sel_pred_fluxes[which_above_fmin], sel_measured_fluxes[which_above_fmin],  sigma=np.sqrt(sel_var_measured_fluxes[which_above_fmin]), absolute_sigma=True)
-#         popt, pcov = curve_fit(linear_func_nointercept, sel_pred_fluxes[which_above_fmin], sel_measured_fluxes[which_above_fmin], absolute_sigma=True)
-
-        
-        print('slope = ', 1./popt[0])
         plt.axvline(fmin, color='C'+str(fidx), linestyle='solid', linewidth=2)
         slopeunc = (1./popt[0])*(np.sqrt(pcov[0,0])/popt[0])
-        
         plt.plot(fineflux, -1.*popt[0]*fineflux, label='G1G2='+str(np.round(1./popt[0], 1))+'$\\pm$'+str(np.round(slopeunc, 1)), linestyle='dashed', color='C'+str(fidx), zorder=10)
         
     plt.legend()
@@ -1112,7 +1115,7 @@ def ciber_sb_cal(inst, ifield, mask_base_path, mask_tail, dx=6, bkg_rad=0.3, m_m
     
 
     return sel_cal_src_posx, sel_cal_src_posy, sel_pred_fluxes, sel_measured_fluxes, sel_var_measured_fluxes,\
-                sel_bp_corr, sel_g1g2, sel_bkg_level
+                sel_bp_corr, sel_g1g2, sel_bkg_level, fig
 
 def jackknife_g1g2_slope(pred_fluxes, measured_fluxes, var_measured_fluxes, with_intercept=False, plot=False):
     
@@ -1280,6 +1283,145 @@ def make_calibration_catalog(ifield, catalog_basepath=None, save=False):
     return calibration_cat
 
 
+''' 
+These functions were made for reproducing the Z14 calibration as closely as possible, are not the final scripts used in 
+the 4th flight gain calibration
+'''
+def stack_srcs_simp(ciber_map, tracer_cat, mask, dx=5, min_mask_frac=0.9):
+    
+    dimx = 2*dx + 1
+    all_postage_stamps, all_mask_fractions = [], []
+    
+    for x in range(len(tracer_cat)):
+        x0, x1, y0, y1 = int(tracer_cat[x,1])-dx, int(tracer_cat[x,1])+dx+1,\
+                                int(tracer_cat[x,0])-dx, int(tracer_cat[x,0])+dx+1
+
+        maskcutout = mask[x0:x1, y0:y1]
+        mask_frac = float(np.nansum(maskcutout))/float(dimx**2)
+        if mask_frac > min_mask_frac:
+            ciber_cutout = ciber_map[x0:x1, y0:y1]                
+
+            all_postage_stamps.append(ciber_cutout*maskcutout)
+
+    return np.array(all_postage_stamps), np.array(all_mask_fractions)
+
+def repr_mike_calibration(inst, ifield, mask_tail, dm=0.1, m_min=13.5, m_max=15.0, trim_edge=50, dx=3):
+    
+    # ------------ instantiate cbps object and file paths -------------------
+    config_dict, pscb_dict, float_param_dict, fpath_dict = return_default_cbps_dicts()
+    ciber_mock_fpath = config.exthdpath+'ciber_mocks/'
+    cbps = CIBER_PS_pipeline()
+    
+    datestr = '112022'
+    datestr_trilegal = datestr
+    fpath_dict, list_of_dirpaths, base_path, trilegal_base_path = set_up_filepaths_cbps(fpath_dict, inst, 'test', datestr,\
+                                                                                        datestr_trilegal=datestr, data_type='observed', \
+                                                                                       save_fpaths=True)
+    
+    base_fluc_path = config.exthdpath+'ciber_fluctuation_data/'
+    tempbank_dirpath = base_fluc_path+'/TM'+str(inst)+'/subpixel_psfs/'
+    catalog_basepath = base_fluc_path+'catalogs/'
+    magkey_dict = dict({1:'j_m', 2:'h_m'})
+    lam_dict = dict({1:1.05, 2:1.75})
+    nunaught_dict = dict({1:2.867e14, 2:1.6802e14})
+    fwhm_dict = dict({1:10.3, 2:10.6})
+    
+    nx = 2*dx+1
+    meshgrid_x, meshgrid_y = np.meshgrid(np.arange(nx) - nx//2, np.arange(nx) - nx//2)
+    
+    r = np.sqrt(meshgrid_x**2 + meshgrid_y**2)
+    
+    bkg_mask = np.zeros((nx, nx))
+    
+    bkg_mask[(r > 0.4*nx)] = 1.
+    
+    plot_map(bkg_mask, title='rmask')
+
+    # --------------
+    mag_range = np.arange(m_min, m_max+dm, dm)
+    print('mag range = ', mag_range)
+    n_mag_bins = len(mag_range)-1
+    field_name = cbps.ciber_field_dict[ifield]
+
+    # load mask
+    mask_fpath = fpath_dict['mask_base_path']+'/'+mask_tail+'/joint_mask_ifield'+str(ifield)+'_inst'+str(inst)+'_observed_'+mask_tail+'.fits'
+    mask = fits.open(mask_fpath)[1].data
+
+    # load flight image
+#     flight_im = fits.open('/Users/richardfeder/Downloads/ciber_TM'+str(inst)+'_ifield'+str(ifield)+'_proc_lin_short_081023.fits')[1].data
+
+    flight_im = fits.open('/Users/richardfeder/Downloads/ciber_TM'+str(inst)+'_ifield'+str(ifield)+'_proc_080423.fits')[1].data
+    ciber_photocurrent_map = -1.*flight_im / cbps.cal_facs[inst]
+    
+    median_flight_im = np.median(ciber_photocurrent_map[mask==1])
+
+    ciber_photocurrent_map[mask==1] -= median_flight_im
+
+    # load 2MASS catalog and grab all sources with m_Vega between m_min and m_max that are sufficiently far from edge
+    twomass_cat = pd.read_csv(catalog_basepath+'2MASS/filt/2MASS_filt_rdflag_wxy_'+field_name+'_Jlt17.5.csv')
+    twomass_x = np.array(twomass_cat['x'+str(inst)])
+    twomass_y = np.array(twomass_cat['y'+str(inst)])
+    twomass_mag = np.array(twomass_cat[magkey_dict[inst]]) # magkey   
+    cal_src_mask = (twomass_mag >= m_min)*(twomass_mag <= m_max)*(twomass_x > trim_edge)*(twomass_x+trim_edge < 1024)*(twomass_y > trim_edge)*(twomass_y+trim_edge < 1024)
+
+    twomass_cal_src_cat = np.array([twomass_x[cal_src_mask], twomass_y[cal_src_mask], twomass_mag[cal_src_mask]]).transpose()
+    print('Number of calibration sources for '+field_name+' is '+str(twomass_cal_src_cat.shape[0]))        
+        
+    # ------------- for each Vega magnitude bin, calculate corresponding flux and stack sources in bin ----------
+    
+    sb_bin_predict, sb_cal, nsrc_perstack = [np.zeros((n_mag_bins)) for x in range(3)]
+    all_med_postage_stamps = []
+    all_sb_cal_srcs = []
+    for b in range(n_mag_bins):
+        
+        # extrapolate Vega zero point to CIBER effective wavelength 
+        # and calculate flux density
+        zp_ciber = extrap_vega_zp(lam_dict[inst]) 
+        ciber_flux_density_pred = zp_ciber*10**(-0.4*mag_range[b])
+        
+        # convert from Jy to nW m-2 Hz-1
+        ciber_nW_m2_Hz_pred = ciber_flux_density_pred*1e-17 
+        nunaught = 3e8 / (lam_dict[inst]*1e-6)
+        
+        # use effective frequency to convert to nW m-2
+        ciber_nW_m2_pred = ciber_nW_m2_Hz_pred*nunaught
+        
+        # this grabs the values used in get_quick_psf.m, 
+        # 10.3" for TM1 and 10.6" for TM2
+        fwhm = fwhm_dict[inst] 
+        
+        # area of beam in steradians
+        omega_beam = (1.133*(fwhm/3600.)**2*(np.pi/180.)**2) 
+#         ciber_nW_m2_sr_pred = ciber_nW_m2_pred / omega_beam
+        
+        
+        ciber_nW_m2_sr_pred = ciber_nW_m2_pred / cmock.pix_sr.value # step in question
+        
+
+        sb_bin_predict[b] = ciber_nW_m2_sr_pred
+        stack_dm_mask = np.where((twomass_cal_src_cat[:,2] > mag_range[b])*(twomass_cal_src_cat[:,2] <= mag_range[b+1]))[0]
+        twomass_dm_stackcat = twomass_cal_src_cat[stack_dm_mask, :]
+                
+        
+        all_postage_stamps, all_mask_fractions = stack_srcs_simp(ciber_photocurrent_map, twomass_dm_stackcat, mask, dx=dx, min_mask_frac=0.9)
+        
+        nsrc_perstack[b] = len(all_postage_stamps)
+        
+        all_postage_stamps[np.isinf(all_postage_stamps)] = np.nan
+        
+        med_postage_stamps = np.nanmedian(all_postage_stamps, axis=0)
+        sb_cal[b] = sb_bin_predict[b] / (np.nansum(med_postage_stamps)) 
+        
+        sb_cal_all_srcs = [sb_bin_predict[b]/np.nansum(post) for post in all_postage_stamps]
+
+        all_sb_cal_srcs.append(sb_cal_all_srcs)
+        all_med_postage_stamps.append(med_postage_stamps)
+    
+    print('sb cals are ', sb_cal)
+    
+    print('nsrc per stack is ', nsrc_perstack)
+    
+    return all_med_postage_stamps, mag_range, sb_cal, nsrc_perstack, all_sb_cal_srcs
     
 
         

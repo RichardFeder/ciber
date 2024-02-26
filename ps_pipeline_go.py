@@ -71,6 +71,7 @@ def update_dicts(list_of_dicts, kwargs):
 	return list_of_dicts 
 
 
+
 def ciber_difference_spectrum(cbps, fpath_dict, config_dict, inst, ifieldA, ifieldB, mask_tail, masking_maglim, mask=None, sigma_clip=False, nsig=5, \
                              per_quadrant=False):
     
@@ -81,7 +82,7 @@ def ciber_difference_spectrum(cbps, fpath_dict, config_dict, inst, ifieldA, ifie
     
     fieldidxA, fieldidxB = ifieldA-4, ifieldB-4
     
-    read_noise_models = cbps.grab_noise_model_set([ifieldA, ifieldB], inst, noise_model_base_path=fpath_dict['read_noise_modl_base_path'], noise_modl_type=config_dict['noise_modl_type'])
+    read_noise_models = cbps.grab_noise_model_set([ifieldA, ifieldB], inst, field_set_shape=((2, cbps.dimx, cbps.dimy)), noise_model_base_path=fpath_dict['read_noise_modl_base_path'], noise_modl_type=config_dict['noise_modl_type'])
     
     dc_template = cbps.load_dark_current_template(inst, verbose=True, inplace=False)
     
@@ -124,7 +125,6 @@ def ciber_difference_spectrum(cbps, fpath_dict, config_dict, inst, ifieldA, ifie
         observed_im = cbps.image*cbps.cal_facs[inst]
         observed_im -= dc_template*cbps.cal_facs[inst]
 
-        
         if ifield==ifieldA:
             observed_im_A = observed_im
         if ifield==ifieldB:
@@ -185,8 +185,6 @@ def ciber_difference_spectrum(cbps, fpath_dict, config_dict, inst, ifieldA, ifie
                                  gradient_filter=True, save_intermediate_cls=False, N_ell=N_ell_est, \
                                  per_quadrant=per_quadrant, max_val_after_sub=max_vals_ptsrc)
     
-    
-
     processed_ps_nf /= t_ell_av
     cl_proc_err /= t_ell_av
     
@@ -202,6 +200,152 @@ def ciber_difference_spectrum(cbps, fpath_dict, config_dict, inst, ifieldA, ifie
     plt.show()
     
     return lb, processed_ps_nf, cl_proc_err, N_ell_est
+
+
+def ciber_difference_cross_spectrum(cbps, inst, cross_inst, ifieldA, ifieldB, mask_tail, masking_maglim, mask=None, sigma_clip=False, nsig=5, \
+                                   per_quadrant=True):
+    
+    masking_maglim_ff = max(17.5, masking_maglim)
+    fieldidxA, fieldidxB = ifieldA-4, ifieldB-4
+    
+    astr_dir = config.ciber_basepath+'data/'
+
+    mask_save_fpath = config.ciber_basepath+'data/fluctuation_data/TM'+str(inst)+'/masks/'+mask_tail+'/joint_mask_ifield'+str(ifieldA)+'_ifield'+str(ifieldB)+'_inst'+str(inst)+'_observed_'+mask_tail+'.fits'
+    mask = fits.open(mask_save_fpath)['joint_mask_'+str(ifieldA)].data
+    
+    plot_map(mask, title='mask')
+    
+    dc_template = cbps.load_dark_current_template(inst, verbose=True, inplace=False)
+    dc_template_cross = cbps.load_dark_current_template(cross_inst, verbose=True, inplace=False)
+
+    
+    if per_quadrant:
+        t_ell_fpath = config.ciber_basepath+'data/transfer_function/t_ell_masked_wdgl_2500_n=2p5_wgrad_quadrant_nsims=1000.npz'
+    else:
+        t_ell_fpath = config.ciber_basepath+'data/transfer_function/t_ell_est_nsims=100.npz'
+        
+    t_ell_av = np.load(t_ell_fpath)['t_ell_av']
+    print('t_ell = ', t_ell_av)
+    
+    
+    tl_regrid_fpath = config.ciber_basepath+'data/transfer_function/regrid/tl_regrid_tm2_to_tm1_order=2.npz'
+    tl_regrid = np.load(tl_regrid_fpath)['tl_regrid']
+
+    tl_regrid = np.sqrt(tl_regrid)
+    t_ell_av *= tl_regrid
+    
+    
+    mkkonly_savepath = config.ciber_basepath+'data/fluctuation_data/TM'+str(inst)+'/mkk/'+mask_tail+'/mkk_maskonly_estimate_ifield'+str(ifieldA)+'_ifield'+str(ifieldB)+'_observed_'+mask_tail+'.fits'
+    inv_Mkk = fits.open(mkkonly_savepath)['inv_Mkk_'+str(ifieldA)].data
+    
+    
+    # beams
+    # load beams and average Bootes fields
+    bls_fpath = config.ciber_basepath+'data/fluctuation_data/TM'+str(inst)+'/beam_correction/bl_est_postage_stamps_TM'+str(inst)+'_081121.npz'
+    B_ells = np.load(bls_fpath)['B_ells_post']
+    B_ell_eff = np.sqrt(B_ells[fieldidxA]*B_ells[fieldidxB])
+    
+    bls_fpath_cross = config.ciber_basepath+'data/fluctuation_data/TM'+str(cross_inst)+'/beam_correction/bl_est_postage_stamps_TM'+str(cross_inst)+'_081121.npz'
+    B_ells_cross = np.load(bls_fpath_cross)['B_ells_post']
+    B_ell_eff_cross = np.sqrt(B_ells_cross[fieldidxA]*B_ells_cross[fieldidxB])
+    
+    
+    B_ell_eff_tot = B_ell_eff*B_ell_eff_cross
+    
+    if per_quadrant:
+        t_ell_fpath = config.ciber_basepath+'data/transfer_function/t_ell_masked_wdgl_2500_n=2p5_wgrad_quadrant_nsims=1000.npz'
+    else:
+        t_ell_fpath = config.ciber_basepath+'data/transfer_function/t_ell_est_nsims=100.npz'
+        
+    all_obs_im, all_obs_im_cross = [], []
+    
+    for fieldidx, ifield in enumerate([ifieldA, ifieldB]):
+
+        cbps.load_flight_image(ifield, inst, verbose=True, ytmap=False) # default loads aducorr maps
+        observed_im = cbps.image*cbps.cal_facs[inst]
+        observed_im -= dc_template*cbps.cal_facs[inst]
+        
+        all_obs_im.append(observed_im)
+        
+        cbps.load_flight_image(ifield, cross_inst, verbose=True, ytmap=False) # default loads aducorr maps
+        observed_im_cross = cbps.image*cbps.cal_facs[cross_inst]
+        observed_im_cross -= dc_template_cross*cbps.cal_facs[cross_inst]
+        
+        corner_mask = np.ones_like(mask)
+        corner_mask[900:, 0:200] = 0.
+        
+        observed_im_cross *= corner_mask
+        
+        cross_regrid, ciber_fp_regrid = regrid_arrays_by_quadrant(observed_im_cross, ifield, inst0=inst, inst1=cross_inst, \
+                                                     plot=False, astr_dir=astr_dir, order=0, conserve_flux=False)
+
+
+        
+        all_obs_im_cross.append(cross_regrid)
+        
+    
+    difference_im = all_obs_im[0]-all_obs_im[1]
+    difference_im_cross = all_obs_im_cross[0]-all_obs_im_cross[1]
+    
+    plot_map(difference_im, title='difference im')
+    plot_map(difference_im_cross, title='difference im cross reproj')
+    plot_map(difference_im-difference_im_cross, title='diff')
+    
+    if sigma_clip:
+        mask *= iter_sigma_clip_mask(difference_im, sig=nsig, nitermax=5, mask=mask)
+        mask *= iter_sigma_clip_mask(difference_im_cross, sig=nsig, nitermax=5, mask=mask)
+    
+    mask *= (difference_im != 0)*(difference_im_cross != 0)
+    
+    difference_im *= mask
+    difference_im_cross *= mask
+    
+    theta_quad, plane = fit_gradient_to_map(difference_im, mask=mask)
+    difference_im -= plane
+
+    theta_quad, plane = fit_gradient_to_map(difference_im_cross, mask=mask)
+    difference_im_cross -= plane
+
+    
+#     for q in range(4):
+#         theta_quad, plane_quad = fit_gradient_to_map(difference_im[cbps.x0s[q]:cbps.x1s[q], cbps.y0s[q]:cbps.y1s[q]], mask=mask[cbps.x0s[q]:cbps.x1s[q], cbps.y0s[q]:cbps.y1s[q]])
+#         difference_im[cbps.x0s[q]:cbps.x1s[q], cbps.y0s[q]:cbps.y1s[q]] -= plane_quad
+
+    posmask = (difference_im != 0)*(difference_im_cross != 0)
+    
+    meansub = np.mean(difference_im[posmask])
+    difference_im[posmask] -= meansub
+    
+    meansub_cross = np.mean(difference_im_cross[posmask])
+    difference_im_cross[posmask] -= meansub_cross
+    
+    plot_map(difference_im, title='diff im masked')
+    plot_map(difference_im_cross, title='diff im masked')
+    
+    lb, cl, clerr = get_power_spec(difference_im, map_b=difference_im_cross, lbinedges=cbps.Mkk_obj.binl, lbins=cbps.Mkk_obj.midbin_ell)
+    
+    cl = np.dot(inv_Mkk.transpose(), cl)
+
+    
+    cl /= B_ell_eff_tot
+    clerr /= B_ell_eff_tot
+    cl /= t_ell_av
+    clerr /= t_ell_av
+    
+    cl /= 2
+    clerr /= 2
+    
+    pf = lb*(lb+1)/(2*np.pi)
+    plt.figure()
+    plt.errorbar(lb[:-1], (pf*cl)[:-1], yerr=(pf*clerr)[:-1], fmt='o', color='k')
+    plt.xscale('log')
+    plt.yscale('log')
+    plt.ylim(1e-1, 1e4)
+    plt.grid(alpha=0.5)
+    plt.xlim(150, 1e5)
+    plt.show()
+        
+    return lb, cl, clerr
 
 
 def set_up_filepaths_cbps(fpath_dict, inst, run_name, datestr, datestr_trilegal=None, data_type='mock', cross_inst=None, save_fpaths=True, \

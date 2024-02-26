@@ -495,6 +495,143 @@ def plot_mean_posts_magbins(sopred, bandstr, return_fig=True):
     if return_fig:
         return f
 
+
+def plot_ciber_spitzer_auto_cross(spitzer_mask_string=None, ciber_tailstrs=None, startidx=0, endidx=-1, \
+                                 mag_lim_sdwfs = None, mag_lims_ciber=None, keywd = None, load_snpred=False, \
+                                 xlim=[180, 1.5e5], alph=0.6):
+    
+    irac_lamdict = dict({1:3.6, 2:4.5})
+    bandstr_dict = dict({1:'J', 2:'H'})
+    ciber_lamdict = dict({1:1.1, 2:1.8})
+    
+    if mag_lims_ciber is None:
+        mag_lims_ciber = [17.5, 17.0] # J, H
+        
+    spitzer_auto_basepath = config.ciber_basepath+'data/'
+
+    
+    colors = ['b', 'C3']
+
+    fig, ax = plt.subplots(figsize=(7, 7), nrows=2, ncols=2)
+        
+    if spitzer_mask_string is None:
+        spitzer_mask_string = '052623_gradsub_byepoch_CH'+str(irac_ch)
+        
+    for irac_ch in [1]: 
+        lamirac = irac_lamdict[irac_ch]
+
+        
+        for inst in [1]:
+            bandstr = bandstr_dict[inst]
+            lam_ciber = ciber_lamdict[inst]
+            
+#             if ciber_tailstr is None:
+#                 ciber_mask_tail = 'maglim_'+bandstr+'_Vega_'+str(mag_lims_ciber[inst-1])+'_062623'
+
+            # load CIBER x Spitzer cross corr ---------------------------
+            
+            save_cl_fpath = spitzer_auto_basepath+'input_recovered_ps/ciber_spitzer/ciber_spitzer_cross_auto_cl_TM'+str(inst)+'_IRACCH'+str(irac_ch)+'.npz'
+            ciber_spitzer_clfile = np.load(save_cl_fpath)
+            
+            lb = ciber_spitzer_clfile['lb']
+            prefac = lb*(lb+1)/(2*np.pi)
+            
+            all_cl_cross = ciber_spitzer_clfile['all_cl_cross']
+    
+            all_clerr_cross = ciber_spitzer_clfile['all_clerr_cross_tot']
+            all_clerr_spitzer_noise_ciber = ciber_spitzer_clfile['all_clerr_spitzer_noise_ciber']
+            all_clerr_ciber_noise_spitzer = ciber_spitzer_clfile['all_clerr_ciber_noise_spitzer']
+            all_clerr_cross_tot = ciber_spitzer_clfile['all_clerr_cross_tot']
+            
+            fieldav_cl_cross = ciber_spitzer_clfile['fieldav_cl_cross']
+            fieldav_clerr_cross = ciber_spitzer_clfile['fieldav_clerr_cross']
+            
+            snr_cross_largescale, tot_snr_cross = compute_cl_snr(lb, fieldav_cl_cross, fieldav_clerr_cross, lb_max=2000)
+
+            print('snr cross large scale:', snr_cross_largescale)
+            print('total snr large scale cross:', tot_snr_cross)
+            
+    
+            # load Spitzer auto corr -------------------------
+        
+            
+            all_cl_spitzer = ciber_spitzer_clfile['all_cl_spitzer']
+            all_clerr_spitzer= ciber_spitzer_clfile['all_clerr_spitzer']
+            
+            fieldav_cl_spitzer = ciber_spitzer_clfile['fieldav_cl_spitzer']
+            fieldav_clerr_spitzer = ciber_spitzer_clfile['fieldav_clerr_spitzer']
+            
+#             mean_cl_spitzer = np.mean(np.array(all_cl_spitzer), axis=0)
+#             sum_err_spitz = np.sqrt(all_clerr_spitzer[0]**2 + all_clerr_spitzer[1]**2)/np.sqrt(2)
+#             spitz_auto_knox_errors = np.sqrt(1./((2*lb+1)*cbps.Mkk_obj.delta_ell)) # factor of 1 in numerator since auto is a cross-epoch cross
+#             A_eff = 2*4*0.6 # two fields 2x2 degree, with 60% unmasked
+#             fsky = A_eff/(41253.)    
+#             spitz_auto_knox_errors /= np.sqrt(fsky)
+#             print('spitz_auto_knox_errors fractional', spitz_auto_knox_errors)
+#             spitz_auto_knox_errors *= np.abs(mean_cl_spitzer)
+#             sum_err_spitz = np.sqrt(sum_err_spitz**2 + spitz_auto_knox_errors**2)
+            
+            
+            # ----------------- load CIBER auto spectra ---------------------------
+            # grab bootes fields and compute mean/uncertainty from two-field average
+
+#             obs_name = ''
+#             cl_fpath_obs = 'data/input_recovered_ps/cl_files/TM'+str(inst)+'/cl_'+obs_name+'.npz'
+#             lb, observed_recov_ps, observed_recov_dcl_perfield,\
+#                 observed_field_average_cl, observed_field_average_dcl,\
+#                     mock_all_field_cl_weights = load_weighted_cl_file(cl_fpath_obs)
+            
+#             mean_ciber_bootes_ps = 0.5*(observed_recov_ps[2]+observed_recov_ps[3])
+#             ciber_mean_clerr = None
+            
+            # plot something!
+            
+            lbmask = (lb >=lb[startidx])*(lb < lb[endidx])
+
+            cross_negmask = (fieldav_cl_cross < 0)*lbmask
+            cross_posmask = (fieldav_cl_cross > 0)*lbmask
+
+            ax[irac_ch-1, inst-1].errorbar(lb[cross_posmask], (prefac*fieldav_cl_cross)[cross_posmask], yerr=(prefac*fieldav_clerr_cross)[cross_posmask], fmt='o', color='k', alpha=alph, markersize=4, capsize=4, label='CIBER x Spitzer')
+            ax[irac_ch-1, inst-1].errorbar(lb[cross_negmask], np.abs(prefac*fieldav_cl_cross)[cross_negmask], yerr=(prefac*fieldav_clerr_cross)[cross_negmask], fmt='o', color='k', markersize=4, capsize=4, mfc='white')
+
+            negmask_spitzerauto = (fieldav_cl_spitzer < 0)*lbmask
+            posmask_spitzerauto = (fieldav_cl_spitzer > 0)*lbmask
+
+#             print(fieldav_cl_spitz)
+            ax[irac_ch-1, inst-1].errorbar(lb[posmask_spitzerauto], (prefac*fieldav_cl_spitzer)[posmask_spitzerauto], yerr=(prefac*fieldav_clerr_spitzer)[posmask_spitzerauto], markersize=4, fmt='o', capsize=4, color='grey', label='Spitzer auto')
+            ax[irac_ch-1, inst-1].errorbar(lb[negmask_spitzerauto], np.abs((prefac*fieldav_cl_spitzer)[negmask_spitzerauto]), yerr=(prefac*fieldav_clerr_spitzer)[negmask_spitzerauto], markersize=4, mfc='white', fmt='o', capsize=4, color='grey')
+
+#             prefac_ciber = lb*(lb+1)/(2*np.pi)
+#             ax[inst-1].errorbar(lb[startidx:endidx], (prefac*all_mean_bootes_ps)[lbmask], yerr=(prefac_ciber*ciber_mean_clerr)[startidx:endidx], markersize=4, fmt='o', alpha=alph, capsize=4, color=colors[inst-1], label='CIBER auto')
+
+
+            ax[irac_ch-1, inst-1].set_xscale("log")
+            ax[irac_ch-1, inst-1].set_yscale("log")
+            ax[irac_ch-1, inst-1].set_ylim(1e-6, 2e4)
+            ax[irac_ch-1, inst-1].tick_params(labelsize=12)
+            
+            if irac_ch==2:
+                ax[irac_ch-1, inst-1].set_xlabel('$\\ell$', fontsize=16)
+            if inst==1:
+                ax[irac_ch-1, inst-1].set_ylabel('$D_{\\ell}$ [nW$^2$ m$^{-4}$ sr$^{-2}$]', fontsize=16)
+            ax[irac_ch-1, inst-1].set_xlim(xlim)
+    
+            if inst==1:
+                ax[irac_ch-1, inst-1].set_yticks([1e-3, 1e-1, 1e1, 1e3])
+            elif inst==2:
+                ax[irac_ch-1, inst-1].set_yticks([1e-3, 1e-1, 1e1, 1e3], ['', '', '', ''])
+                
+            ax[irac_ch-1, inst-1].grid(alpha=0.3)
+            ax[irac_ch-1,inst-1].text(250, 60, str(lam_ciber)+' $\mu$m $\\times$ '+str(lamirac)+' $\\mu$m\nMask $'+bandstr+'<'+str(mag_lims_ciber[inst-1])+'$', fontsize=14, color='k', bbox=dict({'facecolor':'white', 'alpha':0.4, 'edgecolor':'None'}))
+
+    plt.legend(fontsize=14, bbox_to_anchor=[1.0, 1.4], ncol=2)
+    plt.subplots_adjust(wspace=0.0)
+
+    plt.show()
+
+    return fig
+
+
 def plot_spitzer_auto(inst, irac_ch, lb, spitzer_auto_cl, spitzer_auto_clerr, all_cl_spitzer, all_clerr_spitzer, return_fig=True):
     
     ''' Plot cross spectra with individual cross noise terms '''
@@ -667,7 +804,7 @@ def single_panel_observed_ps_results(inst, masking_maglim, lb, observed_field_av
                                     include_dgl_ul=True, include_igl_helgason=True, include_c15_snpred=False, \
                                      include_z14=False, rescale_Z14=False, fac=None, include_perfield=True, startidx=0, endidx=-1, show=True, \
                                     return_fig=True, zcolor='grey', xlim=[1.5e2, 1e5], ylim=[1e-2, 4e3], textpos=[2e2, 2e2], \
-                                    obs_labels=['4th flight field average'], obs_colors=['k'], figsize=(6,5), zorders=None):
+                                    obs_labels=['4th flight field average'], obs_colors=['k'], figsize=(6,5), zorders=None, bbox_to_anchor=None):
         
     lam_dict = dict({1:1.1, 2:1.8})
     lam_dict_z14 = dict({1:1.1, 2:1.6})
@@ -676,105 +813,123 @@ def single_panel_observed_ps_results(inst, masking_maglim, lb, observed_field_av
 
     ciber_field_dict = dict({4:'elat10', 5:'elat30', 6:'Bootes B', 7:'Bootes A', 8:'SWIRE'})
     
-    bandstr = bandstr_dict[inst]
         
     prefac = lb[startidx:endidx]*(lb[startidx:endidx]+1)/(2*np.pi)
-       
-    fig = plt.figure(figsize=figsize)
+
+
+    if type(inst) != list:
+        inst = [inst]
+        masking_maglim = [masking_maglim]
+        observed_field_average_cl = [observed_field_average_cl]
+        observed_recov_ps = [observed_recov_ps]
+        median_fieldav_err = [median_fieldav_err]
+        all_mock_recov_ps = [all_mock_recov_ps]
+
+
+    if len(inst)==1:
+        fig = plt.figure(figsize=figsize)
+    else:
+        fig, ax = plt.figure(ncol=len(inst), nrows=1, figsize=figsize)
     
-    if include_perfield:
-        for fieldidx, ifield in enumerate(ifield_list):
-            std_recov_mock_ps = 0.5*(np.percentile(all_mock_recov_ps[:,fieldidx,:], 84, axis=0)-np.percentile(all_mock_recov_ps[:,fieldidx,:], 16, axis=0))
 
-            print('std recov mock ps:', std_recov_mock_ps.shape)
-            print('observed recov ps:', observed_recov_ps.shape)
-            print(fieldidx, startidx, endidx)
-            print(ciber_field_dict[ifield])
-            plt.errorbar(lb[startidx:endidx], prefac*observed_recov_ps[fieldidx,startidx:endidx], yerr=prefac*std_recov_mock_ps[startidx:endidx], label=ciber_field_dict[ifield], fmt='.', color='C'+str(fieldidx), alpha=0.3, capsize=4, markersize=10)
-            
-    if len(np.array(observed_field_average_cl).shape)==2:
-        for obs_idx, obs_cl in enumerate(observed_field_average_cl):
-            plt.errorbar(lb[startidx:endidx], prefac*observed_field_average_cl[obs_idx][startidx:endidx], yerr=(prefac)*np.median(np.abs(field_average_error), axis=0)[startidx:endidx],\
-                         label=obs_labels[obs_idx], fmt='o', capthick=1.5, color=obs_colors[obs_idx], capsize=3, markersize=4, linewidth=2., \
-                        zorder=zorders[obs_idx])
-    else:     
-        plt.errorbar(lb[startidx:endidx], prefac*observed_field_average_cl[startidx:endidx], yerr=(prefac)*median_fieldav_err[startidx:endidx], label=obs_labels[0], fmt='o', capthick=1.5, color='k', capsize=3, markersize=4, linewidth=2.)
+    for x in range(len(inst)):
 
+        bandstr = bandstr_dict[inst[x]]
 
-    if include_dgl_ul:
-    
-        dgl_auto_pred = np.load(config.ciber_basepath+'data/fluctuation_data/TM'+str(inst)+'/dgl_tracer_maps/sfd_clean/dgl_auto_constraints_TM'+str(inst)+'_sfd_clean_053023.npz')
-        lb_modl = dgl_auto_pred['lb_modl']
-        best_ps_fit_av = dgl_auto_pred['best_ps_fit_av']
-        AC_A1 = dgl_auto_pred['AC_A1']
-        dAC_sq = dgl_auto_pred['dAC_sq']
-        
-        
-        lb_extend = [4000, 6000, 10000, 20000]
-        ps_extend = best_ps_fit_av[-1]*(np.array(lb_extend)/lb_modl[-1])**(-1.2)
-        best_ps_fit_av = np.array(list(best_ps_fit_av) + list(ps_extend))
-        lb_modl = np.array(list(lb_modl) + list(lb_extend))
-        
-        plt.plot(lb_modl, best_ps_fit_av*AC_A1**2, color='k', label='DGL', linestyle='solid')
-        plt.fill_between(lb_modl, best_ps_fit_av*(AC_A1**2-dAC_sq), best_ps_fit_av*(AC_A1**2+dAC_sq), color='k', alpha=0.2)
-        plt.fill_between(lb_modl, best_ps_fit_av*(AC_A1**2-2*dAC_sq), best_ps_fit_av*(AC_A1**2+2*dAC_sq), color='k', alpha=0.1)
-       
-    if include_igl_helgason:
-        print('inst = ', inst)
-        config_dict, pscb_dict, float_param_dict, fpath_dict = return_default_cbps_dicts()
-        ciber_mock_fpath = config.ciber_basepath+'data/ciber_mocks/'
-        fpath_dict, list_of_dirpaths, base_path, trilegal_base_path = set_up_filepaths_cbps(fpath_dict, inst, 'test', '112022',\
-                                                                                        datestr_trilegal='112022', data_type='mock', \
-                                                                                       save_fpaths=True)
+        plt.subplot(1, len(inst), x+1)
+        if include_perfield:
+            for fieldidx, ifield in enumerate(ifield_list):
+                std_recov_mock_ps = 0.5*(np.percentile(all_mock_recov_ps[x][:,fieldidx,:], 84, axis=0)-np.percentile(all_mock_recov_ps[x][:,fieldidx,:], 16, axis=0))
 
-        all_cl = []
-        prefac_full = lb*(lb+1)/(2*np.pi)
-        
-        isl_igl = np.load(config.ciber_basepath+'data/cl_predictions/TM'+str(inst)+'/igl_isl_pred_mlim='+str(masking_maglim)+'_meas.npz')['isl_igl']
-        plt.plot(lb, prefac_full*isl_igl, linestyle='dashdot', color='grey', label='IGL+ISL')
-
-        
-    if include_c15_snpred:
-        
-        c15_ccorr = np.load(config.ciber_basepath+'data/cl_predictions/color_corr_vs_'+bandstr+'_min_cosmos15.npz')
-        mmin_range_cc = c15_ccorr['mmin_list']
-        all_pv_c15 = c15_ccorr['all_pv_c15']
-        
-        lb_pred = np.array([50, 100]+list(lb))
-        pf_pred = lb_pred*(lb_pred+1)/(2*np.pi)
-        which_cc_match = np.where((mmin_range_cc==masking_maglim))[0][0]
-
-        plt.plot(lb_pred, (pf_pred*all_pv_c15[which_cc_match]), linestyle='dashed', color='k', label='Predicted $C_{\\ell}^{SN}$\n(IGL+ISL)')
-
-        
-        
-    if include_z14:
-        zemcov_auto = np.loadtxt(config.ciber_basepath+'/data/zemcov14_ps/ciber_'+str(lam_dict_z14[inst])+'x'+str(lam_dict_z14[inst])+'_dCl.txt', skiprows=8)
-        zemcov_lb = zemcov_auto[:,0]
+                print('std recov mock ps:', std_recov_mock_ps[x].shape)
+                print('observed recov ps:', observed_recov_ps[x].shape)
+                print(fieldidx, startidx, endidx)
+                print(ciber_field_dict[ifield])
+                plt.errorbar(lb[startidx:endidx], prefac*observed_recov_ps[x][fieldidx,startidx:endidx], yerr=prefac*std_recov_mock_ps[x][startidx:endidx], label=ciber_field_dict[ifield], fmt='.', color='C'+str(fieldidx), alpha=0.3, capsize=4, markersize=10)
                 
-        if rescale_Z14:
-            if inst==1:
-                fac = 1.6
-            else:
-                fac = 2.09
+        if len(np.array(observed_field_average_cl[x]).shape)==2:
+            for obs_idx, obs_cl in enumerate(observed_field_average_cl[x]):
+                plt.errorbar(lb[startidx:endidx], prefac*observed_field_average_cl[x][obs_idx][startidx:endidx], yerr=(prefac)*np.median(np.abs(field_average_error), axis=0)[startidx:endidx],\
+                             label=obs_labels[obs_idx], fmt='o', capthick=1.5, color=obs_colors[obs_idx], capsize=3, markersize=4, linewidth=2., \
+                            zorder=zorders[obs_idx])
+        else:     
+            plt.errorbar(lb[startidx:endidx], prefac*observed_field_average_cl[x][startidx:endidx], yerr=(prefac)*median_fieldav_err[x][startidx:endidx], label=obs_labels[0], fmt='o', capthick=1.5, color='k', capsize=3, markersize=4, linewidth=2.)
+
+
+        if include_dgl_ul:
         
-        plt.plot(zemcov_lb, zemcov_auto[:,1]*fac**2, label='Zemcov+14', marker='.', color=zcolor, alpha=0.3)
-        plt.fill_between(zemcov_lb, (zemcov_auto[:,1]-zemcov_auto[:,2])*fac**2, (zemcov_auto[:,1]+zemcov_auto[:,3])*fac**2, color=zcolor, alpha=0.15)
+            dgl_auto_pred = np.load(config.ciber_basepath+'data/fluctuation_data/TM'+str(inst[x])+'/dgl_tracer_maps/sfd_clean/dgl_auto_constraints_TM'+str(inst[x])+'_sfd_clean_053023.npz')
+            lb_modl = dgl_auto_pred['lb_modl']
+            best_ps_fit_av = dgl_auto_pred['best_ps_fit_av']
+            AC_A1 = dgl_auto_pred['AC_A1']
+            dAC_sq = dgl_auto_pred['dAC_sq']
+            
+            
+            lb_extend = [4000, 6000, 10000, 20000]
+            ps_extend = best_ps_fit_av[-1]*(np.array(lb_extend)/lb_modl[-1])**(-1.2)
+            best_ps_fit_av = np.array(list(best_ps_fit_av) + list(ps_extend))
+            lb_modl = np.array(list(lb_modl) + list(lb_extend))
+            
+            plt.plot(lb_modl, best_ps_fit_av*AC_A1**2, color='k', label='DGL', linestyle='solid')
+            plt.fill_between(lb_modl, best_ps_fit_av*(AC_A1**2-dAC_sq), best_ps_fit_av*(AC_A1**2+dAC_sq), color='k', alpha=0.2)
+            plt.fill_between(lb_modl, best_ps_fit_av*(AC_A1**2-2*dAC_sq), best_ps_fit_av*(AC_A1**2+2*dAC_sq), color='k', alpha=0.1)
+           
+        if include_igl_helgason:
+            print('inst = ', inst)
+            config_dict, pscb_dict, float_param_dict, fpath_dict = return_default_cbps_dicts()
+            ciber_mock_fpath = config.ciber_basepath+'data/ciber_mocks/'
+            fpath_dict, list_of_dirpaths, base_path, trilegal_base_path = set_up_filepaths_cbps(fpath_dict, inst, 'test', '112022',\
+                                                                                            datestr_trilegal='112022', data_type='mock', \
+                                                                                           save_fpaths=True)
+
+            all_cl = []
+            prefac_full = lb*(lb+1)/(2*np.pi)
+            
+            isl_igl = np.load(config.ciber_basepath+'data/cl_predictions/TM'+str(inst)+'/igl_isl_pred_mlim='+str(masking_maglim)+'_meas.npz')['isl_igl']
+            plt.plot(lb, prefac_full*isl_igl, linestyle='dashdot', color='grey', label='IGL+ISL')
+
+            
+        if include_c15_snpred:
+            
+            c15_ccorr = np.load(config.ciber_basepath+'data/cl_predictions/color_corr_vs_'+bandstr+'_min_cosmos15.npz')
+            mmin_range_cc = c15_ccorr['mmin_list']
+            all_pv_c15 = c15_ccorr['all_pv_c15']
+            
+            lb_pred = np.array([50, 100]+list(lb))
+            pf_pred = lb_pred*(lb_pred+1)/(2*np.pi)
+            which_cc_match = np.where((mmin_range_cc==masking_maglim))[0][0]
+
+            plt.plot(lb_pred, (pf_pred*all_pv_c15[which_cc_match]), linestyle='dashed', color='k', label='Predicted $C_{\\ell}^{SN}$\n(IGL+ISL)')
+
+            
+            
+        if include_z14:
+            zemcov_auto = np.loadtxt(config.ciber_basepath+'/data/zemcov14_ps/ciber_'+str(lam_dict_z14[inst[x]])+'x'+str(lam_dict_z14[inst[x]])+'_dCl.txt', skiprows=8)
+            zemcov_lb = zemcov_auto[:,0]
+                    
+            if rescale_Z14:
+                if inst==1:
+                    fac = 1.6
+                else:
+                    fac = 2.09
+            
+            plt.plot(zemcov_lb, zemcov_auto[:,1]*fac**2, label='Zemcov+14', marker='.', color=zcolor, alpha=0.3)
+            plt.fill_between(zemcov_lb, (zemcov_auto[:,1]-zemcov_auto[:,2])*fac**2, (zemcov_auto[:,1]+zemcov_auto[:,3])*fac**2, color=zcolor, alpha=0.15)
 
 
-    plt.xlim(xlim)
-    plt.ylim(ylim)
+        plt.xlim(xlim)
+        plt.ylim(ylim)
 
-    plt.yscale('log')
-    plt.xscale('log')
-    plt.tick_params(labelsize=14)
-    plt.xlabel('$\\ell$', fontsize=16)
-    plt.ylabel('$D_{\\ell}$ [nW$^2$ m$^{-4}$ sr$^{-2}$]', fontsize=16)
-    plt.grid(alpha=0.5, color='grey')
+        plt.yscale('log')
+        plt.xscale('log')
+        plt.tick_params(labelsize=14)
+        plt.xlabel('$\\ell$', fontsize=16)
+        plt.ylabel('$D_{\\ell}$ [nW$^2$ m$^{-4}$ sr$^{-2}$]', fontsize=16)
+        plt.grid(alpha=0.5, color='grey')
 
-    plt.text(textpos[0], textpos[1], 'CIBER '+str(lam_dict[inst])+' $\\mu$m\nObserved data\nMask '+bandstr_dict[inst]+'$<'+str(masking_maglim)+'$', fontsize=16)
-    
-    plt.legend(fontsize=10, loc=4, ncol=2)
+        plt.text(textpos[0], textpos[1], 'CIBER '+str(lam_dict[inst[x]])+' $\\mu$m\nObserved data\nMask '+bandstr_dict[inst[x]]+'$<'+str(masking_maglim[x])+'$', fontsize=16)
+        
+    plt.legend(fontsize=10, loc=4, ncol=2, bbox_to_anchor=bbox_to_anchor)
     plt.tight_layout()
     
     if show:
@@ -949,7 +1104,7 @@ def make_figure_cross_corrcoeff_ciber_ciber_vs_mag(maglim_J = [12.0, 13.0, 14.0,
     if show:
         plt.show()
     if return_fig:
-        return fig
+        return fig, all_r_TM, all_sigma_r_TM, lb
 
 def plot_ciber_x_ciber_ps(ifield_list, lb, all_cl1d_obs, all_nl1d_unc, field_weights,\
                           startidx=1, endidx=-1, return_fig=True, flatidx=7):
