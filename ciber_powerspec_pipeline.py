@@ -847,7 +847,6 @@ class CIBER_PS_pipeline():
 			# obs_AB = np.array([masked_image, masked_cross_image]) # cross already preprocessed
 			# fft_objs_maps[1](obs_AB*sterad_per_pix)
 
-			# plot_map(simmaps[0], title='simmaps [0]')
 			fft_objs[1](simmaps*sterad_per_pix)
 			fft_objs_cross[1](simmaps_cross*sterad_per_pix)
 			cl2ds = np.array([fftshift(dentry*np.conj(dentry_cross)).real for dentry, dentry_cross in zip(empty_aligned_objs[2], empty_aligned_objs_cross[2])])

@@ -65,6 +65,7 @@ def fit_gradient_to_map(image, mask=None):
     Returns
     -------
 
+    theta : `~np.array~` of shape (3), type `float`. Best fit gradient parameters
     plane : `~np.array~` of shape (dimx, dimy), type `float`. Best-fit plane. 
 
     '''

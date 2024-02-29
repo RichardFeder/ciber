@@ -622,7 +622,7 @@ def plot_ciber_spitzer_auto_cross(spitzer_mask_string=None, ciber_tailstrs=None,
                 ax[irac_ch-1, inst-1].set_yticks([1e-3, 1e-1, 1e1, 1e3], ['', '', '', ''])
                 
             ax[irac_ch-1, inst-1].grid(alpha=0.3)
-            ax[irac_ch-1,inst-1].text(250, 60, str(lam_ciber)+' $\mu$m $\\times$ '+str(lamirac)+' $\\mu$m\nMask $'+bandstr+'<'+str(mag_lims_ciber[inst-1])+'$', fontsize=14, color='k', bbox=dict({'facecolor':'white', 'alpha':0.4, 'edgecolor':'None'}))
+            ax[irac_ch-1,inst-1].text(250, 60, str(lam_ciber)+' $\\mu$m $\\times$ '+str(lamirac)+' $\\mu$m\nMask $'+bandstr+'<'+str(mag_lims_ciber[inst-1])+'$', fontsize=14, color='k', bbox=dict({'facecolor':'white', 'alpha':0.4, 'edgecolor':'None'}))
 
     plt.legend(fontsize=14, bbox_to_anchor=[1.0, 1.4], ncol=2)
     plt.subplots_adjust(wspace=0.0)
@@ -632,26 +632,54 @@ def plot_ciber_spitzer_auto_cross(spitzer_mask_string=None, ciber_tailstrs=None,
     return fig
 
 
-def plot_spitzer_auto(inst, irac_ch, lb, spitzer_auto_cl, spitzer_auto_clerr, all_cl_spitzer, all_clerr_spitzer, return_fig=True):
+def plot_spitzer_auto(inst, irac_ch, lb, spitzer_auto_cl, spitzer_auto_clerr, all_cl_spitzer=None, all_clerr_spitzer=None, return_fig=True, \
+                        capsize=3, markersize=5, capthick=1.5, alph=0.5, startidx=0, endidx=-1, ylim=[1e-5, 1e1]):
     
     ''' Plot cross spectra with individual cross noise terms '''
     
     pf = lb*(lb+1)/(2*np.pi)
+
+    lbmask = (lb >= lb[startidx])*(lb < lb[endidx])
     
-    f = plt.figure(figsize=(6,5))
+    f = plt.figure(figsize=(5,4))
     
-    plt.title('IRAC CH'+str(irac_ch), fontsize=14)
-    plt.errorbar(lb, pf*all_cl_spitzer[1], yerr=pf*all_clerr_spitzer[1], alpha=0.7, fmt='o', color='r', label='Bootes A')
-    plt.errorbar(lb, pf*all_cl_spitzer[0], yerr=pf*all_clerr_spitzer[0], alpha=0.7, fmt='o', color='b', label='Bootes B')
+    plt.title('Cross-epoch, IRAC CH'+str(irac_ch), fontsize=14)
+
+    if all_cl_spitzer is not None and all_clerr_spitzer is not None:
+
+        posmask_A = lbmask*(all_cl_spitzer[1] > 0)
+        negmask_A = lbmask*(all_cl_spitzer[1] < 0)
+
+        posmask_B = lbmask*(all_cl_spitzer[0] > 0)
+        negmask_B = lbmask*(all_cl_spitzer[0] < 0)
+
+        plt.errorbar(lb[posmask_A], (pf*all_cl_spitzer[1])[posmask_A], yerr=(pf*all_clerr_spitzer[1])[posmask_A], capsize=capsize, markersize=markersize, capthick=capthick, alpha=alph, fmt='o', color='r', label='Bootes A')
+        plt.errorbar(lb[posmask_B], (pf*all_cl_spitzer[0])[posmask_B], yerr=(pf*all_clerr_spitzer[0])[posmask_B], capsize=capsize, markersize=markersize, capthick=capthick, alpha=alph, fmt='o', color='b', label='Bootes B')
     
-    plt.errorbar(lb, pf*spitzer_auto_cl, yerr=pf*spitzer_auto_clerr, fmt='o', color='k', label='Spitzer auto')
-    plt.plot(lb, pf*spitzer_auto_clerr, color='k', linestyle='dashed')
+        plt.errorbar(lb[negmask_A], np.abs(pf*all_cl_spitzer[1])[negmask_A], yerr=(pf*all_clerr_spitzer[1])[negmask_A], mfc='white', capsize=capsize, markersize=markersize, capthick=capthick, alpha=alph, fmt='o', color='r')
+        plt.errorbar(lb[negmask_B], np.abs(pf*all_cl_spitzer[0])[negmask_B], yerr=(pf*all_clerr_spitzer[0])[negmask_B], mfc='white', capsize=capsize, markersize=markersize, capthick=capthick, alpha=alph, fmt='o', color='b')
+    
+        # plt.plot(lb, pf*all_clerr_spitzer[1], color='r', linestyle='dashed', alpha=alph)
+        # plt.plot(lb, pf*all_clerr_spitzer[0], color='b', linestyle='dashed', alpha=alph)
+
+
+    posmask = lbmask*(spitzer_auto_cl > 0)
+    negmask = lbmask*(spitzer_auto_cl < 0)
+
+    plt.errorbar(lb[posmask], (pf*spitzer_auto_cl)[posmask], yerr=(pf*spitzer_auto_clerr)[posmask], fmt='o', capsize=capsize, markersize=markersize, capthick=capthick, color='k', label='Spitzer auto')
+    plt.errorbar(lb[negmask], np.abs(pf*spitzer_auto_cl)[negmask], yerr=(pf*spitzer_auto_clerr)[negmask], fmt='o', mfc='white', capsize=capsize, markersize=markersize, capthick=capthick, color='k')
+
+    plt.plot(lb, pf*spitzer_auto_clerr, color='k', linestyle='dashed', alpha=0.8)
     
     plt.xscale('log')
     plt.yscale('log')
+    if ylim is not None:
+        plt.ylim(ylim[0], ylim[1])
+    plt.xlim(150, 1.2e5)
     plt.xlabel('$\\ell$', fontsize=14)
-    plt.ylabel('$D_{\\ell}$', fontsize=14)
-    plt.legend()
+    plt.ylabel('$D_{\\ell}$ [nW$^2$ m$^{-4}$ sr$^{-2}$]', fontsize=14)
+    plt.legend(loc=2)
+    plt.grid(alpha=0.5)
     plt.show()
     
     if return_fig:
@@ -659,56 +687,144 @@ def plot_spitzer_auto(inst, irac_ch, lb, spitzer_auto_cl, spitzer_auto_clerr, al
 
 
 def plot_fieldav_ciber_spitzer_cross(inst, irac_ch, lb, fieldav_cl_cross, fieldav_clerr_cross, all_cl_cross, all_clerr_cross_tot, \
-                                    return_fig=True):
+                                    return_fig=True, startidx=0, endidx=-1, capsize=3, markersize=5, capthick=1.5, alph=0.5):
 
     pf = lb*(lb+1)/(2*np.pi)
 
-    f = plt.figure(figsize=(6, 5))
+    f = plt.figure(figsize=(5, 4))
 
     plt.title('CIBER TM'+str(inst)+' x IRAC CH'+str(irac_ch), fontsize=14)
-    plt.errorbar(lb, pf*all_cl_cross[1], yerr=pf*all_clerr_cross_tot[1], alpha=0.7, fmt='o', color='r', label='Bootes A')
 
-    plt.errorbar(lb, pf*all_cl_cross[0], yerr=pf*all_clerr_cross_tot[0], alpha=0.7, fmt='o', color='b', label='Bootes B')
+    lbmask = (lb >= lb[startidx])*(lb < lb[endidx])
 
-    plt.errorbar(lb, pf*fieldav_cl_cross, yerr=pf*fieldav_clerr_cross, fmt='o', color='k', label='Field average')
+    posmask_A = (all_cl_cross[1] > 0)*lbmask
+    posmask_B = (all_cl_cross[0] > 0)*lbmask
+    negmask_A = (all_cl_cross[1] < 0)*lbmask
+    negmask_B = (all_cl_cross[0] < 0)*lbmask
 
-    plt.plot(lb, pf*fieldav_clerr_cross, linestyle='dashed', color='k')
+    posmask_av = (fieldav_cl_cross > 0)*lbmask
+    negmask_av = (fieldav_cl_cross < 0)*lbmask
+
+    plt.errorbar(lb[posmask_A], (pf*all_cl_cross[1])[posmask_A], yerr=(pf*all_clerr_cross_tot[1])[posmask_A], capsize=capsize, markersize=markersize, capthick=capthick, alpha=0.7, fmt='o', color='r', label='Bootes A')
+    plt.errorbar(lb[negmask_A], np.abs(pf*all_cl_cross[1])[negmask_A], yerr=(pf*all_clerr_cross_tot[1])[negmask_A], capsize=capsize, markersize=markersize, capthick=capthick, alpha=0.7, fmt='o', mfc='white', color='r')
+
+    # plt.plot(lb[lbmask], (pf*all_clerr_cross_tot[1])[lbmask], linestyle='dashed', color='r', alpha=alph)
+
+    plt.errorbar(lb[posmask_B], (pf*all_cl_cross[0])[posmask_B], yerr=(pf*all_clerr_cross_tot[0])[posmask_B], capsize=capsize, markersize=markersize, capthick=capthick, alpha=0.7, fmt='o', color='b', label='Bootes B')
+    plt.errorbar(lb[negmask_B], np.abs(pf*all_cl_cross[0])[negmask_B], yerr=(pf*all_clerr_cross_tot[0])[negmask_B], capsize=capsize, markersize=markersize, capthick=capthick, alpha=0.7, fmt='o', mfc='white', color='b')
+    # plt.plot(lb[lbmask], (pf*all_clerr_cross_tot[0])[lbmask], linestyle='dashed', color='b', alpha=alph)
+
+    plt.errorbar(lb[posmask_av], (pf*fieldav_cl_cross)[posmask_av], yerr=(pf*fieldav_clerr_cross)[posmask_av], fmt='o', capsize=capsize, markersize=markersize, capthick=capthick, color='k', label='Field average')
+    plt.errorbar(lb[negmask_av], np.abs(pf*fieldav_cl_cross)[negmask_av], yerr=(pf*fieldav_clerr_cross)[negmask_av], mfc='white', capsize=capsize, markersize=markersize, capthick=capthick, fmt='o', color='k')
+
+    plt.plot(lb[lbmask], (pf*fieldav_clerr_cross)[lbmask], linestyle='dashed', color='k', alpha=0.8)
+
     plt.xscale('log')
     plt.yscale('log')
     plt.xlabel('$\\ell$', fontsize=14)
-    plt.ylabel('$D_{\\ell}$', fontsize=14)
-    plt.legend()
+    plt.ylabel('$D_{\\ell}$ [nW$^2$ m$^{-4}$ sr$^{-1}$]', fontsize=14)
+    plt.grid(alpha=0.5)
+    plt.legend(loc=2)
+    plt.ylim(1e-4, 1e2)
     plt.show()
 
+    if return_fig:
+        return f
+
+
+def plot_ciber_crossep_auto_with_terms(inst, irac_ch, fieldname, lb, crossep_cl, crossep_clerr, \
+                                        std_nl1ds_nAsB, std_nl1ds_nBsA, std_nl1ds_nAnB, return_fig=True, \
+                                        ylim=[5e-5, 1e2], startidx=0, endidx=-1, markersize=5, capsize=3, capthick=1.5, \
+                                        alph=0.7):
+
+    pf = lb*(lb+1)/(2*np.pi)
+    
+    f = plt.figure(figsize=(5,4))
+    
+    plt.title('Cross-epoch IRAC CH'+str(irac_ch)+', '+fieldname, fontsize=14)
+
+    lbmask = (lb >= lb[startidx])*(lb < lb[endidx])
+    posmask = (crossep_cl > 0)*lbmask
+    negmask = (crossep_cl < 0)*lbmask
+
+    plt.errorbar(lb[posmask], (pf*crossep_cl)[posmask], yerr=(pf*crossep_clerr)[posmask], fmt='o', label='0.5(A+B) x 0.5(C+D)', color='k', markersize=markersize, capsize=capsize, capthick=capthick)
+    plt.errorbar(lb[negmask], np.abs(pf*crossep_cl)[negmask], yerr=(pf*crossep_clerr)[negmask], mfc='white', fmt='o', color='k', markersize=markersize, capsize=capsize, capthick=capthick)
+    
+    plt.plot(lb[lbmask], (pf*std_nl1ds_nAsB)[lbmask], color='C0', linestyle='dashed', label='Noise AB x CD', alpha=alph)
+    plt.plot(lb[lbmask], (pf*std_nl1ds_nBsA)[lbmask], color='C1', linestyle='dashed', label='Noise CD x AB', alpha=alph)
+    plt.plot(lb[lbmask], (pf*std_nl1ds_nAnB)[lbmask], color='C2', linestyle='dashed', label='Noise AB x Noise CD', alpha=alph)
+    plt.plot(lb[lbmask], (pf*crossep_clerr)[lbmask], color='k', linestyle='dashed', label='Total uncertainty', alpha=alph)
+    
+    plt.xscale('log')
+    plt.yscale('log')
+    plt.xlabel('$\\ell$', fontsize=14)
+    plt.ylabel('$D_{\\ell}$ [nW$^2$ m$^{-4}$ sr$^{-2}$]', fontsize=14)
+    plt.legend()
+    plt.ylim(ylim[0], ylim[1])
+    plt.tick_params(labelsize=12)
+    plt.grid(alpha=0.5)
+    plt.show()
+    
     if return_fig:
         return f
 
 
 def plot_ciber_spitzer_cross_with_terms(inst, irac_ch, fieldname, lb, cl_cross, clerr_cross_tot, clerr_ciber_noise_spitzer, \
-                                       clerr_spitzer_noise_ciber, return_fig=True):
+                                       clerr_spitzer_noise_ciber, clerr_ciber_noise_spitzer_noise, return_fig=True, \
+                                       startidx=0, endidx=-1, capsize=3, markersize=5, capthick=1.5):
     
     ''' Plot cross spectra with individual cross noise terms '''
     
     pf = lb*(lb+1)/(2*np.pi)
     
-    f = plt.figure(figsize=(6,5))
+    f = plt.figure(figsize=(5,4))
     
     plt.title('CIBER TM'+str(inst)+' x IRAC CH'+str(irac_ch)+', '+fieldname, fontsize=14)
-    plt.errorbar(lb, pf*cl_cross, yerr=pf*clerr_cross_tot, fmt='o', label='CIBER x Spitzer')
+
+    lbmask = (lb >= lb[startidx])*(lb < lb[endidx])
     
-    plt.plot(lb, pf*clerr_ciber_noise_spitzer, color='C0', linestyle='dashed', label='CIBER noise x Spitzer')
-    plt.plot(lb, pf*clerr_spitzer_noise_ciber, color='C1', linestyle='dashed', label='Spitzer noise x CIBER')
-    plt.plot(lb, pf*clerr_cross_tot, color='k', linestyle='dashed', label='Total uncertainty')
+    posmask = (cl_cross > 0)*lbmask
+    negmask = (cl_cross < 0)*lbmask
+
+    plt.errorbar(lb[posmask], (pf*cl_cross)[posmask], yerr=(pf*clerr_cross_tot)[posmask], fmt='o', color='k', capsize=capsize, markersize=markersize, capthick=capthick)
+    plt.errorbar(lb[negmask], np.abs(pf*cl_cross)[negmask], yerr=(pf*clerr_cross_tot)[negmask], fmt='o', mfc='white', color='k', capsize=capsize, markersize=markersize, capthick=capthick)
+
+    # plt.errorbar(lb, pf*cl_cross, yerr=pf*clerr_cross_tot, fmt='o', label='CIBER x Spitzer')
+    
+    plt.plot(lb[lbmask], (pf*clerr_ciber_noise_spitzer)[lbmask], color='C0', linestyle='dashed', label='CIBER noise x Spitzer')
+    plt.plot(lb[lbmask], (pf*clerr_spitzer_noise_ciber)[lbmask], color='C1', linestyle='dashed', label='Spitzer noise x CIBER')
+    plt.plot(lb[lbmask], (pf*clerr_ciber_noise_spitzer_noise)[lbmask], color='C2', linestyle='dashed', label='CIBER noise x Spitzer noise')
+    plt.plot(lb[lbmask], (pf*clerr_cross_tot)[lbmask], color='k', linestyle='dashed', label='Total uncertainty')
     
     plt.xscale('log')
     plt.yscale('log')
     plt.xlabel('$\\ell$', fontsize=14)
-    plt.ylabel('$D_{\\ell}$', fontsize=14)
+    plt.ylabel('$D_{\\ell}$ [nW$^2$ m$^{-4}$ sr$^{-2}$]', fontsize=14)
     plt.legend()
+    plt.grid(alpha=0.5)
+    plt.tick_params(labelsize=12)
+    plt.ylim(1e-4, 1e2)
     plt.show()
     
     if return_fig:
         return f
+
+
+def plot_irac_beam(irac_ch, irac_lb, irac_bl, interp_bl=None):
+    fig = plt.figure()
+    plt.scatter(irac_lb, irac_bl)
+    if interp_bl is None:
+        plt.plot(irac_lb, interp_bl, color='r')
+    plt.yscale('log')
+    plt.xscale('log')
+    plt.title('IRAC CH'+str(irac_ch)+' beam')
+    plt.xlabel('$\\ell$')
+    plt.ylabel('$B_{\\ell}$')
+    plt.xlim(100, 1e5)
+    plt.ylim(1e-2, 1e0)
+    plt.show()
+    
+    return fig
 
 def plot_field_weights_ciber_bands(mock_field_cl_basepath, return_fig=True, show=True):
     

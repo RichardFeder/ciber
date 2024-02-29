@@ -231,11 +231,20 @@ def write_Mkk_fits(Mkk, inv_Mkk, ifield, inst, cross_inst=None, sim_idx=None, ge
     return hdul
 
 
-def write_regrid_spitzer_proc_file(ifield, inst, irac_ch, sdwfs_epoch_diffs=None, sdwfs_epoch_av=None, \
-                                     grad_sub=True, save=True, tailstr=None):
+def write_regrid_spitzer_proc_file(ifield, inst, irac_ch, mask_tail=None, sdwfs_epoch_diffs=None, sdwfs_epoch_av=None, sdwfs_per_epoch=None, \
+                                     grad_sub=True, save=True, tailstr=None, spitzer_basepath=None):
+    
+
     if spitzer_basepath is None and save:
         spitzer_basepath = config.ciber_basepath+'data/Spitzer/spitzer_regrid/proc/TM'+str(inst)+'/IRAC_CH'+str(irac_ch)+'/'
     
+    if mask_tail is not None:
+        spitzer_basepath += mask_tail+'/'
+
+        if not os.path.exists(spitzer_basepath):
+            print('making directory ', spitzer_basepath)
+            os.makedirs(spitzer_basepath)
+
     hdup = fits.PrimaryHDU()
     hdup.header['ifield'] = ifield
     hdup.header['inst'] = inst
@@ -246,12 +255,17 @@ def write_regrid_spitzer_proc_file(ifield, inst, irac_ch, sdwfs_epoch_diffs=None
     if sdwfs_epoch_diffs is not None:
 
         for diffidx in np.arange(2):
-            hdum = fits.HDUImage(sdwfs_epoch_diffs[diffidx], name='diff'+str(diffidx))
-            hdulist.append(hdum)
+            hdu_epoch_diffs = fits.ImageHDU(sdwfs_epoch_diffs[diffidx], name='diff'+str(diffidx))
+            hdulist.append(hdu_epoch_diffs)
+
+    if sdwfs_per_epoch is not None:
+        for epochidx in range(len(sdwfs_per_epoch)):
+            hdu_per_epoch = fits.ImageHDU(sdwfs_per_epoch[epochidx], name='epoch_'+str(epochidx))
+            hdulist.append(hdu_per_epoch)
 
     if sdwfs_epoch_av is not None:
-        hdum = fits.HDUImage(sdwfs_epoch_diffs[diffidx], name='epoch_av')
-
+        hdum = fits.ImageHDU(sdwfs_epoch_av, name='epoch_av')
+        hdulist.append(hdum)
 
     hdul = fits.HDUList(hdulist)
 
@@ -260,6 +274,8 @@ def write_regrid_spitzer_proc_file(ifield, inst, irac_ch, sdwfs_epoch_diffs=None
         if tailstr is not None:
             save_fpath += '_'+tailstr
         hdul.writeto(save_fpath+'.fits', overwrite=True)
+
+    return save_fpath
 
 
 def write_regrid_spitzer_raw_file(ifield, inst, irac_ch, spitzer_regrid_per_epoch=None, spitzer_regrid_epoch_av=None, \
