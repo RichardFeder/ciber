@@ -24,7 +24,7 @@ from powerspec_utils import *
 from ciber_mocks import *
 # from cross_spectrum import regrid_arrays_by_quadrant
 from numerical_routines import *
-from filtering_utils import calculate_plane, fit_gradient_to_map
+from filtering_utils import calculate_plane, fit_gradient_to_map, precomp_offset_gradient, offset_gradient_fit_precomp
 
 # from ps_pipeline_go import update_dicts
 # from ciber_noise_data_utils import iter_sigma_clip_mask, sigma_clip_maskonly
@@ -688,6 +688,11 @@ class CIBER_PS_pipeline():
 
 		l2d = get_l2d(self.dimx, self.dimy, self.pixsize)
 
+		if spitzer:
+			adu_to_sb = False 
+		else:
+			adu_to_sb = True
+
 		field_nfr = self.field_nfrs[ifield]
 
 		verbprint(verbose, 'Field nfr used here for ifield '+str(ifield)+', inst '+str(inst)+' is '+str(field_nfr))
@@ -772,10 +777,12 @@ class CIBER_PS_pipeline():
 			simmaps_cross = np.zeros(maplist_split_shape)	
 
 			rnmaps, snmaps = self.noise_model_realization(inst, maplist_split_shape, noise_model, fft_obj=fft_objs[0],\
-												  read_noise=read_noise, photon_noise=photon_noise, shot_sigma_sb=shot_sigma_sb, chisq=False)
+												  read_noise=read_noise, photon_noise=photon_noise, shot_sigma_sb=shot_sigma_sb, chisq=False, \
+												  adu_to_sb=adu_to_sb)
 
 			rnmaps_cross, snmaps_cross = self.noise_model_realization(cross_inst, maplist_split_shape, cross_noise_model, fft_obj=fft_objs_cross[0],\
-												  read_noise=read_noise, photon_noise=photon_noise, shot_sigma_sb=cross_shot_sigma_sb, chisq=False)	
+												  read_noise=read_noise, photon_noise=photon_noise, shot_sigma_sb=cross_shot_sigma_sb, chisq=False, \
+												  adu_to_sb=adu_to_sb)	
 
 
 			if simmap_dc is not None and simmap_dc_cross is not None:
@@ -850,7 +857,7 @@ class CIBER_PS_pipeline():
 			fft_objs[1](simmaps*sterad_per_pix)
 			fft_objs_cross[1](simmaps_cross*sterad_per_pix)
 			cl2ds = np.array([fftshift(dentry*np.conj(dentry_cross)).real for dentry, dentry_cross in zip(empty_aligned_objs[2], empty_aligned_objs_cross[2])])
-			count, mean_nl2d, M2_nl2d = update_meanvar(count, mean_nl2d, M2_nl2d, cl2ds/V/(self.cal_facs[inst]*self.cal_facs[cross_inst]))
+			count, mean_nl2d, M2_nl2d = update_meanvar(count, mean_nl2d, M2_nl2d, cl2ds/V)
 			# nl1ds = [azim_average_cl2d(nl2d/V/(self.cal_facs[inst]*self.cal_facs[cross_inst]), l2d, lbinedges=self.Mkk_obj.binl, lbins=self.Mkk_obj.midbin_ell)[1] for nl2d in cl2ds]
 			nl1ds = [azim_average_cl2d(nl2d/V, l2d, lbinedges=self.Mkk_obj.binl, lbins=self.Mkk_obj.midbin_ell)[1] for nl2d in cl2ds]
 
@@ -858,23 +865,23 @@ class CIBER_PS_pipeline():
 
 			nl2ds_noiseA_sigB = np.array([fftshift(dentry*np.conj(empty_aligned_objs_maps[2][1])).real for dentry in empty_aligned_objs[2]])
 			
-			if spitzer: # lose one factor of cal_facs since spitzer maps do not have this
-				nl1ds = [azim_average_cl2d(nl2d/V/(self.cal_facs[inst]), l2d, lbinedges=self.Mkk_obj.binl, lbins=self.Mkk_obj.midbin_ell)[1] for nl2d in nl2ds_noiseA_sigB]
-			else:
-				# nl1ds = [azim_average_cl2d(nl2d/V/(self.cal_facs[inst]*self.cal_facs[cross_inst]), l2d, lbinedges=self.Mkk_obj.binl, lbins=self.Mkk_obj.midbin_ell)[1] for nl2d in nl2ds_noiseA_sigB]
-				nl1ds = [azim_average_cl2d(nl2d/V, l2d, lbinedges=self.Mkk_obj.binl, lbins=self.Mkk_obj.midbin_ell)[1] for nl2d in nl2ds_noiseA_sigB]
+			# if spitzer: # lose one factor of cal_facs since spitzer maps do not have this
+			# 	nl1ds = [azim_average_cl2d(nl2d/V/(self.cal_facs[inst]), l2d, lbinedges=self.Mkk_obj.binl, lbins=self.Mkk_obj.midbin_ell)[1] for nl2d in nl2ds_noiseA_sigB]
+			# else:
+			# 	# nl1ds = [azim_average_cl2d(nl2d/V/(self.cal_facs[inst]*self.cal_facs[cross_inst]), l2d, lbinedges=self.Mkk_obj.binl, lbins=self.Mkk_obj.midbin_ell)[1] for nl2d in nl2ds_noiseA_sigB]
+			nl1ds = [azim_average_cl2d(nl2d/V, l2d, lbinedges=self.Mkk_obj.binl, lbins=self.Mkk_obj.midbin_ell)[1] for nl2d in nl2ds_noiseA_sigB]
 			
 			nl1ds_nAsB.extend(nl1ds)
-			count_nAsB, mean_nl2d_nAsB, M2_nl2d_nAsB = update_meanvar(count_nAsB, mean_nl2d_nAsB, M2_nl2d_nAsB, nl2ds_noiseA_sigB/V/(self.cal_facs[inst]*self.cal_facs[cross_inst]))
+			count_nAsB, mean_nl2d_nAsB, M2_nl2d_nAsB = update_meanvar(count_nAsB, mean_nl2d_nAsB, M2_nl2d_nAsB, nl2ds_noiseA_sigB/V)
 			
 			nl2ds_noiseB_sigA = np.array([fftshift(dentry_cross*np.conj(empty_aligned_objs_maps[2][0])).real for dentry_cross in empty_aligned_objs_cross[2]])
-			count_nBsA, mean_nl2d_nBsA, M2_nl2d_nBsA = update_meanvar(count_nBsA, mean_nl2d_nBsA, M2_nl2d_nBsA, nl2ds_noiseB_sigA/V/(self.cal_facs[inst]*self.cal_facs[cross_inst]))
+			count_nBsA, mean_nl2d_nBsA, M2_nl2d_nBsA = update_meanvar(count_nBsA, mean_nl2d_nBsA, M2_nl2d_nBsA, nl2ds_noiseB_sigA/V)
 			
-			if spitzer:
-				nl1ds = [azim_average_cl2d(nl2d/V/(self.cal_facs[inst]), l2d, lbinedges=self.Mkk_obj.binl, lbins=self.Mkk_obj.midbin_ell)[1] for nl2d in nl2ds_noiseB_sigA]
-			else:
-				# nl1ds = [azim_average_cl2d(nl2d/V/(self.cal_facs[inst]*self.cal_facs[cross_inst]), l2d, lbinedges=self.Mkk_obj.binl, lbins=self.Mkk_obj.midbin_ell)[1] for nl2d in nl2ds_noiseB_sigA]
-				nl1ds = [azim_average_cl2d(nl2d/V, l2d, lbinedges=self.Mkk_obj.binl, lbins=self.Mkk_obj.midbin_ell)[1] for nl2d in nl2ds_noiseB_sigA]
+			# if spitzer:
+			# 	nl1ds = [azim_average_cl2d(nl2d/V/(self.cal_facs[inst]), l2d, lbinedges=self.Mkk_obj.binl, lbins=self.Mkk_obj.midbin_ell)[1] for nl2d in nl2ds_noiseB_sigA]
+			# else:
+			# 	# nl1ds = [azim_average_cl2d(nl2d/V/(self.cal_facs[inst]*self.cal_facs[cross_inst]), l2d, lbinedges=self.Mkk_obj.binl, lbins=self.Mkk_obj.midbin_ell)[1] for nl2d in nl2ds_noiseB_sigA]
+			nl1ds = [azim_average_cl2d(nl2d/V, l2d, lbinedges=self.Mkk_obj.binl, lbins=self.Mkk_obj.midbin_ell)[1] for nl2d in nl2ds_noiseB_sigA]
 
 			nl1ds_nBsA.extend(nl1ds)
 
@@ -887,7 +894,8 @@ class CIBER_PS_pipeline():
 		plot_map(mean_nl2d_nAsB, title='nAsB')
 		plot_map(mean_nl2d_nBsA, title='nBsA')
 
-		fourier_weights = 1./var_nl2d
+		total_var_nl2d = var_nl2d + var_nl2d_nAsB + var_nl2d_nBsA
+		fourier_weights = 1./total_var_nl2d
 
 		nl1ds_nAnB = np.array(nl1ds_nAnB)
 		nl1ds_nAsB = np.array(nl1ds_nAsB)
@@ -1003,6 +1011,8 @@ class CIBER_PS_pipeline():
 			else:
 				print('field nfr = None')
 
+		if per_quadrant:
+			mask_perquad = [mask[self.x0s[q]:self.x1s[q], self.y0s[q]:self.y1s[q]] for q in range(4)]
 
 		verbprint(verbose, 'Field nfr used here for ifield '+str(ifield)+', inst '+str(inst)+' is '+str(field_nfr))
 
@@ -1022,9 +1032,9 @@ class CIBER_PS_pipeline():
 
 			# noise_model = self.load_noise_Cl2D(noise_fpath='data/fluctuation_data/TM'+str(inst)+'/noiseCl2D/field'+str(ifield)+'_noiseCl2D_110421.fits', inplace=False, transpose=transpose_noise)
 
-		if mask is None and apply_mask:
-			verbprint(verbose, 'No mask provided but apply_mask=True, using union of self.strmask and self.maskInst_clean..')
-			mask = self.strmask*self.maskInst
+		# if mask is None and apply_mask:
+		# 	verbprint(verbose, 'No mask provided but apply_mask=True, using union of self.strmask and self.maskInst_clean..')
+		# 	mask = self.strmask*self.maskInst
 
 		# compute the pixel-wise shot noise estimate given the image (which gets converted to e-/s) and the number of frames used in the integration
 		if photon_noise and shot_sigma_sb is None:
@@ -1082,7 +1092,7 @@ class CIBER_PS_pipeline():
 					# 	plot_map(snmaps2[0], title='snmaps[0]')
 
 
-				if i==0:
+				if i==0 and read_noise:
 					plot_map(rnmaps[0], title='rn maps noise bias realizations')
 
 				if cross_noise_model is not None:
@@ -1175,8 +1185,13 @@ class CIBER_PS_pipeline():
 				verbprint(True, 'Gradient filtering image in the noiiiise bias..')
 
 				for s in range(len(simmaps)):
-					theta, plane = fit_gradient_to_map(simmaps[s], mask=mask)
-					simmaps[s] -= plane
+					if per_quadrant:
+						for q in range(4):
+							theta, plane = fit_gradient_to_map(simmaps[s][self.x0s[q]:self.x1s[q], self.y0s[q]:self.y1s[q]], mask=mask_perquad[q])
+							simmaps[s][self.x0s[q]:self.x1s[q], self.y0s[q]:self.y1s[q]] -= plane
+					else:
+						theta, plane = fit_gradient_to_map(simmaps[s], mask=mask)
+						simmaps[s] -= plane
 
 				if cross_noise_model is not None:
 					for s in range(len(simmaps_cross)):
@@ -1209,7 +1224,7 @@ class CIBER_PS_pipeline():
 
 				# I need a wrapper function that does mean subtraction for full and per quadrant..
 				if per_quadrant:
-					mask_perquad = [mask[self.x0s[q]:self.x1s[q], self.y0s[q]:self.y1s[q]] for q in range(4)]
+					# mask_perquad = [mask[self.x0s[q]:self.x1s[q], self.y0s[q]:self.y1s[q]] for q in range(4)]
 					
 					for q in range(4):
 						unmasked_means_quad = [np.mean(simmap[self.x0s[q]:self.x1s[q], self.y0s[q]:self.y1s[q]][mask_perquad[q]==1]) for simmap in simmaps]
@@ -1223,7 +1238,7 @@ class CIBER_PS_pipeline():
 							if difference:
 								diff_maps[s][self.x0s[q]:self.x1s[q], self.y0s[q]:self.y1s[q]] -= mask_perquad[q]*unmasked_means_quad_diff[s]
 
-
+					plot_map(simmaps[0], title='mean subtracted noise realization')
 				else:
 					unmasked_means = [np.mean(simmap[mask==1]) for simmap in simmaps]
 					simmaps -= np.array([mask*unmasked_mean for unmasked_mean in unmasked_means])
@@ -2096,7 +2111,54 @@ class CIBER_PS_pipeline():
 					ciber_im += dgl_realization 
 
 
+	def calculate_transfer_function_quadoff_grad(self, nsims, dgl_scale_fac=5., indiv_ifield=6,\
+						 plot=False, masks=None, inv_Mkks=None,\
+						 inst=1, noise_scalefac=1., off_fac=None, \
+						 include_dgl=True, include_ihl=False, cl_pivot_fac_gen=None, power_law_idx=-3.0):
 
+		ps_set_shape = (nsims, self.n_ps_bin)
+
+		cls_orig = np.zeros(ps_set_shape)
+		cls_filt = np.zeros(ps_set_shape)
+		t_ells = np.zeros(ps_set_shape)
+
+		dot1, X = precomp_offset_gradient(self.dimx, self.dimy)   
+
+		for i in range(nsims):
+
+			if i%50==0:
+				print('i = ', i)
+			_, _, diff_realization = generate_diffuse_realization(self.dimx, self.dimy, power_law_idx=0.0, scale_fac=3e8)
+
+			if include_dgl:
+				dgl_realization = self.generate_custom_sky_clustering(inst, dgl_scale_fac=dgl_scale_fac, gen_ifield=indiv_ifield, cl_pivot_fac_gen=cl_pivot_fac_gen)
+				diff_realization += dgl_realization 
+
+			if plot and i%10==0:
+				plot_map(diff_realization, title='Mock sky realization, set '+str(i))
+
+			lb, cl_orig, clerr_orig = get_power_spec(diff_realization - np.mean(diff_realization), lbinedges=self.Mkk_obj.binl, lbins=self.Mkk_obj.midbin_ell)
+
+			theta, recov_offset_grad = offset_gradient_fit_precomp(diff_realization, dot1, X)
+
+			diff_realization -= recov_offset_grad
+			
+			lb, cl_filt, clerr_filt = get_power_spec(diff_realization, lbinedges=self.Mkk_obj.binl, lbins=self.Mkk_obj.midbin_ell)
+			
+			if inv_Mkks is not None:
+				cl_filt = np.dot(inv_Mkks[maskidx].transpose(), cl_filt)
+
+			cls_orig[i] = cl_orig
+			cls_filt[i] = cl_filt
+			t_ell_indiv = cl_filt/cl_orig 
+
+			t_ells[i] = t_ell_indiv
+
+		t_ell_av = np.median(t_ells, axis=0)
+		t_ell_stderr = np.std(t_ells, axis=0)/np.sqrt(t_ells.shape[0])
+
+
+		return lb, t_ell_av, t_ell_stderr, t_ells, cls_orig, cls_filt
 
 	def calculate_transfer_function(self, nsims, \
 						 niter_grad_ff=1, dgl_scale_fac=5., indiv_ifield=6, apply_FF=False,\
@@ -2104,7 +2166,7 @@ class CIBER_PS_pipeline():
 						 mean_normalizations=None, ifield_list=None, \
 						 masks=None, inv_Mkks=None, niter=5, inst=1, maskidx=0, ff_stack_min=2, \
 						 apply_mask_ffest=True, noise_scalefac=1., off_fac=None, \
-						 include_dgl=True, cl_pivot_fac_gen=None, power_law_idx=-3.0, \
+						 include_dgl=True, include_ihl=False, cl_pivot_fac_gen=None, power_law_idx=-3.0, \
 						 ff_bias_correct=True, smooth_sig=None, separate_quadrants=False):
 
 		''' 
@@ -2181,6 +2243,12 @@ class CIBER_PS_pipeline():
 					else:
 						sky_realiz = mock_cib_im
 
+					if include_ihl:
+						print('adding ell-2 PS')
+						scalefac = dict({1:1e4, 2:5e4})
+						ihl = self.generate_custom_sky_clustering(inst, dgl_scale_fac=scalefac[inst], power_law_idx=-2.0)
+						sky_realiz += ihl
+						
 					if smooth_sig is not None:
 						sky_realiz = gaussian_filter(sky_realiz, sigma=smooth_sig)
 
@@ -2907,7 +2975,8 @@ class CIBER_PS_pipeline():
 		gsmt_dict = dict({'same_zl_levels':False, 'same_clus_levels':True, 'apply_zl_gradient':True,\
 						  'apply_smooth_FF':False, 'with_inst_noise':True,\
 						  'with_photon_noise':True, 'load_ptsrc_cib':True, 'load_trilegal':True, \
-						 'load_noise_model':True, 'show_plots':False, 'verbose':False, 'generate_diffuse_realization':True})
+						 'load_noise_model':True, 'show_plots':False, 'verbose':False, 'generate_diffuse_realization':True, \
+						 'add_ellm2_clus':False})
 		
 		float_param_dict = dict({'ff_min':0.5, 'ff_max':1.5, 'clip_sigma':5, 'ff_stack_min':2, 'nmc_ff':10, \
 					  'theta_mag':0.01, 'niter':3, 'dgl_scale_fac':5, 'smooth_sigma':5, 'indiv_ifield':6, 'nfr_same':25})
@@ -2932,7 +3001,8 @@ class CIBER_PS_pipeline():
 				
 			else:
 				ff_truth = np.ones((self.dimx, self.dimy))
-
+		else:
+			print('ff truth is not None')
 		if noise_models is not None:
 			print('Already provided noise models to generate_synthetic_mock_test_set(), setting gsmt_dict[load_noise_model] = False')
 			gsmt_dict['load_noise_model'] = False
@@ -3036,14 +3106,15 @@ class CIBER_PS_pipeline():
 					diff_realization = self.generate_custom_sky_clustering(inst, dgl_scale_fac=float_param_dict['dgl_scale_fac'], ifield=ifield, gen_ifield=float_param_dict['indiv_ifield'])
 				diff_realizations[fieldidx] = diff_realization
 
-				print('adding ell-2 PS')
-				scalefac = dict({1:1e4, 2:5e4})
-				ihl = self.generate_custom_sky_clustering(inst, dgl_scale_fac=scalefac[inst], power_law_idx=-2.0)
+				if gsmt_dict['add_ellm2_clus']:
+					print('adding ell-2 PS..')
+					scalefac = dict({1:1e4, 2:5e4})
+					ihl = self.generate_custom_sky_clustering(inst, dgl_scale_fac=scalefac[inst], power_law_idx=-2.0)
 
-				diff_realizations[fieldidx] += ihl
+					diff_realizations[fieldidx] += ihl
 
-				if gsmt_dict['show_plots'] and fieldidx==0:
-					plot_map(diff_realization, title='diff_realization, ifield'+str(ifield))
+					if gsmt_dict['show_plots'] and fieldidx==0:
+						plot_map(diff_realization, title='diff_realization, ifield'+str(ifield))
 
 				# if not gsmt_dict['load_ptsrc_cib']:
 				# 	diff_realizations[fieldidx] += mock_cib_ims
@@ -3196,7 +3267,8 @@ def small_Nl2D_from_larger(dimx_small, dimy_small, n_ps_bin,ifield, noise_model=
 
 # def process_ciber_maps(cbps, ifield_list, inst, ciber_maps, masks, cross_maps=None, ff_stack_min=1, clip_sigma=None, nitermax=10):
 
-def process_ciber_maps(cbps, ifield_list, inst, ciber_maps, masks, cross_maps=None, ff_stack_min=1, clip_sigma=4, nitermax=10, niter=5):
+def process_ciber_maps(cbps, ifield_list, inst, ciber_maps, masks, cross_maps=None, ff_stack_min=1, clip_sigma=4, nitermax=10, niter=5, \
+						ff_weights=None):
 	
 	if clip_sigma is not None:
 
@@ -3206,7 +3278,9 @@ def process_ciber_maps(cbps, ifield_list, inst, ciber_maps, masks, cross_maps=No
 			
 	mask_fractions = np.array([float(np.sum(masks[fieldidx]))/float(cbps.dimx**2) for fieldidx in range(len(ifield_list))])
 	mean_norms = [cbps.zl_levels_ciber_fields[inst][cbps.ciber_field_dict[ifield]] for ifield in ifield_list]
-	ff_weights = cbps.compute_ff_weights(inst, mean_norms, ifield_list, photon_noise=True)
+
+	if ff_weights is None:
+		ff_weights = cbps.compute_ff_weights(inst, mean_norms, ifield_list, photon_noise=True)
 	
 	processed_ciber_maps, ff_estimates,\
 			final_planes, stack_masks,\

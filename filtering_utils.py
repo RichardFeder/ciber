@@ -98,7 +98,49 @@ def fit_gradient_to_map(image, mask=None):
     return theta, plane
 
 
+def precomp_offset_gradient(dimx, dimy, mask=None, x0s=None, x1s=None, y0s=None, y1s=None):
+    
+    if x0s is None:
+        x0s = [0, 0, 512, 512]
+        x1s = [512, 512, 1024, 1024]
+        y0s = [0, 512, 0, 512]
+        y1s = [512, 1024, 512, 1024]
 
+    X1, X2 = np.mgrid[:dimx, :dimy]
+
+    X = np.hstack(   ( np.reshape(X1, (dimx*dimy, 1)) , np.reshape(X2, (dimx*dimy, 1)) ) )
+    
+    for q in range(4):
+        mquad = np.zeros((dimx, dimy))
+        mquad[x0s[q]:x1s[q], y0s[q]:y1s[q]] = 1.
+        mquad_rav = np.expand_dims(mquad.ravel(), axis=1)
+        X = np.hstack(   ( mquad_rav , X ))
+        
+    if mask is not None:
+        mask_rav = np.reshape(mask, (dimx*dimy)).astype(bool)
+        X_cut = X[mask_rav,:]
+        dot1 = np.dot( np.linalg.pinv(np.dot(X_cut.transpose(), X_cut)), X_cut.transpose())
+        return dot1, X, mask_rav
+    
+    else:
+        dot1 = np.dot( np.linalg.pinv(np.dot(X.transpose(), X)), X.transpose())
+
+        return dot1, X
+
+def offset_gradient_fit_precomp(image, dot1, X, mask_rav=None):
+    
+    dimx, dimy = image.shape[0], image.shape[1]
+    YY = np.reshape(image, (dimx*dimy, 1)) # data vector
+
+    if mask_rav is not None:
+        YY_cut = YY[mask_rav]
+        theta = np.dot(dot1, YY_cut)
+    else:
+        theta = np.dot(dot1, YY)
+
+    plane_offsets = np.reshape(np.dot(X, theta), (dimx, dimy))
+    
+    return theta, plane_offsets
 
 
 
