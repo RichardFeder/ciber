@@ -10,7 +10,7 @@ import multiprocessing
 from multiprocessing import Pool
 import pyfftw
 import time
-from filtering_utils import fit_gradient_to_map, precomp_gradient_dat, fit_gradient_to_map_precomp
+from filtering_utils import fit_gradient_to_map, precomp_gradient_dat, fit_gradient_to_map_precomp, precomp_offset_gradient, offset_gradient_fit_precomp
 from plotting_fns import plot_map
 from numerical_routines import *
 
@@ -188,7 +188,8 @@ class Mkk_bare():
         self.binl = binl
 
     def get_mkk_sim(self, mask, nsims, show_tone_map=False, mode='auto', n_split=1, threads=1, \
-                    print_timestats=False, return_all_Mkks=False, n_fine_bins=None, sub_bins=False, store_Mkks=True, precompute_all=False):
+                    print_timestats=False, return_all_Mkks=False, n_fine_bins=None, sub_bins=False, store_Mkks=True, precompute_all=False, \
+                    input_cl_func=None, quadoff_grad=False):
         
         ''' This is the main function that computes an estimate of the mode coupling matrix Mkk from nsims generated tone maps. 
         Knox errors are also computed based on the mask/number of modes/etc. (note: should this also include a beam factor?) This implementation is more memory intensive,
@@ -245,7 +246,7 @@ class Mkk_bare():
         
         # lets precompute a few things that are used later..
         if precompute_all:
-            self.precompute_mkk_quantities(precompute_all=True, shift=True, sub_bins=sub_bins)
+            self.precompute_mkk_quantities(precompute_all=True, shift=True, sub_bins=sub_bins, input_cl_func=input_cl_func)
         
         # this is for measuring individual 2D fourier modes for some number of bins 
         if sub_bins and self.n_fine_bins > 0:
@@ -257,6 +258,12 @@ class Mkk_bare():
 
         if return_all_Mkks or store_Mkks:
             all_Mkks = np.zeros((nsims, n_total_bins, n_total_bins))
+
+
+        if quadoff_grad:
+
+            dot1, X, mask_rav = precomp_offset_gradient(self.dimx, self.dimy, mask=mask)
+
         
         for i in range(n_split):
             print('Split '+str(i+1)+' of '+str(n_split))
@@ -279,7 +286,13 @@ class Mkk_bare():
                             break
                                                 
                     self.plot_tone_map_realization(self.empty_aligned_objs[1][0].real, idx=title_idx)
-                
+
+
+                if quadoff_grad:
+                    print('subtracting quadrant offsets and gradient')
+                    recov_offset_grads = np.array([offset_gradient_fit_precomp(self.empty_aligned_objs[1][s].real, dot1, X, mask_rav)[1] for s in range(maplist_split_shape[0])])
+                    self.empty_aligned_objs[1].real -= np.array([mask*recov_offset_grads[s] for s in range(maplist_split_shape[0])])
+
                 if mode=='auto':
                     masked_Cl = self.get_ensemble_angular_autospec(nsims=nsims//n_split, sub_bins=sub_bins, apply_mask=True)
 
@@ -308,7 +321,7 @@ class Mkk_bare():
         return av_Mkk
     
     
-    def map_from_phase_realization(self, idx=0, shift=True,nsims=1, mode=None, sub_bins=False, pix_size=7.):
+    def map_from_phase_realization(self, idx=0, shift=True, nsims=1, mode=None, sub_bins=False, pix_size=7.):
 
         ''' This makes maps very quickly given some precomputed quantities. The unshifted ringmasks are used to generate
         the pure tones within each band, so then this gets multiplied by the precalculated noise and fourier transformed to real space. These
@@ -429,13 +442,19 @@ class Mkk_bare():
         return C_ell
     
     
-    def compute_ringmasks(self, sub_bins=False, verbose=False):    
+    def compute_ringmasks(self, sub_bins=False, verbose=False, input_cl_func=None):    
         if verbose:    
             print('Minimum ell_map value is '+str(np.min(self.ell_map)))
         
         self.correspond_bins = []
         
         unshifted_ringmasks, ringmasks = [], []
+
+        if input_cl_func is not None:
+
+            cl2d = input_cl_func(self.ell_map)
+        else:
+            cl2d = None
                  
         for i in range(len(self.binl)-1):
             
@@ -479,7 +498,19 @@ class Mkk_bare():
             else:
                 
                 sub_bins_list.append(len(unshifted_ringmasks))
-                unshifted_ringmasks.append(fftshift(np.array((self.ell_map >= self.binl[i])*(self.ell_map <= self.binl[i+1])).astype(float)/self.arcsec_pp_to_radian))
+
+                ell_map_mask = np.array((self.ell_map >= self.binl[i])*(self.ell_map <= self.binl[i+1]))
+                if cl2d is not None:
+                    sum_ell_map_mask = np.sum(ell_map_mask)
+
+                    ell_map_mask *= cl2d
+                    ell_map_mask /= sum_ell_map_mask
+
+                    plot_map(ell_map_mask, title='cl2d map with input spectrum')
+
+                unshifted_ringmasks.append(fftshift(ell_map_mask.astype(float)/self.arcsec_pp_to_radian))
+
+                # unshifted_ringmasks.append(fftshift(np.array((self.ell_map >= self.binl[i])*(self.ell_map <= self.binl[i+1])).astype(float)/self.arcsec_pp_to_radian))
                 ringmasks.append((fftshift(self.ell_map) >= self.binl[i])*(fftshift(self.ell_map) <= self.binl[i+1]))
  
             self.correspond_bins.append(sub_bins_list)
@@ -560,7 +591,7 @@ class Mkk_bare():
 
     def precompute_mkk_quantities(self, precompute_all=False, ell_map=False, binl=False, weights=False, ringmasks=False,\
                                 masked_weight_sums=False, masked_weights=False, midbin_delta_ells=False, shift=True, sub_bins=False, \
-                                verbose=False):
+                                input_cl_func=None, verbose=False):
         
         
         if ell_map or precompute_all:
@@ -586,7 +617,7 @@ class Mkk_bare():
             if self.ringmasks is None or sub_bins:
                 if verbose:
                     print('Computing Fourier ring masks..')
-                self.compute_ringmasks(sub_bins=sub_bins)
+                self.compute_ringmasks(sub_bins=sub_bins, input_cl_func=input_cl_func)
               
         if masked_weights or precompute_all:
             self.compute_masked_weights(sub_bins=sub_bins)
@@ -798,6 +829,134 @@ def save_mkks(filepath, all_Mkks=None, av_Mkk=None, inverse_Mkk=None, bins=None,
 
     if return_inv_Mkk:
         return inverse_Mkk
+
+
+def estimate_mkk_ffest_quadoff(cbps, nsims, masks, ifield_list=None, n_split=1, mean_normalizations=None, ff_weights=None, \
+                      verbose=False, grad_sub=False, niter=1, quadoff_grad=False):
+    
+    if ifield_list is None:
+        ifield_list = [4, 5, 6, 7, 8]
+        
+    masks = masks.astype(float)
+        
+    nfield = len(ifield_list)
+    nsims_perf = nsims//n_split
+    nstack = nsims_perf*nfield
+    
+    if mean_normalizations is None:
+        mean_normalizations = np.zeros_like(ifield_list)
+            
+    maplist_split_shape = (nstack, cbps.dimx, cbps.dimy)
+    maplist_split_shapenew = (nfield,nsims_perf, cbps.dimx, cbps.dimy)
+    
+    # empty aligned object will have nfield, nsims perfield shape. so fftsq iterates over fields and extends by nsims per field.
+
+    print('maplist split shape is ', maplist_split_shape)
+    
+    cbps.Mkk_obj.precompute_mkk_quantities(precompute_all=True)
+
+    cbps.Mkk_obj.empty_aligned_objs, cbps.Mkk_obj.fft_objs = construct_pyfftw_objs_gen(4, maplist_split_shapenew, axes=(2,3), \
+                                                                                  n_fft_obj=2, fft_idx0_list=[0, 2], fft_idx1_list=[1,3])
+
+    n_total_bins = len(cbps.Mkk_obj.unshifted_ringmasks)
+    Mkks_per_field = np.zeros((nfield, nsims, n_total_bins, n_total_bins))
+    
+    all_dot1, all_X, all_mask_rav = [], [], []
+    if quadoff_grad:
+        grad_sub=False
+        print('Precomputing quantities for quad offset + gradient..')
+        for m in range(len(masks)):
+            dot1, X, mask_rav = precomp_offset_gradient(cbps.dimx, cbps.dimy, mask=masks[m])   
+            all_dot1.append(dot1)
+            all_X.append(X)
+            all_mask_rav.append(mask_rav)
+        
+    
+    # only need to compute ff estimates for one field at a time, so nstack instead of nstack*nfield
+    perf_mapshape = (nsims_perf, cbps.dimx, cbps.dimy)
+    
+    ff_estimates = np.zeros(perf_mapshape)
+    
+    if ff_weights is None:
+        ff_weights = np.ones((nfield))
+        
+    ff_weight_ims = np.array([ff_weights[m]*mask for m, mask in enumerate(masks)])
+
+    for i in range(n_split):
+        print('Split '+str(i+1)+' of '+str(n_split))
+        
+        cbps.Mkk_obj.noise = np.random.normal(size=maplist_split_shapenew)+ 1j*np.random.normal(size=maplist_split_shapenew)
+        
+        for j in range(n_total_bins):
+            print('band ', j)
+            cbps.Mkk_obj.map_from_phase_realization(j, nsims=nstack)
+            
+            # now we have 5 x nsims/nsplit maps. add mean normalization to each and apply mask.
+            # I think I just need to get the relative mean normalizations correct.
+            # does it matter what the relative fluctuation amplitude is? 
+            
+            for k in range(nfield):
+
+                cbps.Mkk_obj.empty_aligned_objs[1][k].real += mean_normalizations[k]
+                cbps.Mkk_obj.empty_aligned_objs[1][k].real *= masks[k]
+                
+            # for each source estimate the flat field from the other four fields. 
+            for k in range(nfield):
+                if verbose:
+                    print('now computing for k = ', k)
+                notkrange = [kp for kp in range(nfield) if kp != k]
+
+                ff_weight_ims = np.array([ff_weights[kp]*masks[kp] for kp in notkrange])
+
+                sum_ff_weight_ims = np.sum(ff_weight_ims, axis=0)
+
+                for kp in notkrange:
+                    cbps.Mkk_obj.empty_aligned_objs[1][kp] *= ff_weights[kp]/mean_normalizations[kp]
+
+                if verbose:
+                    print('shaaape', np.sum(cbps.Mkk_obj.empty_aligned_objs[1][notkrange,:,:,:].real, axis=0).shape)
+
+                ff_estimates = np.sum(cbps.Mkk_obj.empty_aligned_objs[1][notkrange].real, axis=0)/sum_ff_weight_ims
+                ff_estimates[np.isnan(ff_estimates)] = 1.   
+
+                cbps.Mkk_obj.empty_aligned_objs[2][k].real = cbps.Mkk_obj.empty_aligned_objs[1][k].real/ff_estimates
+
+                if quadoff_grad:
+                    recov_offset_grads = np.array([offset_gradient_fit_precomp(cbps.Mkk_obj.empty_aligned_objs[2][k,s].real, all_dot1[k], all_X[k], all_mask_rav[k])[1] for s in range(nsims_perf)])
+                    cbps.Mkk_obj.empty_aligned_objs[2][k].real -= np.array([masks[k]*recov_offset_grads[s] for s in range(nsims_perf)])
+
+                elif grad_sub:
+                    planes = np.array([fit_gradient_to_map(cbps.Mkk_obj.empty_aligned_objs[2][k,s].real, masks[k])[1] for s in range(nsims_perf)])
+                    cbps.Mkk_obj.empty_aligned_objs[2][k].real -= np.array([masks[k]*planes[s] for s in range(nsims_perf)])
+
+                unmasked_means = np.array([np.mean(cbps.Mkk_obj.empty_aligned_objs[2][k,s].real[masks[k]==1.]) for s in range(nsims_perf)])                
+                cbps.Mkk_obj.empty_aligned_objs[2][k] -= np.array([masks[k]*unmasked_means[s] for s in range(nsims_perf)])
+                unmasked_means_sub = np.array([np.mean(cbps.Mkk_obj.empty_aligned_objs[2][k,s].real[masks[k]==1.]) for s in range(nsims_perf)])
+
+                # undo scaling of off fields to ff_estimate
+                for kp in notkrange:
+                    cbps.Mkk_obj.empty_aligned_objs[1][kp] /= ff_weights[kp]/mean_normalizations[kp]
+
+                if verbose:
+                    print('unmasked means sub:', unmasked_means_sub)
+                    print('ff scatter for field'+str(k)+':'+str(np.std([ff_estimate[masks[k]==1.] for ff_estimate in ff_estimates])))
+    
+            masked_Cl = cbps.Mkk_obj.get_ensemble_angular_autospec_ndim(nsims=nstack, apply_mask=False, obj_idx0=2, obj_idx1=3)
+            for k in range(nfield):
+                if verbose and i==0:
+                    print('masked CL field '+str(k)+':')
+                    print(np.mean(masked_Cl[k*nsims_perf:(k+1)*nsims_perf], axis=0))
+
+                Mkks_per_field[k, i*nsims_perf:(i+1)*nsims_perf, j, :] = np.array(masked_Cl)[k*nsims_perf:(k+1)*nsims_perf]
+            
+        average_Mkks_perfield = np.mean(Mkks_per_field, axis=1)
+        
+        if i==n_split-1:
+            for k in range(nfield):
+                plot_mkk_matrix(average_Mkks_perfield[k])            
+
+
+    return average_Mkks_perfield, Mkks_per_field
 
 
 def estimate_mkk_ffest_cross(cbps, nsims, masks, n_split=1, grad_sub=False, niter=1, \
@@ -1069,6 +1228,7 @@ def estimate_mkk_ffest(cbps, nsims, masks, ifield_list=None, n_split=1, mean_nor
                 cbps.Mkk_obj.empty_aligned_objs[2][k].real = cbps.Mkk_obj.empty_aligned_objs[1][k].real/ff_estimates
 
                 if grad_sub:
+
                     planes = np.array([fit_gradient_to_map(cbps.Mkk_obj.empty_aligned_objs[2][k,s].real, masks[k])[1] for s in range(nsims_perf)])
 #                     plot_map(planes[0], title='plane kp = '+str(kp))
                     cbps.Mkk_obj.empty_aligned_objs[2][k].real -= np.array([masks[k]*planes[s] for s in range(nsims_perf)])
@@ -1077,10 +1237,6 @@ def estimate_mkk_ffest(cbps, nsims, masks, ifield_list=None, n_split=1, mean_nor
                 unmasked_means = np.array([np.mean(cbps.Mkk_obj.empty_aligned_objs[2][k,s].real[masks[k]==1.]) for s in range(nsims_perf)])                
                 cbps.Mkk_obj.empty_aligned_objs[2][k] -= np.array([masks[k]*unmasked_means[s] for s in range(nsims_perf)])
                 unmasked_means_sub = np.array([np.mean(cbps.Mkk_obj.empty_aligned_objs[2][k,s].real[masks[k]==1.]) for s in range(nsims_perf)])
-                # if k==0 and i==0:
-                #     print('unmasked mean pre sub:', unmasked_means)
-                #     print('unmasked mean post subs', unmasked_means_sub)
-                #     plot_map(cbps.Mkk_obj.empty_aligned_objs[2][k,0].real, title='cbps.Mkk_obj.empty_aligned_objs[2][k,0].real post mean sub')
 
                 # undo scaling of off fields to ff_estimate
                 for kp in notkrange:

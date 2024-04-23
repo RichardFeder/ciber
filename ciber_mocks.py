@@ -721,7 +721,8 @@ class ciber_mock():
                                        simidx0=0, m_min=None, m_max=28, m_tracer_max=19.5, save=True, trilegal_base_path=None, \
                                      ciber_mock_dirpath = config.exthdpath+'ciber_mocks/', simulate_pointing_offset=False, \
                                      dx_pointing=0.5, dy_pointing=0.5, wcs_hdrs_tm1_first=None, wcs_hdrs_tm1_second=None, \
-                                     wcs_hdrs_tm2_first=None, wcs_hdrs_tm2_second=None, trilegal_path=None, save_fpath=None, tailstr=None):
+                                     wcs_hdrs_tm2_first=None, wcs_hdrs_tm2_second=None, trilegal_path=None, save_fpath=None, tailstr=None, \
+                                     trilo_tailstr='trilegal'):
         
         if m_min is not None:
             m_min_perfield = dict({4:m_min, 5: m_min, 6: m_min, 7:m_min, 8:m_min})
@@ -729,7 +730,8 @@ class ciber_mock():
             m_min_perfield = dict({4: 5.69, 5: 4.52, 6: 7.82, 7:7.20, 8:6.63}) # J band
 
         data_path= ciber_mock_dirpath+datestr
-        trilo_path = data_path+'/trilegal/'
+
+        trilo_path = data_path+'/'+trilo_tailstr+'/'
 
         if not os.path.isdir(trilo_path):
             os.makedirs(trilo_path)
@@ -792,19 +794,19 @@ class ciber_mock():
                         cat_full_dpoint[:,1] += dy_pointing
 
                 srcmap_stars_J = self.make_srcmap_temp_bank(ifield, 1, cat_full, flux_idx=4, n_fine_bin=10, nwide=17, load_precomp_tempbank=True, \
-                                                            tempbank_dirpath=config.exthdpath+'ciber_fluctuation_data/TM1/subpixel_psfs/')
+                                                            tempbank_dirpath=config.ciber_basepath+'data/fluctuation_data/TM1/subpixel_psfs/')
                 
                 if simulate_pointing_offset:
 
                     srcmap_stars_J_dpoint = self.make_srcmap_temp_bank(ifield, 1, cat_full_dpoint, flux_idx=4, n_fine_bin=10, nwide=17, load_precomp_tempbank=True, \
-                                                tempbank_dirpath=config.exthdpath+'ciber_fluctuation_data/TM1/subpixel_psfs/')
+                                                tempbank_dirpath=config.ciber_basepath+'data/fluctuation_data/TM1/subpixel_psfs/')
                     full_maps_J_dpoint.append(srcmap_stars_J_dpoint)
 
                 self.psf_temp_bank = None
                 
                 # ------------ TM2 -----------------
                 srcmap_stars_H = self.make_srcmap_temp_bank(ifield, 2, cat_full, flux_idx=5, n_fine_bin=10, nwide=17, load_precomp_tempbank=True, \
-                                                            tempbank_dirpath=config.exthdpath+'ciber_fluctuation_data/TM2/subpixel_psfs/')
+                                                            tempbank_dirpath=config.ciber_basepath+'data/fluctuation_data/TM2/subpixel_psfs/')
 
                 if simulate_pointing_offset:
 
@@ -821,7 +823,7 @@ class ciber_mock():
                         cat_full_dpoint[:,1] = newy
 
                     srcmap_stars_H_dpoint = self.make_srcmap_temp_bank(ifield, 2, cat_full_dpoint, flux_idx=4, n_fine_bin=10, nwide=17, load_precomp_tempbank=True, \
-                                                tempbank_dirpath=config.exthdpath+'ciber_fluctuation_data/TM2/subpixel_psfs/')
+                                                tempbank_dirpath=config.ciber_basepath+'data/fluctuation_data/TM2/subpixel_psfs/')
                     full_maps_H_dpoint.append(srcmap_stars_H_dpoint)
 
                 full_maps_J.append(srcmap_stars_J)

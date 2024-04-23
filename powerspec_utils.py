@@ -16,111 +16,6 @@ import healpy as hp
 from scipy import interpolate
 import os
 from plotting_fns import *
-# from mkk_parallel import *
-# from ciber_noise_data_utils import iter_sigma_clip_mask
-# from ciber_powerspec_pipeline import *
-# from ciber_powerspec_pipeline import CIBER_PS_pipeline
-
-
-# gen_data_utils.py
-# def sigma_clip_maskonly(vals, previous_mask=None, sig=5):
-# def compute_Neff(weights):
-# def generate_map_meshgrid(ra_cen, dec_cen, nside_deg, dimx, dimy):
-# def weighted_avg_and_std(values, weights):
-
-# flat_field_est.py
-# def compute_flatfield_prods(ifield_list, inst, observed_ims, joint_masks, cbps, show_plots=False, ff_stack_min=1, \
-#                            inv_var_weight=True, field_nfrs=None, ff_weights=None):
-
-# ciber_data_file_utils.py
-# def read_ciber_powerspectra(filename):
-# def load_quad_hdrs(ifield, inst, base_path='/Users/richardfeder/Downloads/ciber_flight/', quad_list=['A', 'B', 'C', 'D'], halves=True):
-# def write_Mkk_fits(Mkk, inv_Mkk, ifield, inst, cross_inst=None, sim_idx=None, generate_starmask=True, generate_galmask=True, \
-#                   use_inst_mask=True, dat_type=None, mag_lim_AB=None):
-# def load_all_ciber_quad_wcs_hdrs(inst, field, hdrdir=None):
-# def write_ff_file(ff_estimate, ifield, inst, sim_idx=None, dat_type=None, mag_lim_AB=None, ff_stack_min=None):
-# def write_regrid_proc_file(masked_proc, ifield, inst, regrid_to_inst, mask_tail=None,\
-#                            dat_type='observed', mag_lim=None, mag_lim_cross=None, obs_level=None):
-# def write_mask_file(mask, ifield, inst, cross_inst=None, sim_idx=None, generate_galmask=None, generate_starmask=None, use_inst_mask=None, \
-#                    dat_type=None, mag_lim_AB=None, with_ff_mask=None, name=None, a1=None, b1=None, c1=None, dm=None, alpha_m=None, beta_m=None):
-# def save_resid_cl_file(cl_table, names, mode='isl', return_hdul=False, save=True, cl_save_fpath=None, **kwargs):
-# def load_weighted_cl_file_cross(cl_fpath, mode='observed'):
-
-# cross_spectrum.py
-# def regrid_iris_by_quadrant(fieldname, inst=1, quad_list=['A', 'B', 'C', 'D'], \
-#                              xoff=[0,0,512,512], yoff=[0,512,0,512], astr_dir='../data/astroutputs/', \
-#                              plot=True, dimx=1024, dimy=1024):
-# def regrid_arrays_by_quadrant(map1, ifield, inst0=1, inst1=2, quad_list=['A', 'B', 'C', 'D'], \
-#                              xoff=[0,0,512,512], yoff=[0,512,0,512], astr_map0_hdrs=None, astr_map1_hdrs=None, indiv_map0_hdr=None, indiv_map1_hdr=None, astr_dir=None, \
-#                              plot=True, order=0):
-# def regrid_iris_ciber_science_fields(ifield_list=[4,5,6,7,8], inst=1, tail_name=None, plot=False, \
-#             save_fpath=config.exthdpath+'ciber_fluctuation_data/'):
-
-# def regrid_tm2_to_tm1_science_fields(ifield_list=[4,5,6,7,8], inst0=1, inst1=2, \
-#                                     inst0_maps=None, inst1_maps=None, flight_dat_base_path=config.exthdpath+'noise_model_validation_data/', \
-#                                     save_fpath=config.exthdpath+'/ciber_fluctuation_data/', \
-#                                     tail_name=None, plot=False, cal_facs=None, astr_dir=None):
-
-# def ciber_x_ciber_regrid_all_masks(cbps, inst, cross_inst, cross_union_mask_tail, mask_tail, mask_tail_cross, ifield_list=[4,5,6,7,8], astr_base_path='data/', \
-#                                   base_fluc_path = 'data/fluctuation_data/', save=True, cross_mask=None, cross_inst_only=False, plot=False, plot_quad=False):
-# def interpolate_iris_maps_hp(iris_hp, cbps, inst, ncoarse_samp, nside_upsample=None,\
-#                              ifield_list=[4, 5, 6, 7, 8], use_ciber_wcs=True, nside_deg=4, \
-#                             plot=True):
-
-def gather_fiducial_auto_ps_results(inst, nsim_mock=None, observed_run_name=None, mock_run_name=None,\
-                                    mag_lim=None, ifield_list=[4, 5, 6, 7, 8], flatidx=0, \
-                                   datestr_obs='111323', datestr_mock='112022', lmax_cov=10000, \
-                                   save_cov=True, startidx=1):
-    
-    cbps = CIBER_PS_pipeline()
-    bandstr_dict = dict({1:'J', 2:'H'})
-    maglim_default = dict({1:17.5, 2:17.0})
-    
-    bandstr = bandstr_dict[inst]
-    
-    if mag_lim is None:
-        mag_lim = maglim_default[inst]
-        
-    if observed_run_name is None:
-        observed_run_name = 'observed_'+bandstr+'lt'+str(mag_lim)+'_012524_ukdebias'
-        
-    if mock_run_name is None:
-        if mag_lim <= 15:
-            mock_mode = 'maskmkk'
-        else:
-            mock_mode = 'mkkffest'
-        mock_run_name = 'mock_'+str(bandstr)+'lt'+str(mag_lim)+'_121823_'+mock_mode+'_perquad'
-#         mock_run_name += '_ellm2clus'
-
-    
-    lb, observed_recov_ps, observed_recov_dcl_perfield, observed_field_average_cl, observed_field_average_dcl,\
-        mock_mean_input_ps, mock_all_field_averaged_cls, mock_all_field_cl_weights, \
-            all_mock_recov_ps, all_mock_signal_ps = process_observed_powerspectra(cbps, datestr_obs, ifield_list, inst, \
-                                                                                    observed_run_name, mock_run_name, nsim_mock, \
-                                                                                 flatidx=flatidx, apply_field_weights=True, \
-                                                                                 datestr_mock=datestr_mock) 
-    
-    
-    obs_dict = dict({'lb':lb, 'observed_run_name':observed_run_name, 'mag_lim':mag_lim, 'observed_recov_ps':observed_recov_ps, 'observed_recov_dcl_perfield':observed_recov_dcl_perfield, \
-                    'observed_field_average_cl':observed_field_average_cl, 'observed_field_average_dcl':observed_field_average_dcl})
-    
-    mock_dict = dict({'mock_run_name':mock_run_name, 'mock_mean_input_ps':mock_mean_input_ps, 'mock_all_field_averaged_cls':mock_all_field_averaged_cls, \
-                     'mock_all_field_cl_weights':mock_all_field_cl_weights, 'all_mock_recov_ps':all_mock_recov_ps, 'all_mock_signal_ps':all_mock_signal_ps})
-    
-    lb_mask, all_cov_indiv_full,\
-        all_resid_data_matrices,\
-            resid_joint_data_matrix = compute_mock_covariance_matrix(lb, inst, all_mock_recov_ps, mock_all_field_averaged_cls, \
-                                                                    lmax=lmax_cov, save=save_cov, mock_run_name=mock_run_name, plot=False, startidx=startidx)
-
-    cov_dict = dict({'lb_mask':lb_mask, 'all_cov_indiv_full':all_cov_indiv_full, 'all_resid_data_matrices':all_resid_data_matrices, \
-                    'resid_joint_data_matrix':resid_joint_data_matrix})
-    
-    if save_cov:
-        cl_fpath = save_weighted_mock_cl_file(lb, inst, mock_run_name, mock_mean_input_ps, mock_all_field_averaged_cls, mock_all_field_cl_weights, all_mock_recov_ps, \
-                        all_mock_signal_ps)
-        
-    
-    return obs_dict, mock_dict, cov_dict, cl_fpath
 
 
 def calc_binned_ps_vs_mag(mag_lims, ifield_list, obs_fieldav_cl, obs_fieldav_dcl, pf, observed_recov_dcl_perfield=None,\
@@ -186,6 +81,20 @@ def compute_snr(average, errors):
     snrs_per_bin = average / errors
     total_sq = np.sum(snrs_per_bin**2)
     return np.sqrt(total_sq), snrs_per_bin
+
+def compute_cl_snr(lb, cl, clerr, lb_min=None, lb_max=None):
+
+    snr_vec = cl/clerr
+    snr_mask = (cl > 0)
+    if lb_min is not None:
+        snr_mask *= (lb >= lb_min)
+    if lb_max is not None:
+        snr_mask *= (lb <= lb_max)
+
+    snr_sel = snr_vec[snr_mask]
+    tot_snr = np.sqrt(np.sum(snr_sel**2))
+
+    return snr_sel, tot_snr
 
 def compute_sqrt_cl_errors(cl, dcl):
     sqrt_cl_errors = 0.5*(dcl*cl**(-0.5))
@@ -829,7 +738,7 @@ def compute_fieldav_powerspectra(ifield_list, all_signal_ps, all_recov_ps, flati
     return mean_input_powerspectra, all_field_averaged_cls, all_field_cl_weights
 
 
-def process_mock_powerspectra(cbps, datestr, ifield_list, inst, run_name, nsim, flatidx=8, apply_field_weights=True, sim_test_fpath=None):
+def process_mock_powerspectra(cbps, datestr, ifield_list, inst, run_name, nsim, flatidx=8, apply_field_weights=True, sim_test_fpath=None, pct68=True):
     # being used as of 12/6/22
     all_signal_ps = np.zeros((nsim, len(ifield_list), cbps.n_ps_bin))
     all_recov_ps = np.zeros((nsim, len(ifield_list), cbps.n_ps_bin))
@@ -853,7 +762,7 @@ def process_mock_powerspectra(cbps, datestr, ifield_list, inst, run_name, nsim, 
     return mean_input_powerspectra, all_signal_ps, all_recov_ps, all_field_averaged_cls, all_field_cl_weights, lb
 
 def process_observed_powerspectra(cbps, datestr, ifield_list, inst, observed_run_name, mock_run_name, nsim_mock, flatidx=8, apply_field_weights=True, per_quadrant=False, \
-                                    datestr_mock=None):
+                                    datestr_mock=None, pct68=True):
     
     if datestr_mock is None:
         datestr_mock = datestr
@@ -864,7 +773,7 @@ def process_observed_powerspectra(cbps, datestr, ifield_list, inst, observed_run
     mock_mean_input_ps, all_mock_signal_ps, all_mock_recov_ps,\
             mock_all_field_averaged_cls, mock_all_field_cl_weights, lb = process_mock_powerspectra(cbps, datestr_mock, ifield_list, \
                                                                                                 inst, mock_run_name, nsim_mock, flatidx=flatidx, \
-                                                                                                sim_test_fpath=sim_test_fpath_mock)
+                                                                                                sim_test_fpath=sim_test_fpath_mock, pct68=pct68)
     cl_sumweights = np.sum(mock_all_field_cl_weights, axis=0)
     
     if per_quadrant:
@@ -926,26 +835,6 @@ def compute_sqrt_cl_errors(cl, dcl):
 	return sqrt_cl_errors
 
 
-
-# def compute_weighted_cl(all_cl, all_clerr):
-    
-#     all_cl = np.array(all_cl)
-#     all_clerr = np.array(all_clerr)
-    
-#     variance = all_clerr**2
-    
-#     weights = 1./variance
-    
-#     cl_sumweights = np.sum(weights, axis=0)
-    
-#     weighted_variance = 1./cl_sumweights
-    
-#     field_averaged_std = np.sqrt(weighted_variance)
-    
-#     field_averaged_cl = np.nansum(weights*all_cl, axis=0)/cl_sumweights
-    
-#     return field_averaged_cl, field_averaged_std
-
     
 def compute_weighted_cl(indiv_cl, field_weights):
     
@@ -956,6 +845,7 @@ def compute_weighted_cl(indiv_cl, field_weights):
         field_weights[:,n] /= np.sum(field_weights[:,n])
         field_average_cl[n] = np.average(indiv_cl[:,n], weights=field_weights[:,n])
         neff_indiv = compute_Neff(field_weights[:,n])
+
         
         psvar_indivbin = np.sum(field_weights[:,n]*(indiv_cl[:,n] - field_average_cl[n])**2)*neff_indiv/(neff_indiv-1.)
         field_average_dcl[n] = np.sqrt(psvar_indivbin/neff_indiv)

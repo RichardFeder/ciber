@@ -263,7 +263,8 @@ def generate_ptsrc_map_for_ffnoise(inst, mag_min, mag_max, ifield_list=[4, 5, 6,
 	return all_maps
 
 
-def iterative_gradient_ff_solve(orig_images, niter=3, masks=None, weights_ff=None, plot=False, ff_stack_min=1, masks_ffest=None):
+def iterative_gradient_ff_solve(orig_images, niter=3, masks=None, weights_ff=None, plot=False, ff_stack_min=1, masks_ffest=None, \
+								quadoff_grad=False):
 	
 	'''
 	This function takes a set of images and masks and estimates both the gradients of the maps and a set of stacked flat field estimates. 
@@ -287,7 +288,11 @@ def iterative_gradient_ff_solve(orig_images, niter=3, masks=None, weights_ff=Non
 	# maps at end of each iteration
 	images = np.array(list(orig_images.copy()))
 	nfields = len(images)
-	all_coeffs = np.zeros((niter, nfields, 3))    
+	if quadoff_grad:
+		ncoeff = 6
+	else:
+		ncoeff = 3
+	all_coeffs = np.zeros((niter, nfields, ncoeff))    
 
 	final_planes = np.zeros_like(images)
 
@@ -299,38 +304,28 @@ def iterative_gradient_ff_solve(orig_images, niter=3, masks=None, weights_ff=Non
 		
 		stack_masks = np.zeros_like(images)
 		masks, stack_masks = stack_masks_ffest(masks, ff_stack_min)
-
-		# if masks_ffest is not None:
-		# 	masks_ffest, stack_masks = stack_masks_ffest(masks_ffest, ff_stack_min)
-		# 	# masked_images = np.array([np.ma.array(images[i], mask=(stack_masks[i]==0)) for i in range(len(images))])
-		# else:
-		
-		# masks, stack_masks = stack_masks_ffest(masks, ff_stack_min)
-			# masked_images = np.array([np.ma.array(images[i], mask=(masks[i]==0)) for i in range(len(images))])
-
-
-		# for imidx, image in enumerate(images):
-			# sum_mask = np.sum(masks[(np.arange(len(masks))!=imidx),:], axis=0)
-			# stack_masks[imidx] = (sum_mask >= ff_stack_min)
-			# mfrac = float(np.sum(masks[imidx]))/float(masks[imidx].shape[0]**2)
-
-			# add_maskfrac_stack.append(mfrac)
-			# masks[imidx] *= stack_masks[imidx]
-
-			# mfrac = float(np.sum(masks[imidx]))/float(masks[imidx].shape[0]**2)
-			# add_maskfrac_stack[imidx] -= mfrac
-		# masked_images = np.array([np.ma.array(images[i], mask=(masks[i]==0)) for i in range(len(images))])
-		
-	# print('add maskfrac stack is ', add_maskfrac_stack)
-	# if means is None:
-	#     if masks is not None:
-	#         means = [np.ma.mean(im) for im in masked_images]
-	#     else:
-	#         means = [np.mean(im) for im in images]
-
-	#     print('Means are ', means)
 				
 	ff_estimates = np.zeros_like(images)
+
+
+	if quadoff_grad:
+
+		dimx, dimy = images[0].shape[0], images[0].shape[1]
+
+		all_dot1, all_X = [], []
+
+		if masks is not None:
+			all_mask_rav = []
+
+		for maskidx in range(len(images)):
+			if masks is None:
+				dot1, X = precomp_offset_gradient(dimx, dimy)
+			else:
+				dot1, X, mask_rav = precomp_offset_gradient(dimx, dimy, mask=masks[maskidx])
+
+				all_mask_rav.append(mask_rav)
+			all_dot1.append(dot1)
+			all_X.append(X)
 
 	for n in range(niter):
 		# print('n = ', n)
@@ -360,12 +355,25 @@ def iterative_gradient_ff_solve(orig_images, niter=3, masks=None, weights_ff=Non
 
 			# if masks_ffest is not None:
 				# theta, plane = fit_gradient_to_map(running_images[imidx], mask=masks_ffest[imidx])
-			if masks is not None:
-				theta, plane = fit_gradient_to_map(running_images[imidx], mask=masks[imidx])
-			else:
-				theta, plane = fit_gradient_to_map(running_images[imidx])
 
-			running_images[imidx] -= (plane-np.mean(plane))
+
+			if quadoff_grad:
+				if masks is not None:
+					theta, plane_offsets = offset_gradient_fit_precomp(running_images[imidx], all_dot1[imidx], all_X[imidx], mask_rav=all_mask_rav[imidx])
+				else:
+					theta, plane_offsets = offset_gradient_fit_precomp(running_images[imidx], all_dot1[imidx], all_X[imidx], mask_rav=None)
+			
+				# average dc level from four offsets, or just isolate the plane component
+				running_images[imidx] -= (plane_offsets-np.mean(plane_offsets))
+
+			else:
+
+				if masks is not None:
+					theta, plane = fit_gradient_to_map(running_images[imidx], mask=masks[imidx])
+				else:
+					theta, plane = fit_gradient_to_map(running_images[imidx])
+
+				running_images[imidx] -= (plane-np.mean(plane))
 			
 			all_coeffs[n, imidx] = theta[:,0]
 
@@ -376,7 +384,10 @@ def iterative_gradient_ff_solve(orig_images, niter=3, masks=None, weights_ff=Non
 			if n<niter-1:
 				running_images[imidx] *= ff_estimate
 			else:
-				final_planes[imidx] = plane
+				if quadoff_grad:
+					final_planes[imidx] = plane_offsets
+				else:
+					final_planes[imidx] = plane
 		
 		images = running_images.copy()
 
@@ -953,12 +964,12 @@ class CIBER_PS_pipeline():
 
 
 
-	def estimate_noise_power_spectrum(self, inst=None, ifield=None, field_nfr=None,  mask=None, apply_mask=True, noise_model=None, noise_model_fpath=None, verbose=False, inplace=True, \
+	def estimate_noise_power_spectrum(self, inst=None, ifield=None, field_nfr=None, mask=None, apply_mask=True, noise_model=None, noise_model_fpath=None, verbose=False, inplace=True, \
 								 nsims = 50, n_split=5, simmap_dc = None, show=False, read_noise=True, photon_noise=True, shot_sigma_sb=None,  image=None,\
 								  ff_estimate=None, transpose_noise=False, ff_truth=None, mc_ff_estimates = None, gradient_filter=False, \
 								  cross_inst=None, cross_noise_model_fpath=None, cross_noise_model=None, cross_shot_sigma_sb=None, \
 								  chisq=False, skew_upsamp=None, compute_1d_cl=False, per_quadrant=False, difference=False, fw_diff=None, \
-								  point_src_comp=None):
+								  point_src_comp=None, quadoff_grad=False, mc_ff_ptsrc_estimates=None):
 
 		''' 
 		This function generates realizations of the CIBER read + photon noise model and applies the relevant observational effects that are needed to 
@@ -1011,9 +1022,10 @@ class CIBER_PS_pipeline():
 			else:
 				print('field nfr = None')
 
-		if per_quadrant:
+		if per_quadrant and mask is not None:
 			mask_perquad = [mask[self.x0s[q]:self.x1s[q], self.y0s[q]:self.y1s[q]] for q in range(4)]
-
+		else:
+			mask_perquad = [None for x in range(4)]
 		verbprint(verbose, 'Field nfr used here for ifield '+str(ifield)+', inst '+str(inst)+' is '+str(field_nfr))
 
 		# if noise_model is None and read_noise:
@@ -1063,7 +1075,13 @@ class CIBER_PS_pipeline():
 			read_count = 0
 			mean_nl2d_diff, M2_nl2d_diff = [np.zeros(self.map_shape) for x in range(2)]
 
-		if gradient_filter:
+		if quadoff_grad:
+			if apply_mask:
+				dot1, X, mask_rav = precomp_offset_gradient(self.dimx, self.dimy, mask=mask)
+			else:
+				dot1, X = precomp_offset_gradient(self.dimx, self.dimy)
+
+		elif gradient_filter:
 			if apply_mask:
 				dotgrad, Xgrad, mask_rav = precomp_gradient_dat(self.dimx, self.dimy, mask=mask) # precomputed quantities for faster gradient subtraction
 			else:
@@ -1121,7 +1139,6 @@ class CIBER_PS_pipeline():
 						simmaps[s] += simmap_dc
 
 
-
 			if photon_noise:
 				print('adding photon noise')
 				simmaps += snmaps 
@@ -1153,38 +1170,100 @@ class CIBER_PS_pipeline():
 
 				if i==0:
 					plot_map(simmaps[0], title='sim map before ff error')
+					simmap_orig = simmaps[0].copy()
 
 				simmaps /= mc_ff_estimates[i%nmc]
 
 				if i==0:
 					plot_map(mc_ff_estimates[i%nmc], title='FF errors')
 
-					plot_map(simmaps[0], title='sim map / ff error')
+					plot_map(simmaps[0]-simmap_orig, title='sim map / ff error')
+
+					simdiff = simmaps[0]-simmap_orig
+
+					simdiff[simdiff != 0] -= np.mean(simdiff[simdiff != 0])
+					lb, cl, clerr = get_power_spec(simdiff, lbinedges=self.Mkk_obj.binl, lbins=self.Mkk_obj.midbin_ell)
+
+					plt.figure(figsize=(6,5))
+					plt.title('Mean sky brightness / instrument FF errors')
+					plt.plot(lb, lb**2*cl/(2*np.pi))
+					plt.xscale('log')
+					plt.yscale('log')
+					plt.xlabel('$\\ell$')
+					plt.ylabel('$D_{\\ell}$')
+					plt.show()
 
 				if point_src_comp is not None:
 					print('adding point source x FF error noise component..')
 					point_src_comp_ff = (point_src_comp /mc_ff_estimates[i%nmc])-point_src_comp
+
+
+					lb, cl, clerr = get_power_spec(point_src_comp_ff-np.mean(point_src_comp_ff), lbinedges=self.Mkk_obj.binl, lbins=self.Mkk_obj.midbin_ell)
+
+					plt.figure(figsize=(6,5))
+					plt.title('Point sources / instrument FF errors')
+					plt.plot(lb, lb**2*cl/(2*np.pi))
+					plt.xscale('log')
+					plt.yscale('log')
+					plt.xlabel('$\\ell$')
+					plt.ylabel('$D_{\\ell}$')
+					plt.show()
 
 					if i==0:
 						plot_map(point_src_comp_ff, title='FF errors x point source')
 
 					simmaps += point_src_comp_ff
 
-			elif ff_estimate is not None:
+			if mc_ff_ptsrc_estimates is not None:
+
+				nmc_ptsrc = len(mc_ff_ptsrc_estimates)
+
+				total_noise = snmaps + rnmaps
+				total_noise_ff = (total_noise/mc_ff_ptsrc_estimates[i%nmc_ptsrc])-total_noise
 
 				if i==0:
-					print('std on simmaps before ff estimate is ', np.std(simmaps))
-					print('mean, std on ff_estimate are ', np.mean(ff_estimate), np.std(ff_estimate))
-				simmaps /= ff_estimate
+					simdiff = total_noise_ff[0].copy()
 
-				if i==0:
-					print('std on simmaps after ff estimate is ', np.std(simmaps))
+					simdiff[simdiff != 0] -= np.mean(simdiff[simdiff != 0])
+					plot_map(simdiff, title='pt src ff errors x instrument noise')
+					lb, cl, clerr = get_power_spec(simdiff, lbinedges=self.Mkk_obj.binl, lbins=self.Mkk_obj.midbin_ell)
+
+					plt.figure(figsize=(6,5))
+					plt.title('Point source FF errors / instrument noise')
+					plt.plot(lb, lb**2*cl/(2*np.pi))
+					plt.xscale('log')
+					plt.yscale('log')
+					plt.xlabel('$\\ell$')
+					plt.ylabel('$D_{\\ell}$')
+					plt.show()
+				print('Adding to simmaps')
+				simmaps += total_noise_ff
+
+			# elif ff_estimate is not None:
+
+			# 	if i==0:
+			# 		print('std on simmaps before ff estimate is ', np.std(simmaps))
+			# 		print('mean, std on ff_estimate are ', np.mean(ff_estimate), np.std(ff_estimate))
+			# 	simmaps /= ff_estimate
+
+			# 	if i==0:
+			# 		print('std on simmaps after ff estimate is ', np.std(simmaps))
 
 
 			if gradient_filter:
 				verbprint(True, 'Gradient filtering image in the noiiiise bias..')
 
 				for s in range(len(simmaps)):
+
+					if quadoff_grad:
+
+						if mask is not None:
+							theta, plane_offsets = offset_gradient_fit_precomp(simmaps[s], dot1, X, mask_rav=mask_rav)
+						else:
+							theta, plane_offsets = offset_gradient_fit_precomp(simmaps[s], dot1, X, mask_rav=None)
+					
+						simmaps[s] -= plane_offsets
+
 					if per_quadrant:
 						for q in range(4):
 							theta, plane = fit_gradient_to_map(simmaps[s][self.x0s[q]:self.x1s[q], self.y0s[q]:self.y1s[q]], mask=mask_perquad[q])
@@ -1257,8 +1336,9 @@ class CIBER_PS_pipeline():
 			else:
 				simmaps -= np.array([np.full(self.map_shape, np.mean(simmap)) for simmap in simmaps])
 
-				diff_maps = rnmaps - rnmaps2
-				print('diff_maps have means : ', [np.mean(diff_map) for diff_map in diff_maps])
+				if difference:
+					diff_maps = rnmaps - rnmaps2
+					print('diff_maps have means : ', [np.mean(diff_map) for diff_map in diff_maps])
 
 			fft_objs[1](simmaps*sterad_per_pix)
 
@@ -1487,14 +1567,15 @@ class CIBER_PS_pipeline():
 
 		return all_ff_ests_nofluc
 
-	def collect_ff_realiz_estimates(self, fieldidx, run_name, fpath_dict, pscb_dict, config_dict, float_param_dict, datestr='112022', ff_min=None, ff_max=None):
+	def collect_ff_realiz_estimates(self, fieldidx, run_name, fpath_dict, pscb_dict, config_dict, float_param_dict, datestr='112022', ff_min=None, ff_max=None, \
+									ff_type='estimate'):
 		all_ff_ests_nofluc = np.zeros((float_param_dict['nmc_ff'], self.dimx, self.dimy))
 		all_ff_ests_nofluc_cross = None 
 
 		if config_dict['ps_type'] != 'cross' and pscb_dict['iterate_grad_ff']:
 
 			for ffidx in range(float_param_dict['nmc_ff']):
-				ff_file = np.load(fpath_dict['ff_est_dirpath']+'/'+run_name+'/ff_realization_estimate_ffidx'+str(ffidx)+'.npz')
+				ff_file = np.load(fpath_dict['ff_est_dirpath']+'/'+run_name+'/ff_realization_'+ff_type+'_ffidx'+str(ffidx)+'.npz')
 				ff_est = ff_file['ff_realization_estimates'][fieldidx]
 
 				if ff_min is not None and ff_max is not None:
@@ -3031,7 +3112,7 @@ class CIBER_PS_pipeline():
 			for fieldidx, ifield in enumerate(ifield_list):
 				_, ps, mock_cib_im = generate_diffuse_realization(self.dimx, self.dimy, power_law_idx=0.0, scale_fac=3e8)
 				lb, cl_mock, clerr_mock = get_power_spec(mock_cib_im - np.mean(mock_cib_im), lbinedges=self.Mkk_obj.binl, lbins=self.Mkk_obj.midbin_ell)
-				print('cl mock is ', cl_mock)
+				# print('cl mock is ', cl_mock)
 				mock_cib_ims.append(mock_cib_im)
 
 
@@ -3268,7 +3349,7 @@ def small_Nl2D_from_larger(dimx_small, dimy_small, n_ps_bin,ifield, noise_model=
 # def process_ciber_maps(cbps, ifield_list, inst, ciber_maps, masks, cross_maps=None, ff_stack_min=1, clip_sigma=None, nitermax=10):
 
 def process_ciber_maps(cbps, ifield_list, inst, ciber_maps, masks, cross_maps=None, ff_stack_min=1, clip_sigma=4, nitermax=10, niter=5, \
-						ff_weights=None):
+						ff_weights=None, quadoff_grad=False):
 	
 	if clip_sigma is not None:
 
@@ -3285,7 +3366,8 @@ def process_ciber_maps(cbps, ifield_list, inst, ciber_maps, masks, cross_maps=No
 	processed_ciber_maps, ff_estimates,\
 			final_planes, stack_masks,\
 				all_coeffs = iterative_gradient_ff_solve(ciber_maps, niter=niter, masks=masks, \
-														weights_ff=ff_weights, ff_stack_min=ff_stack_min)
+														weights_ff=ff_weights, ff_stack_min=ff_stack_min, \
+														quadoff_grad=quadoff_grad)
 
 	
 	return processed_ciber_maps, ff_estimates, final_planes, stack_masks, ff_weights
