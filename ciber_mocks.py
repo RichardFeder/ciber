@@ -154,6 +154,46 @@ def generate_diffuse_realization(N, M, power_law_idx=-3.0, scale_fac=1., B_ell_2
 
     return ell_map, ps, diffuse_realiz
 
+
+def generate_subthresh_ptsrc_maps(nsim, inst, m_min=17.5, m_max=23, save=True, nsim0=0, \
+                                     ifield_list = [4, 5, 6, 7, 8], m_tracer_max = 18.0):
+    
+    ''' Make mocks specifically for estimating the additional bias from pointing offset in half exposure differences '''
+
+
+    band = inst - 1
+    datestr = '111323'
+
+    config_dict, pscb_dict, float_param_dict, fpath_dict = return_default_cbps_dicts()
+    ciber_mock_fpath = config.ciber_basepath+'data/ciber_mocks/'
+
+    fpath_dict, list_of_dirpaths, base_path, trilegal_base_path = set_up_filepaths_cbps(fpath_dict, inst, 'ciber_lam_obs', datestr,\
+                                                                                        datestr_trilegal=datestr, data_type='observed', \
+                                                                                       save_fpaths=True)
+
+    cbps = CIBER_PS_pipeline()
+    cmock = ciber_mock()
+
+    for cib_setidx in np.arange(nsim0, nsim):
+        print('CIB set idx = ', cib_setidx)
+        ncatalog = 5
+
+        srcmaps, cats = cmock.make_mock_ciber_map(m_min, m_max, ifield_list=ifield_list, \
+                                                        band=band, load_cl_limber_file=True, plot=False, \
+                                                        ncatalog=ncatalog, temp_bank=True, \
+                                                        simulate_pointing_offset=False, \
+                                                        m_tracer_max=m_tracer_max, use_ciber_lam_eff=True, \
+                                                        mode=None)
+        
+        data_path = test_set_fpath = fpath_dict['ciber_mock_fpath']+datestr+'/TM'+str(inst)+'/cib_dffs/'
+
+        tail_name = 'cib_dffs_default_5field_set'+str(cib_setidx)+'_'+datestr+'_TM'+str(inst)
+
+        print(data_path+tail_name)
+        print(os.path.isdir(data_path))
+
+        save_mock_to_fits(srcmaps, cats, tail_name, data_path=data_path, m_tracer_max=m_tracer_max, m_min=m_min, m_max=m_max,\
+                          ifield_list=ifield_list, map_names=['cib_'+cbps.inst_to_band[inst], 'dummy'])
     
 def generate_psf_template_bank(beta, rc, norm, n_fine_bin=10, nwide=17, pix_to_arcsec=7.):
     
@@ -184,6 +224,104 @@ def generate_psf_template_bank(beta, rc, norm, n_fine_bin=10, nwide=17, pix_to_a
             
     return downsampled_psf_posts, dists
 
+def compute_extended_psf_mocks(inst, ifield_list, masking_maglim, datestr, convert_Vega_to_AB=True, \
+                              simidx0=0, nsims=100, fpath_dict=None, tailstr='with_dpoint', simstr=None, \
+                              sigma_xy=None):
+    
+    trilegal_base_path = fpath_dict['trilegal_base_path']
+    cib_realiz_path = fpath_dict['cib_realiz_path']
+    bls_fpath = fpath_dict['bls_base_path']+'/bl_est_postage_stamps_TM'+str(inst)+'_081121.npz'
+    tempbank_dirpath = fpath_dict['subpixel_psfs_path']+'/'
+    mask_base_path = fpath_dict['mask_base_path']
+    mkk_base_path = fpath_dict['mkk_base_path']
+
+    cbps = CIBER_PS_pipeline()
+    cmock = ciber_mock()
+    
+    trilegal_band_dict = dict({1:'j_m', 2:'h_m'})
+    trilegal_fnu_dict = dict({1:'j_nuInu', 2:'h_nuInu'})
+    bandstr, Iarr_str = trilegal_band_dict[inst], trilegal_fnu_dict[inst]
+    print('bandstr, Iarr_str = ', bandstr, Iarr_str)
+    
+    cib_bandstr = 'm_app'
+    
+    if convert_Vega_to_AB:
+        mag_limit_match = masking_maglim + cmock.Vega_to_AB[inst]
+    else:
+        mag_limit_match = masking_maglim
+
+    
+    B_ells = np.load(bls_fpath)['B_ells_post']
+    
+    src_map_cls = np.zeros((len(ifield_list), nsims, cbps.n_ps_bin))
+    
+    mask_tail = 'maglim_'+str(masking_maglim)+'_Vega_test'
+
+    for setidx in np.arange(simidx0, nsims):
+        
+        print('On set ', setidx, 'of ', nsims)
+        trilegal_path = trilegal_base_path+'/mock_trilegal_simidx'+str(setidx)+'_'+datestr+'.fits'
+        mock_trilegal = fits.open(trilegal_path)
+        
+        mock_gal = fits.open(cib_realiz_path+'/cib_with_tracer_'+simstr+'_5field_set'+str(setidx)+'_'+datestr+'_TM'+str(inst)+'.fits')
+        
+        for fieldidx, ifield in enumerate(ifield_list):
+            
+            mask_fpath = mask_base_path+'/'+mask_tail+'/joint_mask_ifield'+str(ifield)+'_inst'+str(inst)+'_simidx'+str(setidx)+'_'+mask_tail+'.fits'
+            mask = fits.open(mask_fpath)['joint_mask_'+str(ifield)].data
+        
+            inv_Mkk = fits.open(mkk_base_path+'/'+mask_tail+'/mkk_maskonly_estimate_ifield'+str(ifield)+'_inst'+str(inst)+'_simidx'+str(setidx)+'_'+mask_tail+'.fits')['inv_Mkk_'+str(ifield)].data
+
+            mock_trilegal_cat = mock_trilegal['tracer_cat_'+str(ifield)].data
+            
+            if sigma_xy is not None:
+                mock_trilegal_cat['x'] += np.random.normal(0, sigma_xy, len(mock_trilegal_cat['x']))
+                mock_trilegal_cat['y'] += np.random.normal(0, sigma_xy, len(mock_trilegal_cat['y']))
+            
+            full_tracer_cat_star = np.array([mock_trilegal_cat['x'], mock_trilegal_cat['y'], mock_trilegal_cat[bandstr], mock_trilegal_cat[Iarr_str]])
+
+            mock_gal_cat = mock_gal['tracer_cat_'+str(ifield)].data
+            I_arr_full = cmock.mag_2_nu_Inu(mock_gal_cat[cib_bandstr], inst-1)
+            
+            if sigma_xy is not None:
+                mock_gal_cat['x'] += np.random.normal(0, sigma_xy, len(mock_gal_cat['x']))
+                mock_gal_cat['y'] += np.random.normal(0, sigma_xy, len(mock_gal_cat['y']))
+            
+            full_tracer_cat_gal = np.array([mock_gal_cat['x'], mock_gal_cat['y'], mock_gal_cat[cib_bandstr], I_arr_full])
+
+            
+            bright_cut_star = np.where(full_tracer_cat_star[2,:] < mag_limit_match)[0]
+            bright_cut_gal = np.where(full_tracer_cat_gal[2,:] < mag_limit_match)[0]
+            
+            cut_cat_star = full_tracer_cat_star[:, bright_cut_star].transpose()
+            cut_cat_gal = full_tracer_cat_gal[:, bright_cut_gal].transpose()
+            
+            bright_star_map = cmock.make_srcmap_temp_bank(ifield, inst, cut_cat_star, flux_idx=-1, load_precomp_tempbank=True, \
+                                                        tempbank_dirpath=tempbank_dirpath)
+            
+            bright_gal_map = cmock.make_srcmap_temp_bank(ifield, inst, cut_cat_gal, flux_idx=-1, load_precomp_tempbank=False, \
+                                            tempbank_dirpath=tempbank_dirpath)
+            
+            bright_src_map = bright_star_map + bright_gal_map
+            
+            masked_bright_src_map = mask*bright_src_map
+            
+            masked_bright_src_map[masked_bright_src_map != 0] -= np.mean(masked_bright_src_map[masked_bright_src_map != 0])
+            
+            if setidx==0:
+                plot_map(masked_bright_src_map, title='field '+str(ifield))
+                
+            lb, cl_outskirts_masked, clerr_outskirts_masked = get_power_spec(masked_bright_src_map, lbinedges=cbps.Mkk_obj.binl, lbins=cbps.Mkk_obj.midbin_ell)
+
+            cl_proc = np.dot(inv_Mkk.transpose(), cl_outskirts_masked)
+            
+            cl_proc /= B_ells[fieldidx]**2
+            
+            src_map_cls[fieldidx, setidx] = cl_proc
+            
+            
+    return lb, src_map_cls
+
 def make_synthetic_trilegal_cat(trilegal_path, J_band_idx=16, H_band_idx=17, imdim=1024.):
     ''' 
     Generate synthetic catalog realization from TRILEGAL catalog. All this function does is draw uniformly random positions and 
@@ -195,6 +333,30 @@ def make_synthetic_trilegal_cat(trilegal_path, J_band_idx=16, H_band_idx=17, imd
     synthetic_cat = np.array([synthetic_cat[:,0], synthetic_cat[:,1], trilegal[:,J_band_idx], trilegal[:,H_band_idx]]).transpose()
     print('synthetic cat has shape ', synthetic_cat.shape)
     return synthetic_cat
+
+def make_offset_grad_image(offset_range=10, zl_level=500, dimx=1024, dimy=1024, theta_mag=0.01):
+    
+    cbps = CIBER_PS_pipeline()
+    
+    image = np.zeros((dimx, dimy))
+    
+    offsets = []
+    for q in range(4):
+        
+        offset = np.random.uniform(-offset_range, offset_range)
+        
+        offsets.append(offset)
+        
+        image[cbps.x0s[q]:cbps.x1s[q], cbps.y0s[q]:cbps.y1s[q]] += offset
+        
+    # add gradient
+    zl_realiz = generate_zl_realization(zl_level, True, theta_mag=theta_mag, dimx=dimx, dimy=dimy)[0]
+
+    image += zl_realiz
+    
+    plot_map(image)
+    
+    return image, offsets
 
 def filter_trilegal_cat(trilegal_cat, m_min=4, m_max=17, filter_band_idx=16):
     

@@ -10,7 +10,7 @@ from astropy.coordinates import SkyCoord
 from astropy.coordinates import match_coordinates_sky
 import pandas as pd
 from scipy.ndimage import gaussian_filter
-
+import config
 
 
 def catalog_df_add_xy(field, df, datadir='/Users/luminatech/Documents/ciber2/ciber/data/', imcut=True):
@@ -553,8 +553,10 @@ def read_in_sdwfs_cat(cbps, catalog_basepath='data/Spitzer/sdwfs_catalogs/', cat
 
     sdwfs_ch1_magauto_err = sdwfs_cat[:,22]
     sdwfs_ch2_magauto_err = sdwfs_cat[:,23]
+
+    sdwfs_flag = sdwfs_cat[:,26]
     
-    remerge_cat = np.array([sdwfs_ra, sdwfs_dec, sdwfs_ch1_magauto, sdwfs_ch2_magauto, sdwfs_ch1_magauto_err, sdwfs_ch2_magauto_err])
+    remerge_cat = np.array([sdwfs_ra, sdwfs_dec, sdwfs_ch1_magauto, sdwfs_ch2_magauto, sdwfs_ch1_magauto_err, sdwfs_ch2_magauto_err, sdwfs_flag])
     
     print('remerge cat has shape', remerge_cat.shape)
     
@@ -566,7 +568,7 @@ def read_in_sdwfs_cat(cbps, catalog_basepath='data/Spitzer/sdwfs_catalogs/', cat
         
         print('ciber fov cat has shape', ciber_fov_cat.shape)
         
-        sdwfs_ciber_df = pd.DataFrame(ciber_fov_cat.transpose(), columns=['ra', 'dec', 'CH1_mag_auto', 'CH2_mag_auto', 'CH1_mag_auto_err', 'CH2_mag_auto_err'])
+        sdwfs_ciber_df = pd.DataFrame(ciber_fov_cat.transpose(), columns=['ra', 'dec', 'CH1_mag_auto', 'CH2_mag_auto', 'CH1_mag_auto_err', 'CH2_mag_auto_err', 'sdwfs_flag'])
         
         print(sdwfs_ciber_df)
         sdwfs_ciber_filt = catalog_df_add_xy(cbps.ciber_field_dict[bootes_ifield], sdwfs_ciber_df, datadir=config.ciber_basepath+'data/')
@@ -580,6 +582,61 @@ def read_in_sdwfs_cat(cbps, catalog_basepath='data/Spitzer/sdwfs_catalogs/', cat
         plt.show()
         print('saving to ', catalog_basepath+'sdwfs_wxy_CIBER_ifield'+str(bootes_ifield)+'.csv')
         sdwfs_ciber_filt.to_csv(catalog_basepath+'sdwfs_wxy_CIBER_ifield'+str(bootes_ifield)+'.csv')
+
+
+def map_sdwfs_radec_to_mosaic_xy(irac_ch, ifield, catalog_basepath=None, epochidx=0, sdwfs_basepath=None, radius=0.5, \
+                                version=3):
+    
+    if catalog_basepath is None:
+        catalog_basepath = config.ciber_basepath+'data/catalogs/'
+    catalog_fpath_pred = catalog_basepath + '/sdwfs/SDWFS_ch1_stack.v34.txt' # this has all four bands, just selected on 3.6 um
+    
+    if sdwfs_basepath is None:
+        sdwfs_basepath = config.ciber_basepath+'data/Spitzer/sdwfs/'
+    
+    sdwfs_cat = np.loadtxt(catalog_fpath_pred, skiprows=21)
+    sdwfs_ra = sdwfs_cat[:,0]
+    sdwfs_dec = sdwfs_cat[:,1]
+    
+    sdwfs_mag1 = sdwfs_cat[:,2]
+    sdwfs_mag2 = sdwfs_cat[:,3]
+    
+    sdwfs_flag = sdwfs_cat[:,26]
+    
+    ra_cen_dict = dict({6:217.2, 7:218.4})
+    dec_cen_dict = dict({6:33.2, 7:34.8})
+    
+    radecmask = (sdwfs_ra > ra_cen_dict[ifield]-radius)*(sdwfs_ra < ra_cen_dict[ifield]+radius)*(sdwfs_dec > dec_cen_dict[ifield]-radius)*(sdwfs_dec < dec_cen_dict[ifield]+radius)
+    radecmask *= (sdwfs_mag1 < 18.0)
+    radecmask *= (sdwfs_flag < 3)
+    sdwfs_cat = np.array([sdwfs_ra, sdwfs_dec, sdwfs_mag1, sdwfs_mag2]).transpose()[radecmask]
+    
+    print(sdwfs_cat.shape)
+
+    catalog_fpath_wxy = catalog_basepath + '/sdwfs/SDWFS_ch'+str(irac_ch)+'_ifield'+str(ifield)+'with_mosaic_xy.csv'
+
+    spitz_hdr = fits.open(sdwfs_basepath+'I'+str(irac_ch)+'_bootes_epoch'+str(epochidx+1)+'.v3.fits')[0].header
+    spitz_wcs = wcs.WCS(spitz_hdr)
+    
+    src_coord = SkyCoord(ra=sdwfs_cat[:,0]*u.degree, dec=sdwfs_cat[:,1]*u.degree, frame='icrs', unit=u.degree)
+    
+    x_arr, y_arr = spitz_wcs.all_world2pix(sdwfs_cat[:,0],sdwfs_cat[:,1],0)
+    
+    plt.figure(figsize=(6, 6))
+    plt.scatter(x_arr, y_arr, alpha=0.3, s=2)
+    plt.xlabel('IRAC x')
+    plt.ylabel('IRAC y')
+    plt.show()
+    
+    sdwfs_cat_wxy = np.array([sdwfs_cat[:,0], sdwfs_cat[:,1], sdwfs_cat[:,2], sdwfs_cat[:,3], x_arr, y_arr])
+    sdwfs_mosaicxy_df = pd.DataFrame(sdwfs_cat_wxy.transpose(), columns=['ra', 'dec', 'CH1_mag_auto', 'CH2_mag_auto', 'x', 'y'])
+    
+    catalog_fpath_save = catalog_basepath + '/sdwfs/SDWFS_ch'+str(irac_ch)+'_ifield'+str(ifield)+'_with_mosaic_xy.csv'
+    print('saving to ', catalog_fpath_save)
+
+    sdwfs_mosaicxy_df.to_csv(catalog_fpath_save)
+    
+    return catalog_fpath_save
 
 
 def read_in_decals_cat(cbps, ifield_list=[4, 5, 6, 7, 8], catalog_basepath=None, convert_to_Vega=True, with_photz=True, \

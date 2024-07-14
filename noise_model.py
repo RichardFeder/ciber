@@ -44,11 +44,13 @@ class CIBER_NoiseModel():
 		self.cbps = cbps
 		
 		if save_fpath is None:
-			save_fpath = config.exthdpath +'ciber_fluctuation_data/'
+			save_fpath = config.ciber_basepath+'data/fluctuation_data/'
+			# save_fpath = config.exthdpath +'ciber_fluctuation_data/'
 			print('save directory is ', save_fpath)
 
 		if base_path is None:
-			base_path = config.exthdpath+'noise_model_validation_data/'
+			base_path = config.ciber_basepath+'data/noise_model_validation_data/'
+			# base_path = config.exthdpath+'noise_model_validation_data/'
 			print('base path is ', base_path)
 		
 		self.save_fpath = save_fpath
@@ -69,7 +71,8 @@ class CIBER_NoiseModel():
 	def estimate_read_noise_modl(self, inst, per_quadrant=False, ifield_plot=[4], save=False, tailstr='quadsub_021323', compute_ps2d_per_quadrant=False, \
 									halves=False):
 		
-		noise_model_dir = self.save_fpath+'TM'+str(inst)+'/noise_model/'
+		# noise_model_dir = self.save_fpath+'TM'+str(inst)+'/noise_model/'
+		noise_model_dir = config.ciber_basepath+'data/fluctuation_data/TM'+str(inst)+'/noise_model/'
 
 		print('Estimating read noise model for exposures corresponding to ifield_list=', self.ifield_list)
 
@@ -85,8 +88,10 @@ class CIBER_NoiseModel():
 				labexp_fpaths = self.grab_all_exposures(inst, ifield, key='full')
 				nexp = len(labexp_fpaths)
 			
-			maskInst_fpath = self.save_fpath+'TM'+str(inst)+'/masks/maskInst_102422/field'+str(ifield)+'_TM'+str(inst)+'_maskInst_102422.fits'
+			maskInst_fpath = config.ciber_basepath+'data/fluctuation_data/TM'+str(inst)+'/masks/maskInst_102422/field'+str(ifield)+'_TM'+str(inst)+'_maskInst_102422.fits'
 			mask_inst = fits.open(maskInst_fpath)['maskInst'].data # 10/24/22
+
+			plot_map(mask_inst, title='mask inst')
 
 			if ifield in ifield_plot:
 				plot=True 
@@ -107,7 +112,7 @@ class CIBER_NoiseModel():
 			
 
 				av_cl2d, av_means, expdiff, cls_2d_noise_full = labexp_to_noisemodl_quad(self.cbps, inst, ifield, labexp_fpaths=labexp_fpaths, clip_sigma=3, \
-																 plot=plot, cal_facs=None, maskInst_fpath=maskInst_fpath, \
+																 plot=plot, cal_facs=None, mask_inst=mask_inst, maskInst_fpath=maskInst_fpath, \
 																	 per_quadrant=per_quadrant, compute_ps2d_per_quadrant=compute_ps2d_per_quadrant, \
 																	 labexp_fpaths1=labexp_fpaths1, labexp_fpaths2=labexp_fpaths2, halves=halves)
 
@@ -134,7 +139,14 @@ class CIBER_NoiseModel():
 					np.savez(dark_exp_diff_fpath, ifield=ifield, inst=inst, expdiff=expdiff, cls_2d_noise_full=cls_2d_noise_full)
 
 					hdul = write_noise_model_fits(av_cl2d, ifield, inst)
-					noise_model_fpath = noise_model_dir+'noise_model_TM'+str(inst)+'_ifield'+str(ifield)+'_'+tailstr+'.fits'
+
+					if halves:
+						noise_model_fpath = noise_model_dir+'halfexp/noise_model_TM'+str(inst)+'_ifield'+str(ifield)+'_'+tailstr+'.fits'
+					else:
+						noise_model_fpath = noise_model_dir+'noise_model_TM'+str(inst)+'_ifield'+str(ifield)+'_'+tailstr+'.fits'
+
+
+					print('Saving noise model to ', noise_model_fpath)
 					noise_model_fpaths.append(noise_model_fpath)
 					hdul.writeto(noise_model_fpath, overwrite=True)
 
@@ -202,8 +214,11 @@ class CIBER_NoiseModel():
 		return lb, cl_modl, clerr_modl, cls_dd, clerrs_dd, mean_nl2d
 
 	
+	# def compute_flight_exp_differences(self, ifield, inst, mask, base_nv_path=None):
+	# 	if base_nv_path is None:
+	# 		base_nv_path = config.ciber_basepath+'data/noise_model_validation_data/'
 	
-	def compute_lab_flight_exp_differences(self, ifield, inst, base_nv_path=None, mask=None, mask_fpath=None, \
+	def compute_lab_flight_exp_differences(self, ifield, inst, mask, base_nv_path=None, mask_fpath=None, \
 										  mask_inst=None, stdpower=2, flight_exp_diff=None, verbose=False, plot=False, clip_sigma = 5, nitermax=10, \
 										   compute_noise_cov=False, return_read_nl2d=False, \
 										   nsims=500, n_split=10, chisq=False, per_quadrant=False, gradient_filter=False, mean_nl2d_diff=None, \
@@ -214,18 +229,22 @@ class CIBER_NoiseModel():
 		'''
 
 		if base_nv_path is None:
-			base_nv_path = config.exthdpath+'noise_model_validation_data/'
+			base_nv_path = config.ciber_basepath+'data/noise_model_validation_data/'
+
+		print('base nv path:', base_nv_path)
+
 		if mask_fpath is None and mask is None:
-			mask_fpath = config.exthdpath+'ciber_fluctuation_data/TM'+str(inst)+'/masks/joint_mask_with_ffmask_ifield'+str(ifield)+'_inst'+str(inst)+'.fits'
+			mask_fpath = config.ciber_basepath+'data/fluctuation_data/TM'+str(inst)+'/masks/joint_mask_ifield'+str(ifield)+'_inst'+str(inst)+'_observed_'+mask_tail+'.fits'
 			print('both mask_fpath and mask are None, loading mask from default ', mask_fpath)        
 			mask = fits.open(mask_fpath)['joint_mask_'+str(ifield)].data
-			if plot:
-				plot_map(mask, title='mask')
+		if plot:
+			plot_map(mask, title='mask')
+
 		if mask_inst is not None:
 			print('we have instrument mask')
 			plot_map(mask_inst, title='mask inst')
 
-		data_path = base_nv_path+'TM'+str(inst)+'/validationHalfExp/field'+str(ifield)
+		data_path = base_nv_path+'TM'+str(inst)+'/validationHalfExp/field'+str(ifield)+'/'
 
 		if inst==2:
 			lab_path = base_nv_path+'TM'+str(inst)+'/validationHalfExp/alldarkEXP_20211001/field'+str(ifield)
@@ -247,8 +266,8 @@ class CIBER_NoiseModel():
 		cl2ds_read, mean_nl2d_read = None, None
 		if return_read_nl2d:
 			cl2ds_read = np.zeros(imarray_shape)
-
 		cl_diffs_darkexp, cl_diffs_phot = [np.zeros(psarray_shape) for x in range(2)]
+
 		if verbose:
 			print('base_nv_path is ', base_nv_path)
 			print('mask_fpath is ', mask_fpath)
@@ -259,8 +278,7 @@ class CIBER_NoiseModel():
 		if flight_exp_diff is None:
 			pathA = data_path+'/flightMap_2.FITS'
 			pathB = data_path+'/flightMap_1.FITS'
-			flight_exp_diff, meanA, meanB, mean_flight_test, expA, expB = compute_exp_difference(inst, cal_facs=self.cbps.cal_facs, pathA=pathA, pathB=pathB, mask=mask, mode='flight', return_maps=True, \
-																								per_quadrant=per_quadrant)
+			flight_exp_diff, meanA, meanB, mean_flight_test, expA, expB = compute_exp_difference(inst, cal_facs=self.cbps.cal_facs, pathA=pathA, pathB=pathB, mask=mask, mode='flight', return_maps=True)
 
 			print('meanA = ', meanA, 'mean B = ', meanB)
 
@@ -277,22 +295,11 @@ class CIBER_NoiseModel():
 			print('meanA, meanB ', meanA, meanB)
 			print(self.cbps.field_nfrs[ifield], self.cbps.field_nfrs[ifield]//2)
 
-		x0s = [0, 0, 512, 512]
-		x1s = [512, 512, 1024, 1024]
-		y0s = [0, 512, 0, 512]
-		y1s = [512, 1024, 512, 1024]
-
-		if per_quadrant:
-			mean_image = np.ones_like(flight_exp_diff)
-			for q in range(4):
-				mean_image[x0s[q]:x1s[q],y0s[q]:y1s[q]] = 0.5*(meanA[q]+meanB[q])
-
-		else:
-			mean_image = 0.5*(meanA+meanB)*np.ones_like(flight_exp_diff)
-
+		
+		mean_image = 0.5*(meanA+meanB)*np.ones_like(flight_exp_diff)
+		
 		shot_sigma_sb_map = self.cbps.compute_shot_sigma_map(inst, mean_image, nfr=self.cbps.field_nfrs[ifield]//2)
 
-		# shot_sigma_sb_map = self.cbps.compute_shot_sigma_map(inst, 0.5*(meanA+meanB)*np.ones_like(flight_exp_diff), nfr=self.cbps.field_nfrs[ifield]//2)
 		dsnmaps = np.sqrt(2)*shot_sigma_sb_map*np.random.normal(0, 1, size=imarray_shape)
 
 		for i in range(n_image):
@@ -302,15 +309,15 @@ class CIBER_NoiseModel():
 				print('i = ', i, ' pathA:', pathA)
 				print('i = ', i, ' pathB:', pathB)
 
-			dark_exp_diff, darkmeanA, darkmeanB, mean_dark = compute_exp_difference(inst, mask=mask, cal_facs=self.cbps.cal_facs, pathA=pathA, pathB=pathB, per_quadrant=per_quadrant)
+			dark_exp_diff, darkmeanA, darkmeanB, mean_dark = compute_exp_difference(inst, mask=mask, cal_facs=self.cbps.cal_facs, pathA=pathA, pathB=pathB)
 			dark_sc_mask = iter_sigma_clip_mask(dark_exp_diff, sig=clip_sigma, nitermax=nitermax, mask=mask.astype(int))
 			dark_exp_diff += dsnmaps[i]
 
 			if per_quadrant:
 				for q in range(4):
-					mquad_sc = dark_sc_mask[x0s[q]:x1s[q],y0s[q]:y1s[q]]
+					mquad_sc = dark_sc_mask[self.cbps.x0s[q]:self.cbps.x1s[q],self.cbps.y0s[q]:self.cbps.y1s[q]]
 
-					dark_exp_diff[x0s[q]:x1s[q],y0s[q]:y1s[q]][mquad_sc==1] -= np.mean(dark_exp_diff[x0s[q]:x1s[q],y0s[q]:y1s[q]][mquad_sc==1])
+					dark_exp_diff[self.cbps.x0s[q]:self.cbps.x1s[q],self.cbps.y0s[q]:self.cbps.y1s[q]][mquad_sc==1] -= np.mean(dark_exp_diff[self.cbps.x0s[q]:self.cbps.x1s[q],self.cbps.y0s[q]:self.cbps.y1s[q]][mquad_sc==1])
 			else:
 				dark_exp_diff[dark_sc_mask==1] -= np.mean(dark_exp_diff[dark_sc_mask==1])
 
@@ -340,20 +347,17 @@ class CIBER_NoiseModel():
 		# compute mean 2D power spectrum and compute inverse variance weights
 		mean_nl2d_dark = np.mean(cl2ds_dark, axis=0)
 
-
 		if return_read_nl2d:
 			mean_nl2d_read = np.mean(cl2ds_read, axis=0)/2.
 
-		print('Estimating noise power spectrum mean and Fourier weights..')
+
 		plot_map(shot_sigma_sb_map, title='shot_sigma_sb_map')
 
 		if mean_nl2d_diff is None:
 			mean_nl2d_diff = mean_nl2d_dark
 
 		if not load_fw_mean_nl2d:
-			# if mean_nl2d_diff is None:
-			# 	mean_nl2d_diff = mean_nl2d_dark
-
+			print('Estimating noise power spectrum mean and Fourier weights..')
 			fourier_weights, mean_nl2d_modl, nl1ds_diff = self.cbps.estimate_noise_power_spectrum(noise_model=mean_nl2d_diff, mask=mask, shot_sigma_sb=shot_sigma_sb_map, field_nfr=self.cbps.field_nfrs[ifield]//2,\
 																				 nsims=nsims, n_split=n_split, inst=inst, ifield=ifield, photon_noise=True, read_noise=True, inplace=False, chisq=chisq, \
 																				 difference=True, compute_1d_cl=True)
@@ -361,16 +365,13 @@ class CIBER_NoiseModel():
 			plot_map(np.log10(fourier_weights), title='log10(w($\\ell_x, \\ell_y$))')
 
 
-
-
+		nl1ds_diff_weighted, nl1ds_diff = None, None
 		if compute_weighted_1d_nls and fourier_weights is not None:
 			print('now computing weighted 1d nls..')
 			_, mean_nl2d_modl, nl1ds_diff_weighted = self.cbps.estimate_noise_power_spectrum(noise_model=mean_nl2d_diff, mask=mask, shot_sigma_sb=shot_sigma_sb_map, field_nfr=self.cbps.field_nfrs[ifield]//2,\
 																	 nsims=nsims, n_split=n_split, inst=inst, ifield=ifield, photon_noise=True, read_noise=True, inplace=False, chisq=chisq, \
 																	 difference=True, compute_1d_cl=True, fw_diff=fourier_weights)
 			nl1ds_diff = nl1ds_diff_weighted
-		else:
-			nl1ds_diff_weighted, nl1ds_diff = None, None
 
 		proc_nls, noise_cov = None, None
 		if compute_noise_cov:
@@ -402,27 +403,22 @@ class CIBER_NoiseModel():
 			
 			lb, cl_diff_darkexp, _ = azim_average_cl2d(cl2ds_dark[i], l2d, weights=fourier_weights, lbinedges=self.cbps.Mkk_obj.binl, lbins=self.cbps.Mkk_obj.midbin_ell)
 
-			# cl_diffs_noisemodl[i] = cl_diff_noisemodl/2.
 			cl_diffs_phot[i] = cl_diff_phot/2.
 			cl_diffs_darkexp[i] = cl_diff_darkexp/2.
 
 		if per_quadrant:
 			print('subtracting flight data per quadrant')
-			x0s = [0, 0, 512, 512]
-			x1s = [512, 512, 1024, 1024]
-			y0s = [0, 512, 0, 512]
-			y1s = [512, 1024, 512, 1024]
 
 			flight_masked_diff = (flight_exp_diff*flight_sc_mask).copy()
 			
 			for q in range(4):
-				mquad = flight_sc_mask[x0s[q]:x1s[q], y0s[q]:y1s[q]]
+				mquad = flight_sc_mask[self.cbps.x0s[q]:self.cbps.x1s[q], self.cbps.y0s[q]:self.cbps.y1s[q]]
 
 				if gradient_filter:
-					theta_quad, plane_quad = fit_gradient_to_map(flight_exp_diff[x0s[q]:x1s[q], y0s[q]:y1s[q]], mask=mquad)
-					flight_exp_diff[x0s[q]:x1s[q], y0s[q]:y1s[q]] -= plane_quad
+					theta_quad, plane_quad = fit_gradient_to_map(flight_exp_diff[self.cbps.x0s[q]:self.cbps.x1s[q], self.cbps.y0s[q]:self.cbps.y1s[q]], mask=mquad)
+					flight_exp_diff[self.cbps.x0s[q]:self.cbps.x1s[q], self.cbps.y0s[q]:self.cbps.y1s[q]] -= plane_quad
 
-				flight_exp_diff[x0s[q]:x1s[q], y0s[q]:y1s[q]][mquad==1] -= np.mean(flight_masked_diff[x0s[q]:x1s[q], y0s[q]:y1s[q]][mquad==1])
+				flight_exp_diff[self.cbps.x0s[q]:self.cbps.x1s[q], self.cbps.y0s[q]:self.cbps.y1s[q]][mquad==1] -= np.mean(flight_masked_diff[self.cbps.x0s[q]:self.cbps.x1s[q], self.cbps.y0s[q]:self.cbps.y1s[q]][mquad==1])
 
 			if plot:
 				plot_map(flight_exp_diff*flight_sc_mask, title='gradient subtracted maps')
@@ -452,8 +448,6 @@ class CIBER_NoiseModel():
 
 		exps_A, exps_B, all_fourier_weights = [np.zeros((len(ifield_list), self.cbps.dimx, self.cbps.dimy)) for x in range(3)]
 
-
-
 		all_cl2ds_dark, fpaths_save = [], []
 
 		if masking_maglim is None:
@@ -464,37 +458,38 @@ class CIBER_NoiseModel():
 
 		if mask_tail is None:
 			if inst==1:
-				mask_tail = 'maglim_J_Vega_'+str(masking_maglim)+'_112922'
+				mask_tail = 'maglim_J_Vega_'+str(masking_maglim)+'_111323_ukdebias'
 			elif inst==2:
-				mask_tail = 'maglim_H_Vega_'+str(masking_maglim)+'_112922'
+				mask_tail = 'maglim_H_Vega_'+str(masking_maglim)+'_111323_ukdebias'
 
 		for fieldidx, ifield in enumerate(ifield_list):
+			
+			plot = False
 			if ifield in ifield_plot:
 				plot=True
-			else:
-				plot=False
 				
+			# load mask
 			if mask_base_path is None:
-				mask_base_path = config.exthdpath+'ciber_fluctuation_data/TM'+str(inst)+'/masks/'
-
+				mask_base_path = config.ciber_basepath+'data/fluctuation_data/TM'+str(inst)+'/masks/'
 			mask_fpath = mask_base_path+mask_tail+'/joint_mask_ifield'+str(ifield)+'_inst'+str(inst)+'_observed_'+mask_tail+'.fits'
-			full_mask = fits.open(mask_fpath)[1].data.astype(np.int)    
+			full_mask = fits.open(mask_fpath)[1].data.astype(int)    
 
 			if load_inst_mask:
-				maskInst_fpath = self.save_fpath+'TM'+str(inst)+'/masks/maskInst_102422/field'+str(ifield)+'_TM'+str(inst)+'_maskInst_102422.fits'
+				maskInst_fpath = config.ciber_basepath+'data/fluctuation_data/TM'+str(inst)+'/masks/maskInst_102422/field'+str(ifield)+'_TM'+str(inst)+'_maskInst_102422.fits'
 				mask_inst = fits.open(maskInst_fpath)['maskInst'].data # 10/24/22
-				full_mask *= mask_inst.astype(np.int)
+				full_mask *= mask_inst.astype(int)
 
 			mean_nl2d_diff=None
 			if noisemodl_tailstr is not None:
 
-				noise_model_dir = config.exthdpath+'ciber_fluctuation_data/TM'+str(inst)+'/noise_model/'
-
-				mean_nl2d_diff, _, _ = load_read_noise_modl_filedat(noise_model_dir, inst, ifield, tailstr=noisemodl_tailstr, apply_FW=False, load_cl1d=False, \
-																						mean_nl2d_key='mean_nl2d')
+				# noise_model_dir = config.exthdpath+'ciber_fluctuation_data/TM'+str(inst)+'/noise_model/'
+				noise_model_dir = config.ciber_basepath+'data/fluctuation_data/TM'+str(inst)+'/noise_model/'
+				mean_nl2d_diff, _, _ = load_read_noise_modl_filedat(noise_model_dir, inst, ifield, tailstr=noisemodl_tailstr, load_cl1d=False, \
+																						mean_nl2d_key='mean_nl2d', apply_FW=False)
 
 		
 				plot_map(full_mask, title='full mask')
+				plot_map(mean_nl2d_diff, title='nl2d diff')
 
 			if load_fw_mean_nl2d:
 				tailstr='062423'
@@ -508,7 +503,7 @@ class CIBER_NoiseModel():
 				cl_diffs_darkexp, cl_diff_noisemodl, clerr_diff_noisemodl, cl_diffs_phot,\
 				expA, expB, fourier_weights, cl2ds_dark,\
 				mean_nl2d_read, proc_nls, noise_cov,\
-					shot_sigma_sb_map, nl1ds_diff_weighted = self.compute_lab_flight_exp_differences(ifield, inst, mask=full_mask, clip_sigma=clip_sigma, nitermax=10,\
+					shot_sigma_sb_map, nl1ds_diff_weighted = self.compute_lab_flight_exp_differences(ifield, inst, full_mask, base_nv_path=None, clip_sigma=clip_sigma, nitermax=10,\
 																			   stdpower=2, compute_noise_cov=False, plot=plot,\
 																			   mask_inst=mask_inst, nsims=nsims, n_split=n_split, \
 																			   per_quadrant=per_quadrant, mask_fpath=mask_fpath, verbose=verbose, gradient_filter=gradient_filter, \
@@ -525,18 +520,11 @@ class CIBER_NoiseModel():
 
 			plt.xscale('log')
 			plt.yscale('log')
+			plt.legend()
 			plt.xlabel('$\\ell$', fontsize=14)
 			plt.ylabel('$D_{\\ell}$', fontsize=14)
 			plt.tick_params(labelsize=12)
 			plt.show()
-			# lb, cl_diff_flight, clerr_diff_flight,\
-			# 	cl_diffs_noisemodl, cl_diffs_phot,\
-			# 	expA, expB, fourier_weights, cl2ds_dark,\
-			# 	mean_nl2d_read, proc_nls, noise_cov,\
-			# 		shot_sigma_sb_map = self.compute_lab_flight_exp_differences(ifield, inst, mask=full_mask, clip_sigma=clip_sigma, nitermax=10,\
-			# 																   stdpower=2, compute_noise_cov=False, plot=plot,\
-			# 																   mask_inst=mask_inst, nsims=nsims, n_split=n_split, \
-			# 																   per_quadrant=per_quadrant, mask_fpath=mask_fpath, verbose=verbose, gradient_filter=gradient_filter)
 
 
 			mean_cl2d = np.mean(cl2ds_dark, axis=0)
@@ -554,7 +542,8 @@ class CIBER_NoiseModel():
 
 			# make sure 2d power spectrum is being passed through analysis correctly
 			if save_nvdat:
-				fpath_save = config.exthdpath+'noise_model_validation_data/TM'+str(inst)+'/validationHalfExp/field'+str(ifield)+'/powerspec/cls_expdiff_lab_flight_TM'+str(inst)+'_ifield'+str(ifield)+'_'+tailstr+'.npz'
+				fpath_save = config.ciber_basepath+'data/noise_model_validation_data/TM'+str(inst)+'/validationHalfExp/field'+str(ifield)+'/powerspec/cls_expdiff_lab_flight_TM'+str(inst)+'_ifield'+str(ifield)+'_'+tailstr+'.npz'
+				# fpath_save = config.exthdpath+'noise_model_validation_data/TM'+str(inst)+'/validationHalfExp/field'+str(ifield)+'/powerspec/cls_expdiff_lab_flight_TM'+str(inst)+'_ifield'+str(ifield)+'_'+tailstr+'.npz'
 				print('save fpath is ', fpath_save)
 				# np.savez(fpath_save, \
 				# 		lb=lb, mean_cl2d=mean_cl2d, fourier_weights=fourier_weights, cl_diff_flight=cl_diff_flight, clerr_diff_flight=clerr_diff_flight, cl_diffs_lab=cl_diffs_noisemodl, cl_diffs_phot=cl_diffs_phot, \
@@ -570,9 +559,6 @@ class CIBER_NoiseModel():
 		
 		return exps_A, exps_B, all_fourier_weights
 
-		if save_nvdat:
-			return fpaths_save
-				
 
 	def compute_noise_covariance_matrix(self, fourier_weights, mean_nl2d_read, inst, mask=None, shot_sigma_sb=None, \
 									nsims=500, n_split=10, photon_noise=True, read_noise=True, pixsize=7., inv_Mkk=None):
@@ -652,4 +638,404 @@ class CIBER_NoiseModel():
 		return lb, proc_nls, noise_cov
 
 
+
+
+def labexp_to_noisemodl_quad(cbps, inst, ifield, labexp_fpaths=None, \
+                        clip_sigma = 4, sigma_clip_cl2d=False, \
+                        cl2d_clip_sigma=4, cal_facs=None, nitermax=10,\
+                        plot=True, base_fluc_path=None, \
+                        mask_inst=None, maskInst_fpath=None, per_quadrant=False, compute_ps2d_per_quadrant=False, \
+                        halves=False, labexp_fpaths1=None, labexp_fpaths2=None):
+    
+    
+    ''' 
+    Estimates a read noise model from a collection of dark exposure pair differences. 
+    
+    If per_quadrant set to True, half-exposure differences are mean subtracted by quadrant before 
+    
+    '''
+
+    if base_fluc_path is None:
+        base_fluc_path = config.exthdpath+'ciber_fluctuation_data/'
+
+    if halves:
+        nexp = len(labexp_fpaths1)
+        assert nexp == len(labexp_fpaths2)
+    else:
+        nexp = len(labexp_fpaths)
+
+    if halves:
+        npair = nexp 
+    else:
+        npair = nexp // 2
+
+    if compute_ps2d_per_quadrant:
+        cbps_quad = CIBER_PS_pipeline(dimx=512, dimy=512)
+        cls_2d_noise_per_quadrant = np.zeros((4, npair, cbps_quad.dimx, cbps_quad.dimy))
+
+
+    print('number of pairs : ', npair)
+    
+    mameans_full = np.zeros((npair,))
+    cls_2d_noise_full = np.zeros((npair, cbps.dimx, cbps.dimy))
+    
+
+    meanAs, meanBs, mask_fracs = [], [], []
+
+    if mask_inst is None:
+        if maskInst_fpath is None:
+            mask_inst = cbps.load_mask(ifield=ifield, inst=inst, masktype='maskInst_clean', inplace=False)
+        else:
+            mask_inst = fits.open(maskInst_fpath)['maskInst'].data # 10/24/22
+        
+    for i in range(npair):
+
+        if halves:
+            lab_exp_diff, meanA, meanB, mean_exp = compute_exp_difference(inst, cal_facs=cal_facs, pathA=labexp_fpaths1[i], pathB=labexp_fpaths2[i], mask=mask_inst, plot_diff_hist=False)
+        else:
+            lab_exp_diff, meanA, meanB, mean_exp = compute_exp_difference(inst, cal_facs=cal_facs, pathA=labexp_fpaths[2*i], pathB=labexp_fpaths[2*i+1], mask=mask_inst, plot_diff_hist=False)
+        
+        if plot:
+            plot_map(lab_exp_diff*mask_inst, title='lab exp diff * mask_inst')
+        
+        lab_exp_diff /= np.sqrt(2)
+        new_mask = iter_sigma_clip_mask(lab_exp_diff, sig=clip_sigma, nitermax=nitermax, mask=mask_inst.astype(int))
+        mask_inst *= new_mask
+        
+        if plot:
+            plot_map(lab_exp_diff*mask_inst, title='lab exp diff sigma clipped')
+        
+        meanAs.append(meanA)
+        meanBs.append(meanB)
+        masked_full = lab_exp_diff*mask_inst
+                
+        fdet = float(np.sum(mask_inst))/float(cbps.dimx*cbps.dimy)
+        mask_fracs.append(fdet)
+        
+        if per_quadrant:
+
+            masked_meansub_diff = masked_full.copy()
+            
+            for q in range(4):
+                mquad = mask_inst[cbps.x0s[q]:cbps.x1s[q], cbps.y0s[q]:cbps.y1s[q]]
+                masked_meansub_diff[cbps.x0s[q]:cbps.x1s[q], cbps.y0s[q]:cbps.y1s[q]][mquad==1] -= np.mean(lab_exp_diff[cbps.x0s[q]:cbps.x1s[q], cbps.y0s[q]:cbps.y1s[q]][mquad==1])
+            
+                if compute_ps2d_per_quadrant:
+                    l2d_indiv, cl2d_indiv = get_power_spectrum_2d(masked_meansub_diff[cbps.x0s[q]:cbps.x1s[q], cbps.y0s[q]:cbps.y1s[q]])
+                    cls_2d_noise_per_quadrant[q,i] = cl2d_indiv
+
+        else:
+            mamean = np.mean(masked_full[masked_full!=0])
+            mameans_full[i] = mamean
+            # get 2d power spectrum
+            masked_meansub_diff = mask_inst*(lab_exp_diff-mamean)
+            
+        if plot:
+            plot_map(masked_meansub_diff, title='masked meansub diff')
+            
+        l2d, cl2d = get_power_spectrum_2d(masked_meansub_diff, pixsize=cbps.Mkk_obj.pixsize)
+        
+        cls_2d_noise_full[i] = cl2d
+        
+    print('cls_2d_noise_Full has shape', cls_2d_noise_full.shape)
+    av_cl2d = np.mean(cls_2d_noise_full, axis=0)
+
+    if compute_ps2d_per_quadrant:
+        av_cl2d_per_quadrant = np.mean(cls_2d_noise_per_quadrant, axis=1)
+
+        for q in range(4):
+            plot_map(np.log10(av_cl2d_per_quadrant[q]), title='log10 av cl2d quad '+str(q))
+    
+    plot_map(np.log10(av_cl2d), title='log10 av_cl2d')
+
+    # correct 2d power spectrum for mask with 1/fsky
+    print('mask fractions:', mask_fracs)
+    av_mask_frac = np.mean(mask_fracs)
+    
+    print('average mask fraction:', av_mask_frac)
+
+    av_cl2d /= av_mask_frac
+
+    if compute_ps2d_per_quadrant:
+        av_cl2d_per_quadrant /= av_mask_frac
+
+        for q in range(4):
+            plot_map(av_cl2d_per_quadrant[q], title='mask corrected av cl2d per quad '+str(q))
+    
+    av_means = 0.5*(np.mean(meanAs)+np.mean(meanBs))
+    
+    plot_map(av_cl2d, title='av cl2d')
+        
+    if compute_ps2d_per_quadrant:
+
+        return av_cl2d_per_quadrant, av_means, lab_exp_diff*mask_inst, cls_2d_noise_per_quadrant
+
+    return av_cl2d, av_means, lab_exp_diff*mask_inst, cls_2d_noise_full
+
+
+def plot_noise_model_consistency_flight(inst, ifield_list=[4, 5, 6, 7, 8], startidx=1, endidx=-1, startidx_plot=0, \
+                                       figsize=(10, 7), tailstr=None, lmax=10000, load_cl_dpoint=False, \
+                                        xtext = 300, text_fs=12, xlim=[150, 1.1e5], data_type='observed'):
+    
+    cbps = CIBER_PS_pipeline()
+    ciber_mock_fpath = config.ciber_basepath+'data/ciber_mocks/'
+
+    config_dict, pscb_dict, float_param_dict, fpath_dict = return_default_cbps_dicts()
+    
+    fpath_dict, list_of_dirpaths, base_path, trilegal_base_path = set_up_filepaths_cbps(fpath_dict, inst, 'test', '111323',\
+                                                                                    datestr_trilegal='112022', data_type=data_type, \
+                                                                                   save_fpaths=True)
+
+    bandstr_dict = dict({1:'J', 2:'H'})
+    band = bandstr_dict[inst]
+    lam_dict = dict({1:1.1, 2:1.8})
+    maglim_dict = dict({1:17.5, 2:17.0})
+    
+    base_nv_path = config.ciber_basepath+'data/noise_model_validation_data/'
+
+    
+    masking_maglim = maglim_dict[inst]
+    lam = lam_dict[inst]
+    
+    bbox_dict = dict({'facecolor':'white', 'alpha':0.8, 'edgecolor':'None', 'pad':0.})
+    if inst==1:
+        ylim = [1e-1, 4e4]
+        textypos = 1.5e4
+        
+        fac = 10
+    else:
+        ylim = [1e-2, 1e4]
+        textypos = 4e3
+        fac = 3
+        
+    masktail = 'maglim_'+band+'_Vega_'+str(masking_maglim)+'_111323_ukdebias'
+    mode_couple_base_dir = fpath_dict['mkk_base_path']
+    
+    all_cls_dpoint = None
+    if load_cl_dpoint:
+        all_cls_dpoint = np.load(config.ciber_basepath+'data/fluctuation_data/TM'+str(inst)+'/cl_masked_pointing_offset/cls_masked_pointing_offset_TM'+str(inst)+'_with_wcshdrs_sigclip5_niter1.npz')['cls']
+        
+        fac = cbps.cal_facs[inst]/(cbps.g1_facs_factory[inst]*cbps.g2_facs_Z14[inst])
+        
+        all_cls_dpoint *= fac**2
+
+    chi2_bins = np.linspace(0, 4, 30)
+
+
+    all_nl1d_covs, all_nl1d_corrs, inv_Mkks = [[] for x in range(3)]
+
+    f = plt.figure(figsize=(12, 8))
+
+    for fieldidx, ifield in enumerate(ifield_list):
+        
+#         inv_Mkk_fpath = mode_couple_base_dir+'/'+masktail+'/mkk_ffest_nograd_ifield'+str(ifield)+'_observed_'+masktail+'.fits'
+        inv_Mkk_fpath = mode_couple_base_dir+'/'+masktail+'/mkk_maskonly_estimate_ifield'+str(ifield)+'_observed_'+masktail+'.fits'
+        inv_Mkks.append(fits.open(inv_Mkk_fpath)['inv_Mkk_'+str(ifield)].data)
+    
+        # flight half exposure differences
+        nl_flight_diff_dir = base_nv_path + 'TM'+str(inst)+'/validationHalfExp/field'+str(ifield)+'/nl_flight_diff/'
+        nl_flight_diff = np.load(nl_flight_diff_dir+'nls_flight_diff_TM'+str(inst)+'_ifield'+str(ifield)+'_'+tailstr+'_quadoffgrad.npz')
+        cl_diff_flight = nl_flight_diff['cl_diff_flight']
+        clerr_diff_flight = nl_flight_diff['clerr_diff_flight']
+    
+        # noise model realizations
+        nl_noisemodl_dir = base_nv_path + 'TM'+str(inst)+'/validationHalfExp/field'+str(ifield)+'/nl_noisemodl/'
+        nls_noisemodl = np.load(nl_noisemodl_dir + 'nls_noisemodl_TM'+str(inst)+'_ifield'+str(ifield)+'_'+tailstr+'_quadoffgrad.npz')
+        nl1ds_diff_weighted = nls_noisemodl['nl1ds_diff_weighted']
+        
+        # photon noise
+        nls_noisemodl = np.load(nl_noisemodl_dir + 'nls_noisemodl_TM'+str(inst)+'_ifield'+str(ifield)+'_'+tailstr+'_quadoffgrad_withphot.npz')
+        nl1ds_diff_phot_weighted = np.array(nls_noisemodl['cl_diff_noisemodl_phot'])
+        
+        lb = nls_noisemodl['lb']
+        lb_mask = (lb < lmax)*(lb >= lb[startidx])
+
+        which_large = np.where((cl_diff_flight > np.mean(nl1ds_diff_weighted, axis=0)))[0]
+        print('which large:', which_large)
+        for n in range(nl1ds_diff_weighted.shape[1]):
+            if n in which_large:
+                nl1ds_diff_weighted[:,n] += np.random.normal(0, clerr_diff_flight[n], nl1ds_diff_weighted.shape[0])        
+        
+    
+        cl_diff_flight = np.dot(inv_Mkks[fieldidx].transpose(), cl_diff_flight)
+
+        for m in range(nl1ds_diff_weighted.shape[0]):
+            nl1ds_diff_weighted[m] = np.dot(inv_Mkks[fieldidx].transpose(), nl1ds_diff_weighted[m])
+
+        for m in range(nl1ds_diff_phot_weighted.shape[0]):
+            
+            nl1ds_diff_phot_weighted[m] = np.dot(inv_Mkks[fieldidx].transpose(), nl1ds_diff_phot_weighted[m])
+            
+        cl_diff_noisemodl = np.median(nl1ds_diff_weighted, axis=0)
+        cl_diff_noisemodl_phot = np.median(nl1ds_diff_phot_weighted, axis=0)
+            
+        # noise covariance of mkk corrected spectra
+        subnl1d_weighted = nl1ds_diff_weighted[:,lb_mask]
+        nl1d_cov = np.cov(subnl1d_weighted.transpose())
+        nl1d_corr = np.corrcoef(subnl1d_weighted.transpose())
+        print('condition number is ', np.linalg.cond(nl1d_cov))
+        inv_cov = np.linalg.inv(nl1d_cov)
+        
+        all_nl1d_covs.append(nl1d_cov)
+        all_nl1d_corrs.append(nl1d_corr)
+        
+        cl_resid = cl_diff_flight - cl_diff_noisemodl
+
+        if all_cls_dpoint is not None:
+            mean_ptsrc_bias = np.mean(all_cls_dpoint[:,fieldidx,:], axis=0)/2.
+            mean_ptsrc_bias = np.dot(inv_Mkks[fieldidx].transpose(), mean_ptsrc_bias)
+            cl_resid -= mean_ptsrc_bias
+        
+        cl_resid = cl_resid[lb_mask]
+
+        chi_squared = np.dot(cl_resid.transpose(), np.dot(inv_cov, cl_resid))
+        pte = 1 - stats.chi2.cdf(chi_squared, len(cl_resid))
+        
+        # chi2 for noise realizations
+        all_chi_squared_nr = []
+        for nidx in range(len(nl1ds_diff_weighted)):
+
+            cl_resid_nr = nl1ds_diff_weighted[nidx]-cl_diff_noisemodl
+            cl_resid_nr = cl_resid_nr[lb_mask]
+            chi_squared_nr = np.dot(cl_resid_nr.transpose(), np.dot(inv_cov, cl_resid_nr))
+            all_chi_squared_nr.append(chi_squared_nr/len(cl_resid_nr))
+            
+        all_chi_squared_nr = np.array(all_chi_squared_nr)
+
+        # plot the darn thing
+        
+        ax = f.add_subplot(2,3,fieldidx+1)
+        
+        prefac = lb*(lb+1)/(2*np.pi)
+        
+        plt.errorbar(lb[startidx_plot:endidx], (prefac*cl_diff_flight)[startidx_plot:endidx], yerr=(prefac*clerr_diff_flight)[startidx_plot:endidx], label='Flight difference', color='C'+str(fieldidx), markersize=3, fmt='o', capsize=3)
+
+    #     for nidx in range(len(nl1ds_diff_weighted)):
+    #         plt.plot(lb[startidx:endidx], (prefac*nl1ds_diff_weighted[nidx])[startidx:endidx], color='grey', alpha=0.05)
+    #     nl1d_av_cl = np.mean(nl1ds_diff_weighted, axis=0)
+    
+#         yerrs_sims = np.array([prefac*np.abs(cl_diff_noisemodl-np.percentile(nl1ds_diff_weighted, 16, axis=0)), prefac*np.abs(np.percentile(nl1ds_diff_weighted, 84, axis=0)-cl_diff_noisemodl)])
+#         plt.errorbar(lb[startidx:endidx], (prefac*cl_diff_noisemodl)[startidx:endidx], yerr=yerrs_sims[:,startidx:endidx], fmt='o', color='k', markersize=3, alpha=0.5, capsize=3, label='Noise model')
+        plt.errorbar(lb[startidx_plot:endidx], (prefac*cl_diff_noisemodl)[startidx_plot:endidx], yerr=(prefac*np.std(nl1ds_diff_weighted, axis=0))[startidx_plot:endidx], fmt='o', color='k', markersize=3, alpha=0.5, capsize=3, label='Noise model')
+        
+        
+        plt.plot(lb[startidx_plot:endidx], (prefac*mean_ptsrc_bias)[startidx_plot:endidx], color='k', linestyle='dashed', alpha=0.4)
+#         plt.errorbar(lb[startidx:endidx], (prefac*cl_diff_noisemodl_B)[startidx:endidx], yerr=yerrs_sims[:,startidx:endidx], fmt='o', color='r', markersize=3, alpha=0.5, capsize=3, label='Noise model')
+       
+        
+        plt.plot(lb[startidx:endidx], (prefac*cl_diff_noisemodl_phot)[startidx:endidx], linestyle='solid', color='k', alpha=0.5, label='Photon noise')
+
+        if fieldidx==4:
+            plt.legend(fontsize=14, bbox_to_anchor=[1.25, 0.8])
+        plt.xscale('log')
+        plt.yscale('log')
+        
+#         plt.ylim(ylim)
+        
+        if ifield != 5:
+            plt.ylim(ylim[0], ylim[1])
+            plt.text(xtext, textypos, str(lam)+' $\\mu$m, '+str(cbps.ciber_field_dict[ifield]), fontsize=text_fs, bbox=bbox_dict)
+            plt.text(xtext, textypos*0.3, '$\\chi^2/N_{dof}$ = '+str(np.round(chi_squared, 1))+'/'+str(len(cl_resid))+' ('+str(np.round(chi_squared/len(cl_resid), 2))+')', fontsize=text_fs, bbox=bbox_dict)
+        else:
+            plt.ylim(ylim[0]*3, ylim[1]*3)
+
+            plt.text(xtext, textypos*3, str(lam)+' $\\mu$m, '+str(cbps.ciber_field_dict[ifield]), fontsize=text_fs, bbox=bbox_dict)
+            plt.text(xtext, textypos*3*0.3, '$\\chi^2/N_{dof}$ = '+str(np.round(chi_squared, 1))+'/'+str(len(cl_resid))+' ('+str(np.round(chi_squared/len(cl_resid), 2))+')', fontsize=text_fs, bbox=bbox_dict)
+            
+#         plt.axvline(lmax, linestyle='dashed', color='k')
+#         plt.axvline(0.5*(lb[0]+lb[1]), linestyle='dashed', color='k')
+        
+        plt.axvspan(lmax, 1.1e5, color='grey', alpha=0.2)
+        plt.axvspan(xlim[0], 0.5*(lb[0]+lb[1]), color='grey', alpha=0.2)
+        plt.xlim(xlim)
+        
+        plt.tick_params(labelsize=12)
+
+        if fieldidx > 2:
+            plt.xlabel('$\\ell$', fontsize=16)
+        if fieldidx==0 or fieldidx==3:
+            plt.ylabel('$D_{\\ell}$ [nW$^2$ m$^{-4}$ sr$^{-2}$]', fontsize=16)
+        plt.grid(alpha=0.5)
+        
+        plt.tick_params(labelsize=10)
+        
+        # inset with rank distribution
+        axin = inset_axes(ax, width="45%", # width = 30% of parent_bbox
+                        height=0.75, # height : 1 inch
+                        loc=4, borderpad=1.6)
+    
+        ndof = nl1ds_diff_weighted.shape[1]
+
+        chistat_order_idx = np.argsort(all_chi_squared_nr)
+        
+        plt.hist(all_chi_squared_nr, bins=chi2_bins, linewidth=1, histtype='stepfilled', color='k', alpha=0.2, label=cbps.ciber_field_dict[ifield])
+        plt.axvline(np.mean(all_chi_squared_nr), color='k', alpha=0.5)
+
+        pte = 1.-(np.digitize(chi_squared/len(cl_resid), all_chi_squared_nr[chistat_order_idx]))/len(all_chi_squared_nr)
+        plt.axvline(chi_squared/len(cl_resid), color='C'+str(fieldidx), linestyle='solid', linewidth=2, label='Observed data')
+        print('pte = ', pte)
+        axin.set_xlabel('$\\chi^2_{red}$', fontsize=10)
+        axin.xaxis.set_label_position('top')
+        plt.xticks([0, 1, 2, 3, 4], [0, 1, 2, 3, 4])
+        plt.xlim(0, 4)
+        xpos_inset_text = 1.3
+        axin.tick_params(labelsize=8,bottom=True, top=True, labelbottom=True, labeltop=False)
+        plt.yticks([], [])
+
+        hist = np.histogram(all_chi_squared_nr, bins=chi2_bins)
+        plt.text(xpos_inset_text, 0.8*np.max(hist[0]), 'Noise model', color='grey', fontsize=9, bbox=bbox_dict)
+
+        plt.text(xpos_inset_text, 0.6*np.max(hist[0]), 'PTE='+str(np.round(pte, 3)), color='C'+str(fieldidx), fontsize=9, bbox=bbox_dict)
+
+
+    plt.subplots_adjust(wspace=0.2, hspace=0.2)
+    plt.show()
+    
+    return f
+
+
+def compute_cross_halfexpdiff(flight_diff_basepath, ifield_list = [4, 5, 6, 7, 8], tailstr = 'halfexp_full_051324', plot=False, sign_flip=False):
+    all_clproc, all_clprocerr = [], []
+
+    cbps = CIBER_PS_pipeline()
+
+    for fieldidx, ifield in enumerate(ifield_list):
+        
+
+        nl_savedir_TM1 = flight_diff_basepath + 'TM1/validationHalfExp/field'+str(ifield)+'/nl_flight_diff/'
+        nl_save_fpath_TM1 = nl_savedir_TM1+'nls_flight_diff_TM1_ifield'+str(ifield)+'_'+tailstr
+        flight_diff_TM1 = np.load(nl_save_fpath_TM1+'.npz')['flight_diff']
+        
+        
+        nl_savedir_TM2 = flight_diff_basepath + 'TM2/validationHalfExp/field'+str(ifield)+'/nl_flight_diff/'
+        nl_save_fpath_TM2 = nl_savedir_TM2+'nls_flight_diff_TM2_ifield'+str(ifield)+'_'+tailstr
+        flight_diff_TM2 = np.load(nl_save_fpath_TM2+'.npz')['flight_diff']
+        
+        flight_masked_TM2_to_TM1, footprint = regrid_arrays_by_quadrant(flight_diff_TM2, ifield, inst0=1, inst1=2, quad_list=['A', 'B', 'C', 'D'], \
+                         xoff=[0,0,512,512], yoff=[0,512,0,512], plot=False, astr_dir=config.ciber_basepath+'data/')
+
+        
+        flight_diff_TM1[flight_masked_TM2_to_TM1==0] = 0.
+        flight_masked_TM2_to_TM1[flight_diff_TM1==0] = 0.
+        
+        if plot:
+	        plot_map(flight_diff_TM1, title='TM1 flight diff', cmap='bwr', figsize=(6,6))
+	        plot_map(flight_masked_TM2_to_TM1, title='TM2 flight diff regrid', cmap='bwr', figsize=(6,6))
+	        
+        flight_diff_TM1[flight_diff_TM1 != 0] -= np.mean(flight_diff_TM1[flight_diff_TM1 != 0])
+        
+        flight_masked_TM2_to_TM1[flight_masked_TM2_to_TM1 != 0] -= np.mean(flight_masked_TM2_to_TM1[flight_masked_TM2_to_TM1 != 0])
+
+
+        if sign_flip:
+        	print('flipping TM2 regrid..')
+        	flight_masked_TM2_to_TM1 *= -1.
+        	
+        lb, cl_proc, cl_proc_err = get_power_spec(flight_diff_TM1, map_b=flight_masked_TM2_to_TM1, mask=None, lbinedges=cbps.Mkk_obj.binl, lbins=cbps.Mkk_obj.midbin_ell)
+
+        all_clproc.append(cl_proc)
+        all_clprocerr.append(cl_proc_err)
+        
+        
+    return lb, all_clproc, all_clprocerr
 

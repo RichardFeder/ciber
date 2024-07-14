@@ -13,6 +13,7 @@ import time
 from filtering_utils import fit_gradient_to_map, precomp_gradient_dat, fit_gradient_to_map_precomp, precomp_offset_gradient, offset_gradient_fit_precomp
 from plotting_fns import plot_map
 from numerical_routines import *
+from fourier_bkg_modl_ciber import *
 
 
 def allocate_fftw_memory(data_shape, n_blocks=2):
@@ -161,7 +162,7 @@ def init_fftobj_info(cross_mkk=False):
 
 class Mkk_bare():
     
-    def __init__(self, pixsize=7., dimx=1024, dimy=1024, ell_min=180., logbin=True, nbins=20, n_fine_bins=0):
+    def __init__(self, pixsize=7., dimx=1024, dimy=1024, ell_min=180., logbin=True, nbins=20, n_fine_bins=0, precompute=False):
         
         for attr, valu in locals().items():
             setattr(self, attr, valu)
@@ -183,13 +184,17 @@ class Mkk_bare():
         self.empty_aligned_objs = None # used for fast fourier transforms through pyfftw
         self.fft_objs = None # used for fast fourier transforms through pyfftw
 
+        if precompute:
+            self.precompute_mkk_quantities(precompute_all=True)
+
+
 
     def set_bin_edges(self, binl):
         self.binl = binl
 
     def get_mkk_sim(self, mask, nsims, show_tone_map=False, mode='auto', n_split=1, threads=1, \
                     print_timestats=False, return_all_Mkks=False, n_fine_bins=None, sub_bins=False, store_Mkks=True, precompute_all=False, \
-                    input_cl_func=None, quadoff_grad=False):
+                    input_cl_func=None, quadoff_grad=False, fc_sub=False, fc_sub_quad_offset=False, fc_sub_n_terms=2):
         
         ''' This is the main function that computes an estimate of the mode coupling matrix Mkk from nsims generated tone maps. 
         Knox errors are also computed based on the mask/number of modes/etc. (note: should this also include a beam factor?) This implementation is more memory intensive,
@@ -264,7 +269,11 @@ class Mkk_bare():
 
             dot1, X, mask_rav = precomp_offset_gradient(self.dimx, self.dimy, mask=mask)
 
-        
+        elif fc_sub:
+            dot1, X, mask_rav = precomp_fourier_templates(self.dimx, self.dimy, mask=mask, quad_offset=fc_sub_quad_offset, \
+                                                         n_terms=fc_sub_n_terms)   
+            
+
         for i in range(n_split):
             print('Split '+str(i+1)+' of '+str(n_split))
 
@@ -292,6 +301,9 @@ class Mkk_bare():
                     print('subtracting quadrant offsets and gradient')
                     recov_offset_grads = np.array([offset_gradient_fit_precomp(self.empty_aligned_objs[1][s].real, dot1, X, mask_rav)[1] for s in range(maplist_split_shape[0])])
                     self.empty_aligned_objs[1].real -= np.array([mask*recov_offset_grads[s] for s in range(maplist_split_shape[0])])
+                elif fc_sub:
+                    recov_offset_fcs = np.array([fc_fit_precomp(self.empty_aligned_objs[1][s].real, dot1, X, mask_rav)[1] for s in range(maplist_split_shape[0])])
+                    self.empty_aligned_objs[1].real -= np.array([mask*recov_offset_fcs[s] for s in range(maplist_split_shape[0])])
 
                 if mode=='auto':
                     masked_Cl = self.get_ensemble_angular_autospec(nsims=nsims//n_split, sub_bins=sub_bins, apply_mask=True)
@@ -830,9 +842,8 @@ def save_mkks(filepath, all_Mkks=None, av_Mkk=None, inverse_Mkk=None, bins=None,
     if return_inv_Mkk:
         return inverse_Mkk
 
-
 def estimate_mkk_ffest_quadoff(cbps, nsims, masks, ifield_list=None, n_split=1, mean_normalizations=None, ff_weights=None, \
-                      verbose=False, grad_sub=False, niter=1, quadoff_grad=False):
+                      verbose=False, grad_sub=False, niter=1, quadoff_grad=False, order=1):
     
     if ifield_list is None:
         ifield_list = [4, 5, 6, 7, 8]
@@ -866,7 +877,7 @@ def estimate_mkk_ffest_quadoff(cbps, nsims, masks, ifield_list=None, n_split=1, 
         grad_sub=False
         print('Precomputing quantities for quad offset + gradient..')
         for m in range(len(masks)):
-            dot1, X, mask_rav = precomp_offset_gradient(cbps.dimx, cbps.dimy, mask=masks[m])   
+            dot1, X, mask_rav = precomp_offset_gradient(cbps.dimx, cbps.dimy, mask=masks[m], order=order)   
             all_dot1.append(dot1)
             all_X.append(X)
             all_mask_rav.append(mask_rav)
@@ -960,8 +971,9 @@ def estimate_mkk_ffest_quadoff(cbps, nsims, masks, ifield_list=None, n_split=1, 
 
 
 def estimate_mkk_ffest_cross(cbps, nsims, masks, n_split=1, grad_sub=False, niter=1, \
-                       mean_normalizations=None, ff_weights=None, mean_normalizations_cross=None, ff_weights_cross=None, \
-                       ifield_list=[4, 5, 6, 7, 8], verbose=False, plot=False, threads=1, dtype='complex64', clock=False):
+                       mean_normalizations=None, use_ff=True, ff_weights=None, mean_normalizations_cross=None, ff_weights_cross=None, \
+                       ifield_list=[4, 5, 6, 7, 8], verbose=False, plot=False, threads=1, dtype='complex64', clock=False, \
+                       quadoff_grad=False, order=1, fc_sub=False, fc_sub_quad_offset=False, fc_sub_n_terms=2):
     
     ''' 
     Compute mode coupling matrices for some number of fields for deconvolving observed power spectra.
@@ -976,10 +988,11 @@ def estimate_mkk_ffest_cross(cbps, nsims, masks, n_split=1, grad_sub=False, nite
     nfield = len(ifield_list)
 
     cross_mkk = False
-    ffnorm_facs = np.array(ff_weights)/np.array(mean_normalizations)
-    print('ffnorm facs = ', ffnorm_facs)
+    if use_ff:
+        ffnorm_facs = np.array(ff_weights)/np.array(mean_normalizations)
+        print('ffnorm facs = ', ffnorm_facs)
     
-    if mean_normalizations_cross is not None and ff_weights_cross is not None:
+    if mean_normalizations_cross is not None and ff_weights_cross is not None and use_ff:
         ffnorm_facs_cross = np.array(ff_weights_cross)/np.array(mean_normalizations_cross)
         cross_mkk = True
         
@@ -991,6 +1004,30 @@ def estimate_mkk_ffest_cross(cbps, nsims, masks, n_split=1, grad_sub=False, nite
     maplist_split_shape = (nstack, cbps.dimx, cbps.dimy)
     maplist_split_shapenew = (nfield,nsims_perf, cbps.dimx, cbps.dimy)
     perf_mapshape = (nsims_perf, cbps.dimx, cbps.dimy)
+
+
+
+    all_dot1, all_X, all_mask_rav = [], [], []
+    if quadoff_grad or fc_sub:
+        grad_sub=False
+        for m in range(len(masks)):
+
+            if quadoff_grad:
+                if m==0:
+                    print('Precomputing quantities for quad offset + gradient..')
+                dot1, X, mask_rav = precomp_offset_gradient(cbps.dimx, cbps.dimy, mask=masks[m], order=order)   
+
+            elif fc_sub:
+
+                if m==0:
+                    print('Precomputing FC + quad offsets')
+
+                dot1, X, mask_rav = precomp_fourier_templates(cbps.dimx, cbps.dimy, mask=masks[m], quad_offset=fc_sub_quad_offset, \
+                                            n_terms=fc_sub_n_terms)   
+
+            all_dot1.append(dot1)
+            all_X.append(X)
+            all_mask_rav.append(mask_rav)
 
     # empty aligned object will have nfield, nsims perfield shape. so fftsq iterates over fields and extends by nsims per field.
 
@@ -1089,6 +1126,26 @@ def estimate_mkk_ffest_cross(cbps, nsims, masks, n_split=1, grad_sub=False, nite
                             cbps.Mkk_obj.empty_aligned_objs[4][k+1] /= ffnorm_facs_cross[k+1]
 
                     tnf4 = clock_log(message='tnf4 - tnf3', t0=tnf3, verbose=clock)
+
+
+                    if quadoff_grad:
+                        print('quad off grad beginning')
+                        recov_offset_grads = np.array([offset_gradient_fit_precomp(cbps.Mkk_obj.empty_aligned_objs[2][k,s].real, all_dot1[k], all_X[k], all_mask_rav[k])[1] for s in range(nsims_perf)])
+                        cbps.Mkk_obj.empty_aligned_objs[2][k].real -= np.array([masks[k]*recov_offset_grads[s] for s in range(nsims_perf)])
+                        if cross_mkk:
+                            print('doing quad off grad on cross')
+                            recov_offset_grads_cross = np.array([offset_gradient_fit_precomp(cbps.Mkk_obj.empty_aligned_objs[5][k,s].real, all_dot1[k], all_X[k], all_mask_rav[k])[1] for s in range(nsims_perf)])
+                            cbps.Mkk_obj.empty_aligned_objs[5][k].real -= np.array([masks[k]*recov_offset_grads_cross[s] for s in range(nsims_perf)])
+
+                    elif fc_sub:
+
+                        recov_offset_fcs = np.array([fc_fit_precomp(cbps.Mkk_obj.empty_aligned_objs[2][k,s].real, all_dot1[k], all_X[k], all_mask_rav[k])[1] for s in range(nsims_perf)])
+                        cbps.Mkk_obj.empty_aligned_objs[2][k].real -= np.array([masks[k]*recov_offset_fcs[s] for s in range(nsims_perf)])
+
+                        if cross_mkk:
+                            recov_offset_fcs = np.array([fc_fit_precomp(cbps.Mkk_obj.empty_aligned_objs[5][k,s].real, all_dot1[k], all_X[k], all_mask_rav[k])[1] for s in range(nsims_perf)])
+                            cbps.Mkk_obj.empty_aligned_objs[5][k].real -= np.array([masks[k]*recov_offset_fcs[s] for s in range(nsims_perf)])
+
 
                     if grad_sub: # probably skip this for mocks
                         planes = perform_grad_sub(k, cbps.Mkk_obj.empty_aligned_objs, masks[k], 2, dot1s, Xgrad, mask_ravs[k], nsims_perf)
