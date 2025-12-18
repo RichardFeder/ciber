@@ -6,18 +6,18 @@ import astropy.units as u
 from astropy import constants as const
 from astropy.io import fits
 import scipy.signal
-# from mock_galaxy_catalogs import *
-# from helgason import *
+# from ciber.mocks.galaxy_catalogs import *
+# from ciber.theory.helgason_model import *
 # from cross_spectrum_analysis import *
-# from ciber_beam import *
-# from noise_model import CIBER_NoiseModel
-from masking_utils import *
-from numerical_routines import *
+# from ciber.instrument.beam import *
+# from ciber.instrument.noise_model import CIBER_NoiseModel
+from ciber.masking.mask_utils import *
+from ciber.processing.numerical import *
 import config
-# from powerspec_utils import write_mask_file, write_Mkk_fits
-from mkk_parallel import compute_inverse_mkk, plot_mkk_matrix
+# from ciber.core.powerspec_utils import write_mask_file, write_Mkk_fits
+from ciber.pseudo_cl.mkk_compute import compute_inverse_mkk, plot_mkk_matrix
 
-from filtering_utils import calculate_plane, fit_gradient_to_map
+from ciber.processing.filtering import calculate_plane, fit_gradient_to_map
 import os 
 from PIL import Image
 # from image_eval import psf_poly_fit, image_model_eval
@@ -29,7 +29,7 @@ from numpy.fft import ifftshift as ifftshift
 from numpy.fft import fft2 as fft2
 from numpy.fft import ifft2 as ifft2
 
-from ciber_data_file_utils import *
+from ciber.io.ciber_data_utils import *
 
 # numerical_routines.py
 # def get_q0_post(q, nwide):

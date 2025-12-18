@@ -4,13 +4,13 @@ from astropy.io import fits
 import matplotlib
 import matplotlib.pyplot as plt
 
-from plotting_fns import plot_map
+from ciber.plotting.plot_utils import plot_map
 from scipy.stats import chi2
 
 
-from ciber_data_file_utils import load_ciber_gal_ps
-from powerspec_utils import *
-from ciber_powerspec_pipeline import *
+from ciber.io.ciber_data_utils import load_ciber_gal_ps
+from ciber.core.powerspec_utils import *
+from ciber.core.powerspec_pipeline import *
 
 
 from dataclasses import dataclass

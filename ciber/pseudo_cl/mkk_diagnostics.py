@@ -6,7 +6,7 @@ from numpy.fft import fftshift as fftshift
 from numpy.fft import ifftshift as ifftshift
 from numpy.fft import fft2 as fft2
 from numpy.fft import ifft2 as ifft2
-from mkk_parallel import *
+from ciber.pseudo_cl.mkk_compute import *
 # from ciber_data_helpers import *
 import pyfftw
 

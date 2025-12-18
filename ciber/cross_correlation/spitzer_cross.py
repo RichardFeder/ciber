@@ -1,17 +1,17 @@
 import numpy as np
 from astropy.io import fits
-from plotting_fns import plot_map
+from ciber.plotting.plot_utils import plot_map
 import config
-from ciber_powerspec_pipeline import *
-from noise_model import *
+from ciber.core.powerspec_pipeline import *
+from ciber.instrument.noise_model import *
 # from cross_spectrum_analysis import *
-from cross_spectrum import *
-from mkk_parallel import *
-from mkk_diagnostics import *
-from flat_field_est import *
-from plotting_fns import *
+from ciber.cross_correlation.cross_spectrum import *
+from ciber.pseudo_cl.mkk_compute import *
+from ciber.pseudo_cl.mkk_diagnostics import *
+from ciber.instrument.flat_field import *
+from ciber.plotting.plot_utils import *
 from ps_tests import *
-from powerspec_utils import *
+from ciber.core.powerspec_utils import *
 from astropy.coordinates import SkyCoord
 import healpy as hp
 import scipy.io

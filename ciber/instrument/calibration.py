@@ -1,13 +1,13 @@
 import matplotlib
 import matplotlib.pyplot as plt
-from ciber_mocks import *
+from ciber.mocks.cib_mocks import *
 import numpy as np
 from scipy import interpolate
 import os
 import astropy
 import astropy.wcs as wcs
 import config
-from ciber_powerspec_pipeline import *
+from ciber.core.powerspec_pipeline import *
 from ps_pipeline_go import *
 from scipy.optimize import curve_fit
 from sklearn.linear_model import LinearRegression

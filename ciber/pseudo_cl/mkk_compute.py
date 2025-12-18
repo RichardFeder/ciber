@@ -10,10 +10,10 @@ import multiprocessing
 from multiprocessing import Pool
 import pyfftw
 import time
-from filtering_utils import fit_gradient_to_map, precomp_gradient_dat, fit_gradient_to_map_precomp, precomp_offset_gradient, offset_gradient_fit_precomp
-# from plotting_fns import plot_map
-from numerical_routines import *
-from fourier_bkg_modl_ciber import *
+from ciber.processing.filtering import fit_gradient_to_map, precomp_gradient_dat, fit_gradient_to_map_precomp, precomp_offset_gradient, offset_gradient_fit_precomp
+# from ciber.plotting.plot_utils import plot_map
+from ciber.processing.numerical import *
+from ciber.processing.fourier_bkg import *
 
 
 def allocate_fftw_memory(data_shape, n_blocks=2):

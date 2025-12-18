@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 import scipy.stats
 from astropy.table import Table
 import pandas as pd
-from ciber_mocks import *
+from ciber.mocks.cib_mocks import *
 from cross_spectrum_analysis import *
 
 

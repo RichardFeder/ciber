@@ -1,9 +1,9 @@
 import numpy as np
-# from flat_field_est import *
+# from ciber.instrument.flat_field import *
 # from cross_spectrum_analysis import get_power_spec, get_power_spectrum_2d, azim_average_cl2d
-# from plotting_fns import plot_map
+# from ciber.plotting.plot_utils import plot_map
 # from cross_spectrum_analysis import *
-from fourier_bkg_modl_ciber import *
+from ciber.processing.fourier_bkg import *
 
 
 def precomp_filter_general(dimx, dimy, mask=None, gradient_filter=False, quadoff_grad=False, poly_filter_order=1, \

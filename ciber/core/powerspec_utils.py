@@ -9,8 +9,8 @@ from scipy.ndimage import gaussian_filter
 import matplotlib.pyplot as plt
 
 from astropy import units as u
-# from plotting_fns import plot_map
-from numerical_routines import *
+# from ciber.plotting.plot_utils import plot_map
+from ciber.processing.numerical import *
 
 # from astropy.table import Table
 # from reproject import reproject_interp

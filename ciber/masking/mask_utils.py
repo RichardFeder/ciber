@@ -10,10 +10,10 @@ from astropy import units as u
 from astropy.io import fits
 import scipy
 import pandas as pd
-# from powerspec_utils import write_mask_file, write_Mkk_fits
+# from ciber.core.powerspec_utils import write_mask_file, write_Mkk_fits
 
-from ciber_data_file_utils import *
-from ciber_beam import *
+from ciber.io.ciber_data_utils import *
+from ciber.instrument.beam import *
 # from ciber_source_mask_construction_pipeline import find_alpha_beta
 
 ''' TO DO : CAMB does not compile with Python 3 at the moment -- need to update Fortran compiler '''

@@ -1,6 +1,6 @@
 import matplotlib
 import matplotlib.pyplot as plt
-from ciber_mocks import *
+from ciber.mocks.cib_mocks import *
 
 import numpy as np
 from scipy import interpolate
@@ -11,14 +11,14 @@ from astropy.io import fits
 
 
 import config
-from ciber_powerspec_pipeline import *
+from ciber.core.powerspec_pipeline import *
 from ps_pipeline_go import *
-from cl_predictions import *
+from ciber.theory.cl_predictions import *
 
 
-from catalog_utils import *
-from ciber_powerspec_pipeline import *
-from galaxy_cross import *
+from ciber.io.catalog_utils import *
+from ciber.core.powerspec_pipeline import *
+from ciber.cross_correlation.galaxy_cross import *
 
 
 

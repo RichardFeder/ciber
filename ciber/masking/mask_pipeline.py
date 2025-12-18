@@ -4,13 +4,13 @@ import numpy as np
 import matplotlib.pyplot as plt
 import pandas as pd
 import sys
-from catalog_utils import *
+from ciber.io.catalog_utils import *
 if sys.version_info[0]==2:
-    from ciber_mocks import *
+    from ciber.mocks.cib_mocks import *
 from cross_spectrum_analysis import *
-from mask_source_classification import *
-from masking_utils import *
-from mkk_parallel import *
+from ciber.masking.source_classification import *
+from ciber.masking.mask_utils import *
+from ciber.pseudo_cl.mkk_compute import *
 
 
 def find_alpha_beta(intercept, minrad=10, dm=3, pivot=16.):

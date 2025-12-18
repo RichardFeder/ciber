@@ -8,12 +8,12 @@ import astropy
 import astropy.wcs as wcs
 import config
 
-from ciber_powerspec_pipeline import *
-from catalog_utils import *
+from ciber.core.powerspec_pipeline import *
+from ciber.io.catalog_utils import *
 from ps_pipeline_go import *
-from ciber_mocks import *
-from cl_predictions import *
-from mkk_parallel import *
+from ciber.mocks.cib_mocks import *
+from ciber.theory.cl_predictions import *
+from ciber.pseudo_cl.mkk_compute import *
 
 
 def compute_ciber_hsc_mkk(cbps, inst, mag_lim, quadoff_grad=True, grad_sub=False, ifield=8, mask_tail=None, datestr='111323', \

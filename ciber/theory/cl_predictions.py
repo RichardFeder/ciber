@@ -9,9 +9,9 @@ import scipy.io
 from scipy.ndimage import gaussian_filter
 import matplotlib
 import matplotlib.pyplot as plt
-from mkk_parallel import *
-from ciber_powerspec_pipeline import *
-from ciber_mocks import *
+from ciber.pseudo_cl.mkk_compute import *
+from ciber.core.powerspec_pipeline import *
+from ciber.mocks.cib_mocks import *
 
 
 def save_cl_predictions(inst, ifield_list, mag_lims, power_maglim_isl_igl, power_maglim_igl, keywd='meas'):

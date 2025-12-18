@@ -8,11 +8,11 @@ from astropy.stats import sigma_clip
 from scipy.stats import norm
 # from ciber2_noise_utils import *
 # from cross_spectrum_analysis import *
-from ciber_powerspec_pipeline import *
-from noise_model import *
+from ciber.core.powerspec_pipeline import *
+from ciber.instrument.noise_model import *
 import pickle
 import os
-from plotting_fns import *
+from ciber.plotting.plot_utils import *
 from scipy import stats
 import re
 

@@ -3,7 +3,7 @@ import numpy as np
 import matplotlib
 import matplotlib.pyplot as plt
 from scipy.interpolate import CubicSpline
-from plotting_fns import *
+from ciber.plotting.plot_utils import *
 
 
 # ------------------------------------------ main TreeCorr stuff below --------------------------------------------

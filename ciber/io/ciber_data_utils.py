@@ -10,8 +10,8 @@ from astropy.table import Table
 from PIL import Image
 import os
 import config
-from numerical_routines import interp_pred, interp_pred2
-# from cl_predictions import field_av_trilegal_predictions
+from ciber.processing.numerical import interp_pred, interp_pred2
+# from ciber.theory.cl_predictions import field_av_trilegal_predictions
 
 '''---------------------- loading functions ----------------------'''
 

@@ -24,8 +24,8 @@ else:
 if sys.version_info[0] == 3:
 	from sklearn.tree import plot_tree
 
-from catalog_utils import *
-from masking_utils import *
+from ciber.io.catalog_utils import *
+from ciber.masking.mask_utils import *
 
 
 def compute_tpr_fpr(predictions, labels):

@@ -11,12 +11,12 @@ from astropy.table import Table
 import glob
 from scipy.io import loadmat
 from scipy.ndimage import gaussian_filter
-from ciber_powerspec_pipeline import CIBER_PS_pipeline
+from ciber.core.powerspec_pipeline import CIBER_PS_pipeline
 from datetime import datetime
 
-from mkk_parallel import *
-from plotting_fns import plot_map
-from ciber_data_file_utils import *
+from ciber.pseudo_cl.mkk_compute import *
+from ciber.plotting.plot_utils import plot_map
+from ciber.io.ciber_data_utils import *
 
 
 def compute_rms_subpatches_new(image, mask, npix_perside=16, pct=False):

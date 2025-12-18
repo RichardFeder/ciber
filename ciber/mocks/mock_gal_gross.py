@@ -1,6 +1,6 @@
 import numpy as np
 import config
-from ciber_powerspec_pipeline import *
+from ciber.core.powerspec_pipeline import *
 from powerspec_utils import *
 from proc_jmocks import *
 from ebl_tom import load_norm_bg_dndz

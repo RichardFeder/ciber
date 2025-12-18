@@ -7,10 +7,10 @@ import pandas as pd
 import matplotlib
 import matplotlib.pyplot as plt
 
-from plotting_fns import plot_map
+from ciber.plotting.plot_utils import plot_map
 
-from ciber_powerspec_pipeline import *
-from gal_plotting_fns import *
+from ciber.core.powerspec_pipeline import *
+from ciber.plotting.galaxy_plots import *
 
 
 def completeness_model(m, m_lim=25.0, sigma_m=0.5):

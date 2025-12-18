@@ -8,8 +8,8 @@ from scipy.optimize import minimize
 from scipy import sparse
 from scipy.stats import norm
 
-from ciber_data_file_utils import *
-from gal_plotting_fns import *
+from ciber.io.ciber_data_utils import *
+from ciber.plotting.galaxy_plots import *
 
 
 

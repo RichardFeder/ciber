@@ -17,16 +17,16 @@ from reproject import reproject_adaptive
 
 import config
 # from cross_spectrum_analysis import *
-from mkk_parallel import *
-from flat_field_est import *
-from masking_utils import *
-from powerspec_utils import *
-from ciber_mocks import *
-from fourier_bkg_modl_ciber import *
-from numerical_routines import *
-from filtering_utils import *
-from plotting_fns import *
-# from ciber_noise_data_utils import iter_sigma_clip_mask, sigma_clip_maskonly
+from ciber.pseudo_cl.mkk_compute import *
+from ciber.instrument.flat_field import *
+from ciber.masking.mask_utils import *
+from ciber.core.powerspec_utils import *
+from ciber.mocks.cib_mocks import *
+from ciber.processing.fourier_bkg import *
+from ciber.processing.numerical import *
+from ciber.processing.filtering import *
+from ciber.plotting.plot_utils import *
+# from ciber.instrument.noise_data_utils import iter_sigma_clip_mask, sigma_clip_maskonly
 
 
 ''' 

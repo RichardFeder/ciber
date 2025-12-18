@@ -8,13 +8,13 @@ from matplotlib import cm
 import glob
 import config
 import matplotlib.patches as mpatches
-from ciber_data_file_utils import *
-from ciber_powerspec_pipeline import *
+from ciber.io.ciber_data_utils import *
+from ciber.core.powerspec_pipeline import *
 # from ps_tests import *
-from numerical_routines import *
-# from spitzer_auto_cross import *
-from powerspec_utils import *
-# from mkk_parallel import *
+from ciber.processing.numerical import *
+# from ciber.cross_correlation.spitzer_cross import *
+from ciber.core.powerspec_utils import *
+# from ciber.pseudo_cl.mkk_compute import *
 from mpl_toolkits.axes_grid1.inset_locator import inset_axes
 
 

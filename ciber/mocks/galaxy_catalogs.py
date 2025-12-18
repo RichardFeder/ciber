@@ -1,10 +1,10 @@
 import numpy as np
 import astropy.units as u
 from scipy import stats
-from helgason import *
-from lognormal_counts import *
-from catalog_utils import *
-from plotting_fns import *
+from ciber.theory.helgason_model import *
+from ciber.mocks.lognormal import *
+from ciber.io.catalog_utils import *
+from ciber.plotting.plot_utils import *
 import sys
 import config
 
