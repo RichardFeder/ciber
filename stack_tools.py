@@ -397,7 +397,8 @@ def stack_in_mag_bins_pred(inst, ifield, mask_base_path=None, catalog_basepath=N
 def ciber_stack_flux_prediction_test(inst, ifield_list = [4, 5, 6, 7, 8],\
                                      sdwfs=False, irac_ch=None, epoch_av=True,\
                                      epochidx=None, map_mode='gradsub_perep_conserve_flux', \
-                                    neff=11.2, bbox_to_anchor=[1.0, 1.3], dx=4, pixsize=7., plot=False):
+                                    neff=11.2, bbox_to_anchor=[1.0, 1.3], dx=4, pixsize=7., plot=False, \
+                                    mask_frac_min=0.9, trim_edge=50):
 
 
     cbps = CIBER_PS_pipeline()
@@ -408,9 +409,13 @@ def ciber_stack_flux_prediction_test(inst, ifield_list = [4, 5, 6, 7, 8],\
         lams = [3.6, 4.5]
         lam_um = lams[irac_ch-1]*1e-6*u.m
         nu_eff = (const.c/lam_um).value
+
+        mag_mask = 11.0
         
     else:
         mmin_range_Vega = np.array([16.0, 16.5, 17.0, 17.5, 18.0])+0.1
+
+        mag_mask = 15.0
 
         if inst==2:
             mmin_range_Vega -= 0.5
@@ -441,8 +446,8 @@ def ciber_stack_flux_prediction_test(inst, ifield_list = [4, 5, 6, 7, 8],\
 
     for fieldidx, ifield in enumerate(ifield_list):
 
-        sopred = stack_in_mag_bins_pred(inst, ifield, mmin_range=mmin_range_Vega, dx=dx, trim_edge=50, mask_frac_min=0.9, \
-                                           sdwfs=sdwfs, irac_ch=irac_ch, epoch_av=epoch_av, epochidx=epochidx, mag_mask=11.0, plot=True, \
+        sopred = stack_in_mag_bins_pred(inst, ifield, mmin_range=mmin_range_Vega, dx=dx, trim_edge=trim_edge, mask_frac_min=mask_frac_min, \
+                                           sdwfs=sdwfs, irac_ch=irac_ch, epoch_av=epoch_av, epochidx=epochidx, mag_mask=mag_mask, plot=plot, \
                                            map_mode=map_mode)
 
         

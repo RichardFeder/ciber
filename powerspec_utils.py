@@ -6,125 +6,114 @@ import config
 import scipy
 import scipy.io
 from scipy.ndimage import gaussian_filter
-import matplotlib
 import matplotlib.pyplot as plt
-from astropy.table import Table
-from reproject import reproject_interp
-from astropy.coordinates import SkyCoord
+
 from astropy import units as u
-import healpy as hp
-from scipy import interpolate
-import os
-from plotting_fns import *
-    
+# from plotting_fns import plot_map
+from numerical_routines import *
+
+# from astropy.table import Table
+# from reproject import reproject_interp
+# from astropy.coordinates import SkyCoord
+# import healpy as hp
+# import matplotlib
+# from scipy import interpolate
+# import os
 
 
-def gather_fiducial_auto_ps_results_new(inst, nsim_mock=None, observed_run_name=None, mock_run_name=None,\
-                                    mag_lim=None, ifield_list=[4, 5, 6, 7, 8], flatidx=0, \
-                                   datestr_obs='111323', datestr_mock='112022', lmax_cov=10000, \
-                                   save_cov=True, startidx=1, compute_cov=False, cbps=None):
+# def gather_fiducial_auto_ps_results(inst, nsim_mock=None, observed_run_name=None, mock_run_name=None,\
+#                                     mag_lim=None, ifield_list=[4, 5, 6, 7, 8], flatidx=0, \
+#                                    datestr_obs='111323', datestr_mock='112022', lmax_cov=2e5, \
+#                                    save_cov=True, startidx=1, compute_cov=False, ff_transition_mag=15.0):
     
-    if cbps is None:
-        cbps = CIBER_PS_pipeline()
+#     cbps = CIBER_PS_pipeline()
+#     bandstr_dict = dict({1:'J', 2:'H'})
+#     maglim_default = dict({1:17.5, 2:17.0})
+    
+#     bandstr = bandstr_dict[inst]
+    
+#     if mag_lim is None:
+#         mag_lim = maglim_default[inst]
         
-    bandstr_dict = dict({1:'J', 2:'H'})
-    maglim_default = dict({1:17.5, 2:17.0})
-    
-    bandstr = bandstr_dict[inst]
-    
-    if mag_lim is None:
-        mag_lim = maglim_default[inst]
-        
-    if observed_run_name is None:
-        observed_run_name = 'observed_'+bandstr+'lt'+str(mag_lim)+'_012524_ukdebias'
-        
-    if mock_run_name is None:
-        if mag_lim <= 15:
-            mock_mode = 'maskmkk'
-        else:
-            mock_mode = 'mkkffest'
-        mock_run_name = 'mock_'+str(bandstr)+'lt'+str(mag_lim)+'_121823_'+mock_mode+'_perquad'
-#         mock_run_name += '_ellm2clus'
+#     if observed_run_name is None:
+#         observed_run_name = 'observed_'+bandstr+'lt'+str(mag_lim)+'_072424_quadoff_grad_fcsub_order2'
+
+#     if mock_run_name is None:
+#         if mag_lim <= ff_transition_mag:
+#             mock_mode = 'maskmkk'
+#         else:
+#             mock_mode = 'mkkffest'        
+#         mock_run_name = 'mock_'+bandstr+'lt'+str(mag_lim)+'_072324_'+mock_mode+'_quadoff_grad_fcsub_order=2_theta0p01'
 
     
-    lb, observed_recov_ps, observed_recov_dcl_perfield, observed_field_average_cl, observed_field_average_dcl,\
-        mock_mean_input_ps, mock_all_field_averaged_cls, mock_all_field_cl_weights, \
-            all_mock_recov_ps, all_mock_signal_ps = process_observed_powerspectra(cbps, datestr_obs, ifield_list, inst, \
-                                                                                    observed_run_name, mock_run_name, nsim_mock, \
-                                                                                 flatidx=flatidx, apply_field_weights=True, \
-                                                                                 datestr_mock=datestr_mock) 
+#     lb, observed_recov_ps, observed_recov_dcl_perfield, observed_field_average_cl, observed_field_average_dcl,\
+#         mock_mean_input_ps, mock_all_field_averaged_cls, mock_all_field_cl_weights, \
+#             all_mock_recov_ps, all_mock_signal_ps = process_observed_powerspectra(cbps, datestr_obs, ifield_list, inst, \
+#                                                                                     observed_run_name, mock_run_name, nsim_mock, \
+#                                                                                  flatidx=flatidx, apply_field_weights=True, \
+#                                                                                  datestr_mock=datestr_mock, pct68=True) 
     
     
-    obs_dict = dict({'lb':lb, 'observed_run_name':observed_run_name, 'mag_lim':mag_lim, 'observed_recov_ps':observed_recov_ps, 'observed_recov_dcl_perfield':observed_recov_dcl_perfield, \
-                    'observed_field_average_cl':observed_field_average_cl, 'observed_field_average_dcl':observed_field_average_dcl})
+#     obs_dict = dict({'lb':lb, 'observed_run_name':observed_run_name, 'mag_lim':mag_lim, 'observed_recov_ps':observed_recov_ps, 'observed_recov_dcl_perfield':observed_recov_dcl_perfield, \
+#                     'observed_field_average_cl':observed_field_average_cl, 'observed_field_average_dcl':observed_field_average_dcl})
     
-    mock_dict = dict({'mock_run_name':mock_run_name, 'mock_mean_input_ps':mock_mean_input_ps, 'mock_all_field_averaged_cls':mock_all_field_averaged_cls, \
-                     'mock_all_field_cl_weights':mock_all_field_cl_weights, 'all_mock_recov_ps':all_mock_recov_ps, 'all_mock_signal_ps':all_mock_signal_ps})
+#     mock_dict = dict({'mock_run_name':mock_run_name, 'mock_mean_input_ps':mock_mean_input_ps, 'mock_all_field_averaged_cls':mock_all_field_averaged_cls, \
+#                      'mock_all_field_cl_weights':mock_all_field_cl_weights, 'all_mock_recov_ps':all_mock_recov_ps, 'all_mock_signal_ps':all_mock_signal_ps})
     
-    cov_dict = None
-    cl_fpath = None
-    if compute_cov:
-        lb_mask, all_cov_indiv_full,\
-            all_resid_data_matrices,\
-                resid_joint_data_matrix = compute_mock_covariance_matrix(lb, inst, all_mock_recov_ps, mock_all_field_averaged_cls, \
-                                                                        lmax=lmax_cov, save=save_cov, mock_run_name=mock_run_name, plot=False, startidx=startidx)
+#     cov_dict, cl_path = None, None
+    
+#     if compute_cov:
+#         lb_mask, all_cov_indiv_full,\
+#             all_resid_data_matrices,\
+#                 resid_joint_data_matrix = compute_mock_covariance_matrix(lb, inst, all_mock_recov_ps, mock_all_field_averaged_cls, \
+#                                                                         ifield_list=ifield_list, lmax=lmax_cov, save=save_cov,\
+#                                                                          mock_run_name=mock_run_name, plot=False, startidx=startidx)
 
-        cov_dict = dict({'lb_mask':lb_mask, 'all_cov_indiv_full':all_cov_indiv_full, 'all_resid_data_matrices':all_resid_data_matrices, \
-                        'resid_joint_data_matrix':resid_joint_data_matrix})
+#         cov_dict = dict({'lb_mask':lb_mask, 'all_cov_indiv_full':all_cov_indiv_full, 'all_resid_data_matrices':all_resid_data_matrices, \
+#                         'resid_joint_data_matrix':resid_joint_data_matrix})
 
-        if save_cov:
-            cl_fpath = save_weighted_mock_cl_file(lb, inst, mock_run_name, mock_mean_input_ps, mock_all_field_averaged_cls, mock_all_field_cl_weights, all_mock_recov_ps, \
-                            all_mock_signal_ps)
+#         if save_cov:
+#             print('Saving covariance')
+#             cl_fpath = save_weighted_mock_cl_file(lb, inst, mock_run_name, mock_mean_input_ps, mock_all_field_averaged_cls, mock_all_field_cl_weights, all_mock_recov_ps, \
+#                             all_mock_signal_ps)
+#             print('Saved to ', cl_fpath)
         
     
-    return obs_dict, mock_dict, cov_dict, cl_fpath
+#     return obs_dict, mock_dict, cov_dict, cl_fpath
 
-def calc_binned_ps_vs_mag(mag_lims, ifield_list, obs_fieldav_cl, obs_fieldav_dcl, pf, observed_recov_dcl_perfield=None,\
-                          power_maglim_isl_igl=None, nbp=12):
 
-    nmag = len(mag_lims)
-    binned_obs_fieldav, binned_obs_fieldav_dcl, igl_isl_vs_maglim = [np.zeros((nmag, nbp)) for x in range(3)]
-    if observed_recov_dcl_perfield is not None:
-        binned_obs_perfield, binned_obs_perfield_dcl = [np.zeros((nmag, len(ifield_list), nbp)) for x in range(2)]
-
-    prefac_binned = np.zeros((nbp))
+def load_shift_cl(inst, mask_tail, dx, dy):
     
-    for magidx, maglim in enumerate(mag_lims):
-        for idx in range(nbp):
-
-            if idx==0:
-                prefac_binned[idx] = pf[2*idx+1]
-                binned_obs_fieldav[magidx,idx] = obs_fieldav_cl[2*idx+1]
-                binned_obs_fieldav_dcl[magidx,idx] = obs_fieldav_dcl[2*idx+1]
-
-                if observed_recov_dcl_perfield is not None:
-                    for fieldidx, ifield in enumerate(ifield_list):
-                        binned_obs_perfield[magidx,fieldidx,idx] = observed_recov_ps[fieldidx,2*idx+1]
-                        binned_obs_perfield_dcl[magidx,fieldidx,idx] = observed_recov_dcl_perfield[fieldidx,2*idx+1]
-
-
-                if power_maglim_isl_igl is not None:
-                    igl_isl_vs_maglim[magidx,idx] = power_maglim_isl_igl[2*idx+1]
-
-            else:
-
-                prefac_binned[idx] = np.sqrt(pf[2*idx]*pf[2*idx+1])
-
-                binned_obs_fieldav[magidx,idx] = 0.5*(obs_fieldav_cl[2*idx]+obs_fieldav_cl[2*idx+1])
-                binned_obs_fieldav_dcl[magidx,idx] = np.sqrt(obs_fieldav_dcl[2*idx]**2 + obs_fieldav_dcl[2*idx+1]**2)/np.sqrt(2)
-
-                if observed_recov_dcl_perfield is not None:
-                    for fieldidx, ifield in enumerate(ifield_list):
-                        binned_obs_perfield[magidx,fieldidx,idx] = 0.5*(observed_recov_ps[fieldidx,2*idx]+observed_recov_ps[fieldidx,2*idx+1])
-                        binned_obs_perfield_dcl[magidx,fieldidx,idx] = np.sqrt(observed_recov_dcl_perfield[fieldidx,2*idx]**2 + observed_recov_dcl_perfield[fieldidx,2*idx+1]**2)/np.sqrt(2)
-
-                if power_maglim_isl_igl is not None:
-                    igl_isl_vs_maglim[magidx,idx] = 0.5*(power_maglim_isl_igl[2*idx] + power_maglim_isl_igl[2*idx+1])
+    # load cross ps file
+    cl_fpath = config.ciber_basepath+'data/input_recovered_ps/cl_files/TM'+str(inst)+'/halfexp_cross_shiftxy/halfexp_cross_spectrum_'+mask_tail
+    
+    if dx is not None and dy is not None:
+        cl_fpath += '_dx='+str(dx)+'_dy='+str(dy)
+    
+    halfexp_cross = np.load(cl_fpath+'.npz')
+    lb, all_clx, all_clx_err, ifield_list = halfexp_cross['lb'], halfexp_cross['all_clx'], halfexp_cross['all_clx_err'], halfexp_cross['ifield_list']
+    
+    weights = 1./np.array(all_clx_err)**2
+    
+    weighted_average_cl, weighted_average_dcl = compute_weighted_cl(all_clx, weights)
+    
+    return lb, weighted_average_cl, weighted_average_dcl, ifield_list
 
 
+def load_shift_cl_sim(inst, ifield, maglim, with_read_noise=False):
 
-    return prefac_binned, binned_obs_fieldav, binned_obs_fieldav_dcl,\
-                binned_obs_perfield, binned_obs_perfield_dcl, igl_isl_vs_maglim 
+    if with_read_noise:
+        shift_cl_sim = np.load('data/mean_shifted_spectra_TM'+str(inst)+'_ifield'+str(ifield)+'_maglim'+str(maglim)+'_wread_new.npz')
+    else:
+        shift_cl_sim = np.load('data/mean_shifted_spectra_TM'+str(inst)+'_ifield'+str(ifield)+'_maglim'+str(maglim)+'.npz')
+    
+    lb=shift_cl_sim['lb']
+    mean_shifted_spectra=shift_cl_sim['mean_shifted_spectra']
+    std_shifted_spectra=shift_cl_sim['std_shifted_spectra']
+    dx_range=shift_cl_sim['dx_range']
+    dy_range=shift_cl_sim['dy_range']
+    
+    return lb, mean_shifted_spectra, std_shifted_spectra, dx_range, dy_range
 
 
 def compute_rlx_unc_comps(cl_auto_a, cl_auto_b, cl_cross_ab, dcl_auto_a, dcl_auto_b, dcl_cross_ab):
@@ -200,7 +189,7 @@ def compute_field_averaged_power_spectrum(per_field_cls, per_field_dcls=None, pe
             if verbose:
                 print(per_field_cl_weights.shape, per_field_cls.shape)
             per_field_cl_weights = per_field_dcls**(-2)
-            per_field_cl_weights[per_field_cls < 0.] = 0.
+            # per_field_cl_weights[per_field_cls < 0.] = 0.
                 
     else:
         if which_idxs is not None:
@@ -216,7 +205,7 @@ def compute_field_averaged_power_spectrum(per_field_cls, per_field_dcls=None, pe
     
     field_averaged_std = np.sqrt(weighted_variance)
     
-    per_field_cls[per_field_cls < 0] = 0
+    # per_field_cls[per_field_cls < 0] = 0
     
     nfields_per_bin = np.count_nonzero(per_field_cls, axis=0)
     
@@ -232,9 +221,13 @@ def compute_field_averaged_power_spectrum(per_field_cls, per_field_dcls=None, pe
     return field_averaged_cl, field_averaged_std, cl_sumweights, per_field_cl_weights
 
 def compute_mock_covariance_matrix(lb, inst, all_mock_recov_ps, mock_all_field_averaged_cls, lmax=None, ifield_list = [4, 5, 6, 7, 8], save=False, \
-                                  mock_run_name=None, datestr='111323', plot=False, per_field=True, startidx=None):
+                                  mock_run_name=None, datestr='111323', plot=False, per_field=True, startidx=None, nsim_startidx=0):
     
     
+    all_mock_recov_ps = all_mock_recov_ps[nsim_startidx:]
+    mock_all_field_averaged_cls = mock_all_field_averaged_cls[nsim_startidx:]
+    print("all mock recov ps has shape ", all_mock_recov_ps.shape)
+
     prefac = lb*(lb+1)/(2*np.pi)
 
     if lmax is not None:
@@ -251,18 +244,18 @@ def compute_mock_covariance_matrix(lb, inst, all_mock_recov_ps, mock_all_field_a
     nsim = all_mock_recov_ps.shape[0]
     
     print('nsim = ', nsim)
+
+    print('lb mask:', lb_mask)
     
     resid_data_matrix = np.zeros_like(all_mock_recov_ps)
 
     print('resid_data_matrix has shape ', resid_data_matrix.shape)
-    print('resid_joint_data_matrix has shape ', resid_joint_data_matrix.shape)
-
 
     resid_joint_data_matrix = np.zeros((nsim, ndof*resid_data_matrix.shape[1]))
+
+    print('resid_joint_data_matrix has shape ', resid_joint_data_matrix.shape)
+
     all_cov_indiv_full, all_resid_data_matrices, all_corr_indiv_full = [[] for x in range(3)]
-    
-
-
     
     if per_field:
     
@@ -272,7 +265,7 @@ def compute_mock_covariance_matrix(lb, inst, all_mock_recov_ps, mock_all_field_a
 
                 resid_joint_data_matrix[simidx, fieldidx*ndof:(fieldidx+1)*ndof] = resid_data_matrix[simidx, fieldidx, lb_mask]
 
-            resid_data_matrix_indiv = resid_data_matrix[:,fieldidx,:].copy()
+            resid_data_matrix_indiv = resid_data_matrix[:,fieldidx,lb_mask].copy()
             resid_data_matrix_indiv -= np.mean(resid_data_matrix_indiv)
             all_resid_data_matrices.append(resid_data_matrix_indiv)
 
@@ -369,7 +362,8 @@ def get_power_spectrum_2d(map_a, map_b=None, pixsize=7., verbose=False):
 def get_power_spec(map_a, map_b=None, mask=None, pixsize=7., 
                    lbinedges=None, lbins=None, nbins=29, 
                    logbin=True, weights=None, return_full=False, return_Dl=False, verbose=False, \
-                   remove_outlier_fac=None):
+                   remove_outlier_fac=None, sigma_clip_bandpowers=False, sig=5, theta_masks=None, \
+                   clip_outlier_norm_modes=False, clip_norm_thresh=100, lclip_min=500):
     '''
     calculate 1d cross power spectrum Cl
     
@@ -410,23 +404,54 @@ def get_power_spec(map_a, map_b=None, mask=None, pixsize=7.,
         
     l2d, ps2d = get_power_spectrum_2d(map_a, map_b=map_b, pixsize=pixsize)
             
-    lbins, Cl, Clerr = azim_average_cl2d(ps2d, l2d, nbins=nbins, lbinedges=lbinedges, lbins=lbins, weights=weights, logbin=logbin, verbose=verbose, \
-                                        remove_outlier_fac=remove_outlier_fac)
-        
+    if theta_masks is not None:
+        lbins, Cl, Clerr, Cl_theta_bins, Clerr_theta_bins = azim_average_cl2d(ps2d, l2d, nbins=nbins, lbinedges=lbinedges, lbins=lbins, weights=weights, logbin=logbin, verbose=verbose, \
+                                            remove_outlier_fac=remove_outlier_fac, sigma_clip_bandpowers=sigma_clip_bandpowers, sig=sig, \
+                                            theta_masks=theta_masks, clip_outlier_norm_modes=clip_outlier_norm_modes, clip_norm_thresh=clip_norm_thresh, \
+                                            lclip_min=lclip_min)
+            
+    else:
+        lbins, Cl, Clerr = azim_average_cl2d(ps2d, l2d, nbins=nbins, lbinedges=lbinedges, lbins=lbins, weights=weights, logbin=logbin, verbose=verbose, \
+                                            remove_outlier_fac=remove_outlier_fac, sigma_clip_bandpowers=sigma_clip_bandpowers, sig=sig, \
+                                            clip_outlier_norm_modes=clip_outlier_norm_modes, clip_norm_thresh=clip_norm_thresh, \
+                                            lclip_min=lclip_min)
+            
     if return_Dl:
         Cl = Cl * lbins * (lbins+1) / 2 / np.pi
         
-    if return_full:
-        return lbins, Cl, Clerr, lbinedges, l2d, ps2d
+    if theta_masks is not None:
+        return lbins, Cl, Clerr, lbinedges, l2d, ps2d, Cl_theta_bins, Clerr_theta_bins
     else:
-        return lbins, Cl, Clerr
+        if return_full:
+            return lbins, Cl, Clerr, lbinedges, l2d, ps2d
+        else:
+            return lbins, Cl, Clerr
 
 
-def return_frac_knox_error(lb, delta_ell, nsidedeg=2):
-    frac_knox_errors = np.sqrt(2./((2*lb+1)*delta_ell))
+def return_frac_knox_error(lb, delta_ell, nsidedeg=2, mask_frac=None, mode='auto'):
+
+    if mode=='auto':
+        pf= 2.
+    elif mode=='cross':
+        pf = 1.
+        
+    frac_knox_errors = np.sqrt(pf/((2*lb+1)*delta_ell))
     fsky = float(nsidedeg**2)/float(41253.)    
+
+    if mask_frac is not None:
+        fsky *= mask_frac
+        
     frac_knox_errors /= np.sqrt(fsky)
     return frac_knox_errors
+
+def calc_bandpower_cl_info(p, w):
+
+    cl = np.sum(p*w) / np.sum(w)
+    clerr = np.std(p)
+    Nmodes = len(p)
+    Neff = compute_Neff(w)
+
+    return cl, clerr, Nmodes, Neff 
     
 
 def azimuthalAverage(image, ell_min=90, center=None, logbins=True, nbins=60, sterad_term=None):
@@ -483,8 +508,10 @@ def azimuthalAverage(image, ell_min=90, center=None, logbins=True, nbins=60, ste
 
     return av_rbins, np.array(rad_avg), np.array(rad_std)
 
+
 def azim_average_cl2d(ps2d, l2d, nbins=29, lbinedges=None, lbins=None, weights=None, logbin=False, verbose=False, stderr=True, \
-                    remove_outlier_fac=None):
+                    remove_outlier_fac=None, sigma_clip_bandpowers=False, sig=5, theta_masks=None, clip_outlier_norm_modes=False, \
+                    clip_norm_thresh=100, lclip_min=500):
     
     if lbinedges is None:
         lmin = np.min(l2d[l2d!=0])
@@ -507,41 +534,113 @@ def azim_average_cl2d(ps2d, l2d, nbins=29, lbinedges=None, lbins=None, weights=N
     Nmodes = np.zeros(len(lbins),dtype=int)
     Neffs = np.zeros(len(lbins))
 
+    if theta_masks is not None:
+
+        Cl_theta_bins, Clerr_theta_bins, Nmodes_permask, Neffs_permask = [np.zeros((len(lbins), len(theta_masks))) for x in range(4)]
+
+
     for i,(lmin, lmax) in enumerate(zip(lbinedges[:-1], lbinedges[1:])):
-        lbmask = (l2d>=lmin)*(l2d<lmax)
+        lbmask = (l2d>=lmin)*(l2d<lmax) # band power mask
+
         sp = np.where(lbmask)
-        
-        # sp = np.where((l2d>=lmin) & (l2d<lmax))
         p = ps2d[sp]
         w = weights[sp]
 
-        Neff = compute_Neff(w)
-
+        # print('ps2d[sp] has shape ', ps2d[sp])
+        prav = ps2d[sp].ravel()
 
         if remove_outlier_fac is not None and i > 5:
-
-            prav = p.ravel()
-            wrav = w.ravel()
             mean_prav = np.mean(prav)
-            sp_remove_outlier = (prav < mean_prav*remove_outlier_fac)
-            Cl[i] = np.sum(prav[sp_remove_outlier]*wrav[sp_remove_outlier])/np.sum(wrav[sp_remove_outlier])
-            print('for bin ', i, 'sum weights with/without outlier removal: ', np.sum(wrav[sp_remove_outlier]), np.sum(w))
+            which_outlier = lbmask*(ps2d > mean_prav*remove_outlier_fac)
+
+        elif clip_outlier_norm_modes: # default
+
+            ps2d_weighted = ps2d*weights 
+            ps2d_weighted[lbmask] /= np.mean(ps2d_weighted[lbmask])
+            # which_outlier = lbmask*(ps2d_weighted > clip_norm_thresh)*(l2d > lclip_min)
+            which_outlier = lbmask*(np.abs(ps2d_weighted) > clip_norm_thresh)*(l2d > lclip_min) # temp for spitzer
+
+        elif sigma_clip_bandpowers and i > 3:
+            sigma_val = 0.5*(np.nanpercentile(prav, 84) - np.nanpercentile(prav, 16))
+            abs_dev = np.abs(ps2d-np.nanmedian(prav))
+            which_outlier = lbmask*(abs_dev > sig*sigma_val)
         else:
+            which_outlier=None
 
-            Cl[i] = np.sum(p*w) / np.sum(w)
+        if which_outlier is not None:
+            # print('')
+            # weights[which_outlier] = 0
+            lbmask[which_outlier] = 0
 
-        if verbose:
-            print('sum weights:', np.sum(w))
-            
-        Clerr[i] = np.std(p)
+
+        # recompute
+        sp_bp = np.where(lbmask)
+        prav_bp = ps2d[sp_bp].ravel()
+        wrav_bp = weights[sp_bp].ravel()
+
+        cl, clerr, Nmode, Neff = calc_bandpower_cl_info(prav_bp, wrav_bp)
+        Cl[i] = cl
+        Clerr[i] = clerr
         if stderr:
             Clerr[i] /= np.sqrt(len(p))
-        Nmodes[i] = len(p)
+        Nmodes[i] = Nmode
         Neffs[i] = Neff
+
+        # already has same mode outlier rejection as full bandpowers
+        if theta_masks is not None:
+            for theta_idx, theta_mask in enumerate(theta_masks):
+
+                lbmask_wtheta = lbmask*theta_mask
+                sp_theta = np.where(lbmask_wtheta)
+                p_theta = ps2d[sp_theta]
+                w_theta = weights[sp_theta]
+
+                cl_theta, clerr_theta, Nmodes_theta, Neff_theta = calc_bandpower_cl_info(p_theta, w_theta)
+
+                Cl_theta_bins[i, theta_idx] = cl_theta
+                Clerr_theta_bins[i, theta_idx] = clerr_theta
+                if stderr:
+                    Clerr_theta_bins[i, theta_idx] /= np.sqrt(len(p_theta))
+                Nmodes_permask[i, theta_idx] = Nmodes_theta
+                Neffs_permask[i, theta_idx] = Neff_theta
+
+        # if sigma_clip_bandpowers and i > 3 and remove_outlier_fac is None:
+        #     sigma_val = 0.5*(np.nanpercentile(prav, 84) - np.nanpercentile(prav, 16))
+        #     abs_dev = np.abs(prav-np.nanmedian(prav))
+        #     sp_remove_outlier = (abs_dev < sig*sigma_val)
+        #     Cl[i] = np.sum(prav[sp_remove_outlier]*wrav[sp_remove_outlier])/np.sum(wrav[sp_remove_outlier])
+        #     print('for bin ', i, 'sum weights with/without '+str(sig)+' sigma clip removal: ', np.sum(wrav[sp_remove_outlier]), np.sum(w))
+
+        #     plt.figure(figsize=(4, 3))
+        #     plt.hist(prav, bins=30, histtype='step', label='raw modes')
+        #     plt.hist(prav[sp_remove_outlier], bins=30, histtype='step', label='sigma clipped')
+        #     plt.axvline(np.median(prav), color='k')
+        #     plt.axvline(np.median(prav)+sigma_val, color='k', linestyle='dashed')
+        #     plt.axvline(np.median(prav)-sigma_val, color='k', linestyle='dashed')
+        #     plt.axvline(Cl[i], color='r', linestyle='dashed', linewidth=2)
+        #     plt.legend()
+        #     plt.title('PS2D modes, ['+str(int(lmin))+', '+str(int(lmax))+']')
+        #     plt.show()
+
+        # else:
+
+        #     Cl[i] = np.sum(p*w) / np.sum(w)
+
+        # if verbose:
+        #     print('sum weights:', np.sum(w))
+            
+        # Clerr[i] = np.std(p)
+        # if stderr:
+        #     Clerr[i] /= np.sqrt(len(p))
+        # Nmodes[i] = len(p)
+        # Neffs[i] = Neff
 
     if verbose:
         print('Nmodes:', Nmodes)
         print('Neffs:', Neffs)
+
+    if theta_masks is not None:
+        return lbins, Cl, Clerr, Cl_theta_bins, Clerr_theta_bins
     
     return lbins, Cl, Clerr
 
@@ -935,10 +1034,33 @@ def compute_weighted_cl(indiv_cl, field_weights):
         
     return field_average_cl, field_average_dcl
 
-def ciber_ciber_rl_coefficient(obs_name_A, obs_name_B, obs_name_AB, startidx=1, endidx=-1):
+
+def compute_weighted_cl_2(all_cl, all_clerr):
+    
+    all_cl = np.array(all_cl)
+    all_clerr = np.array(all_clerr)
+    
+    variance = all_clerr**2
+    
+    weights = 1./variance
+    
+    cl_sumweights = np.sum(weights, axis=0)
+    
+    weighted_variance = 1./cl_sumweights
+    
+    field_averaged_std = np.sqrt(weighted_variance)
+    
+    field_averaged_cl = np.nansum(weights*all_cl, axis=0)/cl_sumweights
+    
+    return field_averaged_cl, field_averaged_std
+
+def ciber_ciber_rl_coefficient(obs_name_A, obs_name_B, obs_name_AB, startidx=1, endidx=-1, ifield_list=[4, 5, 6, 7, 8]):
 
     
     obs_fieldav_cls, obs_fieldav_dcls = [], []
+    perfield_cls, perfield_dcls = [], []
+    r_TM_perfield, sigma_r_TM_perfield = [], []
+
     inst_list = [1, 2]
     for clidx, obs_name in enumerate([obs_name_A, obs_name_B, obs_name_AB]):
         if clidx<2:
@@ -946,21 +1068,34 @@ def ciber_ciber_rl_coefficient(obs_name_A, obs_name_B, obs_name_AB, startidx=1, 
             cl_fpath_obs = config.ciber_basepath+'data/input_recovered_ps/cl_files/TM'+str(inst_list[clidx])+'/cl_'+obs_name+'.npz'
             lb, observed_recov_ps, observed_recov_dcl_perfield,\
                 observed_field_average_cl, observed_field_average_dcl,\
-                    mock_all_field_cl_weights = load_weighted_cl_file(cl_fpath_obs)     
+                    _, field_average_error = load_weighted_cl_file(cl_fpath_obs, cltype='bloop')     
         else:
             cl_fpath_obs = config.ciber_basepath+'data/input_recovered_ps/cl_files/TM1_TM2_cross/cl_'+obs_name+'.npz'
             lb, observed_recov_ps, observed_recov_dcl_perfield,\
                 observed_field_average_cl, observed_field_average_dcl,\
-                    mock_all_field_cl_weights = load_weighted_cl_file(cl_fpath_obs)
+                    _, field_average_error = load_weighted_cl_file(cl_fpath_obs, cltype='cross')
 
         obs_fieldav_cls.append(observed_field_average_cl)
         obs_fieldav_dcls.append(observed_field_average_dcl)
 
+        perfield_cls.append(observed_recov_ps)
+        perfield_dcls.append(observed_recov_dcl_perfield)
+
     r_TM = obs_fieldav_cls[2]/np.sqrt(obs_fieldav_cls[0]*obs_fieldav_cls[1])
+
+    for fieldidx in range(len(ifield_list)):
+
+        r_TM_field = perfield_cls[2][fieldidx]/np.sqrt(perfield_cls[0][fieldidx]*perfield_cls[1][fieldidx])
+        sigma_r_TM_field = np.sqrt((1./(perfield_cls[0][fieldidx]*perfield_cls[1][fieldidx]))*(perfield_dcls[2][fieldidx]**2 + (perfield_cls[2][fieldidx]*perfield_dcls[0][fieldidx]/(2*perfield_cls[0][fieldidx]))**2+(perfield_cls[2][fieldidx]*perfield_dcls[1][fieldidx]/(2*perfield_cls[1][fieldidx]))**2))
+
+        # print(r_TM_field)
+        r_TM_perfield.append(r_TM_field)
+        sigma_r_TM_perfield.append(sigma_r_TM_field)
+
 
     sigma_r_TM = np.sqrt((1./(obs_fieldav_cls[0]*obs_fieldav_cls[1]))*(obs_fieldav_dcls[2]**2 + (obs_fieldav_cls[2]*obs_fieldav_dcls[0]/(2*obs_fieldav_cls[0]))**2+(obs_fieldav_cls[2]*obs_fieldav_dcls[1]/(2*obs_fieldav_cls[1]))**2))
 
-    return lb, r_TM, sigma_r_TM, obs_fieldav_cls, obs_fieldav_dcls
+    return lb, r_TM, sigma_r_TM, obs_fieldav_cls, obs_fieldav_dcls, r_TM_perfield, sigma_r_TM_perfield
 
 
 def compute_sim_corrected_fieldaverage(recovered_ps_by_field, input_ps_by_field, lb, obs_idx=0, compute_field_weights=True, \
@@ -1095,4 +1230,126 @@ def knox_spectra(radprofs_auto, radprofs_cross=None, radprofs_gal=None, \
             list_of_crossterms.append(cross_terms)
 
         return snr_sq_cross_list, dCl_sq, ells, list_of_crossterms
+
+
+def compute_effective_ell_small_sky(ell_min, ell_max, area_deg2, 
+                                    weighting='logarithmic', include_mode_coupling=True):
+    """
+    Compute effective multipole for small sky area surveys.
+    
+    Parameters:
+    -----------
+    ell_min : float
+        Minimum ell value
+    ell_max : float
+        Maximum ell value  
+    area_deg2 : float
+        Survey area in square degrees
+    weighting : str
+        'logarithmic', 'arithmetic', or 'mode_weighted'
+    include_mode_coupling : bool
+        Whether to account for mode coupling effects
+    
+    Returns:
+    --------
+    ell_effective : float
+        Effective multipole
+    delta_ell : float
+        Multipole resolution/bin width
+    n_modes : float
+        Approximate number of independent modes
+    """
+    
+    # Convert area to steradians and compute fsky
+    area_sr = area_deg2 * (np.pi/180)**2
+    fsky = area_sr / (4 * np.pi)
+    
+    # Angular size of survey (approximate as square for simplicity)
+    theta_survey = np.sqrt(area_deg2) * np.pi / 180  # in radians
+    
+    # Fundamental mode for this survey area
+    ell_fundamental = np.pi / theta_survey
+    
+    # Mode coupling scale - modes separated by less than this are coupled
+    delta_ell = 2 * ell_fundamental  # Conservative estimate
+    
+    # Check if ell_min is above the fundamental mode
+    if ell_min < ell_fundamental:
+        print(f"Warning: ell_min={ell_min:.1f} is below fundamental mode ell={ell_fundamental:.1f}")
+        ell_min_eff = max(ell_min, ell_fundamental)
+    else:
+        ell_min_eff = ell_min
+    
+    # Effective number of independent ell modes
+    n_modes = (ell_max - ell_min_eff) / delta_ell
+    
+    if weighting == 'logarithmic':
+        # Logarithmic mean - appropriate for log-spaced multipoles
+        ell_effective = np.exp(0.5 * (np.log(ell_min_eff) + np.log(ell_max)))
+        
+    elif weighting == 'arithmetic':
+        # Simple arithmetic mean
+        ell_effective = 0.5 * (ell_min_eff + ell_max)
+        
+    elif weighting == 'mode_weighted':
+        # Weight by number of modes (2ell+1) and sky fraction
+        ell_samples = np.linspace(ell_min_eff, ell_max, 100)
+        weights = fsky * (2 * ell_samples + 1)
+        
+        # Apply exponential damping for very small sky
+        if include_mode_coupling:
+            # Damping due to incomplete sky coverage
+            damping = np.exp(-0.5 * (delta_ell / ell_samples)**2)
+            weights *= damping
+        
+        ell_effective = np.sum(ell_samples * weights) / np.sum(weights)
+    
+    else:
+        raise ValueError(f"Unknown weighting scheme: {weighting}")
+    
+    return ell_effective, delta_ell, n_modes
+
+
+def analyze_small_sky_multipoles(area_deg2=20.0):
+    """
+    Analyze effective multipoles for your specific survey configuration.
+    """
+    
+    print(f"Survey area: {area_deg2:.1f} deg²")
+    print(f"f_sky: {area_deg2 / 41253:.5f}")
+    print("-" * 50)
+    
+    # Case 1: 300 < ell < 1000
+    ell_min_1, ell_max_1 = 300, 1000
+    ell_eff_1, delta_ell_1, n_modes_1 = compute_effective_ell_small_sky(
+        ell_min_1, ell_max_1, area_deg2, weighting='mode_weighted'
+    )
+    
+    print(f"\nRange: {ell_min_1} < ell < {ell_max_1}")
+    print(f"Effective ell (mode-weighted): {ell_eff_1:.1f}")
+    print(f"Multipole resolution Δell: {delta_ell_1:.1f}")
+    print(f"Number of independent modes: {n_modes_1:.1f}")
+    
+    # Case 2: 300 < ell < 2000
+    ell_min_2, ell_max_2 = 300, 2000
+    ell_eff_2, delta_ell_2, n_modes_2 = compute_effective_ell_small_sky(
+        ell_min_2, ell_max_2, area_deg2, weighting='mode_weighted'
+    )
+    
+    print(f"\nRange: {ell_min_2} < ell < {ell_max_2}")
+    print(f"Effective ell (mode-weighted): {ell_eff_2:.1f}")
+    print(f"Multipole resolution Δell: {delta_ell_2:.1f}")
+    print(f"Number of independent modes: {n_modes_2:.1f}")
+    
+    # Compare different weighting schemes
+    print("\n" + "=" * 50)
+    print("Comparison of weighting schemes for 300 < ell < 1000:")
+    
+    for weighting in ['logarithmic', 'arithmetic', 'mode_weighted']:
+        ell_eff, _, _ = compute_effective_ell_small_sky(
+            300, 1000, area_deg2, weighting=weighting
+        )
+        print(f"  {weighting:15s}: ell_eff = {ell_eff:.1f}")
+    
+    return ell_eff_1, ell_eff_2
 

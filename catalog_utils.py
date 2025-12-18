@@ -13,7 +13,8 @@ from scipy.ndimage import gaussian_filter
 import config
 
 
-def catalog_df_add_xy(field, df, datadir='/Users/luminatech/Documents/ciber2/ciber/data/', imcut=True):
+def catalog_df_add_xy(field, df, datadir='/Users/luminatech/Documents/ciber2/ciber/data/', imcut=True, \
+    rakey='ra', deckey='dec'):
     order = [c for c in df.columns]
     # find the x, y solution with all quad
     for inst in [1,2]:
@@ -27,14 +28,14 @@ def catalog_df_add_xy(field, df, datadir='/Users/luminatech/Documents/ciber2/cib
             wcs_hdr=wcs.WCS(hdulist[('primary',1)].header, hdulist)
             hdulist.close()
 
-            ra_arr = np.array(df['ra']).astype(float)
-            dec_arr = np.array(df['dec']).astype(float)
+            ra_arr = np.array(df[rakey]).astype(float)
+            dec_arr = np.array(df[deckey]).astype(float)
 
             src_coord = SkyCoord(ra=ra_arr*u.degree, dec=dec_arr*u.degree, frame='icrs', unit=u.degree)
 
             # src_coord = SkyCoord(ra=df['ra']*u.degree, dec=df['dec']*u.degree, frame='icrs', unit=u.degree)
 
-            x_arr, y_arr = wcs_hdr.all_world2pix(df['ra'],df['dec'],0)
+            x_arr, y_arr = wcs_hdr.all_world2pix(df[rakey],df[deckey],0)
             df['x' + quad] = x_arr + xoff[iquad]
             df['y' + quad] = y_arr + yoff[iquad]
 
@@ -118,6 +119,7 @@ def combine_catalog_dfs_no_duplicates(catalog_dfs, match_threshes=None, verbose=
         print('initial df has length ', len(catalog_dfs[0]))
     
     df_list = [catalog_dfs[0]] # this is where order matters
+
     
     for j in range(len(catalog_dfs)-1):
         
@@ -583,6 +585,42 @@ def read_in_sdwfs_cat(cbps, catalog_basepath='data/Spitzer/sdwfs_catalogs/', cat
         print('saving to ', catalog_basepath+'sdwfs_wxy_CIBER_ifield'+str(bootes_ifield)+'.csv')
         sdwfs_ciber_filt.to_csv(catalog_basepath+'sdwfs_wxy_CIBER_ifield'+str(bootes_ifield)+'.csv')
 
+
+def read_in_ndwfs_cat(cbps, catalog_basepath=config.ciber_basepath+'data/catalogs/NDWFS/', catalog_fname='NDWFS_I_total_cat.fits', bootes_ifield_list=[6,7], bootes_cen_ras=[217.2, 218.4], bootes_cen_decs=[33.2, 34.8]):
+    
+    ndwfs_cat = fits.open(catalog_basepath+catalog_fname)
+
+    mag_auto = ndwfs[1].data['MAG_AUTO']
+    ndwfs_ra = ndwfs[1].data['ALPHA_J2000']
+    ndwfs_dec = ndwfs[1].data['DELTA_J2000']
+    
+    
+    remerge_cat = np.array([sdwfs_ra, sdwfs_dec, sdwfs_ch1_magauto, sdwfs_ch2_magauto, sdwfs_ch1_magauto_err, sdwfs_ch2_magauto_err, sdwfs_flag])
+    
+    print('remerge cat has shape', remerge_cat.shape)
+    
+    for i, bootes_ifield in enumerate(bootes_ifield_list):
+        
+        radecmask = (sdwfs_ra > bootes_cen_ras[i]-2)*(sdwfs_ra < bootes_cen_ras[i]+2)*(sdwfs_dec > bootes_cen_decs[i]-2)*(sdwfs_dec < bootes_cen_decs[i]+2)
+        
+        ciber_fov_cat = remerge_cat[:,np.where(radecmask)[0]]
+        
+        print('ciber fov cat has shape', ciber_fov_cat.shape)
+        
+        sdwfs_ciber_df = pd.DataFrame(ciber_fov_cat.transpose(), columns=['ra', 'dec', 'CH1_mag_auto', 'CH2_mag_auto', 'CH1_mag_auto_err', 'CH2_mag_auto_err', 'sdwfs_flag'])
+        
+        print(sdwfs_ciber_df)
+        sdwfs_ciber_filt = catalog_df_add_xy(cbps.ciber_field_dict[bootes_ifield], sdwfs_ciber_df, datadir=config.ciber_basepath+'data/')
+
+        sdwfs_ciber_filt, _, _ = check_for_catalog_duplicates(sdwfs_ciber_filt)
+        
+        plt.figure()
+        plt.scatter(sdwfs_ciber_filt['x1'], sdwfs_ciber_filt['y1'], s=1, color='k')
+        plt.xlim(0, 1024)
+        plt.ylim(0, 1024)
+        plt.show()
+        print('saving to ', catalog_basepath+'ndwfs_wxy_CIBER_ifield'+str(bootes_ifield)+'.csv')
+        sdwfs_ciber_filt.to_csv(catalog_basepath+'ndwfs_wxy_CIBER_ifield'+str(bootes_ifield)+'.csv')
 
 def map_sdwfs_radec_to_mosaic_xy(irac_ch, ifield, catalog_basepath=None, epochidx=0, sdwfs_basepath=None, radius=0.5, \
                                 version=3):

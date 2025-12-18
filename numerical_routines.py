@@ -6,8 +6,42 @@ import config
 import scipy
 import scipy.io
 
-''' Various numerical routines and general data operations '''
+''' Various numerical routines and general calculations '''
 
+
+def interp_pred(lb_pred, cl_pred, lb_interp):
+    
+    loglb_pred = np.log10(lb_pred)
+    
+    logcl_pred = np.log10(cl_pred)
+    
+    cl_interp = 10**(np.interp(np.log10(lb_interp), loglb_pred, logcl_pred))
+    
+    cl_interp[-1] = cl_interp[-3]*(lb_interp[-1]/lb_interp[-3])**2
+    
+    return cl_interp
+
+
+def interp_pred2(lb_pred, cl_pred, lb_interp):
+    
+    loglb_pred = np.log10(lb_pred)
+    
+    logcl_pred = np.log10(cl_pred)
+    
+    cl_interp = 10**(np.interp(np.log10(lb_interp), loglb_pred, logcl_pred))
+    cl_interp[-1] = cl_interp[-3]*(lb_pred[-1]/lb_pred[-3])
+
+    return cl_interp
+
+def make_theta_lxly_map(imdim):
+    
+    ell_x, ell_y = np.meshgrid(np.arange(imdim), np.arange(imdim))
+    
+    ell_x = np.array(ell_x)-imdim//2
+    ell_y = np.array(ell_y)-imdim//2    
+    theta_lxly = np.arctan2(ell_y, ell_x) # in radians
+
+    return theta_lxly
 
 def compute_fourier_weights(cl2d_all, stdpower=2, mode='mean'):
 	
@@ -174,8 +208,8 @@ def mean_sub_masked_image(image, mask):
 	masked_image = image*mask
 	masked_image[np.isinf(masked_image)] = 0
 	masked_image[np.isnan(masked_image)] = 0
-	unmasked_mean = np.mean(masked_image[mask==1])
-	masked_image[mask==1] -= unmasked_mean
+	unmasked_mean = np.mean(masked_image[masked_image!=0])
+	masked_image[masked_image!=0] -= unmasked_mean
 	
 	return masked_image
 

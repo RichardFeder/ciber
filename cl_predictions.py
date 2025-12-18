@@ -23,6 +23,201 @@ def save_cl_predictions(inst, ifield_list, mag_lims, power_maglim_isl_igl, power
 		
 	return save_fpaths
 
+
+# def generate_auto_dl_trilegal_simp(lb, cat_sel, idx, lam, aeff=4.0):
+# 	cmock = ciber_mock()
+# 	nbands = len(lams)
+
+# 	Vega_to_AB_lam = dict({1.1:0.91, 1.8:1.39, 3.6:2.699, 4.5:3.339})
+	
+# 	volfac = (1./aeff)/3.046e-4
+# 	pf = lb*(lb+1)/(2*np.pi)
+
+# 	nu_Inu = cmock.mag_2_nu_Inu(cat_sel[:,idx], lam_eff=lam*1e-6*u.m)*cmock.pix_sr
+	
+# 	auto_poisson_var = np.sum(volfac*(nu_Inu**2))
+# 	auto_dl_pred = pf*(auto_poisson_var.value)  
+
+# 	return auto_dl_pred  
+
+def field_av_trilegal_predictions(cbps, lb, ifield_list=[4, 5, 6, 7, 8], L_cut=17.7):
+
+    cl_matrix_perf = np.zeros((len(ifield_list), 4, 4, len(lb)))
+
+    for fieldidx, ifield in enumerate(ifield_list):
+
+        fieldname = cbps.ciber_field_dict[ifield]
+
+        trilegal_fpath = 'data/TRILEGAL/trilegal_2MASS_Spitzer_WISE_'+fieldname+'.dat'
+        
+        trileg = make_synthetic_trilegal_cat_2MSW(trilegal_fpath)
+
+        whichsel3 = (trileg[:,2] > 16.9)*(trileg[:,3] > 16.9)
+        whichsel3 *= (trileg[:,4] > L_cut)
+
+        trileg_sel = trileg[whichsel3,2:]
+
+        cl_matrix_perf[fieldidx] = generate_trilegal_cl_matrix_from_cat(lb, trileg_sel)
+        
+    cl_matrix_field_av = np.mean(cl_matrix_perf, axis=0)
+        
+    return cl_matrix_field_av, cl_matrix_perf
+    
+
+# def calc_cross_cl_shot_noise(cat_sel, lam, idx, aeff=4.0):
+def calc_cross_cl_shot_noise(mags, lam, aeff=4.0):
+
+    """
+    Calculate cross-shot noise power between CIB intensity and a galaxy catalog.
+    
+    lb      : array of ell values
+    cat_sel : mock catalog selection (rows = sources, columns = properties)
+    lam     : wavelength in microns
+    idx     : column index for magnitudes in cat_sel
+    aeff    : effective survey area in deg^2
+    """
+    cmock = ciber_mock()
+
+    # steradian per mock area
+    volfac = (1. / aeff) / 3.046e-4  # 1 deg^2 = 3.046e-4 sr
+
+    # Convert magnitudes to nu*I_nu per pixel (flux density per sr)
+    # nu_Inu = cmock.mag_2_nu_Inu(cat_sel[:, idx], lam_eff=lam*1e-6*u.m) * cmock.pix_sr
+    nu_Inu = cmock.mag_2_nu_Inu(mags, lam_eff=lam*1e-6*u.m) * cmock.pix_sr
+
+    # Number of galaxies in catalog
+    N_gal = len(mags)
+
+    # Surface density of galaxies (per sr)
+    n_gal_sr = N_gal * volfac  # galaxies / sr
+
+    # Sum of fluxes for galaxies in bin (W/m^2/sr or equivalent units)
+    sum_flux = np.sum(volfac * nu_Inu)  # integrated over area
+
+    # Cross-shot noise amplitude (flat in ell)
+    cross_poisson_var = sum_flux / n_gal_sr  # matches your formula
+
+    cross_cl_pred = cross_poisson_var.value
+
+    return cross_cl_pred
+
+def calc_auto_dl_trilegal_simp(lb, cat_sel, lam, idx, aeff=4.0):
+    cmock = ciber_mock()
+
+    volfac = (1./aeff)/3.046e-4
+    pf = lb*(lb+1)/(2*np.pi)
+
+    nu_Inu = cmock.mag_2_nu_Inu(cat_sel[:,idx], lam_eff=lam*1e-6*u.m)*cmock.pix_sr
+
+    auto_poisson_var = np.sum(volfac*(nu_Inu**2))
+    auto_dl_pred = pf*(auto_poisson_var.value)
+
+    return auto_dl_pred   
+
+
+def generate_auto_dl_pred_trilegal(lb_use, inst, maglim, ifield_list=[4, 5, 6, 7, 8], m_max=28):
+    
+    cbps = CIBER_PS_pipeline()
+    m_min_perfield = dict({4: 5.69, 5: 4.52, 6: 7.82, 7:7.20, 8:6.63}) # J band
+    isl_dl_pred = np.zeros((len(ifield_list), len(lb_use)))
+    trilegal_base_path = config.ciber_basepath+'data/mock_trilegal_realizations_111722/'
+    
+    Vega_to_AB = dict({1:0.91, 2:1.39})
+    lam_dict = dict({1:1.05, 2:1.79})
+    idx_dict = dict({1:2, 2:3})
+    
+    for fieldidx, ifield in enumerate(ifield_list):
+        trilegal_path = trilegal_base_path+'trilegal_'+cbps.ciber_field_dict[ifield]+'.dat'
+        trilegal_cat = make_synthetic_trilegal_cat(trilegal_path, J_band_idx=26, H_band_idx=27)
+
+        filt_cat = filter_trilegal_cat(trilegal_cat, filter_band_idx=2, m_min=m_min_perfield[ifield], m_max=m_max)
+        m_AB = maglim + Vega_to_AB[inst]
+        mask_sel = np.where(((filt_cat[:,idx_dict[inst]] > m_AB)))[0]
+        trilegal_cat_sel = filt_cat[mask_sel, :]
+        
+        isl_dl_pred[fieldidx] = calc_auto_dl_trilegal_simp(lb_use, trilegal_cat_sel, lam_dict[inst], idx_dict[inst])
+
+    return isl_dl_pred
+
+
+def generate_cross_dl_pred_trilegal(lb_use, maglim_J, maglim_H, ifield_list=[4, 5, 6, 7, 8], idx=2, idxc=3, m_max=28):
+    
+    cbps = CIBER_PS_pipeline()
+    m_min_perfield = dict({4: 5.69, 5: 4.52, 6: 7.82, 7:7.20, 8:6.63}) # J band
+
+    isl_dl_pred = np.zeros((len(ifield_list), len(lb_use)))
+
+    trilegal_base_path = config.ciber_basepath+'data/mock_trilegal_realizations_111722/'
+
+    for fieldidx, ifield in enumerate(ifield_list):
+
+        trilegal_path = trilegal_base_path+'trilegal_'+cbps.ciber_field_dict[ifield]+'.dat'
+        trilegal_cat = make_synthetic_trilegal_cat(trilegal_path, J_band_idx=26, H_band_idx=27)
+
+        filt_cat = filter_trilegal_cat(trilegal_cat, filter_band_idx=2, m_min=m_min_perfield[ifield], m_max=m_max)
+
+        J_AB, H_AB = maglim_J+0.91, maglim_H+1.39
+        mask_sel = np.where(((filt_cat[:,idx] > J_AB)*(filt_cat[:,idxc] > H_AB)))[0]
+
+        trilegal_cat_sel = filt_cat[mask_sel, :]
+
+        print('trilegal cat sel has shape:', trilegal_cat_sel.shape)
+        print('first row:', trilegal_cat_sel[0,:])
+
+        isl_dl_pred[fieldidx] = calc_cross_dl_trilegal_simp(lb_use, trilegal_cat_sel, 1.05, 1.79, idx, idxc)
+        
+    return isl_dl_pred
+
+def calc_cross_dl_trilegal_simp(lb, cat_sel, lam, lam_cross, idx, idxc, aeff=4.0):
+    cmock = ciber_mock()
+
+    volfac = (1./aeff)/3.046e-4
+    pf = lb*(lb+1)/(2*np.pi)
+
+    nu_Inu = cmock.mag_2_nu_Inu(cat_sel[:,idx], lam_eff=lam*1e-6*u.m)*cmock.pix_sr
+    nu_Inu_cross = cmock.mag_2_nu_Inu(cat_sel[:,idxc], lam_eff=lam_cross*1e-6*u.m)*cmock.pix_sr
+
+    cross_poisson_var = np.sum(volfac*(nu_Inu*nu_Inu_cross))
+    cross_dl_pred = pf*(cross_poisson_var.value)
+
+    return cross_dl_pred   
+
+
+def generate_trilegal_cl_matrix_from_cat(lb, cosmos_cat_sel, lams=[1.1, 1.8, 3.6, 4.5], aeff=4.0):
+
+    cmock = ciber_mock()
+    nbands = len(lams)
+
+    Vega_to_AB_lam = dict({1.1:0.91, 1.8:1.39, 3.6:2.699, 4.5:3.339})
+    
+    volfac = (1./aeff)/3.046e-4
+    
+    cl_matrix = np.zeros((nbands, nbands, len(lb)))
+    
+    pf = lb*(lb+1)/(2*np.pi)
+    
+    for idx, lam in enumerate(lams):
+                
+        nu_Inu = cmock.mag_2_nu_Inu(cosmos_cat_sel[:,idx], lam_eff=lam*1e-6*u.m)*cmock.pix_sr
+        
+        auto_poisson_var = np.sum(volfac*(nu_Inu**2))
+        auto_cl_pred = pf*(auto_poisson_var.value)    
+        cl_matrix[idx, idx] = auto_cl_pred
+        
+        
+    for idx in range(nbands-1):
+        for idxc in range(idx+1, nbands):
+            
+            nu_Inu = cmock.mag_2_nu_Inu(cosmos_cat_sel[:,idx], lam_eff=lams[idx]*1e-6*u.m)*cmock.pix_sr
+            nu_Inu_cross = cmock.mag_2_nu_Inu(cosmos_cat_sel[:,idxc], lam_eff=lams[idxc]*1e-6*u.m)*cmock.pix_sr
+            
+            cross_poisson_var = np.sum(volfac*(nu_Inu*nu_Inu_cross))
+            cross_cl_pred = pf*(cross_poisson_var.value)
+            cl_matrix[idx, idxc] = cross_cl_pred
+
+    
+    return cl_matrix
+
 def make_binned_coverage_mask_and_mkk(posx, posy, catalog_mode, nx=None, ny=None, n_mkk_sim=100, n_split=2, \
 									 cl_pred_basepath=None, save=False, addstr=None, hitmin=0, nreg=None):
 		
@@ -82,107 +277,107 @@ def make_binned_coverage_mask_and_mkk(posx, posy, catalog_mode, nx=None, ny=None
 	return av_Mkk, inv_Mkk, coverage_mask
 	
 def preprocess_c15_catalog(catalog_fpath=None, radec_cut=True, ramin=149.4, ramax=150.8, decmin=1.5, decmax=2.9, save=False, \
-                          binned_coverage_mask_mkk=False, nreg=None, capak_mask=False):
+						  binned_coverage_mask_mkk=False, nreg=None, capak_mask=False):
 
-    if catalog_fpath is None:
-        catalog_fpath = '../spherex/inhouse_code/data/COSMOS2015_Laigle_v1.1.fits'
-        
-    c15_cat = fits.open(catalog_fpath)
-    
-    c15_dat = c15_cat[1].data
+	if catalog_fpath is None:
+		catalog_fpath = '../spherex/inhouse_code/data/COSMOS2015_Laigle_v1.1.fits'
+		
+	c15_cat = fits.open(catalog_fpath)
+	
+	c15_dat = c15_cat[1].data
 
-    c15_ra = np.array(c15_dat['ALPHA_J2000'])
-    c15_dec = np.array(c15_dat['DELTA_J2000'])
-    c15_flag_hjmcc = np.array(c15_dat['FLAG_HJMCC']) # in UltraVISTA region (i.e., with NIR photometry)
-    c15_flag_capak = np.array(c15_dat['FLAG_PETER'])
-    c15_type = np.array(c15_dat['TYPE'])
-    
-    c15_r_AB = -2.5*np.log10(c15_dat['r_FLUX_APER3'])+23.9
-    c15_i_AB = -2.5*np.log10(c15_dat['ip_FLUX_APER3'])+23.9
-    c15_z_AB = -2.5*np.log10(c15_dat['zp_FLUX_APER3'])+23.9
-    c15_y_AB = -2.5*np.log10(c15_dat['Y_FLUX_APER3'])+23.9
-    c15_J_AB = -2.5*np.log10(c15_dat['J_FLUX_APER3'])+23.9
-    c15_H_AB = -2.5*np.log10(c15_dat['H_FLUX_APER3'])+23.9
-    
-    c15_Ks_AB = -2.5*np.log10(c15_dat['Ks_FLUX_APER3'])+23.9
-    c15_CH1_AB = -2.5*np.log10(c15_dat['SPLASH_1_FLUX'])+23.9
-    c15_CH2_AB = -2.5*np.log10(c15_dat['SPLASH_2_FLUX'])+23.9
-    
-    c15_redshift = np.array(c15_dat['PHOTOZ'])
-    
-    deg_2_pix = 3600/7.
-    c15_x = (c15_ra-ramin)*deg_2_pix # convert to arcseconds and then CIBER pixels
-    c15_y = (c15_dec-decmin)*deg_2_pix # convert to arcseconds and then CIBER pixels
-    
-    c15_catalog = np.array([c15_ra, c15_dec, c15_x, c15_y, c15_J_AB, \
-                           c15_H_AB, c15_CH1_AB, c15_CH2_AB, c15_type, c15_r_AB, c15_i_AB, c15_z_AB, c15_y_AB, c15_redshift, c15_Ks_AB]).transpose()
-    
-    c15mask = (c15_flag_hjmcc==0) # in UVISTA region
-    
-    if radec_cut:
-        c15mask *= (c15_ra > ramin)*(c15_ra < ramax)*(c15_dec > decmin)*(c15_dec < decmax)
-    
-    if capak_mask:
-        c15mask *= (c15_flag_capak==0)
+	c15_ra = np.array(c15_dat['ALPHA_J2000'])
+	c15_dec = np.array(c15_dat['DELTA_J2000'])
+	c15_flag_hjmcc = np.array(c15_dat['FLAG_HJMCC']) # in UltraVISTA region (i.e., with NIR photometry)
+	c15_flag_capak = np.array(c15_dat['FLAG_PETER'])
+	c15_type = np.array(c15_dat['TYPE'])
+	
+	c15_r_AB = -2.5*np.log10(c15_dat['r_FLUX_APER3'])+23.9
+	c15_i_AB = -2.5*np.log10(c15_dat['ip_FLUX_APER3'])+23.9
+	c15_z_AB = -2.5*np.log10(c15_dat['zp_FLUX_APER3'])+23.9
+	c15_y_AB = -2.5*np.log10(c15_dat['Y_FLUX_APER3'])+23.9
+	c15_J_AB = -2.5*np.log10(c15_dat['J_FLUX_APER3'])+23.9
+	c15_H_AB = -2.5*np.log10(c15_dat['H_FLUX_APER3'])+23.9
+	
+	c15_Ks_AB = -2.5*np.log10(c15_dat['Ks_FLUX_APER3'])+23.9
+	c15_CH1_AB = -2.5*np.log10(c15_dat['SPLASH_1_FLUX'])+23.9
+	c15_CH2_AB = -2.5*np.log10(c15_dat['SPLASH_2_FLUX'])+23.9
+	
+	c15_redshift = np.array(c15_dat['PHOTOZ'])
+	
+	deg_2_pix = 3600/7.
+	c15_x = (c15_ra-ramin)*deg_2_pix # convert to arcseconds and then CIBER pixels
+	c15_y = (c15_dec-decmin)*deg_2_pix # convert to arcseconds and then CIBER pixels
+	
+	c15_catalog = np.array([c15_ra, c15_dec, c15_x, c15_y, c15_J_AB, \
+						   c15_H_AB, c15_CH1_AB, c15_CH2_AB, c15_type, c15_r_AB, c15_i_AB, c15_z_AB, c15_y_AB, c15_redshift, c15_Ks_AB]).transpose()
+	
+	c15mask = (c15_flag_hjmcc==0) # in UVISTA region
+	
+	if radec_cut:
+		c15mask *= (c15_ra > ramin)*(c15_ra < ramax)*(c15_dec > decmin)*(c15_dec < decmax)
+	
+	if capak_mask:
+		c15mask *= (c15_flag_capak==0)
 
-    c15 = c15_catalog[c15mask,:]
-    
-    if radec_cut:
-        x_min, x_max = np.min(c15[:,2]), np.max(c15[:,2])
-        y_min, y_max = np.min(c15[:,3]), np.max(c15[:,3])
+	c15 = c15_catalog[c15mask,:]
+	
+	if radec_cut:
+		x_min, x_max = np.min(c15[:,2]), np.max(c15[:,2])
+		y_min, y_max = np.min(c15[:,3]), np.max(c15[:,3])
 
-        nx = int(x_max - x_min)
-        ny = int(y_max - y_min)
+		nx = int(x_max - x_min)
+		ny = int(y_max - y_min)
 
-        sqdim = min(nx, ny)
+		sqdim = min(nx, ny)
 
-        c15[:,2] -= x_min
-        c15[:,3] -= y_min
+		c15[:,2] -= x_min
+		c15[:,3] -= y_min
 
-        sqmask = (c15[:,2] < sqdim)*(c15[:,3] < sqdim)
-        c15 = c15[sqmask,:]
-        
-        
-    c15_x_sel = c15[:,2]
-    c15_y_sel = c15[:,3]
+		sqmask = (c15[:,2] < sqdim)*(c15[:,3] < sqdim)
+		c15 = c15[sqmask,:]
+		
+		
+	c15_x_sel = c15[:,2]
+	c15_y_sel = c15[:,3]
 
-    plt.figure()
-    plt.hist(c15[:,4], bins=np.linspace(10, 25, 30))
-    plt.yscale('log')
-    plt.xlabel('J band magnitude')
-    plt.show()
+	plt.figure()
+	plt.hist(c15[:,4], bins=np.linspace(10, 25, 30))
+	plt.yscale('log')
+	plt.xlabel('J band magnitude')
+	plt.show()
 
-    plt.figure(figsize=(8, 8))
-    plt.title('COSMOS 2015', fontsize=14)
-    plt.scatter(c15[:,2], c15[:,3], s=2, color='k', alpha=0.02)
-    plt.xlabel('x [CIBER pixels]', fontsize=14)
-    plt.xlabel('y [CIBER pixels]', fontsize=14)
-    plt.grid()
-    plt.show()
-    
-    
-    full_df_allbands = pd.DataFrame({'x':c15_x_sel, 'y':c15_y_sel, 'r_AB':c15[:,9], \
-                                     'i_AB':c15[:,10], 'z_AB':c15[:,11], 'y_AB':c15[:,12],\
-                                     'J': c15[:,4], 'H':c15[:,5], 'mag_CH1':c15[:,6], 'mag_CH2':c15[:,7], 'type':c15[:,8], 'redshift':c15[:,13], \
-                                    'Ks':c15[:,14]})
-    
-    if save:
-        tailstr = 'COSMOS15_rizy_JHKs_CH1CH2_AB_hjmcc'
-        if capak_mask:
-            tailstr += '_capak'
-        
-        save_fpath = config.ciber_basepath+'data/catalogs/COSMOS15/'+tailstr+'.csv'
+	plt.figure(figsize=(8, 8))
+	plt.title('COSMOS 2015', fontsize=14)
+	plt.scatter(c15[:,2], c15[:,3], s=2, color='k', alpha=0.02)
+	plt.xlabel('x [CIBER pixels]', fontsize=14)
+	plt.xlabel('y [CIBER pixels]', fontsize=14)
+	plt.grid()
+	plt.show()
+	
+	
+	full_df_allbands = pd.DataFrame({'x':c15_x_sel, 'y':c15_y_sel, 'r_AB':c15[:,9], \
+									 'i_AB':c15[:,10], 'z_AB':c15[:,11], 'y_AB':c15[:,12],\
+									 'J': c15[:,4], 'H':c15[:,5], 'mag_CH1':c15[:,6], 'mag_CH2':c15[:,7], 'type':c15[:,8], 'redshift':c15[:,13], \
+									'Ks':c15[:,14]})
+	
+	if save:
+		tailstr = 'COSMOS15_rizy_JHKs_CH1CH2_AB_hjmcc'
+		if capak_mask:
+			tailstr += '_capak'
+		
+		save_fpath = config.ciber_basepath+'data/catalogs/COSMOS15/'+tailstr+'.csv'
 
-        print('Saving catalog to ', save_fpath)
-        full_df_allbands.to_csv(save_fpath)
+		print('Saving catalog to ', save_fpath)
+		full_df_allbands.to_csv(save_fpath)
 
-        
-    if binned_coverage_mask_mkk:
-        av_Mkk, inv_Mkk, coverage_mask, save_fpath = make_binned_coverage_mask_and_mkk(c15_x_sel, c15_y_sel, 'COSMOS15',\
-                                                                               nx=sqdim, ny=sqdim, addstr='peter_hjmcc', save=save, nreg=nreg)
-    
-        
-    return full_df_allbands
+		
+	if binned_coverage_mask_mkk:
+		av_Mkk, inv_Mkk, coverage_mask, save_fpath = make_binned_coverage_mask_and_mkk(c15_x_sel, c15_y_sel, 'COSMOS15',\
+																			   nx=sqdim, ny=sqdim, addstr='peter_hjmcc', save=save, nreg=nreg)
+	
+		
+	return full_df_allbands
 
 
 def predict_auto_cross_cl_C15(m_min_J_list, m_min_H_list, inst=1, include_IRAC_mask=False, maglim_IRAC=18., m_max=28, \
@@ -533,234 +728,234 @@ def ukidss_uds_cl_predict_JH(m_min_J_list, m_min_H_list, dimx=450, m_max = 28, p
 
 
 def simulate_deep_cats_correlation_coeff_cosmos(m_min_J_list, m_min_H_list, inst=1, ifield_choose = 4, include_IRAC_mask=False, maglim_IRAC=18., m_max=28, \
-                                               inv_Mkk=None, mkk_correct=True, coverage_mask=None, m_min_CH1_list=[16.0, 17.0, 18.0, 19.0], \
-                                               m_min_CH2_list=None, catalog_fpath=None, startidx=1, endidx=-1, nx=650, ny=650, \
-                                               cl_pred_basepath=config.ciber_basepath+'data/cl_predictions/'):
+											   inv_Mkk=None, mkk_correct=True, coverage_mask=None, m_min_CH1_list=[16.0, 17.0, 18.0, 19.0], \
+											   m_min_CH2_list=None, catalog_fpath=None, startidx=1, endidx=-1, nx=650, ny=650, \
+											   cl_pred_basepath=config.ciber_basepath+'data/cl_predictions/'):
 
-    Vega_to_AB = dict({'g':-0.08, 'r':0.16, 'i':0.37, 'z':0.54, 'y':0.634, 'J':0.91, 'H':1.39, 'K':1.85, \
-                      'CH1':2.699, 'CH2':3.339})
-    
-    if catalog_fpath is None:
-        catalog_fpath = 'data/cosmos/cosmos20_farmer_catalog_wxy_073123.npz'
-       
-    cbps = CIBER_PS_pipeline(dimx=nx, dimy=ny)
-    
-    bls_fpath = config.ciber_basepath+'data/fluctuation_data/TM'+str(inst)+'/beam_correction/bl_est_postage_stamps_TM'+str(inst)+'_081121.npz'
-    B_ells = np.load(bls_fpath)['B_ells_post']
-    
-    mean_bl = B_ells[0]
-    
-    print('mean bl:', mean_bl)
+	Vega_to_AB = dict({'g':-0.08, 'r':0.16, 'i':0.37, 'z':0.54, 'y':0.634, 'J':0.91, 'H':1.39, 'K':1.85, \
+					  'CH1':2.699, 'CH2':3.339})
+	
+	if catalog_fpath is None:
+		catalog_fpath = 'data/cosmos/cosmos20_farmer_catalog_wxy_073123.npz'
+	   
+	cbps = CIBER_PS_pipeline(dimx=nx, dimy=ny)
+	
+	bls_fpath = config.ciber_basepath+'data/fluctuation_data/TM'+str(inst)+'/beam_correction/bl_est_postage_stamps_TM'+str(inst)+'_081121.npz'
+	B_ells = np.load(bls_fpath)['B_ells_post']
+	
+	mean_bl = B_ells[0]
+	
+	print('mean bl:', mean_bl)
 
-    subpixel_psf_dirpath = config.exthdpath+'ciber_fluctuation_data/TM'+str(inst)+'/subpixel_psfs/'
-    lb, mean_bl, bls = cbps.compute_beam_correction_posts(ifield_choose, inst)    
-    
-    cmock = ciber_mock(nx=nx, ny=ny)
-    
-    if m_min_CH2_list is None:
-        m_min_CH2_list = m_min_CH1_list
+	subpixel_psf_dirpath = config.exthdpath+'ciber_fluctuation_data/TM'+str(inst)+'/subpixel_psfs/'
+	lb, mean_bl, bls = cbps.compute_beam_correction_posts(ifield_choose, inst)    
+	
+	cmock = ciber_mock(nx=nx, ny=ny)
+	
+	if m_min_CH2_list is None:
+		m_min_CH2_list = m_min_CH1_list
 
-    cosmos_catalog = np.load(catalog_fpath)
+	cosmos_catalog = np.load(catalog_fpath)
 
-    # these are all AB mags from Farmer catalog
-    cosmos_xpos = cosmos_catalog['cosmos_xpos']
-    cosmos_ypos = cosmos_catalog['cosmos_ypos']
-    cosmos_J_mag = cosmos_catalog['cosmos_J_mag']
-    cosmos_H_mag = cosmos_catalog['cosmos_H_mag']
-    cosmos_CH1_mag = cosmos_catalog['cosmos_CH1_mag']
-    cosmos_CH2_mag = cosmos_catalog['cosmos_CH2_mag']
-    
-    magbins = np.linspace(13, 26, 30)
-    plt.figure()
-    plt.hist(cosmos_J_mag, bins=magbins, histtype='step', label='J')
-    plt.hist(cosmos_H_mag, bins=magbins, histtype='step', label='H')
-    plt.hist(cosmos_CH1_mag, bins=magbins, histtype='step', label='CH1')
-    plt.hist(cosmos_CH2_mag, bins=magbins, histtype='step', label='CH2')
-    plt.yscale('log')
-    plt.legend()
-    plt.show()
+	# these are all AB mags from Farmer catalog
+	cosmos_xpos = cosmos_catalog['cosmos_xpos']
+	cosmos_ypos = cosmos_catalog['cosmos_ypos']
+	cosmos_J_mag = cosmos_catalog['cosmos_J_mag']
+	cosmos_H_mag = cosmos_catalog['cosmos_H_mag']
+	cosmos_CH1_mag = cosmos_catalog['cosmos_CH1_mag']
+	cosmos_CH2_mag = cosmos_catalog['cosmos_CH2_mag']
+	
+	magbins = np.linspace(13, 26, 30)
+	plt.figure()
+	plt.hist(cosmos_J_mag, bins=magbins, histtype='step', label='J')
+	plt.hist(cosmos_H_mag, bins=magbins, histtype='step', label='H')
+	plt.hist(cosmos_CH1_mag, bins=magbins, histtype='step', label='CH1')
+	plt.hist(cosmos_CH2_mag, bins=magbins, histtype='step', label='CH2')
+	plt.yscale('log')
+	plt.legend()
+	plt.show()
 
-    cosmos_bordermask = (cosmos_xpos < nx)*(cosmos_ypos < ny)*(cosmos_xpos > 0)*(cosmos_ypos > 0)
-    
-    if inv_Mkk is None and mkk_correct:
-        H, xedges, yedges = np.histogram2d(cosmos_xpos, cosmos_ypos, bins=[np.linspace(0, nx, nx+1), np.linspace(0, ny, ny+1)])
+	cosmos_bordermask = (cosmos_xpos < nx)*(cosmos_ypos < ny)*(cosmos_xpos > 0)*(cosmos_ypos > 0)
+	
+	if inv_Mkk is None and mkk_correct:
+		H, xedges, yedges = np.histogram2d(cosmos_xpos, cosmos_ypos, bins=[np.linspace(0, nx, nx+1), np.linspace(0, ny, ny+1)])
 
-        coverage_mask = (H != 0)
+		coverage_mask = (H != 0)
 
-        H_mask = H*coverage_mask
-        plt.figure()
-        plt.imshow(H_mask, origin='lower')
-        plt.colorbar()
-        plt.show()
+		H_mask = H*coverage_mask
+		plt.figure()
+		plt.imshow(H_mask, origin='lower')
+		plt.colorbar()
+		plt.show()
 
-        print('coverage_mask has shape ', coverage_mask.shape)
-        plt.figure()
-        plt.imshow(coverage_mask, origin='lower')
-        plt.colorbar()
-        plt.show()
-        
-        av_Mkk = cbps.Mkk_obj.get_mkk_sim(coverage_mask, 100, n_split=1)
-        
-        inv_Mkk = save_mkks(cl_pred_basepath+'cosmos/Mkk_file_C20_coverage.npz', av_Mkk=av_Mkk, return_inv_Mkk=True, mask=coverage_mask)
-    
-    
-    all_clauto_J, all_clauto_H, all_clauto_CH1, all_clauto_CH2 = [[] for x in range(4)]
-    all_clx_JH, all_clx_J_CH1, all_clx_J_CH2, all_clx_H_CH1, all_clx_H_CH2, all_clx_CH1_CH2 = [[] for x in range(6)]
-    
+		print('coverage_mask has shape ', coverage_mask.shape)
+		plt.figure()
+		plt.imshow(coverage_mask, origin='lower')
+		plt.colorbar()
+		plt.show()
+		
+		av_Mkk = cbps.Mkk_obj.get_mkk_sim(coverage_mask, 100, n_split=1)
+		
+		inv_Mkk = save_mkks(cl_pred_basepath+'cosmos/Mkk_file_C20_coverage.npz', av_Mkk=av_Mkk, return_inv_Mkk=True, mask=coverage_mask)
+	
+	
+	all_clauto_J, all_clauto_H, all_clauto_CH1, all_clauto_CH2 = [[] for x in range(4)]
+	all_clx_JH, all_clx_J_CH1, all_clx_J_CH2, all_clx_H_CH1, all_clx_H_CH2, all_clx_CH1_CH2 = [[] for x in range(6)]
+	
 
-    for magidx in range(len(m_min_J_list)):
+	for magidx in range(len(m_min_J_list)):
 
-        magmask_J = (cosmos_J_mag-Vega_to_AB['J'] > m_min_J_list[magidx])*(cosmos_J_mag-Vega_to_AB['J'] < m_max)
-        magmask_H = (cosmos_H_mag-Vega_to_AB['H'] > m_min_H_list[magidx])*(cosmos_H_mag-Vega_to_AB['H'] < m_max)
-        magmask = magmask_J*magmask_H
-        
-        if include_IRAC_mask:
-            print('adding IRAC mask L < '+str(maglim_IRAC))
-            magmask *= (cosmos_CH1_mag-Vega_to_AB['CH1'] > maglim_IRAC)
-        
-        mask_J = cosmos_bordermask*magmask
-        mask_H = cosmos_bordermask*magmask
-        mask = cosmos_bordermask*magmask
-        
-        I_arr_J = cmock.mag_2_nu_Inu(cosmos_J_mag, band=None, lam_eff=1.05*1e-6*u.m)
-        I_arr_H = cmock.mag_2_nu_Inu(cosmos_H_mag, band=None, lam_eff=1.79*1e-6*u.m)
-        I_arr_CH1 = cmock.mag_2_nu_Inu(cosmos_CH1_mag, band=None, lam_eff=3.6*1e-6*u.m)
-        I_arr_CH2 = cmock.mag_2_nu_Inu(cosmos_CH2_mag, band=None, lam_eff=4.5*1e-6*u.m)
-        
+		magmask_J = (cosmos_J_mag-Vega_to_AB['J'] > m_min_J_list[magidx])*(cosmos_J_mag-Vega_to_AB['J'] < m_max)
+		magmask_H = (cosmos_H_mag-Vega_to_AB['H'] > m_min_H_list[magidx])*(cosmos_H_mag-Vega_to_AB['H'] < m_max)
+		magmask = magmask_J*magmask_H
+		
+		if include_IRAC_mask:
+			print('adding IRAC mask L < '+str(maglim_IRAC))
+			magmask *= (cosmos_CH1_mag-Vega_to_AB['CH1'] > maglim_IRAC)
+		
+		mask_J = cosmos_bordermask*magmask
+		mask_H = cosmos_bordermask*magmask
+		mask = cosmos_bordermask*magmask
+		
+		I_arr_J = cmock.mag_2_nu_Inu(cosmos_J_mag, band=None, lam_eff=1.05*1e-6*u.m)
+		I_arr_H = cmock.mag_2_nu_Inu(cosmos_H_mag, band=None, lam_eff=1.79*1e-6*u.m)
+		I_arr_CH1 = cmock.mag_2_nu_Inu(cosmos_CH1_mag, band=None, lam_eff=3.6*1e-6*u.m)
+		I_arr_CH2 = cmock.mag_2_nu_Inu(cosmos_CH2_mag, band=None, lam_eff=4.5*1e-6*u.m)
+		
 
-        I_arr_J[np.isnan(I_arr_J)] = 0.
-        I_arr_H[np.isnan(I_arr_H)] = 0.
-        I_arr_CH1[np.isnan(I_arr_CH1)] = 0.
-        I_arr_CH2[np.isnan(I_arr_CH2)] = 0.
-        
-        mock_cat_J = np.array([cosmos_xpos[mask_J], cosmos_ypos[mask_J], cosmos_J_mag[mask_J], I_arr_J[mask_J]]).transpose()
-        mock_cat_H = np.array([cosmos_xpos[mask_H], cosmos_ypos[mask_H], cosmos_H_mag[mask_H], I_arr_H[mask_H]]).transpose()
-        mock_cat_CH1 = np.array([cosmos_xpos[mask], cosmos_ypos[mask], cosmos_CH1_mag[mask], I_arr_CH1[mask]]).transpose()
-        mock_cat_CH2 = np.array([cosmos_xpos[mask], cosmos_ypos[mask], cosmos_CH2_mag[mask], I_arr_CH2[mask]]).transpose()
-        
-        sourcemap_J = cmock.make_srcmap_temp_bank(ifield_choose, inst, mock_cat_J, flux_idx=-1, n_fine_bin=10, nwide=17,tempbank_dirpath=subpixel_psf_dirpath, load_precomp_tempbank=True)
-        sourcemap_H = cmock.make_srcmap_temp_bank(ifield_choose, inst, mock_cat_H, flux_idx=-1, n_fine_bin=10, nwide=17,tempbank_dirpath=subpixel_psf_dirpath, load_precomp_tempbank=True)
-        sourcemap_CH1 = cmock.make_srcmap_temp_bank(ifield_choose, inst, mock_cat_CH1, flux_idx=-1, n_fine_bin=10, nwide=17,tempbank_dirpath=subpixel_psf_dirpath, load_precomp_tempbank=True)
-        sourcemap_CH2 = cmock.make_srcmap_temp_bank(ifield_choose, inst, mock_cat_CH2, flux_idx=-1, n_fine_bin=10, nwide=17,tempbank_dirpath=subpixel_psf_dirpath, load_precomp_tempbank=True)        
-        
-        sourcemap_J *= coverage_mask
-        sourcemap_H *= coverage_mask
-        sourcemap_CH1 *= coverage_mask
-        sourcemap_CH2 *= coverage_mask
-        
-        plot_map(sourcemap_J, title='COSMOS $J$ band map (VISTA filter)')
-        
-        sourcemap_J[coverage_mask != 0] -= np.mean(sourcemap_J[coverage_mask != 0])
-        sourcemap_H[coverage_mask != 0] -= np.mean(sourcemap_H[coverage_mask != 0])
-        sourcemap_CH1[coverage_mask != 0] -= np.mean(sourcemap_CH1[coverage_mask != 0])
-        sourcemap_CH2[coverage_mask != 0] -= np.mean(sourcemap_CH2[coverage_mask != 0])
-        
-        # autos
-        lb, clauto_J, clerr_auto_J = get_power_spec(sourcemap_J, \
-                                                 lbinedges=cbps.Mkk_obj.binl, lbins=cbps.Mkk_obj.midbin_ell)
-        lb, clauto_H, clerr_auto_H = get_power_spec(sourcemap_H, \
-                                                 lbinedges=cbps.Mkk_obj.binl, lbins=cbps.Mkk_obj.midbin_ell)
-        lb, clauto_CH1, clerr_auto_CH1 = get_power_spec(sourcemap_CH1, \
-                                                 lbinedges=cbps.Mkk_obj.binl, lbins=cbps.Mkk_obj.midbin_ell)
-        lb, clauto_CH2, clerr_auto_CH2 = get_power_spec(sourcemap_CH2, \
-                                                 lbinedges=cbps.Mkk_obj.binl, lbins=cbps.Mkk_obj.midbin_ell)
-        
-        cl_autos = [clauto_J, clauto_H, clauto_CH1, clauto_CH2]
-        
-        # now compute crosses
-        lb, clx_J_H, clerr_x_J_H = get_power_spec(sourcemap_J, map_b=sourcemap_H, \
-                                 lbinedges=cbps.Mkk_obj.binl, lbins=cbps.Mkk_obj.midbin_ell)
-        lb, clx_J_CH1, clerr_x_J_CH1 = get_power_spec(sourcemap_J, map_b=sourcemap_CH1, \
-                                 lbinedges=cbps.Mkk_obj.binl, lbins=cbps.Mkk_obj.midbin_ell)
-        lb, clx_J_CH2, clerr_x_J_CH2 = get_power_spec(sourcemap_J, map_b=sourcemap_CH2, \
-                                 lbinedges=cbps.Mkk_obj.binl, lbins=cbps.Mkk_obj.midbin_ell)
-        lb, clx_H_CH1, clerr_x_H_CH1 = get_power_spec(sourcemap_H, map_b=sourcemap_CH1, \
-                         lbinedges=cbps.Mkk_obj.binl, lbins=cbps.Mkk_obj.midbin_ell)
-        lb, clx_H_CH2, clerr_x_H_CH2 = get_power_spec(sourcemap_H, map_b=sourcemap_CH2, \
-                 lbinedges=cbps.Mkk_obj.binl, lbins=cbps.Mkk_obj.midbin_ell)
-        lb, clx_CH1_CH2, clerr_x_CH1_CH2 = get_power_spec(sourcemap_CH1, map_b=sourcemap_CH2, \
-                 lbinedges=cbps.Mkk_obj.binl, lbins=cbps.Mkk_obj.midbin_ell)
-        
-        cl_crosses = [clx_J_H, clx_J_CH1, clx_J_CH2, clx_H_CH1, clx_H_CH2, clx_CH1_CH2]
+		I_arr_J[np.isnan(I_arr_J)] = 0.
+		I_arr_H[np.isnan(I_arr_H)] = 0.
+		I_arr_CH1[np.isnan(I_arr_CH1)] = 0.
+		I_arr_CH2[np.isnan(I_arr_CH2)] = 0.
+		
+		mock_cat_J = np.array([cosmos_xpos[mask_J], cosmos_ypos[mask_J], cosmos_J_mag[mask_J], I_arr_J[mask_J]]).transpose()
+		mock_cat_H = np.array([cosmos_xpos[mask_H], cosmos_ypos[mask_H], cosmos_H_mag[mask_H], I_arr_H[mask_H]]).transpose()
+		mock_cat_CH1 = np.array([cosmos_xpos[mask], cosmos_ypos[mask], cosmos_CH1_mag[mask], I_arr_CH1[mask]]).transpose()
+		mock_cat_CH2 = np.array([cosmos_xpos[mask], cosmos_ypos[mask], cosmos_CH2_mag[mask], I_arr_CH2[mask]]).transpose()
+		
+		sourcemap_J = cmock.make_srcmap_temp_bank(ifield_choose, inst, mock_cat_J, flux_idx=-1, n_fine_bin=10, nwide=17,tempbank_dirpath=subpixel_psf_dirpath, load_precomp_tempbank=True)
+		sourcemap_H = cmock.make_srcmap_temp_bank(ifield_choose, inst, mock_cat_H, flux_idx=-1, n_fine_bin=10, nwide=17,tempbank_dirpath=subpixel_psf_dirpath, load_precomp_tempbank=True)
+		sourcemap_CH1 = cmock.make_srcmap_temp_bank(ifield_choose, inst, mock_cat_CH1, flux_idx=-1, n_fine_bin=10, nwide=17,tempbank_dirpath=subpixel_psf_dirpath, load_precomp_tempbank=True)
+		sourcemap_CH2 = cmock.make_srcmap_temp_bank(ifield_choose, inst, mock_cat_CH2, flux_idx=-1, n_fine_bin=10, nwide=17,tempbank_dirpath=subpixel_psf_dirpath, load_precomp_tempbank=True)        
+		
+		sourcemap_J *= coverage_mask
+		sourcemap_H *= coverage_mask
+		sourcemap_CH1 *= coverage_mask
+		sourcemap_CH2 *= coverage_mask
+		
+		plot_map(sourcemap_J, title='COSMOS $J$ band map (VISTA filter)')
+		
+		sourcemap_J[coverage_mask != 0] -= np.mean(sourcemap_J[coverage_mask != 0])
+		sourcemap_H[coverage_mask != 0] -= np.mean(sourcemap_H[coverage_mask != 0])
+		sourcemap_CH1[coverage_mask != 0] -= np.mean(sourcemap_CH1[coverage_mask != 0])
+		sourcemap_CH2[coverage_mask != 0] -= np.mean(sourcemap_CH2[coverage_mask != 0])
+		
+		# autos
+		lb, clauto_J, clerr_auto_J = get_power_spec(sourcemap_J, \
+												 lbinedges=cbps.Mkk_obj.binl, lbins=cbps.Mkk_obj.midbin_ell)
+		lb, clauto_H, clerr_auto_H = get_power_spec(sourcemap_H, \
+												 lbinedges=cbps.Mkk_obj.binl, lbins=cbps.Mkk_obj.midbin_ell)
+		lb, clauto_CH1, clerr_auto_CH1 = get_power_spec(sourcemap_CH1, \
+												 lbinedges=cbps.Mkk_obj.binl, lbins=cbps.Mkk_obj.midbin_ell)
+		lb, clauto_CH2, clerr_auto_CH2 = get_power_spec(sourcemap_CH2, \
+												 lbinedges=cbps.Mkk_obj.binl, lbins=cbps.Mkk_obj.midbin_ell)
+		
+		cl_autos = [clauto_J, clauto_H, clauto_CH1, clauto_CH2]
+		
+		# now compute crosses
+		lb, clx_J_H, clerr_x_J_H = get_power_spec(sourcemap_J, map_b=sourcemap_H, \
+								 lbinedges=cbps.Mkk_obj.binl, lbins=cbps.Mkk_obj.midbin_ell)
+		lb, clx_J_CH1, clerr_x_J_CH1 = get_power_spec(sourcemap_J, map_b=sourcemap_CH1, \
+								 lbinedges=cbps.Mkk_obj.binl, lbins=cbps.Mkk_obj.midbin_ell)
+		lb, clx_J_CH2, clerr_x_J_CH2 = get_power_spec(sourcemap_J, map_b=sourcemap_CH2, \
+								 lbinedges=cbps.Mkk_obj.binl, lbins=cbps.Mkk_obj.midbin_ell)
+		lb, clx_H_CH1, clerr_x_H_CH1 = get_power_spec(sourcemap_H, map_b=sourcemap_CH1, \
+						 lbinedges=cbps.Mkk_obj.binl, lbins=cbps.Mkk_obj.midbin_ell)
+		lb, clx_H_CH2, clerr_x_H_CH2 = get_power_spec(sourcemap_H, map_b=sourcemap_CH2, \
+				 lbinedges=cbps.Mkk_obj.binl, lbins=cbps.Mkk_obj.midbin_ell)
+		lb, clx_CH1_CH2, clerr_x_CH1_CH2 = get_power_spec(sourcemap_CH1, map_b=sourcemap_CH2, \
+				 lbinedges=cbps.Mkk_obj.binl, lbins=cbps.Mkk_obj.midbin_ell)
+		
+		cl_crosses = [clx_J_H, clx_J_CH1, clx_J_CH2, clx_H_CH1, clx_H_CH2, clx_CH1_CH2]
 
-        for clidx, cl in enumerate(cl_autos):
-            if mkk_correct:
-                cl_autos[clidx] = np.dot(inv_Mkk.transpose(), cl)
-            cl_autos[clidx] = cl_autos[clidx] / mean_bl**2
-            
-            
-        for clidx, clx in enumerate(cl_crosses):
-            if mkk_correct:
-                cl_crosses[clidx] = np.dot(inv_Mkk.transpose(), clx)
-            cl_crosses[clidx] = cl_crosses[clidx] / mean_bl**2
-    
-    
-        r_ell_J_H = cl_crosses[0]/np.sqrt(cl_autos[0]*cl_autos[1])
-        r_ell_J_CH1 = cl_crosses[1]/np.sqrt(cl_autos[0]*cl_autos[2])
-        r_ell_J_CH2 = cl_crosses[2]/np.sqrt(cl_autos[0]*cl_autos[3])
-        
-        r_ell_H_CH1 = cl_crosses[3]/np.sqrt(cl_autos[1]*cl_autos[2])
-        r_ell_H_CH2 = cl_crosses[4]/np.sqrt(cl_autos[1]*cl_autos[3])
-        r_ell_CH1_CH2 = cl_crosses[5]/np.sqrt(cl_autos[2]*cl_autos[3])
-        
-        plt.figure()
-        plt.plot(lb[startidx:endidx], r_ell_J_H[startidx:endidx], label='J x H', color='C5')
-        plt.plot(lb[startidx:endidx], r_ell_J_CH1[startidx:endidx], label='J x CH1', color='C6')
-        plt.plot(lb[startidx:endidx], r_ell_J_CH2[startidx:endidx], label='J x CH2', color='C7')
-        plt.plot(lb[startidx:endidx], r_ell_H_CH1[startidx:endidx], label='H x CH1', color='C8')
-        plt.plot(lb[startidx:endidx], r_ell_H_CH2[startidx:endidx], label='H x CH2', color='C9')
-        plt.plot(lb[startidx:endidx], r_ell_CH1_CH2[startidx:endidx], label='CH1 x CH2', color='C10')
-        plt.xscale('log')
-        plt.ylim(0, 1.3)
-        plt.xlabel('$\\ell$', fontsize=16)
-        plt.ylabel('$r_{\\ell}$', fontsize=16)
-        plt.legend(fontsize=12, ncol=2, loc=3)
-        textstr = 'COSMOS field\nMask $J<$'+str(m_min_J_list[magidx])+' and $H<$'+str(m_min_H_list[magidx])
-        if include_IRAC_mask:
-            textstr += ' $\\cup$ $L<$'+str(maglim_IRAC)
-        plt.text(400, 1.05, textstr, color='k', fontsize=16)
-        plt.grid()
+		for clidx, cl in enumerate(cl_autos):
+			if mkk_correct:
+				cl_autos[clidx] = np.dot(inv_Mkk.transpose(), cl)
+			cl_autos[clidx] = cl_autos[clidx] / mean_bl**2
+			
+			
+		for clidx, clx in enumerate(cl_crosses):
+			if mkk_correct:
+				cl_crosses[clidx] = np.dot(inv_Mkk.transpose(), clx)
+			cl_crosses[clidx] = cl_crosses[clidx] / mean_bl**2
+	
+	
+		r_ell_J_H = cl_crosses[0]/np.sqrt(cl_autos[0]*cl_autos[1])
+		r_ell_J_CH1 = cl_crosses[1]/np.sqrt(cl_autos[0]*cl_autos[2])
+		r_ell_J_CH2 = cl_crosses[2]/np.sqrt(cl_autos[0]*cl_autos[3])
+		
+		r_ell_H_CH1 = cl_crosses[3]/np.sqrt(cl_autos[1]*cl_autos[2])
+		r_ell_H_CH2 = cl_crosses[4]/np.sqrt(cl_autos[1]*cl_autos[3])
+		r_ell_CH1_CH2 = cl_crosses[5]/np.sqrt(cl_autos[2]*cl_autos[3])
+		
+		plt.figure()
+		plt.plot(lb[startidx:endidx], r_ell_J_H[startidx:endidx], label='J x H', color='C5')
+		plt.plot(lb[startidx:endidx], r_ell_J_CH1[startidx:endidx], label='J x CH1', color='C6')
+		plt.plot(lb[startidx:endidx], r_ell_J_CH2[startidx:endidx], label='J x CH2', color='C7')
+		plt.plot(lb[startidx:endidx], r_ell_H_CH1[startidx:endidx], label='H x CH1', color='C8')
+		plt.plot(lb[startidx:endidx], r_ell_H_CH2[startidx:endidx], label='H x CH2', color='C9')
+		plt.plot(lb[startidx:endidx], r_ell_CH1_CH2[startidx:endidx], label='CH1 x CH2', color='C10')
+		plt.xscale('log')
+		plt.ylim(0, 1.3)
+		plt.xlabel('$\\ell$', fontsize=16)
+		plt.ylabel('$r_{\\ell}$', fontsize=16)
+		plt.legend(fontsize=12, ncol=2, loc=3)
+		textstr = 'COSMOS field\nMask $J<$'+str(m_min_J_list[magidx])+' and $H<$'+str(m_min_H_list[magidx])
+		if include_IRAC_mask:
+			textstr += ' $\\cup$ $L<$'+str(maglim_IRAC)
+		plt.text(400, 1.05, textstr, color='k', fontsize=16)
+		plt.grid()
 #         if include_IRAC_mask:
 #             plt.savefig('/Users/richardfeder/Downloads/r_ell_cosmos_JHCH1CH2_mask_Jlt'+str(m_min_J_list[magidx])+'_Hlt'+str(m_min_H_list[magidx])+'_CH1lt'+str(maglim_IRAC)+'.png', bbox_inches='tight', dpi=200)
 #         else:
 #             plt.savefig('/Users/richardfeder/Downloads/r_ell_cosmos_JHCH1CH2_mask_Jlt'+str(m_min_J_list[magidx])+'_Hlt'+str(m_min_H_list[magidx])+'.png', bbox_inches='tight', dpi=200)
-        plt.show()
-        
-        prefac = lb*(lb+1)/(2*np.pi)
-        
-        plt.figure()
-        plt.text(300, 600, 'COSMOS2020 catalog source map \nMask $J<$'+str(m_min_J_list[magidx])+' and $H<$'+str(m_min_H_list[magidx]), fontsize=16)
-        plt.plot(lb, prefac*cl_autos[0], label='$J$ auto')
-        plt.plot(lb, prefac*cl_autos[1], label='$H$ auto')
-        plt.plot(lb, prefac*cl_crosses[0], label='$J\\times H$ cross')
-        plt.plot(lb, prefac*cl_autos[2], label='CH1 auto')
-        plt.plot(lb, prefac*cl_autos[3], label='CH2 auto')
-        plt.legend(loc=3, ncol=2, fontsize=12)
-        plt.xscale('log')
-        plt.yscale('log')
-        plt.tick_params(labelsize=14)
-        plt.xlabel('$\\ell$', fontsize=14)
-        plt.ylabel('$D_{\\ell}$ [nW$^2$ m$^{-4}$ sr$^{-2}$]', fontsize=14)
-        plt.ylim(1e-2, 4e3)
-        plt.grid()
+		plt.show()
+		
+		prefac = lb*(lb+1)/(2*np.pi)
+		
+		plt.figure()
+		plt.text(300, 600, 'COSMOS2020 catalog source map \nMask $J<$'+str(m_min_J_list[magidx])+' and $H<$'+str(m_min_H_list[magidx]), fontsize=16)
+		plt.plot(lb, prefac*cl_autos[0], label='$J$ auto')
+		plt.plot(lb, prefac*cl_autos[1], label='$H$ auto')
+		plt.plot(lb, prefac*cl_crosses[0], label='$J\\times H$ cross')
+		plt.plot(lb, prefac*cl_autos[2], label='CH1 auto')
+		plt.plot(lb, prefac*cl_autos[3], label='CH2 auto')
+		plt.legend(loc=3, ncol=2, fontsize=12)
+		plt.xscale('log')
+		plt.yscale('log')
+		plt.tick_params(labelsize=14)
+		plt.xlabel('$\\ell$', fontsize=14)
+		plt.ylabel('$D_{\\ell}$ [nW$^2$ m$^{-4}$ sr$^{-2}$]', fontsize=14)
+		plt.ylim(1e-2, 4e3)
+		plt.grid()
 #         plt.savefig('/Users/richardfeder/Downloads/cosmos2020_Jlt'+str(m_min_J_list[magidx])+'_Hlt'+str(m_min_H_list[magidx])+'_081423.png', bbox_inches='tight')
-        plt.show()
-        
-        all_clauto_J.append(cl_autos[0])
-        all_clauto_H.append(cl_autos[1])
-        all_clauto_CH1.append(cl_autos[2])
-        all_clauto_CH2.append(cl_autos[3])
-        
-        all_clx_JH.append(cl_crosses[0])
-        all_clx_J_CH1.append(cl_crosses[1])
-        all_clx_J_CH2.append(cl_crosses[2])
-        all_clx_H_CH1.append(cl_crosses[3])
-        all_clx_H_CH2.append(cl_crosses[4])
-        all_clx_CH1_CH2.append(cl_crosses[5])
-        
-    return lb, cl_autos, cl_crosses, all_clauto_J, all_clauto_H, all_clx_JH, all_clauto_CH1, all_clauto_CH2, \
-            all_clx_J_CH1, all_clx_J_CH2, all_clx_H_CH1, all_clx_H_CH2
-        
+		plt.show()
+		
+		all_clauto_J.append(cl_autos[0])
+		all_clauto_H.append(cl_autos[1])
+		all_clauto_CH1.append(cl_autos[2])
+		all_clauto_CH2.append(cl_autos[3])
+		
+		all_clx_JH.append(cl_crosses[0])
+		all_clx_J_CH1.append(cl_crosses[1])
+		all_clx_J_CH2.append(cl_crosses[2])
+		all_clx_H_CH1.append(cl_crosses[3])
+		all_clx_H_CH2.append(cl_crosses[4])
+		all_clx_CH1_CH2.append(cl_crosses[5])
+		
+	return lb, cl_autos, cl_crosses, all_clauto_J, all_clauto_H, all_clx_JH, all_clauto_CH1, all_clauto_CH2, \
+			all_clx_J_CH1, all_clx_J_CH2, all_clx_H_CH1, all_clx_H_CH2
+		
 
 def cl_predictions_vs_magcut(inst, ifield_list=[4, 5, 6, 7, 8], mag_lims=None, mag_cut_cat = 15.0, nsim=10, ifield_choose=4, \
 							load_igl_pred=False):
@@ -885,6 +1080,7 @@ def cl_predictions_vs_magcut(inst, ifield_list=[4, 5, 6, 7, 8], mag_lims=None, m
 			
 			
 	return power_maglim_isl_igl, power_maglim_igl
+
 def compute_cross_shot_noise_trilegal(mag_lim_list, inst, cross_inst, ifield_list, datestr, fpath_dict, mode='isl', mag_lim_list_cross=None, \
 									 simidx0=0, nsims=100, ifield_plot=4, save=True, ciberdir='.', ciber_mock_fpath=None, convert_Vega_to_AB=True, simstr=None):
 	
@@ -1017,7 +1213,8 @@ def compute_cross_shot_noise_trilegal(mag_lim_list, inst, cross_inst, ifield_lis
 def compute_residual_source_shot_noise(mag_lim_list, inst, ifield_list, datestr, fpath_dict=None, mode='cib', cmock=None, cbps=None, convert_Vega_to_AB=True, \
 									simidx0=0, nsims=100, ifield_plot=4, save=True, return_cls=True, \
 									  ciber_mock_dirpath='/Volumes/Seagate Backup Plus Drive/Toolkit/Mirror/Richard/ciber_mocks/', trilegal_fpaths=None, \
-									  tailstr='Vega_magcut', return_src_maps=False, simstr='with_dpoint'):
+									  tailstr='Vega_magcut', return_src_maps=False, simstr='with_dpoint', \
+									  collect_cls=False, ):
 	
 	
 	if fpath_dict is not None:
@@ -1069,7 +1266,12 @@ def compute_residual_source_shot_noise(mag_lim_list, inst, ifield_list, datestr,
 	if return_src_maps:
 		src_maps = np.zeros((len(ifield_list), len(mag_lim_list), cbps.dimx, cbps.dimy))
 
+	if collect_cls:
+		src_map_cls = np.zeros((len(ifield_list), len(mag_lim_list), nsims, cbps.n_ps_bin))
+
+
 	for setidx in np.arange(simidx0, nsims):
+		print('On set ', setidx, 'of ', nsims)
 		for fieldidx, ifield in enumerate(ifield_list):
 			if setidx==0 and fieldidx==0:
 				plt.figure()
@@ -1106,7 +1308,7 @@ def compute_residual_source_shot_noise(mag_lim_list, inst, ifield_list, datestr,
 				print('mode not recognized, try again!')
 				return None
 			
-			print('tracer cat for ifield'+str(ifield)+' has shape ', full_tracer_cat.shape)
+			# print('tracer cat for ifield'+str(ifield)+' has shape ', full_tracer_cat.shape)
 
 			for m, mag_lim in enumerate(mag_lim_list):                
 				if convert_Vega_to_AB:
@@ -1152,6 +1354,10 @@ def compute_residual_source_shot_noise(mag_lim_list, inst, ifield_list, datestr,
 
 					cl_table = [lb, cl_full]
 					names = ['lb', 'cl_full']
+
+				if collect_cls:
+					# print(cl_diff_maglim)
+					src_map_cls[fieldidx, m, setidx] = cl_diff_maglim
 				cl_table.append(cl_diff_maglim)
 				names.append('cl_maglim_'+str(mag_lim))
 
@@ -1175,7 +1381,7 @@ def compute_residual_source_shot_noise(mag_lim_list, inst, ifield_list, datestr,
 			
 			cmock.psf_temp_bank = None
 				
-			if ifield==ifield_plot:
+			if ifield==ifield_plot and save:
 				cl_table_test = fits.open(cl_save_fpath)['cls_'+mode].data
 
 				plt.figure()
@@ -1189,44 +1395,240 @@ def compute_residual_source_shot_noise(mag_lim_list, inst, ifield_list, datestr,
 
 	if return_src_maps:
 		return src_maps
+
+	if collect_cls:
+		return src_map_cls
 	if mode=='isl':
 		return isl_sb_rms
 	elif mode=='cib':
 		return None
 	 
-def calc_cosmos15_shotnoise(inst, cat_df, mag_min=17.0, mag_max=30.0, aeff=1.37, bandstr=None, bandstr_cut=None):
+
+def poisson_pred_ciber_spitzer_wrapper(mag_min_irac=16.0, modes = ['full', 'igl', 'isl'], src_types = [None, 0, 1], \
+												apply_color_correction=False, mag_max=30., ifield_list=[4, 5, 6, 7, 8], \
+													twomass_bandstrs = ['j_m', 'h_m'], inst_list = [1, 2], irac_ch_list=[1, 2], \
+												bandstrs=['J', 'H'], datestr=None):
+	''' One script to do it all, incorporate modifications to Jordan model '''
+	
+	cosmos_aeff = 1.58 # deg^2
+	save_fpath  = config.ciber_basepath+'data/catalogs/COSMOS15/COSMOS15_rizy_JHKs_CH1CH2_AB_hjmcc.csv'
+	c15_df = pd.read_csv(save_fpath)
+	
+	twomass_aeff = 4.0
+
+	if apply_color_correction:
+		c15_ccorr = np.load(config.ciber_basepath+'data/cl_predictions/c15_shotnoise_ratio_ciber_uvista_nuInu_indiv_magcut.npz')
+		mmin_range_ccorr = c15_ccorr['mmin_range']
+#         ratio_c15_ccorr = c15_ccorr['ratio_cib_uv']
+
+		
+	# CIBER autos vs masking depth, single band masking selection
+	# 2MASS, COSMOS, TRILEGAL
+	J_mag_range = [11.0, 12.0, 13.0, 14.0, 15.0, 16.0, 17.0, 17.5, 18.0, 18.5]
+	H_mag_range = [11.0, 12.0, 13.0, 14.0, 15.0, 16.0, 17.0, 17.5, 18.0]
+	ciber_band_mags = [J_mag_range, H_mag_range]
+
+	for idx, inst in enumerate(inst_list):
+		
+		auto_pv_c15 = np.zeros((len(modes), len(ciber_band_mags[idx])))
+		
+		# loop over COSMOS
+		for m, mode in enumerate(modes):
+			for midx, mag in enumerate(ciber_band_mags[idx]):
+
+				auto_pv = calc_catalog_poisson_fluc(inst, c15_df, mag_min=mag, mag_max=mag_max, aeff=cosmos_aeff,\
+													convert_to_AB=True, lam_eff=lam_eff)
+
+				if apply_color_correction:
+					ccorr = grab_color_corr(mag, mmin_range_ccorr, ratio_cib_uv)
+					
+				auto_pv_c15[m, midx] = auto_pv
+		  
+		auto_pv_COSMOS_fpath = ''
+		
+		if datestr is not None:
+			auto_pv_COSMOS_fpath += '_'+datestr
+		
+		print('Saving TM'+str(inst)+' COSMOS 2015 Poisson predictions to '+auto_pv_COSMOS_fpath+'.npz..')
+		np.savez(auto_pv_COSMOS_fpath+'.npz', inst=inst, ifield_list=ifield_list, mag_lims=ciber_band_mags[idx], \
+				auto_pv_c15=auto_pv_c15)
+
+		# 2MASS 
+			
+		auto_pv_2MASS = np.zeros((len(ifield_list), len(ciber_band_mags[idx])))
+		for fieldidx, ifield in enumerate(ifield_list):
+			fieldname = cbps.ciber_field_dict[ifield]
+			twom_basepath = config.ciber_basepath+'data/catalogs/2MASS/filt/'
+			twom_fpath = twom_basepath+'2MASS_filt_rdflag_wxy_'+fieldname+'_Jlt17.5.csv'
+			twomass_df = pd.read_csv(twom_fpath)
+
+			for midx, mag in enumerate(ciber_band_mags[idx]):
+
+				auto_pv = calc_catalog_poisson_fluc(inst, twomass_df, mag_min=mag, mag_max=mag_max,\
+													bandstr=twomass_bandstrs[idx], aeff=twomass_aeff, convert_to_AB=True)
+
+				auto_pv_2MASS[fieldidx, midx] = auto_pv
+				
+		auto_pv_2MASS_fpath = ''
+		
+		if datestr is not None:
+			auto_pv_2MASS_fpath += '_'+datestr
+		
+		print('Saving TM'+str(inst)+' 2MASS Poisson predictions to '+auto_pv_2MASS_fpath+'.npz..')
+		np.savez(auto_pv_2MASS_fpath+'.npz', inst=inst, ifield_list=ifield_list, mag_lims=ciber_band_mags[idx], \
+				auto_pv_2MASS=auto_pv_2MASS)
+
+	
+	# CIBER autos vs masking depth, J+H band masking selection
+	# CIBER crosses vs masking depth, J+H band masking selection
+	# 2MASS, COSMOS, TRILEGAL
+	# IGL, ISL
+	J_mag_range = [12.0, 13.0, 14.0, 15.0, 16.0, 17.0, 17.5, 18.0, 18.5]
+	H_mag_range = np.array(J_mag_range)-0.5
+			
+	all_auto_J_pv, all_auto_H_pv, all_cross_JH_pv = [np.zeros((len(modes), len(J_mag_range))) for x in range(3)]
+	
+	# COSMOS
+	for m, mode in enumerate(modes):
+		for midx, mag in enumerate(J_mag_range):
+			auto_pv, auto_pv_crossinst, cross_pv = calc_catalog_poisson_fluc(1, c15_df, mag_min=mag, mag_max=mag_max, \
+											  bandstr_cut=bandstr, bandstr=bandstr, aeff=cosmos_aeff, \
+												 lam_eff=1.65, src_type=src_types[m], cross_inst=2, mag_min_cross=H_mag_range[midx], \
+												convert_to_AB=True)
+
+			if apply_color_correction:
+				ccorr = grab_color_corr(mag, mmin_range_ccorr, ratio_cib_uv)
+
+			all_auto_J_pv[m, midx] = auto_pv
+			all_auto_H_pv[m, midx] = auto_pv_crossinst
+			all_cross_JH_pv[m, midx] = cross_pv
+					
+	c15_auto_cross_fpath = ''
+	if datestr is not None:
+		c15_auto_cross_fpath += '_'+datestr
+	np.savez(c15_auto_cross_fpath+'.npz', J_mag_range=J_mag_range, H_mag_range=H_mag_range, apply_color_correction=apply_color_correction, \
+			modes=modes, all_auto_J_pv=all_auto_J_pv, all_auto_H_pv=all_auto_H_pv, all_cross_JH_pv=all_cross_JH_pv)
+		
+	# 2MASS
+	auto_pv_J_2MASS, auto_pv_H_2MASS, cross_pv_JH_2MASS = [np.zeros((len(ifield_list), len(ciber_band_mags[idx]))) for x in range(3)]
+	lam_eff, lam_eff_cross = 1.25, 1.65
+	for fieldidx, ifield in enumerate(ifield_list):
+		
+		for midx, mag in enumerate(J_mag_range):
+
+			auto_pv_J, auto_pv_H, cross_pv_JH = calc_catalog_poisson_fluc(inst, twomass_df, cross_inst=cross_inst, mag_min=mag, mag_min_cross=H_mag_range[midx],\
+															mag_max=mag_max, bandstr='j_m', bandstr_cross='h_m', aeff=4.0, convert_to_AB=True, \
+															   lam_eff=lam_eff, lam_eff_cross=lam_eff_cross)
+
+			auto_pv_J_2MASS[fieldidx, midx] = auto_pv_J
+			auto_pv_H_2MASS[fieldidx, midx] = auto_pv_H
+			cross_pv_JH_2MASS[fieldidx, midx] = cross_pv_JH
+		
+		
+	pv_filename_2MASS = ''
+	if datestr is not None:
+		pv_filename_2MASS += '_'+datestr
+	np.savez(pv_filename_2MASS+'.npz', auto_pv_J_2MASS=auto_pv_J_2MASS, auto_pv_H_2MASS=auto_pv_H_2MASS, cross_pv_JH_2MASS=cross_pv_JH_2MASS, \
+			inst=inst, cross_inst=cross_inst, J_mag_range=J_mag_range, H_mag_range=H_mag_range)
+
+	
+	# Spitzer autos vs masking depth, J + CH1 + CH2 selection
+	# CIBER x Spitzer crosses vs masking depth, J/H + CH1 + CH2 selection
+	
+	mag_mins_ciber = [17.5, 17.0] # J/H bands    
+	
+	all_irac_pv_c15, all_ciber_irac_pv_c15, all_ciber_pv_c15 = [np.zeros((len(modes), len(irac_ch_list), len(inst_list))) for x in range(3)]
+
+	for m, mode in enumerate(modes):
+
+		irac_pv, ciber_irac_pv, ciber_pv = calc_cosmos15_shotnoise_ciber_irac_new(c15_df, mag_mins_ciber=mag_mins_ciber,\
+																				  mag_min_irac=mag_min_irac, src_type=src_type, \
+																						inst_list=inst_list, irac_ch_list=irac_ch_list)
+
+		all_irac_pv_c15[m,:,:] = irac_pv
+		all_ciber_irac_pv_c15[m,:,:] = ciber_irac_pv
+		all_ciber_pv_c15[m] = ciber_pv
+		
+	ciber_irac_pv_c15_fpath = config.ciber_basepath+'data/cl_predictions/irac_vs_ciber_pv_cosmos15_nuInu_CH1CH2mask'
+	if datestr is not None:
+		ciber_irac_pv_c15_fpath += '_'+datestr
+	
+	print('Saving CIBER x Spitzer auto/cross Poisson predictions to ', ciber_irac_pv_c15_fpath+'.npz')
+	np.savez(ciber_irac_pv_c15_fpath+'.npz', mag_min_irac=mag_min_irac, modes=modes, irac_ch_list=irac_ch_list, inst_list=inst_list, \
+			all_irac_pv_c15=all_irac_pv_c15, all_ciber_irac_pv_c15=all_ciber_irac_pv_c15, all_ciber_pv_c15=all_ciber_pv)
+		
 	
 
-	cmock = ciber_mock()
-	if inst==1:
-		if bandstr is None:
-			bandstr = 'J'
-		lam = 1.05
-		Vega_to_AB = 0.91
-	else:
-		if bandstr is None:
-			bandstr = 'H'
-		lam = 1.79
-		Vega_to_AB= 1.31
 
+def calc_catalog_poisson_fluc(inst, cat_df, irac_ch=None, irac_ch_cross=None, cross_inst=None, mag_min=17.5, mag_min_cross=None, mag_max=30.0, aeff=1.37,\
+							bandstr=None, bandstr_cut=None, bandstr_cross=None, convert_to_AB=False, lam_eff=None, lam_eff_cross=None):
+
+	''' All shot noise prediction inputs should be in AB magnitudes '''
+	
+	cmock = ciber_mock()
+	
+		
+	bandstr_dict = dict({1:'J', 2:'H'})
+	lam_dict = dict({1:1.05, 2:1.79})
+	Vega_to_AB = dict({1:0.91, 2:1.39})
+	
+	lam_irac_dict = dict({1:3.6, 2:4.5})
+	Vega_to_AB_irac = dict({1:2.699, 2:3.339})
+	
+	if lam_eff is None:
+		lam_eff = lam_dict[inst]
+	if lam_eff_cross is None and cross_inst is not None:
+		lam_eff_cross = lam_dict[cross_inst]
+		
+	if bandstr is None:
+		bandstr = bandstr_dict[inst]
+	if bandstr_cross is None and cross_inst is not None:
+		bandstr_cross = bandstr_dict[cross_inst]
+		
 	cat_mag = np.array(cat_df[bandstr])
 	
+	if src_type is not None:
+		cat_type = np.array(cat_df['type'])
+	
+	if convert_to_AB:
+#         print('converting to AB magntiudes')
+		cat_mag += Vega_to_AB[inst]
+	
+	if cross_inst is not None:
+		cat_mag_cross = np.array(cat_df[bandstr_cross])
+			
+		if convert_to_AB:
+			cat_mag_cross += Vega_to_AB[cross_inst]
+
 	if bandstr_cut is None:
 		catmask = (cat_mag > mag_min)*(cat_mag < mag_max)
 	else:
 		cat_mag_sel = np.array(cat_df[bandstr_cut])
 		catmask = (cat_mag_sel > mag_min)*(cat_mag_sel < mag_max)
-	
-	cat_mag_sel = cat_mag[catmask]
+		
+	if mag_min_cross is not None:
+		catmask *= (cat_mag_cross > mag_min_cross)*(cat_mag_cross < mag_max)
 
-	nu_Inu = cmock.mag_2_nu_Inu(cat_mag_sel, lam_eff=lam*1e-6*u.m)*cmock.pix_sr
+	if src_type is not None:
+		catmask *= (cat_type==src_type)
 	
-	volfac = 1./aeff # 1/deg^2
-	volfac /= 3.046e-4 # 1/sr    
+		
+	volfac = (1./aeff)/3.046e-4
+		
+	nu_Inu = cmock.mag_2_nu_Inu(cat_mag[catmask], lam_eff=lam_eff*1e-6*u.m)*cmock.pix_sr
+	auto_poisson_var = np.sum(volfac*(nu_Inu**2))
+
+	if cross_inst is not None:
+		cat_mag_sel_cross = cat_mag_cross[catmask]
+		
+		nu_Inu_crossinst = cmock.mag_2_nu_Inu(cat_mag_cross[catmask], lam_eff=lam_eff_cross*1e-6*u.m)*cmock.pix_sr
+		auto_poisson_var_crossinst = np.sum(volfac*(nu_Inu_crossinst**2))
+		cross_poisson_var = np.sum(volfac*(nu_Inu*nu_Inu_crossinst))
+		
+		return auto_poisson_var, auto_poisson_var_crossinst, cross_poisson_var
 	
-	poisson_var = np.sum(volfac*(nu_Inu**2))
-	
-	return poisson_var   
+	return auto_poisson_var
+
 
 def calc_shotnoise_from_cat(inst, cat_df, xlims, ylims, mag_min=17.0, mag_max=30.0, cat_type='predict', convert_to_AB=True):
 	
@@ -1279,4 +1681,67 @@ def calc_shotnoise_from_cat(inst, cat_df, xlims, ylims, mag_min=17.0, mag_max=30
 	poisson_var = np.sum(volfac*(nu_Inu**2))
 	
 	return poisson_var
+
+def calc_cosmos15_shotnoise_ciber_irac(cat_df, inst_list=[1, 2], irac_ch_list = [1, 2],\
+									   mag_mins_ciber=[17.5, 17.0], mag_min_irac=16.0, mag_max=30.0, aeff=1.37):
+	
+	cmock = ciber_mock()
+	volfac = (1./aeff)/3.046e-4
+	
+	mag_mins_ciber = np.array(mag_mins_ciber)
+
+	bandstr_dict = dict({1:'J', 2:'H'})
+	lam_ciber_dict = dict({1:1.05, 2:1.79})
+	Vega_to_AB_ciber = dict({1:0.91, 2:1.39})
+	
+	lam_irac_dict = dict({1:3.6, 2:4.5})
+	Vega_to_AB_irac = dict({1:2.699, 2:3.339})
+	
+	mag_mins_ciber[0] += Vega_to_AB_ciber[1]
+	mag_mins_ciber[1] += Vega_to_AB_ciber[2]
+	mag_min_irac += Vega_to_AB_irac[1]
+	
+	print('mag mins ciber (AB):', mag_mins_ciber)
+	print('mag min irac (AB):', mag_min_irac)
+	
+	cat_mag_TM1 = np.array(cat_df['J'])
+	cat_mag_TM2 = np.array(cat_df['H'])
+	
+	cat_mags_ciber = [cat_mag_TM1, cat_mag_TM2]
+	
+	cat_mag_CH1 = np.array(cat_df['mag_CH1'])
+	cat_mag_CH2 = np.array(cat_df['mag_CH2'])
+	
+	cat_mags_irac = [cat_mag_CH1, cat_mag_CH2]
+	
+	irac_pv = np.zeros((len(irac_ch_list), len(inst_list)))
+	ciber_irac_pv = np.zeros((len(irac_ch_list), len(inst_list)))
+	
+	
+	for idx, irac_ch in enumerate(irac_ch_list):
+		
+		for ciberidx, inst in enumerate(inst_list):
+			
+			catmask = (cat_mags_ciber[ciberidx] > mag_mins_ciber[ciberidx])*(cat_mags_ciber[ciberidx] < mag_max)
+			catmask *= (cat_mag_CH1 > mag_min_irac)
+			catmask *= (~np.isinf(cat_mags_ciber[ciberidx]))*(~np.isinf(cat_mag_CH1))*(~np.isinf(cat_mags_irac[idx]))
+			
+			plt.figure()
+			plt.hist(cat_mags_irac[idx][catmask], bins=20, histtype='step', label='IRAC select')
+			plt.hist(cat_mags_ciber[idx][catmask], bins=20, histtype='step', label='CIBER select')
+			plt.xlabel('mAB')
+			plt.yscale('log')
+			plt.legend()
+			plt.show()
+			
+			nu_Inu_ciber = cmock.mag_2_nu_Inu(cat_mags_ciber[ciberidx][catmask], lam_eff=lam_ciber_dict[inst]*1e-6*u.m)*cmock.pix_sr
+			nu_Inu_irac = cmock.mag_2_nu_Inu(cat_mags_irac[idx][catmask], lam_eff=lam_irac_dict[irac_ch]*1e-6*u.m)*cmock.pix_sr
+	
+			irac_auto_poisson_var = np.nansum(volfac*(nu_Inu_irac**2))
+			ciber_irac_cross_poisson_var = np.nansum(volfac*(nu_Inu_irac*nu_Inu_ciber))
+		
+			irac_pv[idx, ciberidx] = irac_auto_poisson_var.value
+			ciber_irac_pv[idx, ciberidx] = ciber_irac_cross_poisson_var.value
+			
+	return irac_pv, ciber_irac_pv
 

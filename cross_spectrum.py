@@ -294,7 +294,9 @@ def regrid_iris_by_quadrant(fieldname, inst=1, quad_list=['A', 'B', 'C', 'D'], \
 
 
 def process_ciber_cross_spectra(maglim_J_list, inst=1, cross_inst=2, datestr='111323', ifield_list=[4, 5, 6, 7, 8], \
-                               include_legends = [True, False], run_names=None, flatidx = 9, save=False):
+                               include_legends = [True, False], run_names=None, flatidx = 9, save=False, plot_cl_errs=False, \
+                               textxpos=300, xlim=[200, 1e5], include_mirocha_model=False, include_isl_pred=False, include_c15_pred=True, datestr_pred='091624', tailstr='test', \
+                               bbox_to_anchor=[1.0, 1.3], ncol=3, order=None, include_swire_pred=False, **kwargs):
     cbps = CIBER_PS_pipeline()
     lb = cbps.Mkk_obj.midbin_ell
     
@@ -312,20 +314,23 @@ def process_ciber_cross_spectra(maglim_J_list, inst=1, cross_inst=2, datestr='11
         else:
             run_name = run_names[m]
             
-
         all_nl1d_err_weighted, all_cl1d_obs, all_dcl1d_obs  = [[] for x in range(3)]
 
         cross_cl_file = np.load(config.ciber_basepath+'data/input_recovered_ps/'+datestr+'/TM1/'+run_name+'/input_recovered_ps_estFF_simidx0.npz')
+
+        # cl1d_obs = np.mean(cross_cl_file['recovered_ps_est_nofluc'], axis=0)
+
+        mean_cl1d_obs = np.mean(cross_cl_file['recovered_ps_est_nofluc'], axis=0)
+
 
         for fieldidx, ifield in enumerate(ifield_list):
             cl1d_obs = cross_cl_file['recovered_ps_est_nofluc'][fieldidx]
             dcl1d_obs = cross_cl_file['recovered_dcl'][fieldidx]
 
             frac_knox_errors = return_frac_knox_error(lb, cbps.Mkk_obj.delta_ell)
-            knox_err = frac_knox_errors*cl1d_obs
+            knox_err = frac_knox_errors*mean_cl1d_obs
 
             dcl1d_obs = np.sqrt(dcl1d_obs**2+knox_err**2)
-
             all_cl1d_obs.append(cl1d_obs)
             all_dcl1d_obs.append(dcl1d_obs)
 
@@ -353,16 +358,24 @@ def process_ciber_cross_spectra(maglim_J_list, inst=1, cross_inst=2, datestr='11
         for x in range(flatidx):
             field_weights[:,x] = np.mean(field_weights[:, -10:], axis=1)
             
-        if maglim_J < 15.0:
-            pv_cross = None
+        if maglim_J < 16.0:
+            ylim = None 
         else:
-            which_pv = np.where((mmin_J_pv==maglim_J))[0][0]
-            pv_cross = all_pv_JH[which_pv]
+            ylim = [1e-2, 1e4]
+        #     pv_cross = None
+        # else:
+        which_pv = np.where((mmin_J_pv==maglim_J))[0][0]
+        pv_cross = all_pv_JH[which_pv]
+
+        if not include_c15_pred:
+            pv_cross = None
             
         f, weighted_cross_average_cl, weighted_cross_average_dcl = plot_ciber_x_ciber_ps(cbps, ifield_list, lb, all_cl1d_obs, all_dcl1d_obs, field_weights, maglim_J, \
-                                                                            plot_cl_errs=False, startidx=2, snpred_cross=pv_cross, flatidx=0, ylim=[1e-2, 1e4], \
-                                                                                    textxpos=220, include_legend=True, \
-                                                                                    include_dgl_ul=True, markersize_alpha=0.4)
+                                                                            plot_cl_errs=plot_cl_errs, startidx=2, snpred_cross=pv_cross, flatidx=0, ylim=ylim, \
+                                                                                    xlim=[250, 1e5], textxpos=textxpos, include_legend=True, \
+                                                                                    include_dgl_ul=True, markersize_alpha=0.4, include_mirocha_model=include_mirocha_model, \
+                                                                                    include_isl_pred=include_isl_pred, datestr=datestr_pred, tailstr=tailstr, \
+                                                                                    bbox_to_anchor=bbox_to_anchor, ncol=ncol, order=order, include_swire_pred=include_swire_pred)
 
 
         fig_list.append(f)
@@ -374,10 +387,54 @@ def process_ciber_cross_spectra(maglim_J_list, inst=1, cross_inst=2, datestr='11
     return fig_list
 
 
+def process_ciber_maps_for_cross_wrapper(mag_lim_J_list, mask_tail_list=None, inst=2, regrid_to_inst=1, ifield_list=[4, 5, 6, 7, 8], \
+                                        astr_dir = config.ciber_basepath+'data/', niter=1, nitermax=10, datestr='111323', \
+                                        ff_min_TM2 = 0.6, ff_max_TM2 = 1.5, save=True, regrid_order=1, conserve_flux=False, \
+                                        fc_sub=True, fc_sub_quad_offset=True, fc_sub_n_terms=2, grad_sub=True, sigma_clip_ffest=5, sigma_clip_dict=None, \
+                                        use_proc_sigclip=False):
+
+    cbps = CIBER_PS_pipeline()
+    regrid_masked_proc_list, regrid_fpaths_list = [], []
+
+    if sigma_clip_dict is None:
+        sigma_clip_dict = dict({11.0:None, 12.0:None, 13.0:None, 14.0:30, 15.0:10, 16.0:10.0, 16.5:5, 17.0:4, \
+               17.5:4, 18.0:4, 18.5:4})
+
+    
+    for m, mag_lim_J in enumerate(mag_lim_J_list):
+
+        if use_proc_sigclip:
+
+            sigma_clip = sigma_clip_dict[mag_lim_J]
+        else:
+            sigma_clip = None 
+
+        mag_lim_H = mag_lim_J-0.5
+        
+        if mask_tail_list is not None:
+            mask_tail = mask_tail_list[m]
+        else:
+            mask_tail = 'Jlim_Vega_'+str(mag_lim_J)+'_Hlim_Vega_'+str(mag_lim_H)+'_ukdebias_111323'
+
+        mag_lim_J_ffest = max(mag_lim_J, 17.5)
+        mag_lim_H_ffest = mag_lim_J_ffest - 0.5
+
+        mask_tail_ffest = 'Jlim_Vega_'+str(mag_lim_J_ffest)+'_Hlim_Vega_'+str(mag_lim_H_ffest)+'_ukdebias_111323'
+        
+        regrid_masked_proc, regrid_fpaths = proc_cibermap_regrid(cbps, inst, regrid_to_inst, mask_tail, mask_tail_ffest=mask_tail_ffest, ifield_list=ifield_list, datestr=datestr, \
+                                niter=niter, nitermax=nitermax, sig=sigma_clip, sig_ffest=sigma_clip_ffest, ff_min=ff_min_TM2, ff_max=ff_max_TM2, astr_dir=astr_dir, \
+                                                     save=save, order=regrid_order, conserve_flux=conserve_flux,\
+                                                      fc_sub=fc_sub, fc_sub_quad_offset=fc_sub_quad_offset, fc_sub_n_terms=fc_sub_n_terms, grad_sub=grad_sub)
+
+        regrid_masked_proc_list.append(regrid_masked_proc)
+        regrid_fpaths_list.append(regrid_fpaths)
+        
+    return regrid_masked_proc_list, regrid_fpaths_list
+
 def proc_cibermap_regrid(cbps, inst, regrid_to_inst, mask_tail, ifield_list=[4, 5, 6, 7, 8], datestr='112022', \
-                        niter=5, nitermax=1, sig=5, ff_min=0.5, ff_max=1.5, astr_dir='../../ciber/data/', \
+                        niter=5, nitermax=1, sig=None, sig_ffest=5, ff_min=0.5, ff_max=1.5, astr_dir='../../ciber/data/', \
                         save=True, mask_tail_ffest=None, order=0, conserve_flux=False, fc_sub=False, \
-                        fc_sub_quad_offset=False, fc_sub_n_terms=2):
+                        fc_sub_quad_offset=False, fc_sub_n_terms=2, grad_sub=True):
     
     config_dict, pscb_dict, float_param_dict, fpath_dict = return_default_cbps_dicts()
 
@@ -416,9 +473,14 @@ def proc_cibermap_regrid(cbps, inst, regrid_to_inst, mask_tail, ifield_list=[4, 
         plot_map(masks[fieldidx]*observed_ims[fieldidx], title='masked map')
 
         if mask_tail_ffest is not None:
-            plot_map(masks[fieldidx]*observed_ims[fieldidx], title='map for ff estimation')
+            plot_map(masks_ffest[fieldidx]*observed_ims[fieldidx], title='map for ff estimation')
 
     ciber_maps_byquad = [observed_ims[:, cbps.x0s[q]:cbps.x1s[q], cbps.y0s[q]:cbps.y1s[q]] for q in range(4)]
+
+    if masks_ffest is not None:
+        masks_use = masks_ffest.copy()
+    else:
+        masks_use = masks.copy()
 
     if fc_sub:
 
@@ -428,41 +490,16 @@ def proc_cibermap_regrid(cbps, inst, regrid_to_inst, mask_tail, ifield_list=[4, 
 
         print('weights ff:', weights_ff)
 
-        if sig is not None:
+        if sig_ffest is not None:
             print('applying sigma clipping')
             for fieldidx, ifield in enumerate(ifield_list):
 
-                if masks_ffest is not None:
-                    sigclip = iter_sigma_clip_mask(observed_ims[fieldidx], sig=sig, nitermax=nitermax, mask=masks_ffest[fieldidx].astype(int))
-                    masks_ffest[fieldidx] *= sigclip
-                else:
-                    sigclip = iter_sigma_clip_mask(observed_ims[fieldidx], sig=sig, nitermax=nitermax, mask=masks[fieldidx].astype(int))
-                    masks[fieldidx] *= sigclip
-                    
+                sigclip = iter_sigma_clip_mask(observed_ims[fieldidx], sig=sig_ffest, nitermax=nitermax, mask=masks_use[fieldidx].astype(int))
+                masks_use[fieldidx] *= sigclip
 
-
-        for m in range(len(masks)):
-
-
-            if masks_ffest is not None:
-                dot1, X, mask_rav = precomp_fourier_templates(cbps.dimx, cbps.dimy, mask=masks_ffest[m], quad_offset=fc_sub_quad_offset, \
-                                                             n_terms=fc_sub_n_terms)   
-
-                masks_use = masks_ffest.copy()
-            else:
-                dot1, X, mask_rav = precomp_fourier_templates(cbps.dimx, cbps.dimy, mask=masks[m], quad_offset=fc_sub_quad_offset, \
-                                                             n_terms=fc_sub_n_terms)   
-            
-                masks_use = masks.copy()
-
-            all_dot1.append(dot1)
-            all_X.append(X)
-            all_mask_rav.append(mask_rav)
-
-
-        processed_ims, ff_estimates, final_planes, stack_masks, all_coeffs = iterative_gradient_ff_solve(observed_ims, niter=1, masks=masks_use, weights_ff=weights_ff, \
-                                                                            ff_stack_min=1, plot=False, \
-                                                                            fc_sub=fc_sub, fc_sub_quad_offset=fc_sub_quad_offset, fc_sub_n_terms=fc_sub_n_terms) # masks already accounting for ff_stack_min previously
+        processed_ims, ff_estimates, final_planes, stack_masks, all_coeffs = iterative_gradient_ff_solve(observed_ims, niter=niter, masks=masks_use, weights_ff=weights_ff, \
+                                                                            ff_stack_min=1, plot=False, fc_sub=fc_sub, fc_sub_quad_offset=fc_sub_quad_offset, fc_sub_n_terms=fc_sub_n_terms, \
+                                                                            with_gradient=grad_sub) # masks already accounting for ff_stack_min previously
 
         masks *= stack_masks
     else:
@@ -493,7 +530,15 @@ def proc_cibermap_regrid(cbps, inst, regrid_to_inst, mask_tail, ifield_list=[4, 
     
     all_masked_proc = []
     all_regrid_masked_proc = []
-    
+    all_regrid_fpath = []
+
+
+    if sig is not None:
+        print('Applying sigma clip of ', sig, 'over ', nitermax, 'iterations')
+        for fieldidx, ifield in enumerate(ifield_list):
+            sigclip = iter_sigma_clip_mask(processed_ims[fieldidx], sig=sig_ffest, nitermax=nitermax, mask=masks[fieldidx].astype(int))
+            masks[fieldidx] *= sigclip
+
     for fieldidx, ifield in enumerate(ifield_list):
         
         obs_level = np.mean(processed_ims[fieldidx][masks[fieldidx]==1])
@@ -501,29 +546,27 @@ def proc_cibermap_regrid(cbps, inst, regrid_to_inst, mask_tail, ifield_list=[4, 
 
         masked_obs = processed_ims[fieldidx]*masks[fieldidx]
 
+        plot_map(masked_obs, title='Masked map, target mask, ifield '+str(ifield))
+
         for q in range(4):
 
             obs_quad = masked_obs[cbps.x0s[q]:cbps.x1s[q], cbps.y0s[q]:cbps.y1s[q]]
             processed_ims[fieldidx][cbps.x0s[q]:cbps.x1s[q], cbps.y0s[q]:cbps.y1s[q]][obs_quad!=0] -= np.mean(obs_quad[obs_quad!=0])
 
-            # mquad = masks[fieldidx][cbps.x0s[q]:cbps.x1s[q], cbps.y0s[q]:cbps.y1s[q]]
-            # processed_ims[fieldidx][cbps.x0s[q]:cbps.x1s[q], cbps.y0s[q]:cbps.y1s[q]][mquad==1] -= np.mean(processed_ims[fieldidx][cbps.x0s[q]:cbps.x1s[q], cbps.y0s[q]:cbps.y1s[q]][mquad==1])
-
         masked_proc = processed_ims[fieldidx]*masks[fieldidx]
-        plot_map(masked_proc, cmap='bwr')
+        plot_map(masked_proc, title='Masked, mean subtracted maps, ifield '+str(ifield))
 
         all_masked_proc.append(masked_proc)
     
         ciber_regrid, ciber_fp_regrid = regrid_arrays_by_quadrant(masked_proc, ifield, inst0=regrid_to_inst, inst1=inst, \
                                                              plot=False, astr_dir=astr_dir, order=order, conserve_flux=conserve_flux)
     
-        plot_map(ciber_regrid, title='regrid')
-        plot_map(masked_proc, title='before regridding')
+        plot_map(ciber_regrid, title='CIBER regrid, ifield '+str(ifield))
+        plot_map(masked_proc, title='CIBER map before regridding')
         
         print('mean of regrid is ', np.mean(ciber_regrid))
         
         all_regrid_masked_proc.append(ciber_regrid)
-        
         
         if save:
             if fieldidx==0:
@@ -532,19 +575,22 @@ def proc_cibermap_regrid(cbps, inst, regrid_to_inst, mask_tail, ifield_list=[4, 
                 make_fpaths([proc_regrid_basepath])
             
             regrid_fpath = proc_regrid_basepath+'proc_regrid_TM'+str(inst)+'_to_TM'+str(regrid_to_inst)+'_ifield'+str(ifield)+'_'+mask_tail
-            regrid_fpath += '_order='+str(order)
             if conserve_flux:
                 regrid_fpath += '_conserve_flux'
-
+            else:
+                regrid_fpath += '_order='+str(order)
             if fc_sub:
-                regrid_fpath += '_fcsub_order'+str(fc_sub_n_terms)
+                regrid_fpath += '_quadoff_grad_fcsub_order'+str(fc_sub_n_terms)
             regrid_fpath += '.fits'
+
             hdul = write_regrid_proc_file(ciber_regrid, ifield, inst, regrid_to_inst, mask_tail=mask_tail, \
                                          obs_level=obs_level, masked_proc_orig=masked_proc)
             print('saving to ', regrid_fpath)
             hdul.writeto(regrid_fpath, overwrite=True)
+
+            all_regrid_fpath.append(regrid_fpath)
         
-    return all_regrid_masked_proc
+    return all_regrid_masked_proc, all_regrid_fpath
 
 def regrid_tm2_to_tm1_science_fields(ifield_list=[4,5,6,7,8], inst0=1, inst1=2, \
                                     inst0_maps=None, inst1_maps=None, flight_dat_base_path=config.exthdpath+'noise_model_validation_data/', \
@@ -931,58 +977,57 @@ def func_powerlaw_fixgamma_clean(ell, c):
 
 def ciber_dgl_cross_correlations(ifield_list=[4, 5, 6, 7, 8], inst_list=[1,2], dgl_modes=['IRIS', 'sfd', 'sfd_clean'],\
                                  plot_alpha=0.4, datestr='111323', lmax=2500, text_xpos=120, save=False, \
-                                show=True):
+                                show=True, colors = ['C3', 'k'], apply_beam_correction=False, include_irac=False, \
+                                figsize=(9, 10), mask_frac=None):
     
     
     cbps = CIBER_PS_pipeline()
     
     gamma_dict = dict({'IRIS':-2.7, 'sfd_clean':-3.2, 'mf15':-2.7, 'sfd_clean_plus_LSS':-2.7})
     theta_fwhm_dict = dict({'IRIS':4.0, 'sfd_clean':6.1, 'mf15':6.1, 'sfd_clean_plus_LSS':6.1})
-    colors = ['C3', 'k']
     fsky = 2*2/(41253.)  
+
+    if mask_frac is not None:
+        print('multiplying fsky by mask frac = ', mask_frac)
+        fsky *= mask_frac
 
     all_AC_A1, all_dAC_sq, all_best_ps_fit_av, all_fieldav_ps = [[[] for x in range(2)] for y in range(4)]
         
-    fig = plt.figure(figsize=(9,10))
 
-    for inst in inst_list:
+    nrow = len(dgl_modes)
+    ncol = len(inst_list)
+    if include_irac:
+        ncol += 1
+
+    fig = plt.figure(figsize=figsize)
+
+
+    for dgl_idx, dgl_mode in enumerate(dgl_modes):  
+
+        bl_dgl = beam_correction_gaussian(lb, theta_fwhm_dict[dgl_mode], unit='arcmin')
+
+        if dgl_mode=='IRIS' or dgl_mode=='mf15' or dgl_mode=='sfd_clean_plus_LSS':
+            func_ps = func_powerlaw_fixgamma_lss
+            modl_fits_dgl_auto = np.load(config.ciber_basepath+'data/fluctuation_data/TM1/dgl_tracer_maps/IRIS/IRIS_large_best_modl_fits_TM1_I100.npz')
+
+        elif dgl_mode=='sfd_clean':
+            func_ps = func_powerlaw_fixgamma_clean
+            modl_fits_dgl_auto = np.load(config.ciber_basepath+'data/fluctuation_data/TM1/dgl_tracer_maps/sfd_clean/sfd_clean_large_best_modl_fits_TM1_I100.npz')
+
+        lb_modl, all_ps_fits, best_ps_fit_av = modl_fits_dgl_auto['lb_modl'], np.array(modl_fits_dgl_auto['all_best_ps_fits']), np.array(modl_fits_dgl_auto['best_ps_fit_av'])
+        gamma_val = gamma_dict[dgl_mode]
         
-        for dgl_idx, dgl_mode in enumerate(dgl_modes):  
+        observed_run_name, cross_text_lab = grab_dgl_config(dgl_mode, addstr='_I100_120423')
 
-            if dgl_mode=='IRIS' or dgl_mode=='mf15' or dgl_mode=='sfd_clean_plus_LSS':
-                func_ps = func_powerlaw_fixgamma_lss
+        for inst in inst_list:
                 
-                modl_fits_dgl_auto = np.load(config.ciber_basepath+'data/fluctuation_data/TM1/dgl_tracer_maps/IRIS/IRIS_large_best_modl_fits_TM1_I100.npz')
-                lb_modl = modl_fits_dgl_auto['lb_modl']
-                all_ps_fits = np.array(modl_fits_dgl_auto['all_best_ps_fits'])
-                best_ps_fit_av = np.array(modl_fits_dgl_auto['best_ps_fit_av'])
-
-                
-            elif dgl_mode=='sfd_clean':
-                func_ps = func_powerlaw_fixgamma_clean
-                
-                modl_fits_dgl_auto = np.load(config.ciber_basepath+'data/fluctuation_data/TM1/dgl_tracer_maps/sfd_clean/sfd_clean_large_best_modl_fits_TM1_I100.npz')
-                lb_modl = modl_fits_dgl_auto['lb_modl']
-                all_ps_fits = np.array(modl_fits_dgl_auto['all_best_ps_fits'])
-                best_ps_fit_av = np.array(modl_fits_dgl_auto['best_ps_fit_av'])
-
-            
-            gamma_val = gamma_dict[dgl_mode]
-            
-            observed_run_name, cross_text_lab = grab_dgl_config(dgl_mode, addstr='_I100_120423')
-            print(cross_text_lab)
-            
-            plt.subplot(3,2,2*dgl_idx+inst)
+            # plt.subplot(3,2,2*dgl_idx+inst)
+            plt.subplot(nrow,ncol,2*dgl_idx+inst)
             
             sim_test_fpath = config.ciber_basepath+'data/input_recovered_ps/'+datestr+'/TM'+str(inst)+'/'
             obs_clfile = np.load(sim_test_fpath+observed_run_name+'/input_recovered_ps_estFF_simidx0.npz')
-            observed_recov_ps = obs_clfile['recovered_ps_est_nofluc']
-            
-            
-            observed_recov_dcl = obs_clfile['recovered_dcl']
-            lb = obs_clfile['lb']
+            lb, observed_recov_ps, observed_recov_dcl = obs_clfile['lb'], obs_clfile['recovered_ps_est_nofluc'], obs_clfile['recovered_dcl']
 
-            bl = beam_correction_gaussian(lb, theta_fwhm_dict[dgl_mode], unit='arcmin')
             observed_recov_ps /= bl
             observed_recov_dcl /= bl
 
@@ -990,9 +1035,9 @@ def ciber_dgl_cross_correlations(ifield_list=[4, 5, 6, 7, 8], inst_list=[1,2], d
             lb_mask = (lb < lmax)*(lb > lb[0])
 
             for fieldidx, ifield in enumerate(ifield_list):
-                knox_errors_full = np.sqrt(2./((2*lb+1)*cbps.Mkk_obj.delta_ell))
-                knox_errors_full /= np.sqrt(fsky)
-                knox_errors_full *= np.abs(observed_recov_ps[fieldidx])
+
+                frac_knox_errors = return_frac_knox_error(lb, cbps.Mkk_obj.delta_ell)
+                knox_errors_full = frac_knox_errors*np.abs(observed_recov_ps[fieldidx])
 
                 dgl_mode_noise = 'sfd_clean'
                 dgl_nl_fpath = config.ciber_basepath+'data/fluctuation_data/TM'+str(inst)+'/dgl_tracer_maps/'
@@ -1017,13 +1062,11 @@ def ciber_dgl_cross_correlations(ifield_list=[4, 5, 6, 7, 8], inst_list=[1,2], d
             print('amp scaled for tm'+str(inst)+' is ', amp_scaled)
             print('amplitude for TM'+str(inst)+' (fixed gamma) is '+str(ps_fit_ciber_iris_fg[0])+'+-'+str(np.sqrt(cov_fg[0,0])))
 
+            # rescale 6x6 deg model by best fit amplitude of cross spectrum fit
             fac = 3
-            mkk_large_obj = Mkk_bare(dimx=1024*fac, dimy=1024*fac, ell_min=180./fac, pixsize=7., nbins=25, precompute=True)
-#             mkk_large_obj.precompute_mkk_quantities(precompute_all=True)
-                
+            mkk_large_obj = Mkk_bare(dimx=1024*fac, dimy=1024*fac, ell_min=180./fac, pixsize=7., nbins=25, precompute=True)                
             lb_iris_large = mkk_large_obj.midbin_ell
             prefac_irislb = lb_iris_large*(lb_iris_large+1)/(2*np.pi)
-
             best_ps_fit_fg = ps_fit_ciber_iris_fg[0]*(lb_iris_large.astype(float)/lbpivot)**(gamma_val)
             unc_ps_fit_fg = np.sqrt(cov_fg[0,0])*(lb_iris_large.astype(float)/lbpivot)**(gamma_val)
 
@@ -1064,14 +1107,12 @@ def ciber_dgl_cross_correlations(ifield_list=[4, 5, 6, 7, 8], inst_list=[1,2], d
                         av_ps=av_ps, std_ps=std_ps, prefac=prefac, lb=lb, lb_mask=lb_mask, \
                         best_ps_fit_fg=best_ps_fit_fg, lb_iris_large=lb_iris_large, prefac_irislb=prefac_irislb, \
                         lower_ps_fit_fg=lower_ps_fit_fg, upper_ps_fit_fg=upper_ps_fit_fg)
-
-
             
             plt.errorbar(lb[lb_mask], prefac[lb_mask]*np.mean(observed_recov_ps, axis=0)[lb_mask], fmt='o', alpha=0.8, capsize=3, markersize=4, zorder=10, yerr=prefac[lb_mask]*np.std(observed_recov_ps, axis=0)[lb_mask]*np.sqrt(1.25)/np.sqrt(5), color='k', label='Field average')
             plt.xscale('log')
             plt.xlim(100, lmax)
             
-            if dgl_idx==2:
+            if dgl_idx==1:
                 plt.xlabel('$\\ell$', fontsize=16)
             if inst==1:
                 plt.ylabel('$D_{\\ell}$ [(nW m$^{-2}$ sr$^{-1}$)(MJy sr$^{-1}$)]', fontsize=11)
@@ -1095,10 +1136,14 @@ def ciber_dgl_cross_correlations(ifield_list=[4, 5, 6, 7, 8], inst_list=[1,2], d
 
             if inst==2 and dgl_idx==0:
                 plt.legend(loc=4, ncol=4, bbox_to_anchor=[0.85, 1.05])
-#     plt.savefig('figures/ciber_compare_dgl_modes_crosspower_012924.pdf', bbox_inches='tight')
+    
+
+
+
+
     if show:
         plt.show()
-    
+
     return fig, all_best_ps_fit_av, all_AC_A1, all_dAC_sq, lb_iris_large
 
 
@@ -1130,10 +1175,14 @@ class dgl_meas():
 def compile_dgl_measurements(dgl_basepath = 'figures/dgl_measurements/'):
     
     ciber_dgl_csfd = dgl_meas('CIBER $\\times$ CSFD (this work)')
+    # ciber_dgl_csfd.add_measurements([1.05, 1.79], [8.2, 8.6], [2.2, 2.1], lam_width=[0.15, 0.3])
     ciber_dgl_csfd.add_measurements([1.05, 1.79], [8.2, 8.6], [2.2, 2.1], lam_width=[0.15, 0.3])
 
-    ciber_dgl_sfd = dgl_meas('CIBER $\\times$ SFD (this work)')
-    ciber_dgl_sfd.add_measurements([1.05, 1.79], [9.1, 7.7], [1.5, 0.6], lam_width=[0.15, 0.3])
+    irac_dgl_csfd = dgl_meas('IRAC $\\times$ CSFD (this work)')
+    irac_dgl_csfd.add_measurements([3.6], [0.58], [0.6], lam_width=[0.4])
+
+    # ciber_dgl_sfd = dgl_meas('CIBER $\\times$ SFD (this work)')
+    # ciber_dgl_sfd.add_measurements([1.05, 1.79], [9.1, 7.7], [1.5, 0.6], lam_width=[0.15, 0.3])
 
     # Onishi 2018
     onishi = dgl_meas('Onishi et al. (2018)')
@@ -1146,7 +1195,7 @@ def compile_dgl_measurements(dgl_basepath = 'figures/dgl_measurements/'):
 
     # tsumura 2013
     tsumura_wav, tsumura_mean, tsumura_std = grab_wav_dgl_col_from_csv(dgl_basepath+'tsumura_2013.csv', dgl_basepath+'tsumura_upper.csv')
-    tsumura_dgl = dgl_meas('Tsumura et al. (2013)')
+    tsumura_dgl = dgl_meas('Tsumura et al. (2013b)')
     tsumura_dgl.add_measurements(list(tsumura_wav), list(tsumura_mean), list(tsumura_std))
 
     # sano
@@ -1169,7 +1218,18 @@ def compile_dgl_measurements(dgl_basepath = 'figures/dgl_measurements/'):
     paley_dgl = dgl_meas('Paley et al. (1991)')
     paley_dgl.add_measurements(list(paley_wav), list(paley_mean), list(paley_std))
     
-    dgl_meas_dicts = [ciber_dgl_sfd, ciber_dgl_csfd, onishi, arai_dgl, tsumura_dgl, sano_dgl, witt_dgl, paley_dgl]
+
+    # Symons+2023
+    symons_dgl = dgl_meas('Symons et al. (2023)')
+    symons_dgl.add_measurements([0.62], [2.74], [0.75], lam_width=[0.2])
+
+    # Postman+2024
+    postman_dgl = dgl_meas('Postman et al. (2024)')
+    postman_dgl.add_measurements([0.62], [10.09], [0.59], lam_width=[0.3])
+
+
+    dgl_meas_dicts = [ciber_dgl_csfd, irac_dgl_csfd, onishi, arai_dgl, tsumura_dgl, sano_dgl, witt_dgl, paley_dgl, symons_dgl, \
+                        postman_dgl]
 
     return dgl_meas_dicts
 

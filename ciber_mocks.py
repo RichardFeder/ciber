@@ -6,15 +6,15 @@ import astropy.units as u
 from astropy import constants as const
 from astropy.io import fits
 import scipy.signal
-from mock_galaxy_catalogs import *
-from helgason import *
+# from mock_galaxy_catalogs import *
+# from helgason import *
 # from cross_spectrum_analysis import *
-from ciber_beam import *
+# from ciber_beam import *
 # from noise_model import CIBER_NoiseModel
 from masking_utils import *
 from numerical_routines import *
 import config
-from powerspec_utils import write_mask_file, write_Mkk_fits
+# from powerspec_utils import write_mask_file, write_Mkk_fits
 from mkk_parallel import compute_inverse_mkk, plot_mkk_matrix
 
 from filtering_utils import calculate_plane, fit_gradient_to_map
@@ -321,6 +321,24 @@ def compute_extended_psf_mocks(inst, ifield_list, masking_maglim, datestr, conve
             
             
     return lb, src_map_cls
+
+def make_synthetic_trilegal_cat_2MSW(trilegal_path, J_band_idx=11, H_band_idx=12, IRAC_CH1_idx=14, IRAC_CH2_idx=15, \
+                                     W1_idx=21, W2_idx=22, imdim=1024.):
+    ''' 
+    Generate synthetic catalog realization from TRILEGAL catalog. All this function does is draw uniformly random positions and 
+    the TRILEGAL catalog magnitudes to make a new catalog, at the moment.
+    '''
+
+    trilegal = np.loadtxt(trilegal_path)
+    nsrc = trilegal.shape[0]
+    synthetic_cat = np.random.uniform(0, imdim, size=(nsrc, 2))
+    synthetic_cat = np.array([synthetic_cat[:,0], synthetic_cat[:,1],\
+                              trilegal[:,J_band_idx], trilegal[:,H_band_idx], \
+                             trilegal[:,IRAC_CH1_idx], trilegal[:,IRAC_CH2_idx], \
+                             trilegal[:,W1_idx], trilegal[:,W2_idx]]).transpose()
+
+    print('synthetic cat has shape ', synthetic_cat.shape)
+    return synthetic_cat
 
 def make_synthetic_trilegal_cat(trilegal_path, J_band_idx=16, H_band_idx=17, imdim=1024.):
     ''' 

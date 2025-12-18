@@ -44,7 +44,7 @@ def counts_from_density_2d(overdensity_fields, Ntot = 200000):
         elif dcounts[i] < 0:
             randx, randy = np.random.choice(np.arange(count_maps[i].shape[-1]), size=(2, np.abs(dcounts[i])))
             for j in range(np.abs(dcounts[i])):
-                counts_map[i][randx[j], randy[j]] += 1
+                count_maps[i][randx[j], randy[j]] += 1
 
     return count_maps
 
@@ -116,13 +116,9 @@ def gaussian_random_field_2d(n_samples, cl, ell_sampled,  size=128, ell_min=90.,
 
     Inputs:
         n_samples (int): number of desired GRF samples
-        
         cl (np.array): input angular power spectrum
-        
         ell_sampled (np.array): multipole bins corresponding to input angular power spectrum
-        
         size (int, default=128): side dimension of desired GRF field in pixels
-        
         ell_min (float, default=90.): minimum multipole of desired **scaled** FOV. This should be (ell_min of desired FOV)/fac
         
         fac (int, default=1): to account for larger than FOV modes, this makes this function increase the angular coverage of the 
@@ -148,7 +144,6 @@ def gaussian_random_field_2d(n_samples, cl, ell_sampled,  size=128, ell_min=90.,
     amplitude[0,0] = 0.
     
     noise = np.random.normal(size = (n_samples, up_size,up_size)) + 1j * np.random.normal(size = (n_samples, up_size, up_size))
-#     gfield = np.array([np.fft.ifft2(n * amplitude * up_size**2 ).real for n in noise])
     gfield = np.array([np.fft.ifft2(n * amplitude).real for n in noise])
     gfield /= steradperpixel
     
@@ -175,7 +170,7 @@ def generate_count_map_2d(n_samples, ell_min=90., size=128, Ntot=2000000, cl=Non
         overdensity_fields (array of np.arrays): corresponding overdensity fields for count maps
 
     '''
-
+ 
     realgrf, amp, k = gaussian_random_field_2d(n_samples, size=size, cl=cl, ell_sampled=ell_sampled, ell_min=ell_min/fac, fac=fac)
     
     cropped_grf = realgrf[:, int(0.5*(realgrf.shape[1]-size)):int(0.5*(realgrf.shape[1]+size)), int(0.5*(realgrf.shape[2]-size)):int(0.5*(realgrf.shape[2]+size))]

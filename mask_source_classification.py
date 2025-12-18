@@ -15,6 +15,12 @@ import sys
 from sklearn import tree
 from sklearn.tree import DecisionTreeRegressor
 
+clf = DecisionTreeRegressor(max_depth=max_depth)
+if max_predict is not None:
+	fig = clf.fit(train_features[mags_train < max_predict], mags_train[mags_train < max_predict])
+else:
+	fig = clf.fit(train_features, mags_train)
+
 if sys.version_info[0] == 3:
 	from sklearn.tree import plot_tree
 
@@ -104,135 +110,135 @@ def compute_tpr_fpr_curves(predictions, labels, vals, nbin=30, minval=13, bounda
 
 
 def calculate_mag_err_rms(inst, valid_features, mags_valid, predicted_valid_mags, compute_by_subsample=True, \
-                         mmin=4, mmax=21, nbins=41):
-    
-    bandstr_dict = dict({1:'J', 2:'H'})
-    labels = ['unWISE+PS', 'PS only', 'unWISE only']
-    mags = np.linspace(mmin, mmax, nbins)
-    mid_mags = 0.5*(mags[1:]+mags[:-1])
-        
-    mag_errs_vs_rms_unPS, mag_errs_vs_rms_noWISE, mag_errs_vs_rms_noPS = [[] for x in range(3)]
-    mag_errs_vs_rms_list = [mag_errs_vs_rms_unPS, mag_errs_vs_rms_noWISE, mag_errs_vs_rms_noPS]
+						 mmin=4, mmax=21, nbins=41):
+	
+	bandstr_dict = dict({1:'J', 2:'H'})
+	labels = ['unWISE+PS', 'PS only', 'unWISE only']
+	mags = np.linspace(mmin, mmax, nbins)
+	mid_mags = 0.5*(mags[1:]+mags[:-1])
+		
+	mag_errs_vs_rms_unPS, mag_errs_vs_rms_noWISE, mag_errs_vs_rms_noPS = [[] for x in range(3)]
+	mag_errs_vs_rms_list = [mag_errs_vs_rms_unPS, mag_errs_vs_rms_noWISE, mag_errs_vs_rms_noPS]
 
-    noPSmask = (valid_features[:,-2] != 30.)*(valid_features[:,0]==30.)
-    noWISEmask = (valid_features[:,-2] == 30.)*(valid_features[:,0]!=30.)
-    unPSmask = (valid_features[:,-2] != 30.)*(valid_features[:,0] !=30.)
-    mags_valid_list = [mags_valid[unPSmask], mags_valid[noWISEmask], mags_valid[noPSmask]]
+	noPSmask = (valid_features[:,-2] != 30.)*(valid_features[:,0]==30.)
+	noWISEmask = (valid_features[:,-2] == 30.)*(valid_features[:,0]!=30.)
+	unPSmask = (valid_features[:,-2] != 30.)*(valid_features[:,0] !=30.)
+	mags_valid_list = [mags_valid[unPSmask], mags_valid[noWISEmask], mags_valid[noPSmask]]
 
-    mag_errs_valid_unPS = predicted_valid_mags[unPSmask]-mags_valid[unPSmask]
-    mag_errs_valid_noWISE = predicted_valid_mags[noWISEmask]-mags_valid[noWISEmask]
-    mag_errs_valid_noPS = predicted_valid_mags[noPSmask]-mags_valid[noPSmask]
-    mag_errs_valid_list = [mag_errs_valid_unPS, mag_errs_valid_noWISE, mag_errs_valid_noPS]
+	mag_errs_valid_unPS = predicted_valid_mags[unPSmask]-mags_valid[unPSmask]
+	mag_errs_valid_noWISE = predicted_valid_mags[noWISEmask]-mags_valid[noWISEmask]
+	mag_errs_valid_noPS = predicted_valid_mags[noPSmask]-mags_valid[noPSmask]
+	mag_errs_valid_list = [mag_errs_valid_unPS, mag_errs_valid_noWISE, mag_errs_valid_noPS]
 
-    all_nmag_bysel = []
-    for m, mag in enumerate(mags[:-1]):
-        nmag = []
-        for midx, mag_errs_vs_rms_indiv in enumerate(mag_errs_vs_rms_list):
+	all_nmag_bysel = []
+	for m, mag in enumerate(mags[:-1]):
+		nmag = []
+		for midx, mag_errs_vs_rms_indiv in enumerate(mag_errs_vs_rms_list):
 
-            magmask = (mags_valid_list[midx] > mag)*(mags_valid_list[midx] <= mags[m+1])
-            nmag.append(float(np.sum(magmask)))
+			magmask = (mags_valid_list[midx] > mag)*(mags_valid_list[midx] <= mags[m+1])
+			nmag.append(float(np.sum(magmask)))
 
-            if np.sum(magmask)==0:
-                mag_errs_vs_rms_list[midx].append(0.)
-            else:
-                mag_errs_inmask = np.array(mag_errs_valid_list[midx])[magmask]
-                mag_errs_vs_rms_list[midx].append(0.5*(np.nanpercentile(mag_errs_inmask, 84)-np.nanpercentile(mag_errs_inmask, 16)))
+			if np.sum(magmask)==0:
+				mag_errs_vs_rms_list[midx].append(0.)
+			else:
+				mag_errs_inmask = np.array(mag_errs_valid_list[midx])[magmask]
+				mag_errs_vs_rms_list[midx].append(0.5*(np.nanpercentile(mag_errs_inmask, 84)-np.nanpercentile(mag_errs_inmask, 16)))
 
-        all_nmag_bysel.append(nmag)
-    
-    all_nmag_bysel = np.array(all_nmag_bysel)
-    type_weights_bysel = np.zeros_like(all_nmag_bysel)
-    
-    for m, mag in enumerate(mags[:-1]):
-        type_weights_bysel[m,:] = all_nmag_bysel[m,:]/np.sum(all_nmag_bysel[m,:])
-        
+		all_nmag_bysel.append(nmag)
+	
+	all_nmag_bysel = np.array(all_nmag_bysel)
+	type_weights_bysel = np.zeros_like(all_nmag_bysel)
+	
+	for m, mag in enumerate(mags[:-1]):
+		type_weights_bysel[m,:] = all_nmag_bysel[m,:]/np.sum(all_nmag_bysel[m,:])
+		
 
-    plt.figure(figsize=(7, 4))
-    plt.subplot(1,2,1)
-    for lidx, lab in enumerate(labels):
-        plt.plot(mid_mags, type_weights_bysel[:,lidx], label=lab)
-        
-    plt.legend()
-    plt.xlabel(bandstr_dict[inst]+' magnitude', fontsize=12)
-    plt.ylabel('Catalog fraction', fontsize=12)
-    plt.subplot(1,2,2)
-    for lidx, lab in enumerate(labels):
-        plt.plot(mid_mags, mag_errs_vs_rms_list[lidx], label=lab)
-        
-    plt.xlabel(bandstr_dict[inst]+' magnitude', fontsize=12)
-    plt.ylabel('Magnitude error RMS', fontsize=12)
-    plt.legend()
-    plt.tight_layout()
-    plt.xlim(12, 22)
-    plt.show()
-        
+	plt.figure(figsize=(7, 4))
+	plt.subplot(1,2,1)
+	for lidx, lab in enumerate(labels):
+		plt.plot(mid_mags, type_weights_bysel[:,lidx], label=lab)
+		
+	plt.legend()
+	plt.xlabel(bandstr_dict[inst]+' magnitude', fontsize=12)
+	plt.ylabel('Catalog fraction', fontsize=12)
+	plt.subplot(1,2,2)
+	for lidx, lab in enumerate(labels):
+		plt.plot(mid_mags, mag_errs_vs_rms_list[lidx], label=lab)
+		
+	plt.xlabel(bandstr_dict[inst]+' magnitude', fontsize=12)
+	plt.ylabel('Magnitude error RMS', fontsize=12)
+	plt.legend()
+	plt.tight_layout()
+	plt.xlim(12, 22)
+	plt.show()
+		
 
-    return labels, mags, mid_mags, mag_errs_vs_rms_list, type_weights_bysel
+	return labels, mags, mid_mags, mag_errs_vs_rms_list, type_weights_bysel
 
 
 
 def draw_train_validation_idxs(data, trainfrac=0.8):
-    if trainfrac==1:
-        ntrain = int(data.shape[0])
-        nvalid = 0
-        trainidx = np.arange(ntrain)
-        valididx = []
-    else:
-        ntrain  = int(data.shape[0] * trainfrac)
-        nvalid = data.shape[0] - ntrain
-        permutation = np.random.permutation(data.shape[0])
-        np.random.seed()
-        trainidx = permutation[0:ntrain]
-        valididx = permutation[-1-nvalid:-1]  
-        
-    return trainidx, valididx
+	if trainfrac==1:
+		ntrain = int(data.shape[0])
+		nvalid = 0
+		trainidx = np.arange(ntrain)
+		valididx = []
+	else:
+		ntrain  = int(data.shape[0] * trainfrac)
+		nvalid = data.shape[0] - ntrain
+		permutation = np.random.permutation(data.shape[0])
+		np.random.seed()
+		trainidx = permutation[0:ntrain]
+		valididx = permutation[-1-nvalid:-1]  
+		
+	return trainidx, valididx
 
 
 def train_random_forest(training_catalog, feature_names, outlablstr='J_Vega', max_depth=5, max_predict=None, \
-                       trainfrac=0.7, debias=True, mag_train_max=21, mag_train_min=0):
+					   trainfrac=0.7, debias=True, mag_train_max=21, mag_train_min=0):
 
-    
-    training_catalog = training_catalog[(training_catalog[outlablstr] > mag_train_min)*(training_catalog[outlablstr] < mag_train_max)] # only train on detected NIR sources
-    
-    if feature_names is None:
-        feature_names=['rMeanPSFMag', 'iMeanPSFMag', 'gMeanPSFMag', 'zMeanPSFMag', 'yMeanPSFMag', 'mag_W1', 'mag_W2']
+	
+	training_catalog = training_catalog[(training_catalog[outlablstr] > mag_train_min)*(training_catalog[outlablstr] < mag_train_max)] # only train on detected NIR sources
+	
+	if feature_names is None:
+		feature_names=['rMeanPSFMag', 'iMeanPSFMag', 'gMeanPSFMag', 'zMeanPSFMag', 'yMeanPSFMag', 'mag_W1', 'mag_W2']
 
-    all_mags = np.array(training_catalog[outlablstr])
-    
-    plt.figure()
-    plt.hist(all_mags, bins=np.linspace(10, 25, 30))
-    plt.yscale('log')
-    plt.show()
-    
-    if debias:
-        print('Subtracting UKIDSS magnitudes by 0.2')
-        all_mags -= 0.2
-    
-    nsrc_tot = len(all_mags)
-    
-    print('nsrc tot is ', nsrc_tot)
-    all_features = feature_matrix_from_df(training_catalog, feature_names, filter_nans=True)
-    print('min/max feature matrix is ', np.min(all_features), np.max(all_features))
-    
-    trainidx, valididx = draw_train_validation_idxs(all_mags, trainfrac=trainfrac)
-    train_features = all_features[trainidx,:]
-    valid_features = all_features[valididx,:]
-    mags_train = all_mags[trainidx]
-    mags_valid = all_mags[valididx]
-    
-    print('train/valid features have shapes:', train_features.shape, valid_features.shape)
-        
-    clf = DecisionTreeRegressor(max_depth=max_depth)
-    if max_predict is not None:
-        fig = clf.fit(train_features[mags_train < max_predict], mags_train[mags_train < max_predict])
-    else:
-        fig = clf.fit(train_features, mags_train)
-        
-    predicted_train_mags = fig.predict(train_features)
-    predicted_valid_mags = fig.predict(valid_features)
-    
+	all_mags = np.array(training_catalog[outlablstr])
+	
+	plt.figure()
+	plt.hist(all_mags, bins=np.linspace(10, 25, 30))
+	plt.yscale('log')
+	plt.show()
+	
+	if debias:
+		print('Subtracting UKIDSS magnitudes by 0.2')
+		all_mags -= 0.2
+	
+	nsrc_tot = len(all_mags)
+	
+	print('nsrc tot is ', nsrc_tot)
+	all_features = feature_matrix_from_df(training_catalog, feature_names, filter_nans=True)
+	print('min/max feature matrix is ', np.min(all_features), np.max(all_features))
+	
+	trainidx, valididx = draw_train_validation_idxs(all_mags, trainfrac=trainfrac)
+	train_features = all_features[trainidx,:]
+	valid_features = all_features[valididx,:]
+	mags_train = all_mags[trainidx]
+	mags_valid = all_mags[valididx]
+	
+	print('train/valid features have shapes:', train_features.shape, valid_features.shape)
+		
+	clf = DecisionTreeRegressor(max_depth=max_depth)
+	if max_predict is not None:
+		fig = clf.fit(train_features[mags_train < max_predict], mags_train[mags_train < max_predict])
+	else:
+		fig = clf.fit(train_features, mags_train)
+		
+	predicted_train_mags = fig.predict(train_features)
+	predicted_valid_mags = fig.predict(valid_features)
+	
 
-    return fig, mags_train, mags_valid, train_features, valid_features, predicted_train_mags, predicted_valid_mags
+	return fig, mags_train, mags_valid, train_features, valid_features, predicted_train_mags, predicted_valid_mags
 
 
 
@@ -422,51 +428,51 @@ def decision_tree_train_and_test(training_catalog, feature_names, feature_bands=
 
 	return train_features, tpr_train, fpr_train, classes_train, predictions_train
 
-def feature_matrix_from_df(df, feature_names, filter_nans=True, nan_replace_val = 25., min_replace_val=-5, verbose=True):
+def feature_matrix_from_df(df, feature_names, filter_nans=True, nan_replace_val = 25., min_replace_val=25, verbose=True):
 
-    '''
-    Helper function for loading catalog values into feature matrix.
+	'''
+	Helper function for loading catalog values into feature matrix.
 
-    Parameters
-    ----------
+	Parameters
+	----------
 
-    df : class 'pandas.core.frame.DataFrame'
-        Dataframe containing catalog data.
+	df : class 'pandas.core.frame.DataFrame'
+		Dataframe containing catalog data.
 
-    feature_names : `list' of strings with length [Nfeatures]
-        list containing names of features used for classification
+	feature_names : `list' of strings with length [Nfeatures]
+		list containing names of features used for classification
 
-    filter_nans : 'bool', optional
-        boolean determining whether feature matrix is filtered for infinite/NaN values.
-        Default is 'True'.
-
-
-    Returns
-    -------
-
-    feature_matrix : `numpy.ndarray' of shape (Nsources, Nfeatures)
-        The compiled feature matrix.
-
-    '''
-
-    feature_matrix = []
-    for f, feature_name in enumerate(feature_names):
-        feature_matrix.append(df[feature_name])
-        
-        print(feature_name)
-        print(feature_matrix[f])
-
-    feature_matrix = np.array(feature_matrix).transpose()
-
-    if filter_nans:
-
-        feature_matrix[np.isinf(feature_matrix)] = nan_replace_val
-        feature_matrix[np.isnan(feature_matrix)] = nan_replace_val
-        feature_matrix[feature_matrix<-50] = min_replace_val
-        feature_matrix[feature_matrix>50] = nan_replace_val
+	filter_nans : 'bool', optional
+		boolean determining whether feature matrix is filtered for infinite/NaN values.
+		Default is 'True'.
 
 
-    return feature_matrix
+	Returns
+	-------
+
+	feature_matrix : `numpy.ndarray' of shape (Nsources, Nfeatures)
+		The compiled feature matrix.
+
+	'''
+
+	feature_matrix = []
+	for f, feature_name in enumerate(feature_names):
+		feature_matrix.append(df[feature_name])
+		
+		# print(feature_name)
+		# print(feature_matrix[f])
+
+	feature_matrix = np.array(feature_matrix).transpose()
+
+	if filter_nans:
+
+		feature_matrix[np.isinf(feature_matrix)] = nan_replace_val
+		feature_matrix[np.isnan(feature_matrix)] = nan_replace_val
+		feature_matrix[feature_matrix<-50] = min_replace_val
+		feature_matrix[feature_matrix>50] = nan_replace_val
+
+
+	return feature_matrix
 
 
 def filter_mask_cat_dt(input_cat, decision_tree, feature_names, mag_lim=17.5, mode='regress'):
@@ -515,272 +521,351 @@ def predict_masking_magnitude_z_W1(mask_cat, J_mag_lim=17.5):
 
 
 def predict_masking_catalogs(ifield_list, catalog_basepath, tailstr, feature_names=None, max_depth=8, save=False, debias=False, \
-                                   color_list=None, mag_train_max=21, mag_train_min=0., dpos_max=1.0, trainstr=None, \
-                            apply_to_science_cats=False, test_cosmos15=False, catalog_fpath=None, save_training_sets=False):
-    
-    if feature_names is None:
-        feature_names=['rMeanPSFMag', 'iMeanPSFMag', 'gMeanPSFMag', 'zMeanPSFMag', 'yMeanPSFMag', 'mag_W1', 'mag_W2']
+								   color_list=None, mag_train_max=21, mag_train_min=0., dpos_max=1.0, trainstr=None, \
+							apply_to_science_cats=False, test_cosmos15=False, catalog_fpath=None, save_training_sets=False, \
+							trainfrac=0.7, mmin_plot=14, mmax_plot=20, plot_s=5, alpha=0.5, mag_cut_rms=None, rms_textfs=12, rms_xpos=16., rms_ypos=15., \
+							alpha_cosmos=0.1):
+	
+	if feature_names is None:
+		feature_names=['rMeanPSFMag', 'iMeanPSFMag', 'gMeanPSFMag', 'zMeanPSFMag', 'yMeanPSFMag', 'mag_W1', 'mag_W2']
 
-    ciber_field_dict = dict({4:'elat10', 5:'elat30',6:'BootesB', 7:'BootesA', 8:'SWIRE', 'train':'UDS'})
+	ciber_field_dict = dict({4:'elat10', 5:'elat30',6:'BootesB', 7:'BootesA', 8:'SWIRE', 'train':'UDS'})
 
-    # load NIR + unWISE + PanSTARRS merged catalog for training
-    
-    if catalog_fpath is None:
-        catalog_fpath = catalog_basepath+'crossmatch/UKIDSS_unWISE_PS_fullmerge/UKIDSS_unWISE_PS_fullmerge_dpos='+str(dpos_max)+'_UDS.csv'
-        
-    merged_crossmatch_catalog = pd.read_csv(catalog_fpath)
-    
+	# load NIR + unWISE + PanSTARRS merged catalog for training
+	
+	if catalog_fpath is None:
+		catalog_fpath = catalog_basepath+'crossmatch/UKIDSS_unWISE_PS_fullmerge/UKIDSS_unWISE_PS_fullmerge_dpos='+str(dpos_max)+'_UDS.csv'
+		
+	merged_crossmatch_catalog = pd.read_csv(catalog_fpath)
 
-    if color_list is not None:
-        for c, comb in enumerate(color_list):
-            color_label = comb[0]+'_'+comb[1]
-            color = merged_crossmatch_catalog[comb[0]]-merged_crossmatch_catalog[comb[1]]
-            merged_crossmatch_catalog.insert(c+1, color_label, color, True)
-            feature_names.append(color_label)
+	plt.figure()
+	plt.hist(merged_crossmatch_catalog['rMeanPSFMag'], bins=np.linspace(15, 27, 30), histtype='step', label='r')
+	plt.hist(merged_crossmatch_catalog['iMeanPSFMag'], bins=np.linspace(15, 27, 30), histtype='step', label='i')
+	plt.hist(merged_crossmatch_catalog['zMeanPSFMag'], bins=np.linspace(15, 27, 30), histtype='step', label='z')
+	plt.hist(merged_crossmatch_catalog['yMeanPSFMag'], bins=np.linspace(15, 27, 30), histtype='step', label='y')
+	plt.hist(merged_crossmatch_catalog['mag_W1'], bins=np.linspace(15, 27, 30), histtype='step', label='mag W1')
+	plt.hist(merged_crossmatch_catalog['mag_W2'], bins=np.linspace(15, 27, 30), histtype='step', label='mag W2')
+	plt.yscale('log')
+	plt.legend()
+	plt.xlabel('Vega mag')
+	plt.ylabel('Nsrc')
+	plt.show()
 
-    random_forest_J, mags_train_J, mags_valid_J, train_features_J,\
-            valid_features_J, predicted_train_mags_J,\
-            predicted_valid_mags_J = train_random_forest(merged_crossmatch_catalog, feature_names=feature_names,\
-                                                       trainfrac=0.7, max_depth=8, outlablstr='J_Vega', debias=debias, mag_train_max=mag_train_max, mag_train_min=mag_train_min)
-    
-    random_forest_H, mags_train_H, mags_valid_H, train_features_H,\
-        valid_features_H, predicted_train_mags_H,\
-        predicted_valid_mags_H = train_random_forest(merged_crossmatch_catalog, feature_names=feature_names,\
-                                                   trainfrac=0.7, max_depth=8, outlablstr='H_Vega', debias=debias, mag_train_max=mag_train_max, mag_train_min=mag_train_min)
 
-    
-    if save_training_sets:
-        train_result_fpath = config.ciber_basepath+'data/catalogs/mask_predict/train_validation_set_J'
-        if trainstr is not None:
-            train_result_fpath += '_'+trainstr
 
-        np.savez(train_result_fpath+'.npz', mags_train_J=mags_train_J, mags_valid_J=mags_valid_J, \
-                train_features_J=train_features_J, valid_features_J=valid_features_J, predicted_train_mags_J=predicted_train_mags_J, \
-                predicted_valid_mags_J=predicted_valid_mags_J)
+	if color_list is not None:
+		for c, comb in enumerate(color_list):
+			color_label = comb[0]+'_'+comb[1]
+			color = merged_crossmatch_catalog[comb[0]]-merged_crossmatch_catalog[comb[1]]
+			merged_crossmatch_catalog.insert(c+1, color_label, color, True)
+			feature_names.append(color_label)
 
-        train_result_fpath = config.ciber_basepath+'data/catalogs/mask_predict/train_validation_set_H'
-        if trainstr is not None:
-            train_result_fpath += '_'+trainstr
+	random_forest_J, mags_train_J, mags_valid_J, train_features_J,\
+			valid_features_J, predicted_train_mags_J,\
+			predicted_valid_mags_J = train_random_forest(merged_crossmatch_catalog, feature_names=feature_names,\
+													   trainfrac=trainfrac, max_depth=max_depth, outlablstr='J_Vega', debias=debias, mag_train_max=mag_train_max, mag_train_min=mag_train_min)
+	
 
-        np.savez(train_result_fpath+'.npz', mags_train_H=mags_train_H, mags_valid_H=mags_valid_H, \
-                train_features_H=train_features_H, valid_features_H=valid_features_H, predicted_train_mags_H=predicted_train_mags_H, \
-                predicted_valid_mags_H=predicted_valid_mags_H)
 
-    print('feature names:', feature_names)
-    # now load science catalogs and make predictions
-    predicted_catalogs = []
-    
-    if test_cosmos15:
-        print('Applying model to predict COSMOS 15 sources')
-        c15_cat = pd.read_csv(catalog_basepath+'COSMOS15/COSMOS15_hjmcc_rizy_JH_CH1CH2_AB.csv')
-        
+	random_forest_H, mags_train_H, mags_valid_H, train_features_H,\
+		valid_features_H, predicted_train_mags_H,\
+		predicted_valid_mags_H = train_random_forest(merged_crossmatch_catalog, feature_names=feature_names,\
+												   trainfrac=trainfrac, max_depth=max_depth, outlablstr='H_Vega', debias=debias, mag_train_max=mag_train_max, mag_train_min=mag_train_min)
+
+	print('maximum feature values:', np.max(train_features_J), np.max(train_features_H))
+
+	if save_training_sets:
+		train_result_fpath = config.ciber_basepath+'data/catalogs/mask_predict/train_validation_set_J'
+		if trainstr is not None:
+			train_result_fpath += '_'+trainstr
+
+		np.savez(train_result_fpath+'.npz', mags_train_J=mags_train_J, mags_valid_J=mags_valid_J, \
+				train_features_J=train_features_J, valid_features_J=valid_features_J, predicted_train_mags_J=predicted_train_mags_J, \
+				predicted_valid_mags_J=predicted_valid_mags_J)
+
+		train_result_fpath = config.ciber_basepath+'data/catalogs/mask_predict/train_validation_set_H'
+		if trainstr is not None:
+			train_result_fpath += '_'+trainstr
+
+		np.savez(train_result_fpath+'.npz', mags_train_H=mags_train_H, mags_valid_H=mags_valid_H, \
+				train_features_H=train_features_H, valid_features_H=valid_features_H, predicted_train_mags_H=predicted_train_mags_H, \
+				predicted_valid_mags_H=predicted_valid_mags_H)
+
+	print('feature names:', feature_names)
+	# now load science catalogs and make predictions
+	predicted_catalogs = []
+	
+	if test_cosmos15:
+		print('Applying model to predict COSMOS 15 sources')
+		c15_cat = pd.read_csv(catalog_basepath+'COSMOS15/COSMOS15_hjmcc_rizy_JH_CH1CH2_AB.csv')
+		
 #         color_list_c15 = [['z_AB', 'y_AB']] # labels are AB but subtracting after converting to Vega magnitudes
-        color_list_c15 = None
-        plt.figure()
-        plt.hist(c15_cat['J'], bins=np.linspace(14, 23, 20), histtype='step', label='J')
-        plt.hist(c15_cat['H'], bins=np.linspace(14, 23, 20), histtype='step', label='H')
-        plt.legend()
-        plt.yscale('log')
-        plt.show()
-        
-        print('c15 cat is originally', len(c15_cat))
-        c15_cat_cut = c15_cat.iloc[np.where((c15_cat['J'] < 22))]
-        print('after J cut c15 cat now has length ', len(c15_cat))
-        
-        feature_names_c15 = ['r_AB', 'i_AB', 'z_AB', 'y_AB', 'mag_CH1', 'mag_CH2']
+		color_list_c15 = None
+		# plt.figure()
+		# plt.hist(c15_cat['J'], bins=np.linspace(14, 23, 20), histtype='step', label='J')
+		# plt.hist(c15_cat['H'], bins=np.linspace(14, 23, 20), histtype='step', label='H')
+		# plt.legend()
+		# plt.yscale('log')
+		# plt.show()
+		
+		print('c15 cat is originally', len(c15_cat))
+
+		c15_cat_cut = c15_cat.iloc[np.where((c15_cat['J'] < 22))]
+		# c15_cat_cut = c15_cat.iloc[np.where((c15_cat['J'] < mag_train_max))]
+
+		Vega_to_AB_c15 = dict({'r_AB':0.16, 'i_AB':0.37, 'z_AB':0.54, 'y_AB':0.634, 'J':0.91, 'H':1.39, 'K':1.85, 'mag_CH1':2.699, 'mag_CH2':3.339})
+
+
+		print('after J cut c15 cat now has length ', len(c15_cat))
+		
+		feature_names_c15 = ['r_AB', 'i_AB', 'z_AB', 'y_AB', 'mag_CH1', 'mag_CH2']
+
+		mag_lims_training = [22, 22, 21.5, 21.0, 18.0, 17.0]
 #         feature_names_c15 = ['r_AB', 'i_AB', 'z_AB', 'y_AB', 'mag_CH1']
-        
-        test_bands = ['J', 'H']
-        
-        Vega_to_AB_c15 = dict({'r_AB':0.16, 'i_AB':0.37, 'z_AB':0.54, 'y_AB':0.634, 'J':0.91, 'H':1.39, 'K':1.85, 'mag_CH1':2.699, 'mag_CH2':3.339})
+		
+		test_bands = ['J', 'H']
+		
 
-        for name in feature_names_c15:
-            c15_cat_cut[name] -= Vega_to_AB_c15[name]
-        
-        for name in test_bands:
-            c15_cat_cut[name] -= Vega_to_AB_c15[name] 
-            
-                
-        if color_list_c15 is not None:
-            for c, comb in enumerate(color_list_c15):
-                color_label = comb[0]+'_'+comb[1]
-                color = c15_cat_cut[comb[0]]-c15_cat_cut[comb[1]]
-                c15_cat_cut.insert(c+1, color_label, color, True)
-                feature_names_c15.append(color_label)
-            
-            
-        plt.figure()
-        plt.hist(c15_cat['J'], bins=np.linspace(14, 23, 20), histtype='step', label='J')
-        plt.hist(c15_cat['H'], bins=np.linspace(14, 23, 20), histtype='step', label='H')
-        
-        plt.hist(c15_cat_cut['J'], bins=np.linspace(14, 23, 20), histtype='step', label='J Vega')
-        plt.hist(c15_cat_cut['H'], bins=np.linspace(14, 23, 20), histtype='step', label='H Vega')
-        
-        plt.legend()
-        plt.yscale('log')
-        plt.show()
-        
-        features_c15_test = feature_matrix_from_df(c15_cat_cut, feature_names=feature_names_c15, filter_nans=True)
-        
-        predictions_J_C15 = random_forest_J.predict(features_c15_test)
-        c15_cat_cut['J_Vega_predict'] = predictions_J_C15
-        
-        predictions_H_C15 = random_forest_H.predict(features_c15_test)
-        c15_cat_cut['H_Vega_predict'] = predictions_H_C15
-        
-        mmin, mmax = 15, 21
-        plt.figure(figsize=(7, 3))
-        plt.subplot(1,2,1)
-        plt.scatter(c15_cat_cut['J'], c15_cat_cut['J_Vega_predict'], alpha=0.1, color='C0', s=5)
-#         plt.scatter(c15_cat_cut['J'], c15_cat_cut['J_Vega_predict'], c=c15_cat_cut['i_AB'], s=5, vmin=15, vmax=25)
-#         plt.scatter(c15_cat_cut['J'], c15_cat_cut['J_Vega_predict'], c=c15_cat_cut['z_AB']-c15_cat_cut['y_AB'], s=5, vmax=5)
-#         plt.scatter(c15_cat_cut['J'], c15_cat_cut['J_Vega_predict'], c=c15_cat_cut['redshift'], s=5, vmax=5)
+		for n, name in enumerate(feature_names_c15):
+			c15_cat_cut[name] -= Vega_to_AB_c15[name]
 
-#         plt.axvline(16.0, label='2MASS depth', color='b', linestyle='dashed')
+			# if name in ['mag_CH1', 'mag_CH2']:
+			# 	c15_cat_cut[name].iloc[(c15_cat_cut[name] > mag_lims_training[n])] = np.nan
+		
+		for name in test_bands:
+			c15_cat_cut[name] -= Vega_to_AB_c15[name] 
+			
 
-#         cbar = plt.colorbar()
-#         cbar.set_label('z - y', fontsize=12)
-        plt.xlim(mmin, mmax)
-        plt.ylim(mmin, mmax)
-        plt.plot(np.linspace(mmin, mmax, 100), np.linspace(mmin, mmax, 100), linestyle='dashed', color='r')
-        
-        plt.text(mmin+0.25, mmax-1.0, 'UDS training set\nCOSMOS15 test set', fontsize=12, bbox=dict({'facecolor':'white', 'alpha':0.5, 'edgecolor':'None'}))
-        plt.xlabel('$J_{true}$ [COSMOS 15]', fontsize=12)
-        plt.ylabel('$J_{predict}$', fontsize=12)
-        plt.grid(alpha=0.5)
-        plt.subplot(1,2,2)
-        plt.scatter(c15_cat_cut['H'], c15_cat_cut['H_Vega_predict'], alpha=0.1, color='C0', s=5)
-#         plt.scatter(c15_cat_cut['H'], c15_cat_cut['H_Vega_predict'], c=c15_cat_cut['i_AB'], s=5, vmin=15, vmax=25)
-#         plt.scatter(c15_cat_cut['H'], c15_cat_cut['H_Vega_predict'], c=c15_cat_cut['z_AB']-c15_cat_cut['y_AB'], s=5, vmax=5)
-#         plt.scatter(c15_cat_cut['H'], c15_cat_cut['H_Vega_predict'], c=c15_cat_cut['redshift'], s=5, vmax=5)
+		plt.figure()
+		plt.title('COSMOS 2015')
+		plt.hist(c15_cat_cut['r_AB'], bins=np.linspace(15, 27, 30), histtype='step', label='r')
+		plt.hist(c15_cat_cut['i_AB'], bins=np.linspace(15, 27, 30), histtype='step', label='i')
+		plt.hist(c15_cat_cut['z_AB'], bins=np.linspace(15, 27, 30), histtype='step', label='z')
+		plt.hist(c15_cat_cut['y_AB'], bins=np.linspace(15, 27, 30), histtype='step', label='y')
+		plt.hist(c15_cat_cut['mag_CH1'], bins=np.linspace(15, 27, 30), histtype='step', label='mag W1')
+		plt.hist(c15_cat_cut['mag_CH2'], bins=np.linspace(15, 27, 30), histtype='step', label='mag W2')
+		plt.yscale('log')
+		plt.legend()
+		plt.xlabel('Vega mag')
+		plt.ylabel('Nsrc')
+		plt.show()
+				
+		if color_list_c15 is not None:
+			for c, comb in enumerate(color_list_c15):
+				color_label = comb[0]+'_'+comb[1]
+				color = c15_cat_cut[comb[0]]-c15_cat_cut[comb[1]]
+				c15_cat_cut.insert(c+1, color_label, color, True)
+				feature_names_c15.append(color_label)
+			
+			
+		plt.figure()
+		plt.hist(c15_cat['J'], bins=np.linspace(14, 23, 20), histtype='step', label='J')
+		plt.hist(c15_cat['H'], bins=np.linspace(14, 23, 20), histtype='step', label='H')
+		
+		plt.hist(c15_cat_cut['J'], bins=np.linspace(14, 23, 20), histtype='step', label='J Vega')
+		plt.hist(c15_cat_cut['H'], bins=np.linspace(14, 23, 20), histtype='step', label='H Vega')
+		
+		plt.legend()
+		plt.yscale('log')
+		plt.show()
+		
+		features_c15_test = feature_matrix_from_df(c15_cat_cut, feature_names=feature_names_c15, filter_nans=True)
+		
+		predictions_J_C15 = random_forest_J.predict(features_c15_test)
+		c15_cat_cut['J_Vega_predict'] = predictions_J_C15
+		
+		predictions_H_C15 = random_forest_H.predict(features_c15_test)
+		c15_cat_cut['H_Vega_predict'] = predictions_H_C15
+		
+		# mmin, mmax = 12, 20
 
-#         plt.axvline(15.0, label='2MASS depth', color='b', linestyle='dashed')
-    
-#         cbar = plt.colorbar()
-#         cbar.set_label('z - y', fontsize=12)
-        plt.xlim(mmin, mmax)
-        plt.ylim(mmin, mmax)
-        plt.plot(np.linspace(mmin, mmax, 100), np.linspace(mmin, mmax, 100), linestyle='dashed', color='r')
-        plt.grid(alpha=0.5)
 
-        plt.xlabel('$H_{true}$ [COSMOS 15]', fontsize=12)
-        plt.ylabel('$H_{predict}$', fontsize=12)
-        plt.tight_layout()
-        plt.savefig('figures/train_uds_test_C15_meas_vs_predicted_JH_012924.png', bbox_inches='tight', dpi=300)
-        plt.show()
-        
-        # convert back to AB magnitudes
-        print('converting back to AB magnitudes')
-        for name in feature_names_c15:
-            c15_cat_cut[name] += Vega_to_AB_c15[name]
-        
-        for name in test_bands:
-            c15_cat_cut[name] += Vega_to_AB_c15[name] 
-            
-        c15_cat_cut['J_Vega_predict'] += Vega_to_AB_c15['J']
-        c15_cat_cut['H_Vega_predict'] += Vega_to_AB_c15['H']
-        
-        # save predicted COSMOS catalogs
-        
-        c15_cat_cut.to_csv(catalog_basepath+'mask_predict/mask_predict_C15test_'+tailstr+'_AB.csv')
-    
-    if apply_to_science_cats:
-        for fieldidx, ifield in enumerate(ifield_list):
+		fig_J = plt.figure(figsize=(4, 4))
 
-            fieldname = ciber_field_dict[ifield]
+		if mag_cut_rms is not None:
+			mag_cut_J = mag_cut_rms[0]
 
-            merged_science_field_cat = pd.read_csv(catalog_basepath+'crossmatch/unWISE_PS_fullmerge/unWISE_PS_fullmerge_dpos=1.0_'+fieldname+'.csv')
-    #         merged_crossmatch_unWISE_PS = pd.read_csv(catalog_basepath+'crossmatch/unWISE_PS_fullmerge/unWISE_PS_fullmerge_dpos=1.0_'+fieldname+'.csv')
-    #         merged_crossmatch_unWISE_PS = pd.read_csv(catalog_basepath+'DECaLS/filt/decals_CIBER_ifield'+str(ifield)+'.csv')
+			mag_err = np.array(c15_cat_cut['J_Vega_predict'])-np.array(c15_cat_cut['J'])
 
-            if color_list is not None:
-                for c, comb in enumerate(color_list):
-                    color_label = comb[0]+'_'+comb[1]
-                    color = merged_science_field_cat[comb[0]]-merged_science_field_cat[comb[1]]
-                    merged_science_field_cat.insert(c+1, color_label, color, True)
+			mag_err_cut = mag_err[(np.array(c15_cat_cut['J']) < mag_cut_J)]
 
-            features_merged_cat = feature_matrix_from_df(merged_science_field_cat, feature_names=feature_names, filter_nans=True)
-            predictions_J_CIBER_field = random_forest_J.predict(features_merged_cat)
-            merged_science_field_cat['J_Vega_predict'] = predictions_J_CIBER_field
+			rms = np.std(mag_err_cut)
+			print('rms:', rms)
 
-            predictions_H_CIBER_field = random_forest_H.predict(features_merged_cat)
-            merged_science_field_cat['H_Vega_predict'] = predictions_H_CIBER_field
+			plt.text(rms_xpos, rms_ypos,'RMS ($J<$'+str(mag_cut_J)+'): '+str(np.round(rms, 2)), color='k', fontsize=rms_textfs)
 
-            if save:
-                print('saving merged catalog..')
-                merged_science_field_cat.to_csv(catalog_basepath+'mask_predict/mask_predict_LS_fullmerge_'+fieldname+'_'+tailstr+'.csv')
+		plt.scatter(c15_cat_cut['J'], c15_cat_cut['J_Vega_predict'], alpha=alpha_cosmos, color='k', s=plot_s)
+		# plt.scatter(c15_cat_cut['J'], c15_cat_cut['J_Vega_predict'], c=c15_cat_cut['y_AB'], alpha=0.2, s=5, vmax=22)
 
-            predicted_catalogs.append(merged_science_field_cat)
-        
-    return predicted_catalogs
+
+		# plt.plot(np.linspace(mmin, mmax, 100), np.linspace(mmin, mmax, 100), linestyle='dashed', color='r')
+		plt.text(mmin_plot+0.3, mmax_plot-0.7, 'COSMOS15 test set', fontsize=14, bbox=dict({'facecolor':'white', 'alpha':0.8, 'edgecolor':'None'}))
+		
+		# plt.text(mmin+0.25, mmax-1.0, 'UDS training set\nCOSMOS15 test set', fontsize=12, bbox=dict({'facecolor':'white', 'alpha':0.5, 'edgecolor':'None'}))
+		# plt.xlabel('$J_{true}$ [COSMOS 15]', fontsize=12)
+		# plt.ylabel('$J_{predict}$', fontsize=12)
+		plt.xlabel('UVISTA J [COSMOS 15]', fontsize=14)
+		plt.ylabel('Predicted J magnitude', fontsize=14)
+
+		plt.xlim(mmin_plot, mmax_plot)
+		plt.ylim(mmin_plot, mmax_plot)
+		plt.plot(np.linspace(mmin_plot, mmax_plot, 100), np.linspace(mmin_plot, mmax_plot, 100), linestyle='dashed', color='grey')
+
+		plt.axvspan(mmin_plot, 15.5, color='b', alpha=0.1)
+		plt.text(13.7, 12.5, 'Optical photometry saturated', rotation=90, fontsize=12, color='b')
+
+		plt.grid(alpha=0.5)
+		plt.tight_layout()
+		# plt.savefig('figures/train_uds_test_C15_meas_vs_predicted_J_032524.png', bbox_inches='tight', dpi=300)
+		plt.show()
+
+		fig_H = plt.figure(figsize=(4, 4))
+
+		if mag_cut_rms is not None:
+			mag_cut_H = mag_cut_rms[1]
+
+			mag_err = np.array(c15_cat_cut['H_Vega_predict'])-np.array(c15_cat_cut['H'])
+
+			mag_err_cut = mag_err[(np.array(c15_cat_cut['H']) < mag_cut_H)]
+
+			rms = np.std(mag_err_cut)
+
+			plt.text(rms_xpos, rms_ypos, 'RMS ($H<$'+str(mag_cut_H)+'): '+str(np.round(rms, 2)), color='k', fontsize=rms_textfs)
+
+		plt.text(mmin_plot+0.3, mmax_plot-0.7, 'COSMOS15 test set', fontsize=14, bbox=dict({'facecolor':'white', 'alpha':0.8, 'edgecolor':'None'}))
+
+		# plt.scatter(c15_cat_cut['H'], c15_cat_cut['H_Vega_predict'], c=c15_cat_cut['y_AB'], alpha=0.2, s=5, vmax=22)
+
+		plt.scatter(c15_cat_cut['H'], c15_cat_cut['H_Vega_predict'], alpha=alpha_cosmos, color='k', s=plot_s)
+	
+		plt.xlim(mmin_plot, mmax_plot)
+		plt.ylim(mmin_plot, mmax_plot)
+		plt.plot(np.linspace(mmin_plot, mmax_plot, 100), np.linspace(mmin_plot, mmax_plot, 100), linestyle='dashed', color='grey')
+		plt.grid(alpha=0.5)
+
+		plt.axvspan(mmin_plot, 15.5, color='b', alpha=0.1)
+
+		plt.text(13.7, 12.5, 'Optical photometry saturated', rotation=90, fontsize=12, color='b')
+
+		plt.xlabel('UVISTA H [COSMOS 15]', fontsize=14)
+		# plt.ylabel('$H_{predict}$', fontsize=12)
+		plt.ylabel('Predicted H magnitude', fontsize=14)
+		plt.tight_layout()
+		# plt.savefig('figures/train_uds_test_C15_meas_vs_predicted_H_032524.png', bbox_inches='tight', dpi=300)
+		plt.show()
+		
+		# convert back to AB magnitudes
+		print('converting back to AB magnitudes')
+		for name in feature_names_c15:
+			c15_cat_cut[name] += Vega_to_AB_c15[name]
+		
+		for name in test_bands:
+			c15_cat_cut[name] += Vega_to_AB_c15[name] 
+			
+		c15_cat_cut['J_Vega_predict'] += Vega_to_AB_c15['J']
+		c15_cat_cut['H_Vega_predict'] += Vega_to_AB_c15['H']
+		
+		# save predicted COSMOS catalogs
+		
+		c15_cat_cut.to_csv(catalog_basepath+'mask_predict/mask_predict_C15test_'+tailstr+'_AB.csv')
+	
+	if apply_to_science_cats:
+		for fieldidx, ifield in enumerate(ifield_list):
+
+			fieldname = ciber_field_dict[ifield]
+
+			merged_science_field_cat = pd.read_csv(catalog_basepath+'crossmatch/unWISE_PS_fullmerge/unWISE_PS_fullmerge_dpos=1.0_'+fieldname+'.csv')
+	#         merged_crossmatch_unWISE_PS = pd.read_csv(catalog_basepath+'crossmatch/unWISE_PS_fullmerge/unWISE_PS_fullmerge_dpos=1.0_'+fieldname+'.csv')
+	#         merged_crossmatch_unWISE_PS = pd.read_csv(catalog_basepath+'DECaLS/filt/decals_CIBER_ifield'+str(ifield)+'.csv')
+
+			if color_list is not None:
+				for c, comb in enumerate(color_list):
+					color_label = comb[0]+'_'+comb[1]
+					color = merged_science_field_cat[comb[0]]-merged_science_field_cat[comb[1]]
+					merged_science_field_cat.insert(c+1, color_label, color, True)
+
+			features_merged_cat = feature_matrix_from_df(merged_science_field_cat, feature_names=feature_names, filter_nans=True)
+			predictions_J_CIBER_field = random_forest_J.predict(features_merged_cat)
+			merged_science_field_cat['J_Vega_predict'] = predictions_J_CIBER_field
+
+			predictions_H_CIBER_field = random_forest_H.predict(features_merged_cat)
+			merged_science_field_cat['H_Vega_predict'] = predictions_H_CIBER_field
+
+			if save:
+				print('saving merged catalog..')
+				merged_science_field_cat.to_csv(catalog_basepath+'mask_predict/mask_predict_LS_fullmerge_'+fieldname+'_'+tailstr+'.csv')
+
+			predicted_catalogs.append(merged_science_field_cat)
+		
+	return predicted_catalogs, fig_J, fig_H
 
 
 
 def mask_cat_predict_rf(ifield, inst, cmock, mask_cat_unWISE_PS=None, fieldstr_train = 'UDS',\
-                        mag_lim=17.5, feature_names=None, max_depth=8, zkey = 'zMeanPSFMag', W1key='mag_W1', mean_z_J_color_all = 1.0925, \
-                             mask_cat_directory='data/cats/masking_cats/', twomass_cat_directory='data/cats/2MASS/filt/', \
-                            mode='regress'):
+						mag_lim=17.5, feature_names=None, max_depth=8, zkey = 'zMeanPSFMag', W1key='mag_W1', mean_z_J_color_all = 1.0925, \
+							 mask_cat_directory='data/cats/masking_cats/', twomass_cat_directory='data/cats/2MASS/filt/', \
+							mode='regress'):
 
-    ''' Train model on UDS field and use to predict J and H band magnitudes '''
+	''' Train model on UDS field and use to predict J and H band magnitudes '''
 
-    fieldstr_mask = cmock.ciber_field_dict[ifield]
-    magstr = cmock.helgason_to_ciber_rough[inst]
-    Vega_dict = dict({1:'j_Vega', 2:'h_Vega'})
-    
-    magstr_predict = cmock.helgason_to_ciber_rough[inst]+'_predict'
+	fieldstr_mask = cmock.ciber_field_dict[ifield]
+	magstr = cmock.helgason_to_ciber_rough[inst]
+	Vega_dict = dict({1:'j_Vega', 2:'h_Vega'})
+	
+	magstr_predict = cmock.helgason_to_ciber_rough[inst]+'_predict'
 
-    if feature_names is None:
-        feature_names=['rMeanPSFMag', 'iMeanPSFMag', 'gMeanPSFMag', 'zMeanPSFMag', 'yMeanPSFMag', 'mag_W1', 'mag_W2']
+	if feature_names is None:
+		feature_names=['rMeanPSFMag', 'iMeanPSFMag', 'gMeanPSFMag', 'zMeanPSFMag', 'yMeanPSFMag', 'mag_W1', 'mag_W2']
 
-    if mask_cat_unWISE_PS is None:
+	if mask_cat_unWISE_PS is None:
 
-        if fieldstr_train == 'UDS': # default is to use UDS field as training set
+		if fieldstr_train == 'UDS': # default is to use UDS field as training set
 
-            print(magstr+'_mag_lim = ', mag_lim)
+			print(magstr+'_mag_lim = ', mag_lim)
 
-            # this catalog is in Vega magnitudes, 
-            nodup_crossmatch_unWISE_PS_uk_UDS = pd.read_csv('data/cats/masking_cats/UDS/unWISE_PanSTARRS_UKIDSS_full_xmatch_merge_UDS.csv')
-            nodup_crossmatch_unWISE_PS_uk_UDS['gMeanPSFMag'] += 0.16
-            mag_condition_uds, unWISE_condition_uds, PanSTARRS_condition_uds = detect_cat_conditions_J_unWISE_PanSTARRS(nodup_crossmatch_unWISE_PS_uk_UDS, \
-                                                                                                                    j_key=Vega_dict[inst])
-            unPSuk_mask = np.where(mag_condition_uds&unWISE_condition_uds&PanSTARRS_condition_uds)
-            unWISE_PS_uk_xmatch = nodup_crossmatch_unWISE_PS_uk_UDS.iloc[unPSuk_mask].copy()
+			# this catalog is in Vega magnitudes, 
+			nodup_crossmatch_unWISE_PS_uk_UDS = pd.read_csv('data/cats/masking_cats/UDS/unWISE_PanSTARRS_UKIDSS_full_xmatch_merge_UDS.csv')
+			nodup_crossmatch_unWISE_PS_uk_UDS['gMeanPSFMag'] += 0.16
+			mag_condition_uds, unWISE_condition_uds, PanSTARRS_condition_uds = detect_cat_conditions_J_unWISE_PanSTARRS(nodup_crossmatch_unWISE_PS_uk_UDS, \
+																													j_key=Vega_dict[inst])
+			unPSuk_mask = np.where(mag_condition_uds&unWISE_condition_uds&PanSTARRS_condition_uds)
+			unWISE_PS_uk_xmatch = nodup_crossmatch_unWISE_PS_uk_UDS.iloc[unPSuk_mask].copy()
 
-            print('Training decision tree..')
+			print('Training decision tree..')
 
-            decision_tree, classes_train, train_features = train_decision_tree(unWISE_PS_uk_xmatch, feature_names=feature_names, mag_lim=mag_lim, \
-                                                                  max_depth=max_depth, outlablstr=Vega_dict[inst], mode=mode)
+			decision_tree, classes_train, train_features = train_decision_tree(unWISE_PS_uk_xmatch, feature_names=feature_names, mag_lim=mag_lim, \
+																  max_depth=max_depth, outlablstr=Vega_dict[inst], mode=mode)
 
 
-        full_merged_cat_unWISE_PS = pd.read_csv('data/cats/masking_cats/'+fieldstr_mask+'/unWISE_PanSTARRS_full_xmatch_merge_'+fieldstr_mask+'_121620.csv')
-        full_merged_cat_unWISE_PS['gMeanPSFMag'] += 0.16 # correcting error in processed PS catalog
+		full_merged_cat_unWISE_PS = pd.read_csv('data/cats/masking_cats/'+fieldstr_mask+'/unWISE_PanSTARRS_full_xmatch_merge_'+fieldstr_mask+'_121620.csv')
+		full_merged_cat_unWISE_PS['gMeanPSFMag'] += 0.16 # correcting error in processed PS catalog
 
-        # use decision tree to identify sources that need masking
-        featuresd_cat_unWISE_PS = feature_matrix_from_df(full_merged_cat_unWISE_PS, feature_names=feature_names, filter_nans=True)
-        predictions_CIBER_field_unWISE_PS = decision_tree.predict(features_merged_cat_unWISE_PS)
-        
-        if mode=='regress':
-            full_merged_cat_unWISE_PS[magstr_predict] = predictions_CIBER_field_unWISE_PS
+		# use decision tree to identify sources that need masking
+		featuresd_cat_unWISE_PS = feature_matrix_from_df(full_merged_cat_unWISE_PS, feature_names=feature_names, filter_nans=True)
+		predictions_CIBER_field_unWISE_PS = decision_tree.predict(features_merged_cat_unWISE_PS)
+		
+		if mode=='regress':
+			full_merged_cat_unWISE_PS[magstr_predict] = predictions_CIBER_field_unWISE_PS
 
-        mask_cat_unWISE_PS = filter_mask_cat_dt(full_merged_cat_unWISE_PS, decision_tree, feature_names, mag_lim=mag_lim, mode=mode)
+		mask_cat_unWISE_PS = filter_mask_cat_dt(full_merged_cat_unWISE_PS, decision_tree, feature_names, mag_lim=mag_lim, mode=mode)
 
-    if mode=='classify':
-        zs_mask, mask_cat, W1_mask, colormask, median_z_W1_color = predict_masking_magnitude_z_W1(mask_cat_unWISE_PS, J_mag_lim=mag_lim)
-        mask_cat_unWISE_PS[zkey_mask] = zs_mask + 0.5
-        magstr_predict = zkey +'_mask'
-    print('magstr predict is ', magstr_predict)
+	if mode=='classify':
+		zs_mask, mask_cat, W1_mask, colormask, median_z_W1_color = predict_masking_magnitude_z_W1(mask_cat_unWISE_PS, J_mag_lim=mag_lim)
+		mask_cat_unWISE_PS[zkey_mask] = zs_mask + 0.5
+		magstr_predict = zkey +'_mask'
+	print('magstr predict is ', magstr_predict)
 
-    twomass = pd.read_csv(twomass_cat_directory+'2MASS_'+fieldstr_mask+'_filtxy.csv') # these are in Vega
-    twomass_max_mag = min(mag_lim, 16.)
-    print('2MASS maximum is ', twomass_max_mag)
+	twomass = pd.read_csv(twomass_cat_directory+'2MASS_'+fieldstr_mask+'_filtxy.csv') # these are in Vega
+	twomass_max_mag = min(mag_lim, 16.)
+	print('2MASS maximum is ', twomass_max_mag)
 
-    if mode=='regress':
-        mean_z_J_color_all = 0.
-        
-    twomass_lt_max_mag = twomass_srcmap_masking_cat_prep(twomass, mean_z_J_color_all, cmock, ifield, inst=inst, twomass_max_mag=twomass_max_mag)
-    
-    return mask_cat_unWISE_PS, twomass_lt_max_mag
-    
+	if mode=='regress':
+		mean_z_J_color_all = 0.
+		
+	twomass_lt_max_mag = twomass_srcmap_masking_cat_prep(twomass, mean_z_J_color_all, cmock, ifield, inst=inst, twomass_max_mag=twomass_max_mag)
+	
+	return mask_cat_unWISE_PS, twomass_lt_max_mag
+	
 
 def source_mask_construct_dt(ifield, inst, cmock, mask_cat_unWISE_PS=None, fieldstr_train = 'UDS',\
 							 J_mag_lim=19.0, feature_names=None, max_depth=8, \

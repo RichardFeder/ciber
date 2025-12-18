@@ -3,17 +3,17 @@ import matplotlib.pyplot as plt
 import numpy as np
 import os
 # from ciber_data_helpers import make_radius_map, compute_radmap_full
-from plotting_fns import plot_map
+# from plotting_fns import plot_map
 import config
 import astropy.wcs as wcs
 from astropy import units as u
 from astropy.io import fits
 import scipy
 import pandas as pd
-from powerspec_utils import write_mask_file, write_Mkk_fits
+# from powerspec_utils import write_mask_file, write_Mkk_fits
 
 from ciber_data_file_utils import *
-
+from ciber_beam import *
 # from ciber_source_mask_construction_pipeline import find_alpha_beta
 
 ''' TO DO : CAMB does not compile with Python 3 at the moment -- need to update Fortran compiler '''
@@ -156,33 +156,33 @@ def mask_from_cat(xs=None, ys=None, mags=None, cat_df=None, dimx=1024, dimy=1024
 		if cat_df is not None and len(cat_df) > 0:
 			mags = cat_df[magstr]
 
-			print('max mag is ', np.max(mags), np.nanmax(mags))
-			print('interp max mag is ', interp_max_mag)
+		print('max mag is ', np.max(mags), np.nanmax(mags))
+		print('interp max mag is ', interp_max_mag)
 
-			if interp_max_mag is not None:
-				mags[mags > interp_max_mag] = interp_max_mag
-			if interp_min_mag is not None:
-				mags[mags < interp_min_mag] = interp_min_mag
+		if interp_max_mag is not None:
+			mags[mags > interp_max_mag] = interp_max_mag
+		if interp_min_mag is not None:
+			mags[mags < interp_min_mag] = interp_min_mag
 
-			radii = interp_maskfn(np.array(mags))
+		radii = interp_maskfn(np.array(mags))
 
-			if m_min_thresh is not None:
-				radii[np.array(mags) < m_min_thresh] = radcap
+		if m_min_thresh is not None:
+			radii[np.array(mags) < m_min_thresh] = radcap
 
-			if min_radius is not None:
-				radii[radii < min_radius] = min_radius
+		if min_radius is not None:
+			radii[radii < min_radius] = min_radius
 
-			# if fudge_fac is not None:
-			# 	radii[np.array(mags) > mag_fudge] *= 2
+		# if fudge_fac is not None:
+		# 	radii[np.array(mags) > mag_fudge] *= 2
 
-			if plot:
-				plt.figure()
-				plt.scatter(mags, radii, s=3, color='k')
-				plt.xlabel('Vega mags')
-				plt.ylabel('radii [arcsec]')
-				plt.show()
-		else:
-			return None, []
+		if plot:
+			plt.figure()
+			plt.scatter(mags, radii, s=3, color='k')
+			plt.xlabel('Vega mags')
+			plt.ylabel('radii [arcsec]')
+			plt.show()
+		# else:
+		# 	return None, []
 
 	if compute_radii or radii is None:
 		print('Computing radii based on magnitudes..')
@@ -322,24 +322,26 @@ def generate_full_masks_050823(cbps, ifield_list, sim_idxs, masktail, inst = 1, 
 							  use_inst_mask = True, mag_lim_Vega=17.5, save_mask = True, \
 							  datestr = '062322', datestr_trilegal='062422', convert_AB_to_Vega = True, \
 							 dm = 3., a1=160., b1=3.632, c1=8.0, intercept_mag=16.0, \
-							 include_ff_mask = False, interp_mask_fn_fpaths=None, max_depth=8, \
+							 include_ff_mask = False, interp_mask_fn_fpaths=None, interp_mask_fn_fpaths_1=None, interp_mask_fn_fpaths_2=None, max_depth=8, \
 							 mag_depth_obs=17.0, cib_file_mode='cib_with_tracer', dx=0., dy=0., interp_maskfn=None, plot=True, \
 							m_min_thresh=None, radcap=200., inst_mag_mask=None, \
-							twomass_only=False, generate_shotnoise_cat=False, add_spitzer_Lmask=False, mag_key_sdwfs='CH1_mag_auto', mag_lim_sdwfs=18.0, \
+							twomass_only=False, generate_shotnoise_cat=False, add_spitzer_Lmask=False, mag_key_sdwfs='CH1_mag_auto', mag_lim_sdwfs=18.0, mag_lim_yPS=18.5, \
 							add_wise_Lmask=False, mag_lim_wise=16.0, \
 							fudge_fac=None, min_mag_fudge=14, max_mag_fudge=16.0, wcs_headers=None, mask_cat_fpaths=None, mode='Zemcov+14', \
 							apply_mask_errs=False, mask_err_vs_mag_fpath=None, mask_transition_mag=14, min_radius=None, \
-							add_flamingos=False):
+							add_flamingos=False, twomass_max_mag=None, irac_ch_mask=None, sdwfs_fixed_radius=14.0, \
+							persistence_mask=False, persistence_src_mag_max=10):
 
 	if twomass_only:
-		generate_starmask = True
+		generate_starmask = True 
 		generate_galmask = False 
 		print('twomass only is True, setting starmask to True since this is where I load the 2MASS catalog..')
 
-	if inst==1:
-		twomass_max_mag = 16.0
-	else:
-		twomass_max_mag = 15.0
+	if twomass_max_mag is None:
+		if inst==1:
+			twomass_max_mag = 16.0
+		else:
+			twomass_max_mag = 15.0
 
 	if inst_mag_mask is not None:
 		mag_lim_AB = mag_lim_Vega + cbps.Vega_to_AB[inst_mag_mask]
@@ -353,6 +355,7 @@ def generate_full_masks_050823(cbps, ifield_list, sim_idxs, masktail, inst = 1, 
 
 	if interp_mask_fn_fpaths is None:
 		param_combo = [a1, b1, c1]
+
 
 	all_interp_fns_maskerrs = None
 	type_weights_bysel = None
@@ -436,12 +439,24 @@ def generate_full_masks_050823(cbps, ifield_list, sim_idxs, masktail, inst = 1, 
 				cent_mags, rad_vs_cent_mags = interp_mask_file['cent_mags'], interp_mask_file['radii']
 				min_mag, max_mag = np.min(cent_mags), np.max(cent_mags)
 
-
 				if fudge_fac is not None:
 					rad_vs_cent_mags[(cent_mags > min_mag_fudge)*(cent_mags < max_mag_fudge)] *= fudge_fac
 
 				interp_maskfn = scipy.interpolate.interp1d(cent_mags[rad_vs_cent_mags!= 0], rad_vs_cent_mags[rad_vs_cent_mags != 0])
 				a1, b1, c1, dm, alpha_m, beta_m = [None for x in range(6)]
+
+				if interp_mask_fn_fpaths_2 is not None:
+					interp_mask_file_2 = np.load(interp_mask_fn_fpaths_2[fieldidx])
+					cent_mags_2, rad_vs_cent_mags_2 = interp_mask_file_2['cent_mags'], interp_mask_file_2['radii']
+					interp_maskfn_2 = scipy.interpolate.interp1d(cent_mags_2[rad_vs_cent_mags_2!= 0], rad_vs_cent_mags_2[rad_vs_cent_mags_2 != 0])
+
+				if interp_mask_fn_fpaths_1 is not None:
+					interp_mask_file_1 = np.load(interp_mask_fn_fpaths_1[fieldidx])
+					cent_mags_1, rad_vs_cent_mags_1 = interp_mask_file_1['cent_mags'], interp_mask_file_1['radii']
+					interp_maskfn_1 = scipy.interpolate.interp1d(cent_mags_1[rad_vs_cent_mags_1!= 0], rad_vs_cent_mags_1[rad_vs_cent_mags_1 != 0])
+
+					# min_mag, max_mag = np.min(cent_mags), np.max(cent_mags)
+
 
 				if s==0:
 					plt.figure()
@@ -476,12 +491,15 @@ def generate_full_masks_050823(cbps, ifield_list, sim_idxs, masktail, inst = 1, 
 					# these are already in Vega magnitudes
 					print('using inst = ', inst, 'for positions')
 
-					if twomass_only:
-						print('loading catalog down to J = 17.5')
-						twomass_cat_df = pd.read_csv(catalog_basepath+'2MASS/filt/2MASS_filt_rdflag_wxy_'+field_name+'_Jlt17.5.csv')
-					else:
-						twomass_cat_df = pd.read_csv(catalog_basepath+'2MASS/filt/2MASS_filt_rdflag_wxy_'+field_name+'_Jlt16.0.csv')
-					
+					print('Loading catalog down to J = 17.5')
+					twomass_cat_df = pd.read_csv(catalog_basepath+'2MASS/filt/2MASS_filt_rdflag_wxy_'+field_name+'_Jlt17.5.csv')
+
+					# if twomass_only:
+					# 	twomass_cat_df = pd.read_csv(catalog_basepath+'2MASS/filt/2MASS_filt_rdflag_wxy_'+field_name+'_Jlt17.5.csv')
+					# else:
+					# 	# twomass_cat_df = pd.read_csv(catalog_basepath+'2MASS/filt/2MASS_filt_rdflag_wxy_'+field_name+'_Jlt16.0.csv')
+					# 	twomass_cat_df = pd.read_csv(catalog_basepath+'2MASS/filt/2MASS_filt_rdflag_wxy_'+field_name+'_Jlt17.5.csv')
+
 					twomass_x = twomass_cat_df['x'+str(inst)]
 					twomass_y = twomass_cat_df['y'+str(inst)]
 					print('using positions x/y'+str(inst))
@@ -557,6 +575,19 @@ def generate_full_masks_050823(cbps, ifield_list, sim_idxs, masktail, inst = 1, 
 													 interp_max_mag = max_mag, interp_min_mag=min_mag, m_min_thresh=m_min_thresh, radcap=radcap, \
 													 mode=mode, mask_transition_mag=mask_transition_mag, min_radius=min_radius)
 
+				if persistence_mask and ifield > 4:
+					print('adding persistence mask from previous exposure..')
+					starmask *= pmask
+
+
+				if persistence_mask:
+					pmask, radii_pmask = mask_from_cat(cat_df = star_cat_df, mag_lim_min=0, inst=inst,\
+																mag_lim=persistence_src_mag_max, interp_maskfn=interp_maskfn,\
+														  magstr=magkey, Vega_to_AB=0., dimx=cbps.dimx, dimy=cbps.dimy, plot=False, \
+														 interp_max_mag = max_mag, interp_min_mag=min_mag, m_min_thresh=m_min_thresh, radcap=radcap, \
+														 mode=mode, mask_transition_mag=mask_transition_mag, min_radius=min_radius)
+
+
 				# if interp_mask_fn_fpaths is not None:
 				# 	# simulated sources changed to Vega magnitudes with convert_AB_to_Vega, masking function magnitudes in Vega units
 				# 	# magnitude limit should be in Vega since we already converted magnitudes to Vega
@@ -585,10 +616,10 @@ def generate_full_masks_050823(cbps, ifield_list, sim_idxs, masktail, inst = 1, 
 					if mask_cat_fpaths is not None:
 						mask_cat_unWISE_PS = pd.read_csv(mask_cat_fpaths[fieldidx])
 					else:
-						# mask_cat_unWISE_PS = pd.read_csv(catalog_basepath+'mask_predict/mask_predict_unWISE_PS_fullmerge_'+field_name+'_ukdebias.csv')
+						mask_cat_unWISE_PS = pd.read_csv(catalog_basepath+'mask_predict/mask_predict_unWISE_PS_fullmerge_'+field_name+'_ukdebias.csv')
 						# mask_cat_unWISE_PS = pd.read_csv(catalog_basepath+'mask_predict/mask_predict_unWISE_PS_fullmerge_'+field_name+'_ukdebias_C15train.csv')
 					
-						mask_cat_unWISE_PS = pd.read_csv(catalog_basepath+'mask_predict/mask_predict_LS_fullmerge_'+field_name+'_uds_ls_grzW1W2_gr.csv')
+						# mask_cat_unWISE_PS = pd.read_csv(catalog_basepath+'mask_predict/mask_predict_LS_fullmerge_'+field_name+'_uds_ls_grzW1W2_gr.csv')
 						# mask_cat_unWISE_PS = pd.read_csv(catalog_basepath+'mask_predict/mask_predict_unWISE_PS_fullmerge_'+field_name+'.csv')
 					if wcs_headers is not None:
 
@@ -598,17 +629,23 @@ def generate_full_masks_050823(cbps, ifield_list, sim_idxs, masktail, inst = 1, 
 						faint_cat_x = mask_cat_unWISE_PS['x'+str(inst)]
 						faint_cat_y = mask_cat_unWISE_PS['y'+str(inst)]
 					# faint_cat_mag = mask_cat_unWISE_PS[magkey+'_Vega_predict'] # magkey
+
 					if inst_mag_mask is not None:
 						print('faint cat mags from ', inst_to_band[inst_mag_mask]+'_Vega_predict')
 						faint_cat_mag = mask_cat_unWISE_PS[inst_to_band[inst_mag_mask]+'_Vega_predict']
 					else:
 						faint_cat_mag = mask_cat_unWISE_PS[inst_to_band[inst]+'_Vega_predict']
 
+					faint_cat_yPS = mask_cat_unWISE_PS['yMeanPSFMag']
+
+					faint_cat_J = mask_cat_unWISE_PS['J_Vega_predict']
+					faint_cat_H = mask_cat_unWISE_PS['H_Vega_predict']
+
 				if convert_AB_to_Vega and dat_type=='mock':
 					print('converting galaxy magnitudes to Vega mag with ', cbps.Vega_to_AB[inst])
 					mock_gal_cat['m_app'] -= cbps.Vega_to_AB[inst]
 
-				galcatcols = ['m_app', 'x'+str(inst), 'y'+str(inst)]
+				galcatcols = ['m_app', 'x'+str(inst), 'y'+str(inst), 'y_PS', 'J_Vega_predict', 'H_Vega_predict']
 				if dat_type=='mock':
 					gal_cat = {'m_app':mock_gal_cat['m_app'].byteswap().newbyteorder(), 'y'+str(inst):mock_gal_cat['x'].byteswap().newbyteorder()+dx, 'x'+str(inst):mock_gal_cat['y'].byteswap().newbyteorder()+dy}
 					gal_cat_df = pd.DataFrame(gal_cat, columns = galcatcols) # check magnitude system of Helgason model
@@ -643,14 +680,32 @@ def generate_full_masks_050823(cbps, ifield_list, sim_idxs, masktail, inst = 1, 
 
 
 				elif dat_type=='real':
-					gal_cat_df = pd.DataFrame({'m_app':faint_cat_mag, 'x'+str(inst):faint_cat_x, 'y'+str(inst):faint_cat_y}, columns = galcatcols)
+					# gal_cat_df = pd.DataFrame({'m_app':faint_cat_mag, 'x'+str(inst):faint_cat_x, 'y'+str(inst):faint_cat_y}, columns = galcatcols)
 
+					# gal_cat_df = pd.DataFrame({'m_app':faint_cat_mag, 'x'+str(inst):faint_cat_x, 'y'+str(inst):faint_cat_y, 'y_PS':faint_cat_yPS}, columns = galcatcols)
+					gal_cat_df = pd.DataFrame({'m_app':faint_cat_mag, 'x'+str(inst):faint_cat_x, 'y'+str(inst):faint_cat_y, 'y_PS':faint_cat_yPS, \
+												'J_Vega_predict':faint_cat_J, 'H_Vega_predict':faint_cat_H}, columns = galcatcols)
 
-				galmask, radii_gals = mask_from_cat(cat_df = gal_cat_df, mag_lim_min=0, inst=inst,\
-										mag_lim=mag_lim_Vega, interp_maskfn=interp_maskfn, magstr='m_app', Vega_to_AB=0., dimx=cbps.dimx, dimy=cbps.dimy, plot=False, \
-												   interp_max_mag = max_mag, interp_min_mag=min_mag, mode=mode, mask_transition_mag=mask_transition_mag, \
-												   min_radius=min_radius)
-				
+				# galmask, radii_gals = mask_from_cat(cat_df = gal_cat_df, mag_lim_min=0, inst=inst,\
+				# 						mag_lim=mag_lim_Vega, interp_maskfn=interp_maskfn, magstr='m_app', Vega_to_AB=0., dimx=cbps.dimx, dimy=cbps.dimy, plot=False, \
+				# 								   interp_max_mag = max_mag, interp_min_mag=min_mag, mode=mode, mask_transition_mag=mask_transition_mag, \
+				# 								   min_radius=min_radius)
+
+				# galmask_yPS, radii_gals_yPS = mask_from_cat(cat_df = gal_cat_df, mag_lim_min=1, inst=inst,\
+				# 		mag_lim=mag_lim_yPS, interp_maskfn=interp_maskfn, magstr='y_PS', Vega_to_AB=0., dimx=cbps.dimx, dimy=cbps.dimy, plot=False, \
+				# 				   interp_max_mag = max_mag, interp_min_mag=min_mag, mode=mode, mask_transition_mag=mask_transition_mag, \
+				# 				   min_radius=min_radius)
+
+				galmask_J, radii_gals_J = mask_from_cat(cat_df = gal_cat_df, mag_lim_min=1, inst=inst,\
+						mag_lim=16.0, interp_maskfn=interp_maskfn_1, magstr='J_Vega_predict', Vega_to_AB=0., dimx=cbps.dimx, dimy=cbps.dimy, plot=False, \
+								   interp_max_mag = max_mag, interp_min_mag=min_mag, mode=mode, mask_transition_mag=mask_transition_mag, \
+								   min_radius=min_radius)
+
+				galmask_H, radii_gals_H = mask_from_cat(cat_df = gal_cat_df, mag_lim_min=1, inst=inst,\
+						mag_lim=15.5, interp_maskfn=interp_maskfn_2, magstr='H_Vega_predict', Vega_to_AB=0., dimx=cbps.dimx, dimy=cbps.dimy, plot=False, \
+								   interp_max_mag = max_mag, interp_min_mag=min_mag, mode=mode, mask_transition_mag=mask_transition_mag, \
+								   min_radius=min_radius)
+
 				# if interp_mask_fn_fpaths is not None:
 
 				# 	print('mag lim Vega for galaxies is ', mag_lim_Vega)
@@ -661,39 +716,95 @@ def generate_full_masks_050823(cbps, ifield_list, sim_idxs, masktail, inst = 1, 
 				# else:
 				# 	galmask, radii_stars_simon, radii_stars_Z14, alpha_m, beta_m = get_masks(gal_cat_df, param_combo, intercept_mag, mag_lim_Vega, dm=dm, magstr='m_app', inst=inst, dimx=cbps.dimx, dimy=cbps.dimy, verbose=True)
 
-				if len(radii_gals) > 0:
-					print('len radii gals is ', len(radii_gals))
-					joint_mask *= galmask
-				else:
-					print('radii gals is ', radii_gals, 'and galmask is ', galmask)
+				print('Adding J + H band mask..')
+				joint_mask *= galmask_J*galmask_H
+
+				# if len(radii_gals) > 0:
+				# 	print('len radii gals is ', len(radii_gals))
+				# 	joint_mask *= galmask
+
+				# 	# print('adding PanSTARRS y band mask')
+				# 	# joint_mask *= galmask_yPS
+
+				# 	# print('Adding J + H band mask..')
+				# 	# joint_mask *= galmask_J*galmask_H
+
+				# 	# print(np.sum(galmask_yPS)/1024.**2, np.sum(galmask)/1024.**2)
+
+				# else:
+				# 	print('radii gals is ', radii_gals, 'and galmask is ', galmask)
 
 
 			if add_spitzer_Lmask and ifield in [6, 7]:
 
 				sdwfs_catpath = catalog_basepath+'SDWFS/sdwfs_wxy_CIBER_ifield'+str(ifield)+'.csv'
-				print('Combining with spitzer mask down to W1 = ', str(mag_lim_sdwfs))
+				print('Combining with spitzer mask down to L = ', str(mag_lim_sdwfs))
 				sdwfs_cat = pd.read_csv(sdwfs_catpath)
 
 				# sdwfs_cat = pd.read_csv('data/Spitzer/sdwfs_catalogs/sdwfs_wxy_CIBER_ifield'+str(ifield)+'.csv')
-				sdwfs_mag = np.array(sdwfs_cat[mag_key_sdwfs])
+				sdwfs_mag1 = np.array(sdwfs_cat['CH1_mag_auto'])
+				sdwfs_mag2 = np.array(sdwfs_cat['CH2_mag_auto'])
+
 				sdwfs_x, sdwfs_y = np.array(sdwfs_cat['x'+str(inst)]), np.array(sdwfs_cat['y'+str(inst)])
 
-				sdwfs_cat = np.array([sdwfs_x, sdwfs_y, sdwfs_mag]).transpose()
+				sdwfs_cat = np.array([sdwfs_x, sdwfs_y, sdwfs_mag1, sdwfs_mag2]).transpose()
 
 				sdwfs_xymask = (sdwfs_x > 0)*(sdwfs_x < cbps.dimx)*(sdwfs_y > 0)*(sdwfs_y < cbps.dimy)
 				sdwfs_cat = sdwfs_cat[np.where(sdwfs_xymask)[0], :]
 
 
-				sdwfs_catcols = ['x'+str(inst), 'y'+str(inst), 'm_app']
+				sdwfs_catcols = ['x'+str(inst), 'y'+str(inst), 'm_app_CH1', 'm_app_CH2']
 				sdwfs_cat_df = pd.DataFrame(sdwfs_cat, columns = sdwfs_catcols) # check magnitude system of Helgason model
 
 				print('sdwfs cat df:', sdwfs_cat_df)
 
-				sdwfs_radii = 7.*np.ones_like(sdwfs_mag)
+				# if irac_ch_mask is not None:
 
-				sdwfs_mask, radii_gals_sdwfs = mask_from_cat(cat_df = sdwfs_cat_df, mag_lim_min=15, inst=inst,\
-										mag_lim=mag_lim_sdwfs, magstr='m_app', Vega_to_AB=0., dimx=cbps.dimx, dimy=cbps.dimy, plot=False, \
-												   radii=sdwfs_radii) 
+				# 	if sdwfs_fixed_radius is not None:
+				# 		sdwfs_radii = sdwfs_fixed_radius*np.ones_like()
+				# 		sdwfs_mask1, radii_gals_sdwfs = mask_from_cat(cat_df = sdwfs_cat_df, mag_lim_min=12, inst=inst,\
+				# 												mag_lim=mag_lim_sdwfs, magstr='m_app_CH1', Vega_to_AB=0., dimx=cbps.dimx, dimy=cbps.dimy, plot=False, \
+				# 														   radii=sdwfs_radii1) 
+
+				# 	sdwfs_mask, radii_gals_sdwfs = mask_from_cat(cat_df = sdwfs_cat_df, mag_lim_min=12, inst=inst,\
+				# 							mag_lim=mag_lim_sdwfs, magstr='m_app_CH'+str(irac_ch_mask), Vega_to_AB=0., dimx=cbps.dimx, dimy=cbps.dimy, plot=False, \
+				# 									   interp_maskfn=interp_maskfn, min_radius=min_radius, mode=mode, \
+				# 									   interp_max_mag=max_mag) 
+				# else:
+				# 	sdwfs_mask1, radii_gals_sdwfs = mask_from_cat(cat_df = sdwfs_cat_df, mag_lim_min=12, inst=inst,\
+				# 							mag_lim=mag_lim_sdwfs, magstr='m_app_CH1', Vega_to_AB=0., dimx=cbps.dimx, dimy=cbps.dimy, plot=False, \
+				# 									   interp_maskfn=interp_maskfn, min_radius=min_radius, mode=mode, \
+				# 									   interp_max_mag=max_mag) 
+
+				# 	sdwfs_mask2, radii_gals_sdwfs = mask_from_cat(cat_df = sdwfs_cat_df, mag_lim_min=12, inst=inst,\
+				# 							mag_lim=mag_lim_sdwfs, magstr='m_app_CH2', Vega_to_AB=0., dimx=cbps.dimx, dimy=cbps.dimy, plot=False, \
+				# 									   interp_maskfn=interp_maskfn, min_radius=min_radius, mode=mode, \
+				# 									   interp_max_mag=max_mag) 
+
+				# 	sdwfs_mask = sdwfs_mask1*sdwfs_mask2
+
+				sdwfs_radii1 = 6.*(16.-sdwfs_mag1)+sdwfs_fixed_radius*np.ones_like(sdwfs_mag1)
+
+				plt.figure()
+				plt.title('mag lim sdwfs: '+str(mag_lim_sdwfs))
+				plt.hist(sdwfs_radii1[sdwfs_mag1 < mag_lim_sdwfs], bins=30)
+				plt.xlabel('Radius masking')
+				plt.show()
+
+				# sdwfs_radii1 = sdwfs_fixed_radius*np.ones_like(sdwfs_mag1)
+				# sdwfs_radii2 = sdwfs_fixed_radius*np.ones_like(sdwfs_mag2)
+
+				sdwfs_mask1, radii_gals_sdwfs = mask_from_cat(cat_df = sdwfs_cat_df, mag_lim_min=10, inst=inst,\
+										mag_lim=mag_lim_sdwfs, magstr='m_app_CH1', Vega_to_AB=0., dimx=cbps.dimx, dimy=cbps.dimy, plot=False, \
+												   radii=sdwfs_radii1) 
+
+				# sdwfs_mask2, radii_gals_sdwfs = mask_from_cat(cat_df = sdwfs_cat_df, mag_lim_min=12, inst=inst,\
+				# 						mag_lim=mag_lim_sdwfs, magstr='m_app_CH2', Vega_to_AB=0., dimx=cbps.dimx, dimy=cbps.dimy, plot=False, \
+				# 								   radii=sdwfs_radii2) 
+				# sdwfs_mask = sdwfs_mask1*sdwfs_mask2
+
+				sdwfs_mask = sdwfs_mask1
+
 				if plot:
 					plot_map(sdwfs_mask, title='SDWFS mask L < '+str(mag_lim_wise))
 
@@ -705,18 +816,32 @@ def generate_full_masks_050823(cbps, ifield_list, sim_idxs, masktail, inst = 1, 
 			if add_wise_Lmask:
 				print('Combining with WISE mask down to W1 = ', str(mag_lim_wise))
 				wise_cat = pd.read_csv(catalog_basepath+'unWISE/filt/unWISE_filt_wxy_magcut_Vega_'+field_name+'.csv')
-				wise_mag = np.array(wise_cat['mag_W1'])
+				wise_mag1 = np.array(wise_cat['mag_W1'])
+				wise_mag2 = np.array(wise_cat['mag_W2'])
+
 				wise_x, wise_y = np.array(wise_cat['x'+str(inst)]), np.array(wise_cat['y'+str(inst)])
 				
-				wise_cat = np.array([wise_x, wise_y, wise_mag]).transpose()
-				wisecatcols = ['x'+str(inst), 'y'+str(inst), 'm_app']
+				wise_cat = np.array([wise_x, wise_y, wise_mag1, wise_mag2]).transpose()
+				wisecatcols = ['x'+str(inst), 'y'+str(inst), 'm_app_CH1', 'm_app_CH2']
 				wise_cat_df = pd.DataFrame(wise_cat, columns = wisecatcols)
 
-				wisemask, radii_gals_wise = mask_from_cat(cat_df = wise_cat_df, mag_lim_min=0, inst=inst,\
-										mag_lim=mag_lim_wise, interp_maskfn=interp_maskfn, magstr='m_app', Vega_to_AB=0., dimx=cbps.dimx, dimy=cbps.dimy, plot=False, \
-												   interp_max_mag = max_mag) 
+				# wisemask, radii_gals_wise = mask_from_cat(cat_df = wise_cat_df, mag_lim_min=0, inst=inst, mode=mode, \
+				# 						mag_lim=mag_lim_wise, interp_maskfn=interp_maskfn, magstr='m_app', Vega_to_AB=0., dimx=cbps.dimx, dimy=cbps.dimy, plot=False, \
+				# 								   interp_max_mag = max_mag) 
+
+				wise_radii = sdwfs_fixed_radius*np.ones_like(wise_mag1)
+
+				wisemask, radii_gals_wise = mask_from_cat(cat_df = wise_cat_df, mag_lim_min=0, inst=inst, mode=mode, \
+						mag_lim=mag_lim_wise, interp_maskfn=interp_maskfn, magstr='m_app_CH1', Vega_to_AB=0., dimx=cbps.dimx, dimy=cbps.dimy, plot=False, \
+								   interp_max_mag = max_mag, radii=wise_radii) 
+
+				# wisemask2, radii_gals_wise = mask_from_cat(cat_df = wise_cat_df, mag_lim_min=0, inst=inst, mode=mode, \
+				# 		mag_lim=mag_lim_wise, interp_maskfn=interp_maskfn, magstr='m_app_CH2', Vega_to_AB=0., dimx=cbps.dimx, dimy=cbps.dimy, plot=False, \
+				# 				   interp_max_mag = max_mag) 
+
+				# wisemask = wisemask1*wisemask2
 				if plot:
-					plot_map(wisemask, title='WISE mask L < '+str(mag_lim_wise))
+					plot_map(wisemask, title='WISE mask CH1, CH2 < '+str(mag_lim_wise))
 
 				if len(radii_gals_wise) > 0:
 					print('len radii gals wise is ', len(radii_gals_wise))

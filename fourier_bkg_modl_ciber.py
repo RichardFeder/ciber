@@ -44,9 +44,6 @@ def precomp_fourier_templates(dimx, dimy, mask=None, n_terms=1,\
             mquad[x0s[q]:x1s[q], y0s[q]:y1s[q]] = 1.
             mquad_rav = np.expand_dims(mquad.ravel(), axis=1)
             X = np.hstack(   ( mquad_rav , X ))
-
-
-
                     
     if mask is not None:
         mask_rav = np.reshape(mask, (dimx*dimy)).astype(bool)
@@ -192,9 +189,11 @@ def fc_fit_precomp(image, dot1, X, mask_rav=None):
     else:
         theta = np.dot(dot1, YY)
 
-    fcs = np.reshape(np.dot(X, theta), (dimx, dimy))
+    fcs_withquad = np.reshape(np.dot(X, theta), (dimx, dimy))
+
+    quadoffsets = np.reshape(np.dot(X[:,-4:], theta[-4:]), (dimx, dimy))
     
-    return theta, fcs
+    return theta, fcs_withquad, quadoffsets
 
 
 

@@ -2,16 +2,18 @@ import numpy as np
 import astropy.io.fits as fits
 import astropy.wcs as wcs
 import pandas as pd
-import scipy.io
 from scipy.ndimage import gaussian_filter
-import matplotlib
 import matplotlib.pyplot as plt
-import pickle
+import os
+
+# import scipy.io
+# from scipy.signal import fftconvolve
+# import matplotlib
+# import pickle
 # from astropy.convolution import convolve
 # from astropy.convolution import Gaussian2DKernel
-from astropy.wcs import WCS
-from scipy.io import loadmat
-import os
+# from astropy.wcs import WCS
+# from scipy.io import loadmat
 
 from powerspec_utils import *
 from ciber_powerspec_pipeline import *
@@ -21,9 +23,11 @@ from ciber_powerspec_pipeline import *
 # from cross_spectrum_analysis import *
 # from ciber_data_helpers import load_psf_params_dict
 from plotting_fns import plot_map
+from gal_plotting_fns import *
 from ciber_mocks import *
 from flat_field_est import *
-from mkk_parallel import compute_inverse_mkk, plot_mkk_matrix
+from mkk_parallel import compute_inverse_mkk
+
 from masking_utils import *
 import config
 from ciber_data_file_utils import *
@@ -70,55 +74,554 @@ def update_dicts(list_of_dicts, kwargs):
 				indiv_dict[key] = value 
 	return list_of_dicts 
 
+def add_bootes_corner_mask(mask):
+	corner_mask = np.ones_like(mask)
+	corner_mask[900:, 0:200] = 0.
+	mask *= corner_mask
+
+	return mask
+
+
+def downgrade_map_resolution(original_map, factor):
+	"""
+	Downgrades the resolution of a 2D map by an integer factor using averaging.
+
+	Args:
+		original_map (np.ndarray): The input 2D map (NumPy array).
+		factor (int): The integer factor by which to downgrade the resolution.
+					  Must be a positive integer and a divisor of both
+					  the map's height and width.
+
+	Returns:
+		np.ndarray: The downgraded resolution map.
+
+	Raises:
+		ValueError: If factor is not a positive integer, or if the map
+					dimensions are not divisible by the factor.
+	"""
+	if not isinstance(factor, int) or factor <= 0:
+		raise ValueError("Factor must be a positive integer.")
+
+	height, width = original_map.shape
+
+	if height % factor != 0 or width % factor != 0:
+		raise ValueError(
+			f"Map dimensions ({height}x{width}) must be divisible by the factor ({factor})."
+		)
+
+	new_height = height // factor
+	new_width = width // factor
+
+	# Reshape the original map to group blocks of 'factor' x 'factor' pixels
+	# The trick here is to add new axes to allow for efficient averaging.
+	# For example, if factor=2:
+	# (H, W) -> (H/2, 2, W/2, 2)
+	# Then average over the 2nd and 4th axes.
+	reshaped_map = original_map.reshape(new_height, factor, new_width, factor)
+
+	# Calculate the mean over the blocks
+	# downgraded_map = reshaped_map.mean(axis=(1, 3))
+	downgraded_map = np.mean(reshaped_map, axis=(1, 3))
+
+
+	return downgraded_map
+
+def upscale_map_from_downgraded(downgraded_map, original_shape, factor):
+	"""
+	Upscales a downgraded map back to the original resolution, filling blocks
+	with the corresponding averaged value.
+
+	Args:
+		downgraded_map (np.ndarray): The 2D map at lower resolution.
+		original_shape (tuple): A tuple (height, width) representing the
+								original resolution of the map.
+		factor (int): The integer factor by which the map was downgraded.
+					  Must be a positive integer and a divisor of both
+					  the original_shape dimensions.
+
+	Returns:
+		np.ndarray: The upscaled map at the original resolution.
+
+	Raises:
+		ValueError: If factor is not a positive integer, or if the original
+					dimensions are not divisible by the factor, or if the
+					downgraded_map shape doesn't match expected after division.
+	"""
+	if not isinstance(factor, int) or factor <= 0:
+		raise ValueError("Factor must be a positive integer.")
+
+	original_height, original_width = original_shape
+	downgraded_height, downgraded_width = downgraded_map.shape
+
+	if original_height % factor != 0 or original_width % factor != 0:
+		raise ValueError(
+			f"Original map dimensions ({original_height}x{original_width}) "
+			f"must be divisible by the factor ({factor})."
+		)
+
+	expected_downgraded_height = original_height // factor
+	expected_downgraded_width = original_width // factor
+
+	if downgraded_height != expected_downgraded_height or \
+	   downgraded_width != expected_downgraded_width:
+		raise ValueError(
+			f"Downgraded map shape ({downgraded_height}x{downgraded_width}) "
+			f"does not match expected shape ({expected_downgraded_height}x{expected_downgraded_width}) "
+			f"for the given original_shape and factor."
+		)
+
+	# Use NumPy's Kronecker product (np.kron) for efficient upscaling
+	# This function is perfect for repeating blocks of values.
+	# It essentially multiplies each element of downgraded_map by a 'factor x factor'
+	# block of ones.
+	upscaled_map = np.kron(downgraded_map, np.ones((factor, factor)))
+
+	return upscaled_map
+
+
+
+def compute_overdensity_with_smoothing(
+    gal_map, rand_map, mask, lb, pix_size_arcmin, sigma_pix=None
+):
+    """
+    Compute a variance-friendly overdensity map with optional Gaussian smoothing.
+    
+    Parameters
+    ----------
+    gal_map : 2D array
+        Galaxy counts map.
+    rand_map : 2D array
+        Random counts map (unscaled).
+    mask : 2D boolean array
+        True for unmasked pixels, False for masked.
+    lb : 1D array
+        ℓ-bin centers for bandpowers.
+    pix_size_arcmin : float
+        Pixel size in arcminutes.
+    sigma_pix : float or None
+        Gaussian smoothing sigma in pixels. If None, no smoothing is applied.
+    
+    Returns
+    -------
+    delta_g : 2D array
+        Overdensity map (mean zero in unmasked region).
+    B_ell : 1D array
+        Beam transfer function for the given lb.
+    """
+    
+    # Apply mask to counts
+    gal_masked = np.where(mask, gal_map, 0.0)
+    rand_masked = np.where(mask, rand_map, 0.0)
+    
+    # Normalization factor alpha
+    alpha = gal_masked.sum() / rand_masked.sum()
+    
+    # Optional smoothing
+    if sigma_pix is not None and sigma_pix > 0:
+        gal_masked = gaussian_filter(gal_masked.astype(float), sigma=sigma_pix)
+        rand_masked = gaussian_filter(rand_masked.astype(float), sigma=sigma_pix)
+        
+        # Compute beam transfer function
+        pix_size_rad = (pix_size_arcmin / 60.0) * np.pi / 180.0
+        sigma_rad = sigma_pix * pix_size_rad
+        B_ell = np.exp(-0.5 * lb * (lb + 1) * sigma_rad**2)
+    else:
+        B_ell = np.ones_like(lb)
+    
+    # Overdensity calculation
+    # Avoid division by zero in masked or empty pixels
+    denom = alpha * rand_masked
+    denom[denom == 0] = np.nan  # will become NaN in masked/empty pixels
+    
+    delta_g = (gal_masked - alpha * rand_masked) / denom
+    
+    # Set masked pixels to zero (or NaN if you prefer)
+    delta_g[~mask] = 0.0
+    
+    return delta_g, B_ell
+	
+def ciber_gal_cross(inst_list, ifield_list_use, catname, addstr=None, randstr=None, mask_tail_list=None, masking_maglim_list=None, \
+				   estimate_ciber_noise_gal=False, estimate_gal_noise_ciber=False, \
+				   estimate_ciber_noise_gal_noise=False, ifield_list_full=[4, 5, 6, 7, 8], \
+				   clip_sigma=5, niter=5, nitermax=5, per_quadrant=True, save=True, plot=False, \
+				   nsims=500, n_split=10, fc_sub=False, fc_sub_quad_offset=True, fc_sub_n_terms=2, \
+				   compute_cl_theta=True, cl_theta_cut=True, n_rad_bins=8, ell_min_wedge=2000, \
+				   quadoff_grad=False, grad_sub=False, subtract_randoms=False, maskstr=None, \
+				   rad_offset=None, theta0=np.pi, gal_downgrade_fac=None, apply_pixel_corr=True, \
+				   rand_downgrade_fac=4,
+				   include_ff_errors=True,
+				   observed_run_name = 'observed_Jlt16.0_Hlt15.5_072424_quadoff_grad_fcsub_order2', 
+				   tailstr_save=None):
+	
+	
+	cbps = CIBER_PS_pipeline()
+	
+	bandstr_dict = dict({1:'J', 2:'H'})
+	masking_maglim_dict = dict({1:17.5, 2:17.0})
+	fieldidx_list_use = np.array(ifield_list_use)-4
+	ciber_maps, masks = [np.zeros((len(ifield_list_full), cbps.dimx, cbps.dimy)) for x in range(2)]
+	all_ps_save_fpath, all_addstr_use = [], []
+
+
+	if randstr is None:
+
+		randstr = addstr+'_random'
+	
+	if compute_cl_theta:
+		if rad_offset is None:
+			rad_offset = -np.pi/n_rad_bins
+		theta_masks =  make_theta_masks(cbps.dimx, theta0=theta0, n_rad_bins=n_rad_bins, rad_offset=rad_offset, \
+										plot=True, ell_min_wedge=ell_min_wedge)
+
+	# if per_quadrant:
+	# 	t_ell_file = np.load(config.ciber_basepath+'data/transfer_function/t_ell_masked_wdgl_2500_n=2p5_wgrad_quadrant_nsims=1000.npz')
+	# else:
+	t_ell_file = np.load(config.ciber_basepath+'data/transfer_function/t_ell_est_nsims=100.npz')
+	t_ell = t_ell_file['t_ell_av']
+	
+
+	for idx, inst in enumerate(inst_list):
+		
+		all_cl_cross, all_cl_gal, all_clerr_cross, all_clerr_gal = [[] for x in range(4)]
+
+		
+		config_dict, pscb_dict, float_param_dict, fpath_dict = return_default_cbps_dicts()
+		fpath_dict, list_of_dirpaths, base_path, trilegal_base_path = set_up_filepaths_cbps(fpath_dict, inst, 'test', '112022',\
+																						datestr_trilegal='112022', data_type='observed', \
+																					   save_fpaths=True)
+		
+		# CIBER beam
+		bls_fpath = config.ciber_basepath+'data/fluctuation_data/TM'+str(inst)+'/beam_correction/bl_est_postage_stamps_TM'+str(inst)+'_081121.npz'
+		B_ells = np.load(bls_fpath)['B_ells_post']
+		
+		bandstr = bandstr_dict[inst]
+		
+		if masking_maglim_list is None:
+			masking_maglim = masking_maglim_dict[inst]
+		else:
+			masking_maglim = masking_maglim_list[idx]
+		
+
+
+		# gal_densities, noise_base_path = load_delta_g_maps(catname, inst, addstr)
+		gal_counts, _, noise_base_path = load_delta_g_maps(catname, inst, addstr)
+
+		if subtract_randoms:
+			rand_counts, _, _ = load_delta_g_maps(catname, inst, randstr)
+
+		if mask_tail_list is not None:
+			mask_tail = mask_tail_list[idx]
+		else:
+			mask_tail = 'maglim_'+bandstr+'_Vega_'+str(masking_maglim)+'_111323_ukdebias'
+
+
+		print('Loading from mask tail = ', mask_tail)
+
+		dc_template = cbps.load_dark_current_template(inst, verbose=True, inplace=False)
+
+		# if catname=='WISE':
+
+		# 	wise_masks = np.load('data/unWISE_coadds/unwise_masks/ciber_regrid_wise_bitmasks_all_TM'+str(inst)+'.npz')['wise_mask_regrid']
+		
+		for fieldidx, ifield in enumerate(ifield_list_full):
+			flight_im = cbps.load_flight_image(ifield, inst, inplace=False)
+			flight_im *= cbps.cal_facs[inst]
+			flight_im -= dc_template*cbps.cal_facs[inst]
+			mask_fpath = fpath_dict['mask_base_path']+'/'+mask_tail+'/joint_mask_ifield'+str(ifield)+'_inst'+str(inst)+'_observed_'+mask_tail+'.fits'
+			mask = fits.open(mask_fpath)[1].data   
+
+			if catname=='HSC':
+				
+				# hscmask = np.load('data/20250731_manualmasks_hsc_swire/TM'+str(inst)+'/hsc_mask_TM'+str(inst)+'_073125.npz')['hscmask']
+				# mask *= hscmask
+
+				if inst==1:
+					mask[-120:, -250:] = 0.
+					mask[:120, -250:] = 0.
+				elif inst==2:
+					mask[:250, :120] = 0.
+					mask[:250, -120:] = 0. 
+
+			# if catname=='WISE':
+			# 	print('Multiplying by WISE bit mask')
+			# 	mask *= wise_masks[fieldidx]
+
+			sigclip = iter_sigma_clip_mask(flight_im, sig=clip_sigma, nitermax=nitermax, mask=mask)
+
+			mask *= sigclip
+			
+			ciber_maps[fieldidx] = flight_im
+			masks[fieldidx] = mask
+			
+			
+		if per_quadrant:
+			processed_ciber_maps, ff_estimates, masks = process_ciber_maps_perquad(cbps, ifield_list_full, inst, ciber_maps, masks, clip_sigma=clip_sigma,\
+																		 nitermax=nitermax)
+		else:
+			
+			_, stack_masks = stack_masks_ffest(masks, 1)
+			masks *= stack_masks
+			
+			mean_norms = [cbps.zl_levels_ciber_fields[inst][cbps.ciber_field_dict[ifield]] for ifield in ifield_list_full]
+			ff_weights = cbps.compute_ff_weights(inst, mean_norms, ifield_list_full, photon_noise=True)
+			
+			print('ff weights:', ff_weights)
+			print('fcsub:', fc_sub, fc_sub_quad_offset, quadoff_grad)
+			
+			processed_ciber_maps, ff_estimates, final_planes, stack_masks, all_coeffs, all_sub_comp = iterative_gradient_ff_solve(ciber_maps, niter=1, masks=masks, weights_ff=ff_weights, \
+																	ff_stack_min=1, plot=False, \
+																	fc_sub=fc_sub, fc_sub_quad_offset=fc_sub_quad_offset, fc_sub_n_terms=fc_sub_n_terms, \
+																	return_subcomp=True, quadoff_grad=quadoff_grad) # masks already accounting for ff_stack_min previously
+
+			
+
+		for fidx, ifield in enumerate(ifield_list_use):
+			
+			fieldidx = fieldidx_list_use[fidx]
+			
+			if fc_sub:
+				mkk_type = 'quadoff_grad_fcsub_order'+str(fc_sub_n_terms)+'_estimate'
+				Mkk = fits.open(config.ciber_basepath+'data/fluctuation_data/TM'+str(inst)+'/mkk/'+mask_tail+'/mkk_'+mkk_type+'_ifield'+str(ifield)+'_observed_'+mask_tail+'.fits')['Mkk_'+str(ifield)].data 
+				truncated_mkk_matrix, inv_Mkk_truncated = truncate_invert_mkkmat(Mkk)
+
+			else:
+				if quadoff_grad:
+					mkk_type = 'quadoff_grad'
+				else:
+					mkk_type = 'maskonly'
+
+				mkkonly_savepath = config.ciber_basepath+'data/fluctuation_data/TM'+str(inst)+'/mkk/'+mask_tail+'/mkk_'+mkk_type+'_estimate_ifield'+str(ifield)+'_observed_'+mask_tail+'.fits'
+				
+				# mkk for CIBER + HSC mask
+				# if catname=='HSC':
+					# mkkonly_savepath.replace('.fits', '_hsc.fits')
+
+				inv_Mkk = fits.open(mkkonly_savepath)['inv_Mkk_'+str(ifield)].data
+
+			gal_map = gal_counts['ifield'+str(ifield)].data.transpose()
+
+			if gal_downgrade_fac is not None:
+				gal_map_shape = gal_map.shape
+				gal_map = downgrade_map_resolution(gal_map, gal_downgrade_fac)
+				gal_map = upscale_map_from_downgraded(gal_map, gal_map_shape, gal_downgrade_fac)
+
+			if plot:
+				plot_map(processed_ciber_maps[fieldidx]*masks[fieldidx], figsize=(6, 6))
+				plot_map(gal_map*masks[fieldidx], figsize=(6, 6), title='galaxy map')
+
+
+
+			if subtract_randoms:
+				print('Subtracting randoms...')
+				rand_map = rand_counts['ifield'+str(ifield)].data.transpose()
+
+				rand_map = downgrade_map_resolution(rand_map, rand_downgrade_fac)
+				rand_map = upscale_map_from_downgraded(rand_map, (1024, 1024), rand_downgrade_fac)
+
+				# rand_map = gaussian_filter(rand_map.astype(float), sigma=10)
+
+				gal_sum = gal_map[masks[fieldidx]!=0].sum()
+				rand_sum = rand_map[masks[fieldidx]!=0].sum()
+				scale = gal_sum / rand_sum
+
+				print('scale is ', scale)
+
+				plot_map(scale*rand_map, figsize=(6, 6), title='alpha*rand_map')
+
+				# Subtract scaled randoms from galaxy counts
+
+				masked_gal_map = np.zeros_like(gal_map, dtype=float)
+				masked_gal_map[masks[fieldidx]!=0] = gal_map[masks[fieldidx]!=0] - scale * rand_map[masks[fieldidx]!=0]
+				masked_gal_map /= np.mean(scale * rand_map[masks[fieldidx]!=0])
+
+
+				# masked_gal_map, B_ell_smooth = compute
+
+			else:
+				print('not subtracting randoms...')
+				masked_gal_map = gal_map*masks[fieldidx] # gal_densities fits file is actually galaxy counts
+				meandens = np.mean(masked_gal_map[masks[fieldidx]!= 0])
+
+				masked_gal_map[masks[fieldidx]!= 0] -= meandens
+				masked_gal_map[masks[fieldidx]!= 0] /= meandens   
+
+			masked_gal_map *= masks[fieldidx]
+
+			if plot:
+				plt.figure()
+				plt.hist((masked_gal_map*masks[fieldidx]).ravel(), bins=50)
+				plt.yscale('log')
+				plt.xlabel('$\\delta_g$', fontsize=14)
+				plt.show()
+				plot_map(masked_gal_map, figsize=(6, 6), title='gal before filtering, CIBER resolution')
+				plot_map(gaussian_filter(masked_gal_map, 2), figsize=(6,6), title='gal before filtering')
+
+			# gradient filter for galaxies
+			dot1, X, mask_rav = precomp_filter_general(cbps.dimx, cbps.dimy, mask=masks[fieldidx], gradient_filter=True, quadoff_grad=False, fc_sub=False, fc_sub_quad_offset=False, fc_sub_n_terms=fc_sub_n_terms, fc_sub_with_gradient=False)
+			theta, filter_comp = apply_filter_to_map_precomp(masked_gal_map, dot1, X, mask_rav=mask_rav)
+			masked_gal_map -= filter_comp
+			masked_gal_map *= masks[fieldidx]
+
+			if plot:
+				plot_map(gaussian_filter(masked_gal_map*masks[fieldidx], 1), figsize=(6,6), title='gal after filtering')
+
+			masked_ciber_map = processed_ciber_maps[fieldidx]*masks[fieldidx]
+			masked_ciber_map[masks[fieldidx]!= 0] -= np.mean(masked_ciber_map[masks[fieldidx]!= 0])
+
+			if plot:
+				plot_map(masked_ciber_map, figsize=(6,6), cmap='bwr', title='masked ciber mask after mean subtraction')
+				plot_map(masked_gal_map, figsize=(6,6), cmap='bwr')
+				
+			if estimate_ciber_noise_gal:
+				nl_save_fpath, lb, all_nl1ds = estimate_ciber_noise_cross_gal(cbps, inst, ifield, catname, masked_gal_map, mask, \
+																			 include_ff_errors=include_ff_errors, add_str=addstr, plot=False, \
+																			 nsims=nsims, n_split=n_split, observed_run_name=observed_run_name)
+			else:
+				nl_save_fpath = noise_base_path+'nl1ds_TM'+str(inst)+'_ifield'+str(ifield)+'_ciber_noise'
+				if addstr is not None:
+					nl_save_fpath += '_'+addstr
+
+				nl_save_fpath += '.npz'
+				all_nl1ds = np.load(nl_save_fpath)['all_nl1ds_cross_gal']
+				
+			if pscb_dict['compute_cl_theta'] and pscb_dict['cut_cl_theta']:
+				weights = np.ones_like(masked_ciber_map)
+				for which_exclude in [0, n_rad_bins//2]:
+					weights[theta_masks[which_exclude]==1] = 0.
+			else:
+				weights = np.ones_like(masked_ciber_map)
+
+
+
+
+			lb, clproc, clerr_raw = get_power_spec(masked_ciber_map, map_b=masked_gal_map, lbinedges=cbps.Mkk_obj.binl, lbins=cbps.Mkk_obj.midbin_ell, weights=weights)
+			lb, clproc_gal, clerr_raw_gal = get_power_spec(masked_gal_map, lbinedges=cbps.Mkk_obj.binl, lbins=cbps.Mkk_obj.midbin_ell, weights=weights)
+
+			if fc_sub and fc_sub_n_terms==2:
+				clproc[2:] = np.dot(inv_Mkk_truncated.transpose(), clproc[2:])
+				clproc_gal[2:] = np.dot(inv_Mkk_truncated.transpose(), clproc_gal[2:])
+			else:
+				clproc = np.dot(inv_Mkk.transpose(), clproc)
+				clproc_gal = np.dot(inv_Mkk.transpose(), clproc_gal)
+
+			
+			if apply_pixel_corr:
+				pix_res_arcsec = 7. 
+				if gal_downgrade_fac is not None:
+					pix_res_arcsec *= gal_downgrade_fac
+				wp_ell = get_pixel_window_function(lb, pix_res_arcsec)
+
+				plt.figure()
+				plt.plot(lb, wp_ell)
+				plt.yscale('log')
+				plt.xscale('log')
+				plt.xlabel('$\\ell$', fontsize=14)
+				plt.ylabel('$W_p(\\ell)', fontsize=14)
+				plt.grid(alpha=0.3)
+				plt.show()
+
+				clproc /= np.sqrt(wp_ell)
+				clproc_gal /= wp_ell
+
+
+			clproc /= B_ells[fieldidx]			
+			clerr_raw /= B_ells[fieldidx]
+
+			std_nl1ds = np.std(all_nl1ds, axis=0)
+			std_nl1ds /= B_ells[fieldidx]
+	
+			all_cl_gal.append(clproc_gal)
+			all_clerr_gal.append(clerr_raw_gal)
+			
+			all_cl_cross.append(clproc)
+			all_clerr_cross.append(std_nl1ds)
+	
+		all_cl_cross, all_clerr_cross = np.array(all_cl_cross), np.array(all_clerr_cross)
+		all_cl_gal, all_clerr_gal = np.array(all_cl_gal), np.array(all_clerr_gal)
+		
+		if save:
+
+			if subtract_randoms:
+				addstr_save = addstr+'_wrandsub'
+			else:
+				addstr_save = addstr
+
+			if maskstr is not None:
+				addstr_save += '_'+maskstr
+
+			if include_ff_errors:
+				addstr_save += '_wFFerr'
+
+			if tailstr_save is not None:
+				addstr_save += '_'+tailstr_save
+
+			ps_save_fpath = save_ciber_gal_ps(inst, ifield_list_use, catname, lb, all_cl_gal, all_clerr_gal, all_cl_cross, all_clerr_cross, \
+							  masking_maglim=masking_maglim, addstr=addstr_save)
+		
+			all_ps_save_fpath.append(ps_save_fpath)
+			all_addstr_use.append(addstr_save)
+			
+	if save:  
+		return all_ps_save_fpath, all_addstr_use
 
 
 def ciber_difference_spectrum(cbps, fpath_dict, config_dict, inst, ifieldA, ifieldB, mask_tail, masking_maglim, mask=None, sigma_clip=False, nsig=5, \
-							 per_quadrant=False):
-	
-	if inst==1:
-		masking_maglim_ff = max(17.5, masking_maglim)
-	else:
-		masking_maglim_ff = max(17.0, masking_maglim)
-	
+							 per_quadrant=False, fc_sub=True, fc_sub_quad_offset=True, fc_sub_n_terms=2, fc_sub_with_gradient=True, \
+							 n_sims_noise=500, n_split_noise=10):
+
+	maglim_ff_dict = dict({1:17.5, 2:17.0})
+	masking_maglim_ff = max(maglim_ff_dict[inst], masking_maglim)
+
 	fieldidxA, fieldidxB = ifieldA-4, ifieldB-4
-	
-	read_noise_models = cbps.grab_noise_model_set([ifieldA, ifieldB], inst, field_set_shape=((2, cbps.dimx, cbps.dimy)), noise_model_base_path=fpath_dict['read_noise_modl_base_path'], noise_modl_type=config_dict['noise_modl_type'])
-	
+	read_noise_models = cbps.grab_noise_model_set([ifieldA, ifieldB], inst, noise_model_base_path=fpath_dict['read_noise_modl_base_path'], noise_modl_type=config_dict['noise_modl_type'])
+
 	dc_template = cbps.load_dark_current_template(inst, verbose=True, inplace=False)
-	
+
 	mask_save_fpath = config.ciber_basepath+'data/fluctuation_data/TM'+str(inst)+'/masks/'+mask_tail+'/joint_mask_ifield'+str(ifieldA)+'_ifield'+str(ifieldB)+'_inst'+str(inst)+'_observed_'+mask_tail+'.fits'
 	mask = fits.open(mask_save_fpath)['joint_mask_'+str(ifieldA)].data
-	
-	plot_map(mask, title='mask')
 
-	mkkonly_savepath = config.ciber_basepath+'data/fluctuation_data/TM'+str(inst)+'/mkk/'+mask_tail+'/mkk_maskonly_estimate_ifield'+str(ifieldA)+'_ifield'+str(ifieldB)+'_observed_'+mask_tail+'.fits'
-	inv_Mkk = fits.open(mkkonly_savepath)['inv_Mkk_'+str(ifieldA)].data
+	plot_map(mask, title='mask')
 	
+	if fc_sub:
+		mkk_type = 'quadoff_grad_fcsub_order'+str(fc_sub_n_terms)
+		mkk_fpath = config.ciber_basepath+'data/fluctuation_data/TM'+str(inst)+'/mkk/'+mask_tail+'/mkk_'+mkk_type+'_ifield'+str(ifieldA)+'_ifield'+str(ifieldB)+'_observed_'+mask_tail+'.fits'
+		
+		Mkk = fits.open(mkk_fpath)['Mkk_'+str(ifieldA)].data
+		
+		inv_Mkk = np.zeros_like(Mkk)
+		inv_Mkk = np.linalg.inv(Mkk[2:,2:])
+		
+		t_ell_av = None
+		
+	else:
+		mkkonly_savepath = config.ciber_basepath+'data/fluctuation_data/TM'+str(inst)+'/mkk/'+mask_tail+'/mkk_maskonly_estimate_ifield'+str(ifieldA)+'_ifield'+str(ifieldB)+'_observed_'+mask_tail+'.fits'
+		inv_Mkk = fits.open(mkkonly_savepath)['inv_Mkk_'+str(ifieldA)].data
+		
+		if per_quadrant:
+			t_ell_fpath = config.ciber_basepath+'data/transfer_function/t_ell_masked_wdgl_2500_n=2p5_wgrad_quadrant_nsims=1000.npz'
+		else:
+			t_ell_fpath = config.ciber_basepath+'data/transfer_function/t_ell_est_nsims=100.npz'
+
+		t_ell_av = np.load(t_ell_fpath)['t_ell_av']
+		print('t_ell = ', t_ell_av)
+
+
 	# load beams and average Bootes fields
 	bls_fpath = config.ciber_basepath+'data/fluctuation_data/TM'+str(inst)+'/beam_correction/bl_est_postage_stamps_TM'+str(inst)+'_081121.npz'
 
 	B_ells = np.load(bls_fpath)['B_ells_post']
 	B_ell_eff = np.sqrt(B_ells[fieldidxA]*B_ells[fieldidxB])
-	
-	
+
+
 	ptsrcfile = fits.open(config.ciber_basepath+'data/fluctuation_data/TM'+str(inst)+'/point_src_maps_for_ffnoise/point_src_maps'+'_TM'+str(inst)+'_mmin='+str(masking_maglim)+'_mmax='+str(masking_maglim_ff)+'_merge.fits', overwrite=True)
 
 	max_vals_ptsrc_A = ptsrcfile['ifield'+str(ifieldA)].header['maxval']
 	max_vals_ptsrc_B = ptsrcfile['ifield'+str(ifieldB)].header['maxval']
-		
 	max_vals_ptsrc = max(max_vals_ptsrc_A, max_vals_ptsrc_B)
-	 
-	print('max val ptsrc:', max_vals_ptsrc)
-	
-	if per_quadrant:
-		t_ell_fpath = config.ciber_basepath+'data/transfer_function/t_ell_masked_wdgl_2500_n=2p5_wgrad_quadrant_nsims=1000.npz'
-	else:
-		t_ell_fpath = config.ciber_basepath+'data/transfer_function/t_ell_est_nsims=100.npz'
-		
-	t_ell_av = np.load(t_ell_fpath)['t_ell_av']
-	print('t_ell = ', t_ell_av)
 
-	
+	print('max val ptsrc:', max_vals_ptsrc)
+
+
 	for fieldidx, ifield in enumerate([ifieldA, ifieldB]):
 
 		cbps.load_flight_image(ifield, inst, verbose=True, ytmap=False) # default loads aducorr maps
@@ -129,65 +632,89 @@ def ciber_difference_spectrum(cbps, fpath_dict, config_dict, inst, ifieldA, ifie
 			observed_im_A = observed_im
 		if ifield==ifieldB:
 			observed_im_B = observed_im   
-	
-	
+
+
 	mean_sb_A = np.mean((observed_im_A*mask)[mask != 0])
 	mean_sb_B = np.mean((observed_im_B*mask)[mask != 0])
-	
+
 	shot_sigma_sb_zl_perfA = cbps.compute_shot_sigma_map(inst, mean_sb_A*np.ones_like(observed_im_A), nfr=cbps.field_nfrs[ifieldA])
 	shot_sigma_sb_zl_perfB = cbps.compute_shot_sigma_map(inst, mean_sb_B*np.ones_like(observed_im_B), nfr=cbps.field_nfrs[ifieldB])
 
 	mean_shot_sigma_sb = 0.5*(shot_sigma_sb_zl_perfA+shot_sigma_sb_zl_perfB)
-	
+
 	plot_map(mean_shot_sigma_sb, title='shot sigma sb')
-	
+
 	difference_im = observed_im_A - observed_im_B
-	
+
 	if sigma_clip:
 		mask = iter_sigma_clip_mask(difference_im, sig=nsig, nitermax=5, mask=mask)
 	
-	if inst==2:
-		corner_mask = np.ones_like(mask)
-		corner_mask[900:, 0:200] = 0.
-		mask *= corner_mask
 		
+	if inst==2:
+		mask = add_bootes_corner_mask(mask)
+
 	plot_map(difference_im*mask)
 	
-	meansub = np.mean(difference_im[mask!=0])
 	
+	dot1, X, mask_rav = precomp_filter_general(cbps.dimx, cbps.dimy, mask=mask, fc_sub=fc_sub, fc_sub_quad_offset=fc_sub_quad_offset, \
+						  fc_sub_n_terms=fc_sub_n_terms, fc_sub_with_gradient=fc_sub_with_gradient)
+	
+	
+	theta, filter_comp = apply_filter_to_map_precomp(difference_im, dot1, X, mask_rav=mask_rav)
+	
+	difference_im -= mask*filter_comp
+
+	meansub = np.mean(difference_im[mask!=0])
+
 	masked_difference = difference_im*mask
 	masked_difference[mask != 0] -= np.mean(masked_difference[mask != 0]) 
-	
+
 	lb, cl, clerr = get_power_spec(masked_difference, lbinedges=cbps.Mkk_obj.binl, lbins=cbps.Mkk_obj.midbin_ell)
-	
+
 	pf = lb*(lb+1)/(2*np.pi)
 	plt.figure()
 	plt.errorbar(lb, pf*cl, yerr=pf*clerr, fmt='o')
 	plt.xscale('log')
 	plt.yscale('log')
 	plt.show()
-	
-	
-	fourier_weights_diff, \
-			mean_nl2d_diff, nl1ds_diff = cbps.estimate_noise_power_spectrum(nsims=500, n_split=10, inst=inst, ifield=ifieldA, field_nfr=cbps.field_nfrs[ifieldA], mask=mask, \
-									  noise_model=read_noise_models[1], difference=True, shot_sigma_sb=mean_shot_sigma_sb, compute_1d_cl=True)
-	
+
+
+	# fourier_weights_diff, \
+	# 		mean_nl2d_diff, nl1ds_diff = cbps.estimate_noise_power_spectrum(nsims=500, n_split=10, inst=inst, ifield=ifieldA, field_nfr=cbps.field_nfrs[ifieldA], mask=mask, \
+	# 								  noise_model=read_noise_models[1], difference=True, shot_sigma_sb=mean_shot_sigma_sb, compute_1d_cl=True)
+
+	noise_bias_dict = cbps.estimate_noise_power_spectrum(nsims=n_sims_noise, n_split=n_split_noise, inst=inst, ifield=ifieldA, field_nfr=cbps.field_nfrs[ifieldA], mask=mask, \
+									  noise_model=read_noise_models[1], apply_filtering=True, difference=True, shot_sigma_sb=mean_shot_sigma_sb, compute_1d_cl=True, \
+														fc_sub=fc_sub, fc_sub_quad_offset=fc_sub_quad_offset, fc_sub_n_terms=fc_sub_n_terms, with_gradient=fc_sub_with_gradient)
+
+	fourier_weights_diff = noise_bias_dict['fourier_weights_diff']
+	mean_nl2d_diff = noise_bias_dict['mean_nl2d_diff']
+	nl1ds_diff = noise_bias_dict['nl1ds_diff']
+
 	plot_map(fourier_weights_diff, title='fourier weights')
 	plot_map(mean_nl2d_diff, title='nl2d')
-	
-	lb, N_ell_est, N_ell_err = cbps.compute_noise_power_spectrum(inst, noise_Cl2D=mean_nl2d_diff.copy(), inplace=False, apply_FW=True, weights=fourier_weights_diff)
 
-	lb, processed_ps_nf, cl_proc_err, _ = cbps.compute_processed_power_spectrum(inst, apply_mask=True, \
+	nl_dict = cbps.compute_noise_power_spectrum(inst, noise_Cl2D=mean_nl2d_diff.copy(), inplace=False, apply_FW=True, weights=fourier_weights_diff)
+	# lb, N_ell_est, N_ell_err = cbps.compute_noise_power_spectrum(inst, noise_Cl2D=mean_nl2d_diff.copy(), inplace=False, apply_FW=True, weights=fourier_weights_diff)
+
+	lb = nl_dict['lbins']
+	N_ell_est = nl_dict['Cl_noise']
+	N_ell_err = nl_dict['Clerr']
+
+
+	lb, processed_ps_nf, cl_proc_err, _, _ = cbps.compute_processed_power_spectrum(inst, apply_mask=True, \
 								 mask=mask, image=masked_difference, convert_adufr_sb=False, \
 								mkk_correct=True, inv_Mkk=inv_Mkk, beam_correct=True, B_ell=B_ell_eff, \
 								apply_FW=True, verbose=True, noise_debias=True, \
-							 FF_correct=False, FW_image=fourier_weights_diff, FF_image=None,\
-								 gradient_filter=True, save_intermediate_cls=False, N_ell=N_ell_est, \
-								 per_quadrant=per_quadrant, max_val_after_sub=max_vals_ptsrc)
-	
-	processed_ps_nf /= t_ell_av
-	cl_proc_err /= t_ell_av
-	
+							 FF_correct=False, FW_image=fourier_weights_diff, \
+								 gradient_filter=False, save_intermediate_cls=False, N_ell=N_ell_est, \
+								 per_quadrant=per_quadrant, max_val_after_sub=max_vals_ptsrc, \
+																			   fc_sub=fc_sub)
+
+	if t_ell_av is not None:
+		processed_ps_nf /= t_ell_av
+		cl_proc_err /= t_ell_av
+
 	plt.figure()
 	plt.errorbar(lb, pf*processed_ps_nf/2., yerr=pf*cl_proc_err, fmt='o')
 	plt.plot(lb, pf*N_ell_est/2., color='r', linestyle='dashed')
@@ -198,9 +725,8 @@ def ciber_difference_spectrum(cbps, fpath_dict, config_dict, inst, ifieldA, ifie
 	plt.ylim(1e-2, 1e4)
 	plt.grid(alpha=0.5)
 	plt.show()
-	
-	return lb, processed_ps_nf, cl_proc_err, N_ell_est
 
+	return lb, processed_ps_nf, cl_proc_err, N_ell_est
 
 def ciber_difference_cross_spectrum(cbps, inst, cross_inst, ifieldA, ifieldB, mask_tail, masking_maglim, mask=None, sigma_clip=False, nsig=5, \
 								   per_quadrant=True):
@@ -402,7 +928,7 @@ def grab_t_ell(config_dict, fpath_dict, float_param_dict, pscb_dict):
 	if t_ell_fpath is not None:
 		t_ell_key = 't_ell_av'
 		print('Loading transfer function from ', fpath_dict['t_ell_fpath'])
-		t_ell_av = np.load(fpath_dict['t_ell_fpath'])[t_ell_key]
+		t_ell_av = np.load(t_ell_fpath)[t_ell_key]
 
 		if pscb_dict['compute_ps_per_quadrant']:
 			print('loading transfer function for single quadrant from ', fpath_dict['t_ell_fpath_quad'])
@@ -425,7 +951,11 @@ def load_proc_regrid_map(fpath_dict, float_param_dict, pscb_dict, regrid_mask_ta
 		obs_cross_fpath += '_conserve_flux'
 
 	if pscb_dict['fc_sub']:
-		obs_cross_fpath += '_fcsub_order'+str(float_param_dict['fc_sub_n_terms'])
+		if pscb_dict['fc_sub_quad_offset']:
+			obs_cross_fpath += '_quadoff_grad_fcsub_order'+str(float_param_dict['fc_sub_n_terms'])
+		else:
+			obs_cross_fpath += '_fcsub_order'+str(float_param_dict['fc_sub_n_terms'])
+		# obs_cross_fpath += '_quadoff_grad_fcsub_order'+str(float_param_dict['fc_sub_n_terms'])
 
 	obs_cross_fpath += '.fits'
 	obs_cross_file = fits.open(obs_cross_fpath)
@@ -435,7 +965,7 @@ def load_proc_regrid_map(fpath_dict, float_param_dict, pscb_dict, regrid_mask_ta
 
 	return obs_cross, obs_level_cross
 
-def load_mkk_fcsub(float_param_dict, mode_couple_base_dir, mkk_mask_tail, mkk_type, inst, ifield, cib_setidx=None):
+def load_mkk_fcsub(float_param_dict, mode_couple_base_dir, mkk_mask_tail, mkk_type, inst, ifield, cib_setidx=None, invert_spliced_matrix=False, compute_pinv=False):
 	print('opening fc sub with mask tail', mkk_mask_tail)
 	if cib_setidx is not None:
 		Mkk = fits.open(mode_couple_base_dir+'/'+mkk_mask_tail+'/mkk_'+mkk_type+'_ifield'+str(ifield)+'_inst'+str(inst)+'_simidx'+str(cib_setidx)+'_'+mkk_mask_tail+'.fits')['Mkk_'+str(ifield)].data 
@@ -443,7 +973,22 @@ def load_mkk_fcsub(float_param_dict, mode_couple_base_dir, mkk_mask_tail, mkk_ty
 		Mkk = fits.open(mode_couple_base_dir+'/'+mkk_mask_tail+'/mkk_'+mkk_type+'_ifield'+str(ifield)+'_observed_'+mkk_mask_tail+'.fits')['Mkk_'+str(ifield)].data 
 
 	if float_param_dict['fc_sub_n_terms']==2:
-		inv_Mkk_truncated = np.linalg.inv(Mkk[2:,2:])
+		if invert_spliced_matrix:
+			print('Splicing and inverting mkk matrix..')
+
+			truncated_mkk_matrix, inv_Mkk_truncated = truncate_invert_mkkmat(Mkk)
+		elif compute_pinv:
+			print('Computing pseudo-inverse, retaining original dimension..')
+
+			print('second row of Mkk is ', Mkk[:,1])
+			Mkk[:,1] = 0.
+			inv_Mkk_pinv = np.linalg.pinv(Mkk)
+			# inv_Mkk_pinv[0,0] = 0.
+
+			return inv_Mkk_pinv
+
+		else:
+			inv_Mkk_truncated = np.linalg.inv(Mkk[2:,2:])
 	elif float_param_dict['fc_sub_n_terms']==3:
 		inv_Mkk_truncated = np.linalg.inv(Mkk[4:,4:])
 	else:
@@ -553,22 +1098,24 @@ def return_default_cbps_dicts():
 	pscb_dict = dict({'ff_estimate_correct':True, 'apply_mask':True, 'with_inst_noise':True, 'with_photon_noise':True, 'apply_FW':True, 'generate_diffuse_realization':True, \
 					'add_ellm2_clus':False, 'apply_smooth_FF':True, 'compute_beam_correction':False, 'same_clus_levels':True, 'same_zl_levels':False, 'apply_zl_gradient':True, 'gradient_filter':False, \
 					'iterate_grad_ff':True ,'mkk_ffest_hybrid':True, 'apply_sum_fluc_image_mask':False, 'same_int':False, 'same_dgl':True, 'use_ff_weights':True, 'plot_ff_error':False, 'load_ptsrc_cib':True, \
-					'load_trilegal':True , 'subtract_subthresh_stars':False, 'ff_bias_correct':False, 'save_ff_ests':True, 'plot_maps':True, \
-					 'draw_cib_setidxs':False, 'aug_rotate':False, 'noise_debias':True, 'load_noise_bias':False, 'transfer_function_correct':True, 'compute_transfer_function':False,\
+					'load_trilegal':True , 'subtract_subthresh_stars':False, 'ff_bias_correct':False, 'save_ff_ests':True, \
+					 'draw_cib_setidxs':False, 'aug_rotate':False, 'noise_debias':True, 'load_noise_bias':False, 'transfer_function_correct':False, 'compute_transfer_function':False,\
 					  'save_intermediate_cls':True, 'verbose':False, 'show_plots':False, 'show_ps':True, 'save':True, 'bl_post':False, 'ff_sigma_clip':False, \
 					  'per_quadrant':False, 'use_dc_template':True, 'ff_estimate_cross':False, 'map_photon_noise':False, 'zl_photon_noise':True, \
 					  'compute_ps_per_quadrant':False, 'apply_wen_cluster_mask':False, 'low_responsivity_blob_mask':False, \
 					  'pt_src_ffnoise':False, 'shut_off_plots':False, 'max_val_clip':False, 'point_src_ffnoise':False, 'unsharp_mask':False, \
 					  'apply_tl_regrid':True, 'conserve_flux':False, 'quadoff_grad':False, 'load_cib_fferr':False, 'load_isl_fferr':False, \
-					  'save_fourier_planes':False, 'clip_clproc_premkk':False, 'read_noise_fw':False, 'diff_cl2d_fwclip':False, 'clip_outlier_norm_modes':False, \
-					  'fc_sub':False, 'fc_sub_quad_offset':True})
+					  'save_fourier_planes':False, 'clip_clproc_premkk':False, 'read_noise_fw':False, 'diff_cl2d_fwclip':True, 'clip_outlier_norm_modes':False, \
+					  'fc_sub':False, 'fc_sub_quad_offset':True, 'make_preprocess_file':False, 'estimate_cross_noise':False, 'invert_spliced_matrix':False, \
+					  'compute_mkk_pinv':False, 'compute_cl_theta':False, 'cut_cl_theta':False})
 
 	float_param_dict = dict({'ff_min':0.5, 'ff_max':2.0, 'clip_sigma':5,'clip_sigma_ff':5, 'ff_stack_min':1, 'nmc_ff':10, \
-					  'theta_mag':0.01, 'niter':5, 'dgl_scale_fac':5, 'smooth_sigma':5, 'indiv_ifield':6,\
+					  'theta_mag':0.01, 'niter':1, 'dgl_scale_fac':5, 'smooth_sigma':5, 'indiv_ifield':6,\
 					  'nfr_same':25, 'J_bright_Bl':11, 'J_faint_Bl':17.5, 'n_FW_sims':500, 'n_FW_split':10, \
-					  'ell_norm_blest':5000, 'n_realiz_t_ell':100, 'nitermax':5, 'n_cib_isl_sims':100, \
+					  'ell_norm_blest':5000, 'n_realiz_t_ell':100, 'nitermax':10, 'n_cib_isl_sims':100, \
 					  'unsharp_pct':95, 'unsharp_sigma':1.0, 'noise_modl_rescale_fac':None, 'interp_order':None, 'poly_order':1, 'fc_sub_n_terms':2, \
-					  'weight_power':1.0, 'remove_outlier_fac':None, 'diff_cl2d_clipthresh':5, 'clip_norm_thresh':5, 'ff_min_nr':0.5, 'ff_max_nr':1.8})
+					  'weight_power':1.0, 'remove_outlier_fac':None, 'diff_cl2d_clipthresh':5, 'clip_norm_thresh':5, 'ff_min_nr':0.5, 'ff_max_nr':1.8, \
+					  'n_rad_bins':8., 'rad_offset':-np.pi/8., 'ell_min_wedge':500})
 
 	fpath_dict = dict({'ciber_mock_fpath':config.ciber_basepath+'data/ciber_mocks/', \
 						'sim_test_fpath':config.ciber_basepath+'data/input_recovered_ps/sim_tests_030122/', \
@@ -585,8 +1132,55 @@ def return_default_cbps_dicts():
 	return config_dict, pscb_dict, float_param_dict, fpath_dict
 
 
+def generate_ff_error_realizations_simp(cbps, nmc_ff, inst, ifield_list, joint_masks, obs_levels, weights_ff, shot_sigma_sb_maps=None, read_noise_models=None):
+
+	maplist_shape = (len(ifield_list), cbps.dimx, cbps.dimy)
+	ff_realization_estimates = np.zeros((nmc_ff, len(ifield_list), cbps.dimx, cbps.dimy))
+	observed_ims_nofluc = np.zeros(maplist_shape)
+	bandstr_dict = dict({1:'J', 2:'H'})
+	bandstr = bandstr_dict[inst]
+
+	for ffidx in range(nmc_ff):
+
+		print('On set ', ffidx, 'of ', nmc_ff)
+		for fieldidx, ifield in enumerate(ifield_list):
+			zl_realiz = generate_zl_realization(obs_levels[fieldidx], False, dimx=cbps.dimx, dimy=cbps.dimy, theta_mag=None)
+
+
+			if shot_sigma_sb_maps is not None:
+				# this line below was a bug for a while, zl_perfield for observed is zero so it was adding zero photon noise to the realizations
+				zl_realiz += shot_sigma_sb_maps[fieldidx]*np.random.normal(0, 1, size=cbps.map_shape) # temp
+				observed_ims_nofluc[fieldidx] = zl_realiz
+
+			if read_noise_models is not None: # true for observed
+				read_noise_indiv, _ = cbps.noise_model_realization(inst, cbps.map_shape, read_noise_models[fieldidx], \
+										read_noise=True, photon_noise=False, chisq=False)
+
+				observed_ims_nofluc[fieldidx] += read_noise_indiv
+
+		for fieldidx, image in enumerate(observed_ims_nofluc):
+
+			stack_obs = list(observed_ims_nofluc.copy())                
+			del(stack_obs[fieldidx])
+
+			weights_ff_iter = None
+		
+			if weights_ff is not None:
+				weights_ff_iter = weights_ff[(np.arange(len(observed_ims_nofluc)) != fieldidx)]
+			
+			# if masks_ffest is not None:
+				# ff_estimate, _, ff_weights = compute_stack_ff_estimate(stack_obs, masks=masks_ffest[(np.arange(len(masks_ffest))!=imidx),:], weights=weights_ff_iter)
+
+			ff_estimate, _, ff_weights = compute_stack_ff_estimate(stack_obs, masks=masks[(np.arange(len(masks))!=fieldidx),:], weights=weights_ff_iter)
+			ff_realization_estimates[ffidx, fieldidx] = ff_estimate
+
+	return ff_realization_estimates
+
+
+
 def generate_ff_error_realizations(cbps, run_name, inst, ifield_list, joint_masks, simmaps_dc_all, shot_sigma_sb_zl, read_noise_models, weights_ff, \
-									fpath_dict, pscb_dict, float_param_dict, obs_levels, datestr='111323', datestr_trilegal='112022', read_noise_fw=False):
+									fpath_dict, pscb_dict, float_param_dict, obs_levels, datestr='111323', datestr_trilegal='112022', read_noise_fw=False, \
+									apply_zl_gradient=False, theta_mag=0.01, save=True, return_realiz=False):
 
 	maplist_shape = (len(ifield_list), cbps.dimx, cbps.dimy)
 	ff_realization_estimates = np.zeros(maplist_shape)
@@ -617,7 +1211,7 @@ def generate_ff_error_realizations(cbps, run_name, inst, ifield_list, joint_mask
 			isl_subthresh = fits.open(isl_dffs_fpath)
 
 		for fieldidx, ifield in enumerate(ifield_list):
-			zl_realiz = generate_zl_realization(obs_levels[fieldidx], False, dimx=cbps.dimx, dimy=cbps.dimy)
+			zl_realiz = generate_zl_realization(obs_levels[fieldidx], apply_zl_gradient, dimx=cbps.dimx, dimy=cbps.dimy, theta_mag=theta_mag)
 
 			if ptsrc_ff:
 				observed_ims_ptsrc[fieldidx] = zl_realiz
@@ -642,7 +1236,6 @@ def generate_ff_error_realizations(cbps, run_name, inst, ifield_list, joint_mask
 										read_noise=True, photon_noise=False, chisq=False)
 
 
-
 				if read_noise_fw and ffidx==0 and fieldidx==0:
 					plot_map(read_noise_indiv, title='read noise indiv ff error')
 				observed_ims_nofluc[fieldidx] += read_noise_indiv
@@ -663,7 +1256,9 @@ def generate_ff_error_realizations(cbps, run_name, inst, ifield_list, joint_mask
 
 				print('niter use is ', niter_use)
 				print('fitting per quadrant offsets and gradient over full array..')
-				print('poly order ', float_param_dict['poly_order'])
+				# print('poly order ', float_param_dict['poly_order'])
+				print('fc sub is ', pscb_dict['fc_sub'])
+				print('quadoff grad is ', pscb_dict['quadoff_grad'])
 				_, ff_realization_estimates, _, _, _, all_sub_comp = iterative_gradient_ff_solve(observed_ims_nofluc, niter=niter_use, masks=joint_masks, weights_ff=weights_ff, \
 																					ff_stack_min=float_param_dict['ff_stack_min'], quadoff_grad=pscb_dict['quadoff_grad'], order=float_param_dict['poly_order'], \
 																					fc_sub=pscb_dict['fc_sub'], fc_sub_quad_offset=pscb_dict['fc_sub_quad_offset'], fc_sub_n_terms=float_param_dict['fc_sub_n_terms'], \
@@ -711,17 +1306,19 @@ def generate_ff_error_realizations(cbps, run_name, inst, ifield_list, joint_mask
 				_, ff_realization_estimates, _, _, _ = iterative_gradient_ff_solve(observed_ims_nofluc, niter=float_param_dict['niter'], masks=joint_masks, weights_ff=weights_ff, \
 																														ff_stack_min=float_param_dict['ff_stack_min']) # masks already accounting for ff_stack_min previously
 
-		if read_noise_fw:
-			np.savez(fpath_dict['ff_est_dirpath']+'/'+run_name+'/ff_realization_estimate_ffidx'+str(ffidx)+'_readnoiseonly.npz', \
-					ff_realization_estimates = ff_realization_estimates)
-		else:
-			np.savez(fpath_dict['ff_est_dirpath']+'/'+run_name+'/ff_realization_estimate_ffidx'+str(ffidx)+'.npz', \
-					ff_realization_estimates = ff_realization_estimates)
+		if save:
+			if read_noise_fw:
+				np.savez(fpath_dict['ff_est_dirpath']+'/'+run_name+'/ff_realization_estimate_ffidx'+str(ffidx)+'_readnoiseonly.npz', \
+						ff_realization_estimates = ff_realization_estimates)
+			else:
+				np.savez(fpath_dict['ff_est_dirpath']+'/'+run_name+'/ff_realization_estimate_ffidx'+str(ffidx)+'.npz', \
+						ff_realization_estimates = ff_realization_estimates)
 
-		if ptsrc_ff:
-			print('Saving point source FF error realizations..')
-			np.savez(fpath_dict['ff_est_dirpath']+'/'+run_name+'/ff_realization_ptsrc_estimate_ffidx'+str(ffidx)+'.npz', \
-					ff_realization_estimates = ff_realization_ptsrc_estimates)
+			if ptsrc_ff:
+				print('Saving point source FF error realizations..')
+				np.savez(fpath_dict['ff_est_dirpath']+'/'+run_name+'/ff_realization_ptsrc_estimate_ffidx'+str(ffidx)+'.npz', \
+						ff_realization_estimates = ff_realization_ptsrc_estimates)
+
 
 
 
@@ -787,7 +1384,7 @@ def run_cbps_pipeline(cbps, inst, nsims, run_name, ifield_list = None, \
 		for fieldidx, ifield in enumerate(ifield_list):
 
 			point_src_comps_for_ff[fieldidx] = cib_subthresh['CIB_'+bandstr+'_'+str(ifield)].data + isl_subthresh['TRILEGAL_'+bandstr+'_'+str(ifield)].data
-			if not pscb_dict['shut_off_plots']:
+			if pscb_dict['show_plots']:
 				plot_map(point_src_comps_for_ff[fieldidx], title='ifield '+str(ifield)+' point src map')
 
 
@@ -900,6 +1497,9 @@ def run_cbps_pipeline(cbps, inst, nsims, run_name, ifield_list = None, \
 
 	inv_Mkks, joint_maskos, joint_maskos_ffest = None, None, None
 
+	l2d = get_l2d(cbps.dimx, cbps.dimy, cbps.pixsize)
+
+
 	final_masked_images = np.zeros(field_set_shape)
 	ps2d_unweighted_perfield = np.zeros(field_set_shape)
 
@@ -925,12 +1525,21 @@ def run_cbps_pipeline(cbps, inst, nsims, run_name, ifield_list = None, \
 		smooth_ff = fits.open(fpath_dict['ff_smooth_fpath'])[1].data
 		plot_map(smooth_ff, title='flat field, smoothed with $\\sigma=$'+str(float_param_dict['smooth_sigma']))
 
+
+	if pscb_dict['compute_cl_theta']:
+
+		theta_masks =  make_theta_masks(cbps.dimx, n_rad_bins=float_param_dict['n_rad_bins'], rad_offset=float_param_dict['rad_offset'], \
+										plot=False, ell_min_wedge=float_param_dict['ell_min_wedge'])
+	else:
+		theta_masks = None
+		N_ell_theta = None
+
 	read_noise_models = [None for x in ifield_noise_list]
 	read_noise_models_per_quad = None
 	if pscb_dict['with_inst_noise']:
 		read_noise_models = cbps.grab_noise_model_set(ifield_noise_list, inst, noise_model_base_path=fpath_dict['read_noise_modl_base_path'], noise_modl_type=config_dict['noise_modl_type'])
 		
-		plot_map(read_noise_models[0], title='read noise model')
+		# plot_map(read_noise_models[0], title='read noise model')
 		if float_param_dict['noise_modl_rescale_fac'] is not None:
 			print('Artificially scaling read noise models by ', float_param_dict['noise_modl_rescale_fac'])
 			read_noise_models *= float_param_dict['noise_modl_rescale_fac']
@@ -980,6 +1589,9 @@ def run_cbps_pipeline(cbps, inst, nsims, run_name, ifield_list = None, \
 		cib_setidx = i%float_param_dict['n_cib_isl_sims']
 		print('cib setidx = ', cib_setidx)
 
+		if pscb_dict['make_preprocess_file']:
+			unmasked_maps_ex, masked_maps_ex, ff_est_ex, filt_comp_ex, proc_map_ex = [[] for x in range(5)]
+
 		if data_type=='mock':
 
 			trilegal_fpath, test_set_fpath = grab_sim_fpaths(inst, pscb_dict['load_trilegal'], pscb_dict['load_ptsrc_cib'], datestr_trilegal, datestr, cib_setidx, fpath_dict['ciber_mock_fpath'], fpath_dict)
@@ -997,14 +1609,18 @@ def run_cbps_pipeline(cbps, inst, nsims, run_name, ifield_list = None, \
 		else:
 
 			if pscb_dict['use_dc_template']:
+				print('Loading DC template..')
 				dc_template = cbps.load_dark_current_template(inst, verbose=True, inplace=False)
-				if pscb_dict['show_plots'] and not pscb_dict['shut_off_plots']:
-					plot_map(dc_template, title='DC template TM'+str(inst))
+				# if pscb_dict['show_plots'] and not pscb_dict['shut_off_plots']:
+				# 	plot_map(dc_template, title='DC template TM'+str(inst))
 
 			for fieldidx, ifield in enumerate(ifield_list):
 
 				cbps.load_flight_image(ifield, inst, verbose=True, ytmap=False) # default loads aducorr maps
 				observed_ims[fieldidx] = cbps.image*cbps.cal_facs[inst]
+
+				if pscb_dict['make_preprocess_file']:
+					unmasked_maps_ex.append(observed_ims[fieldidx])
 
 				if pscb_dict['use_dc_template']:
 					print('subtracting dark current template from image')
@@ -1036,7 +1652,7 @@ def run_cbps_pipeline(cbps, inst, nsims, run_name, ifield_list = None, \
 					observed_ims_cross[fieldidx] = regrid_map
 					fourier_weights_cross = None
 
-				if pscb_dict['plot_maps'] and not pscb_dict['shut_off_plots']:
+				if pscb_dict['show_plots'] and not pscb_dict['shut_off_plots']:
 					plot_map(observed_ims[fieldidx], title='observed ims ifield = '+str(ifield))
 					
 					if config_dict['ps_type']=='cross':
@@ -1063,6 +1679,9 @@ def run_cbps_pipeline(cbps, inst, nsims, run_name, ifield_list = None, \
 																 apply_wen_cluster_mask=pscb_dict['apply_wen_cluster_mask'], \
 																 corner_mask=True)
 
+					if pscb_dict['make_preprocess_file']:
+						masked_maps_ex.append(observed_ims[fieldidx]*joint_maskos[fieldidx])
+
 					if ifield==4:
 						print('line 968 sum of mask 0 is ', np.sum(joint_maskos[fieldidx]))
 
@@ -1077,7 +1696,17 @@ def run_cbps_pipeline(cbps, inst, nsims, run_name, ifield_list = None, \
 							print('Applying sigma clip to uncorrected flight image..')
 							sigclip = iter_sigma_clip_mask(observed_ims[fieldidx], sig=float_param_dict['clip_sigma'], nitermax=float_param_dict['nitermax'], mask=joint_maskos[fieldidx].astype(int))
 							joint_maskos[fieldidx] *= sigclip
-							plot_map(observed_ims[fieldidx]*joint_maskos[fieldidx], cmap='Greys_r', title='masked image line 699 , ifield '+str(ifield))
+							if pscb_dict['show_plots']:
+
+								# maskobs_smooth = gaussian_filter(joint_maskos[fieldidx]*observed_ims[fieldidx], sigma=2)
+								# maskobs_smooth[joint_maskos[fieldidx]==1]-=np.mean(maskobs_smooth[joint_maskos[fieldidx]==1])
+
+								# # maskobs_smooth[maskobs_smooth==0] = np.nan
+
+								# plot_map(maskobs_smooth, title='Smoothed map before FF correction ('+cbps.ciber_field_dict[ifield_list[fieldidx]]+')', hipct=99.999, lopct=0., cmap='jet')
+
+
+								plot_map(observed_ims[fieldidx]*joint_maskos[fieldidx], cmap='Greys_r', title='masked image line 699 , ifield '+str(ifield))
 
 						if ifield==4:
 							print('line 986 sum of joint masko  0 is ', np.sum(joint_maskos[fieldidx]))
@@ -1087,9 +1716,11 @@ def run_cbps_pipeline(cbps, inst, nsims, run_name, ifield_list = None, \
 					else:
 						mkk_ffest_mask_tail = fpath_dict['mkk_ffest_mask_tail']
 
+
+					print('mkk ffest mask tail before load mkk fcsub is ', mkk_ffest_mask_tail)
 					if pscb_dict['fc_sub']:
 
-						inv_Mkk_truncated = load_mkk_fcsub(float_param_dict, mode_couple_base_dir, mkk_ffest_mask_tail, mkk_type, inst, ifield)
+						inv_Mkk_truncated = load_mkk_fcsub(float_param_dict, mode_couple_base_dir, mkk_ffest_mask_tail, mkk_type, inst, ifield, invert_spliced_matrix=pscb_dict['invert_spliced_matrix'], compute_pinv=pscb_dict['compute_mkk_pinv'])
 
 						inv_Mkks.append(inv_Mkk_truncated)
 
@@ -1139,7 +1770,7 @@ def run_cbps_pipeline(cbps, inst, nsims, run_name, ifield_list = None, \
 						
 						elif pscb_dict['fc_sub']:
 
-							inv_Mkk_truncated = load_mkk_fcsub(float_param_dict, mode_couple_base_dir, mkk_ffest_mask_tail, mkk_type, inst, ifield, cib_setidx=cib_setidx)
+							inv_Mkk_truncated = load_mkk_fcsub(float_param_dict, mode_couple_base_dir, mkk_ffest_mask_tail, mkk_type, inst, ifield, cib_setidx=cib_setidx, invert_spliced_matrix=pscb_dict['invert_spliced_matrix'], compute_pinv=pscb_dict['compute_mkk_pinv'])
 							inv_Mkks.append(inv_Mkk_truncated)
 
 						else:
@@ -1208,13 +1839,17 @@ def run_cbps_pipeline(cbps, inst, nsims, run_name, ifield_list = None, \
 
 					print('Quad offsets are:', all_coeffs[0,:,-4:])
 
+					if pscb_dict['make_preprocess_file']:
+						proc_map_ex = processed_ims.copy()
+						ff_est_ex = ff_estimates.copy()
+
 				else:
 					processed_ims, ff_estimates, final_planes, stack_masks, all_coeffs, all_sub_comp = iterative_gradient_ff_solve(observed_ims, niter=1, weights_ff=weights_ff, \
 																						ff_stack_min=float_param_dict['ff_stack_min'], plot=False, \
 																						fc_sub=pscb_dict['fc_sub'], fc_sub_quad_offset=pscb_dict['fc_sub_quad_offset'], fc_sub_n_terms=float_param_dict['fc_sub_n_terms'], \
 																						return_subcomp=True) # masks already accounting for ff_stack_min previously
 
-				if i < 5:
+				if i==0 and pscb_dict['show_plots']:
 
 					for fieldidx, ifield in enumerate(ifield_list):
 
@@ -1326,6 +1961,18 @@ def run_cbps_pipeline(cbps, inst, nsims, run_name, ifield_list = None, \
 			# 		joint_maskos[newidx] *= sigclip
 			# 		print('sum of sigclip is ', np.sum(~sigclip))
 
+			if pscb_dict['make_preprocess_file']:
+
+				print('for preprocess file:', len(unmasked_maps_ex), len(masked_maps_ex), len(ff_est_ex), len(all_sub_comp), len(proc_map_ex))
+				for fieldidx, ifield in enumerate(ifield_list):
+
+					proc_map_save = proc_map_ex[fieldidx]*joint_maskos[fieldidx]
+
+					proc_map_save[proc_map_save != 0] -= np.mean(proc_map_save[proc_map_save!=0])
+
+					hdul = make_proc_fits_file(inst, ifield, dc_template, unmasked_maps_ex[fieldidx], masked_maps_ex[fieldidx], ff_est_ex[fieldidx], all_sub_comp[fieldidx], proc_map_save)
+					hdul.writeto('data/preprocess_example/preprocess_example_TM'+str(inst)+'_ifield'+str(ifield)+'.fits', overwrite=True)
+
 			if float_param_dict['ff_min'] is not None and float_param_dict['ff_max'] is not None:
 				print('we have float_param_dict[ffmin] = ', float_param_dict['ff_min'], float_param_dict['ff_max'])
 				if pscb_dict['apply_mask']:
@@ -1343,8 +1990,8 @@ def run_cbps_pipeline(cbps, inst, nsims, run_name, ifield_list = None, \
 					print('masking fraction is nooww ', mask_fractions)
 
 			observed_ims = processed_ims.copy()
-			if ciber_cross_ciber and pscb_dict['ff_estimate_cross']:
-				observed_ims_cross = processed_ims_cross.copy()
+			# if ciber_cross_ciber and pscb_dict['ff_estimate_cross']:
+			# 	observed_ims_cross = processed_ims_cross.copy()
 
 			for k in range(len(ff_estimates)):
 
@@ -1507,10 +2154,10 @@ def run_cbps_pipeline(cbps, inst, nsims, run_name, ifield_list = None, \
 												 fpath_dict, pscb_dict, float_param_dict, obs_levels, read_noise_fw=True)
 
 				generate_ff_error_realizations(cbps, run_name, inst, ifield_list, joint_maskos_ffest, simmaps_dc_all, shot_sigma_sb_zl, read_noise_models, weights_ff_nofluc, \
-											 fpath_dict, pscb_dict, float_param_dict, obs_levels)
+											 fpath_dict, pscb_dict, float_param_dict, obs_levels, apply_zl_gradient=True, theta_mag=float_param_dict['theta_mag'])
 			else:
 				generate_ff_error_realizations(cbps, run_name, inst, ifield_list, joint_maskos, simmaps_dc_all, shot_sigma_sb_zl, read_noise_models, weights_ff_nofluc, \
-											 fpath_dict, pscb_dict, float_param_dict, obs_levels)
+											 fpath_dict, pscb_dict, float_param_dict, obs_levels, apply_zl_gradient=True, theta_mag=float_param_dict['theta_mag'])
 
 			# print('after ff error realiz, sum mask 0 is ', np.sum(joint_maskos[0]))
 
@@ -1545,6 +2192,9 @@ def run_cbps_pipeline(cbps, inst, nsims, run_name, ifield_list = None, \
 					if config_dict['ps_type']=='cross':
 						simmap_dc_cross = np.median(observed_ims_cross[fieldidx])
 
+				if config_dict['ps_type']=='cross':
+					print('1581 Simmap dc cross :', simmap_dc_cross)
+
 			# noise bias from sims with no fluctuations    
 			if pscb_dict['verbose']:
 				print('and nowwww here on i = ', i)
@@ -1566,6 +2216,11 @@ def run_cbps_pipeline(cbps, inst, nsims, run_name, ifield_list = None, \
 					noisemodl_fpath = fpath_dict['noisemodl_basepath'] + fpath_dict['noisemodl_run_name'] + noisemodl_tailpath
 					noisemodl_file = np.load(noisemodl_fpath)
 					fourier_weights_nofluc = noisemodl_file['fourier_weights_nofluc']
+					mean_cl2d_nofluc = noisemodl_file['mean_cl2d_nofluc']
+
+					if pscb_dict['compute_cl_theta'] and pscb_dict['cut_cl_theta']:
+						for which_exclude in [0, float_param_dict['n_rad_bins']//2]:
+							fourier_weights_nofluc[theta_masks[which_exclude]==1] = 0.
 
 					if pscb_dict['read_noise_fw'] and ifield_list[fieldidx] != 5:
 						print('loading read noise fourier weights')
@@ -1605,7 +2260,11 @@ def run_cbps_pipeline(cbps, inst, nsims, run_name, ifield_list = None, \
 
 						dcl_cross = np.sqrt(var_nAnB+var_nAsB+var_nBsA)
 
-						lb, N_ell_est, N_ell_err = cbps.compute_noise_power_spectrum(inst, noise_Cl2D=mean_cl2d_cross.copy(), inplace=False, apply_FW=pscb_dict['apply_FW'], weights=fourier_weights_cross)
+						# lb, N_ell_est, N_ell_err = cbps.compute_noise_power_spectrum(inst, noise_Cl2D=mean_cl2d_cross.copy(), inplace=False, apply_FW=pscb_dict['apply_FW'], weights=fourier_weights_cross)
+						nl_dict = cbps.compute_noise_power_spectrum(inst, noise_Cl2D=mean_cl2d_cross.copy(), inplace=False, apply_FW=pscb_dict['apply_FW'], weights=fourier_weights_cross)
+						lb = nl_dict['lbins']
+						N_ell_est = nl_dict['Cl_noise']
+						N_ell_err = nl_dict['Clerr']
 
 						plt.figure()
 						prefac = lb*(lb+1)/(2*np.pi)
@@ -1619,39 +2278,44 @@ def run_cbps_pipeline(cbps, inst, nsims, run_name, ifield_list = None, \
 
 						print('N_ell_est for cross ciber is ', N_ell_est)
 					else:
-						mean_cl2d_nofluc = noisemodl_file['mean_cl2d_nofluc']
+						# mean_cl2d_nofluc = noisemodl_file['mean_cl2d_nofluc']
 
 						if pscb_dict['read_noise_fw'] and ifield_list[fieldidx] != 5:
 
-							lb, N_ell_est, N_ell_err = cbps.compute_noise_power_spectrum(inst, noise_Cl2D=mean_cl2d_nofluc.copy(), inplace=False, apply_FW=pscb_dict['apply_FW'], weights=fourier_weights_readnoiseonly, weight_power=float_param_dict['weight_power'])
+							nl_dict = cbps.compute_noise_power_spectrum(inst, noise_Cl2D=mean_cl2d_nofluc.copy(), inplace=False, apply_FW=pscb_dict['apply_FW'], weights=fourier_weights_readnoiseonly, weight_power=float_param_dict['weight_power'], theta_masks=theta_masks)
+							# lb, N_ell_est, N_ell_err = cbps.compute_noise_power_spectrum(inst, noise_Cl2D=mean_cl2d_nofluc.copy(), inplace=False, apply_FW=pscb_dict['apply_FW'], weights=fourier_weights_readnoiseonly, weight_power=float_param_dict['weight_power'])
+							
+							lb = nl_dict['lbins']
+							N_ell_est = nl_dict['Cl_noise']
+							N_ell_err = nl_dict['Clerr']
+
+							if pscb_dict['compute_cl_theta']:
+								N_ell_theta = nl_dict['N_ell_theta']
+								# print('N_ell_theta is ', N_ell_theta)
+								N_ell_theta_err = nl_dict['N_ell_theta_err']
+
 
 						else:
 							N_ell_est = noisemodl_file['nl_estFF_nofluc']
+
+							if pscb_dict['compute_cl_theta']:
+
+								nl_dict = cbps.compute_noise_power_spectrum(inst, noise_Cl2D=mean_cl2d_nofluc.copy(), inplace=False, apply_FW=pscb_dict['apply_FW'], weights=fourier_weights_nofluc, weight_power=float_param_dict['weight_power'], theta_masks=theta_masks)
+
+								N_ell_theta = nl_dict['N_ell_theta']
+								# print('N_ell_theta is ', N_ell_theta)
+								N_ell_theta_err = nl_dict['N_ell_theta_err']
+
+							# nl_dict = cbps.compute_noise_power_spectrum(inst, noise_Cl2D=mean_cl2d_nofluc.copy(), inplace=False, apply_FW=pscb_dict['apply_FW'], weights=fourier_weights_readnoiseonly, weight_power=float_param_dict['weight_power'], theta_masks=theta_masks)
+
+
+
 						# fourier_weights_cross = None
 
 				else:
 					all_ff_ests_nofluc = None
 					all_ff_ests_ptsrc = None
-
-					# load the MC FF estimates obtained by several draws of noise
-
-					if pscb_dict['iterate_grad_ff']:
-						# if masking_maglim < masking_maglim_ff:
-						# all_ff_ests_nofluc, all_ff_ests_nofluc_cross = cbps.collect_ff_realiz_estimates(fieldidx, run_name, fpath_dict, pscb_dict, config_dict, float_param_dict, datestr=datestr, ff_min=float_param_dict['ff_min'], ff_max=float_param_dict['ff_max'])
-						all_ff_ests_nofluc, all_ff_ests_nofluc_cross = cbps.collect_ff_realiz_estimates(fieldidx, run_name, fpath_dict, pscb_dict, config_dict, float_param_dict, datestr=datestr, ff_min=float_param_dict['ff_min_nr'], ff_max=float_param_dict['ff_max_nr'])
-						# all_ff_ests_nofluc, all_ff_ests_nofluc_cross = cbps.collect_ff_realiz_estimates(fieldidx, run_name, fpath_dict, pscb_dict, config_dict, float_param_dict, datestr=datestr, ff_min=0.6, ff_max=1.7)
-
-						if pscb_dict['load_cib_fferr'] or pscb_dict['load_isl_fferr']:
-							all_ff_ests_ptsrc, _ = cbps.collect_ff_realiz_estimates(fieldidx, run_name, fpath_dict, pscb_dict, config_dict, float_param_dict, datestr=datestr, ff_min=float_param_dict['ff_min'], ff_max=float_param_dict['ff_max'], \
-																					ff_type='ptsrc_estimate')
-
-
-					# if pscb_dict['mkk_ffest_hybrid']:
-
-						# all_ff_ests_nofluc, all_ff_ests_nofluc_cross = None, None 
-
-						# if ciber_cross_ciber:
-						# all_ff_ests_nofluc, all_ff_ests_nofluc_cross = cbps.collect_ff_realiz_estimates(fieldidx, run_name, fpath_dict, pscb_dict, config_dict, float_param_dict, datestr=datestr, ff_min=float_param_dict['ff_min'], ff_max=float_param_dict['ff_max'])
+					dcl_cross=None
 
 					if pscb_dict['verbose']:
 						print('median obs is ', np.median(obs))
@@ -1661,62 +2325,81 @@ def run_cbps_pipeline(cbps, inst, nsims, run_name, ifield_list = None, \
 					shot_sigma_sb_zl_noisemodl = cbps.compute_shot_sigma_map(inst, image=obs_levels[fieldidx]*np.ones_like(obs), nfr=nfr_fields[fieldidx])
 
 					if ciber_cross_ciber:
-						print('obs levels cross  is ', obs_levels_cross[fieldidx])
-						cross_shot_sigma_sb_zl_noisemodl = cbps.compute_shot_sigma_map(cross_inst, image=obs_levels_cross[fieldidx]*np.ones_like(obs), nfr=nfr_fields[fieldidx])
-
-					# todo cross
-					if ciber_cross_ciber:
-						plot_map(shot_sigma_sb_zl_noisemodl, title='shot_sigma_sb_zl_noisemodl')
-						plot_map(cross_shot_sigma_sb_zl_noisemodl, title='cross_shot_sigma_sb_zl_noisemodl')
-
-						if pscb_dict['mkk_ffest_hybrid']:
-							simmap_dc_use = simmaps_dc_all[fieldidx] 
-							simmap_dc_cross_use = obs_levels_cross[fieldidx]*np.ones_like(simmap_dc_use)
-						else:
-							simmap_dc_use, simmap_dc_cross_use = None, None
-
-						fourier_weights_cross, mean_cl2d_cross, \
-								mean_nl2d_nAsB, var_nl2d_nAsB,\
-								 mean_nl2d_nBsA, var_nl2d_nBsA, \
-								 nl1ds_nAnB, nl1ds_nAsB, nl1ds_nBsA = cbps.estimate_cross_noise_ps(inst, cross_inst, ifield_noise_list[fieldidx], nsims=float_param_dict['n_FW_sims'], n_split=float_param_dict['n_FW_split'],\
-														mask=target_mask, read_noise=pscb_dict['with_inst_noise'], noise_model=read_noise_models[fieldidx], cross_noise_model=read_noise_models_cross[fieldidx], \
-														 photon_noise=pscb_dict['with_photon_noise'], shot_sigma_sb=shot_sigma_sb_zl_noisemodl, cross_shot_sigma_sb=cross_shot_sigma_sb_zl_noisemodl, \
-														 simmap_dc=simmap_dc_use, simmap_dc_cross=simmap_dc_cross_use, image=obs, image_cross=observed_ims_cross[fieldidx], \
-														  mc_ff_estimates = None, mc_ff_estimates_cross=None, gradient_filter=pscb_dict['gradient_filter'], \
-														  inplace=False, show=True, per_quadrant=pscb_dict['per_quadrant'], regrid_cross=False)
+						if pscb_dict['estimate_cross_noise']:
+							if pscb_dict['iterate_grad_ff']:
+								all_ff_ests_nofluc, all_ff_ests_nofluc_cross = cbps.collect_ff_realiz_estimates(fieldidx, run_name, fpath_dict, pscb_dict, config_dict, float_param_dict, datestr=datestr, ff_min=float_param_dict['ff_min_nr'], ff_max=float_param_dict['ff_max_nr'])
 						
-						var_nAnB = np.var(nl1ds_nAnB, axis=0)
-						var_nAsB = np.var(nl1ds_nAsB, axis=0)
-						var_nBsA = np.var(nl1ds_nBsA, axis=0)
-
-						dcl_cross = np.sqrt(var_nAnB+var_nAsB+var_nBsA)
-
-						print('dl dcl cross:', (cbps.Mkk_obj.midbin_ell**2)*dcl_cross/(2*np.pi))
-
-						plot_map(np.log10(fourier_weights_cross), title='log10 fourier_weights_cross')
-						plot_map(mean_cl2d_cross, title='log10 mean_nl2d_cross')
-
-						var_nl2d_total = var_nl2d_nAsB+var_nl2d_nBsA
-
-						mean_nl2d_cross_total = mean_cl2d_cross + mean_nl2d_nAsB + mean_nl2d_nBsA
-						fourier_weights_cross = 1./((1./fourier_weights_cross) + var_nl2d_nAsB + var_nl2d_nBsA)
-
-						plot_map(mean_nl2d_cross_total, title='mean_nl2d_cross_total')
-						plot_map(fourier_weights_cross, title='fourier_weights_cross_total')
-
-						lb, N_ell_est, N_ell_err = cbps.compute_noise_power_spectrum(inst, noise_Cl2D=mean_nl2d_cross_total.copy(), inplace=False, apply_FW=pscb_dict['apply_FW'], weights=fourier_weights_cross, weight_power=float_param_dict['weight_power'])
 
 
-						plt.figure()
-						prefac = lb*(lb+1)/(2*np.pi)
-						plt.errorbar(lb, prefac*N_ell_est, yerr=prefac*N_ell_err, fmt='o')
-						plt.xscale('log')
-						plt.show()
+							print('obs levels cross  is ', obs_levels_cross[fieldidx])
+							cross_shot_sigma_sb_zl_noisemodl = cbps.compute_shot_sigma_map(cross_inst, image=obs_levels_cross[fieldidx]*np.ones_like(obs), nfr=nfr_fields[fieldidx])
+
+							plot_map(shot_sigma_sb_zl_noisemodl, title='shot_sigma_sb_zl_noisemodl')
+							plot_map(cross_shot_sigma_sb_zl_noisemodl, title='cross_shot_sigma_sb_zl_noisemodl')
+
+							if pscb_dict['mkk_ffest_hybrid']:
+								simmap_dc_use = simmaps_dc_all[fieldidx] 
+								simmap_dc_cross_use = obs_levels_cross[fieldidx]*np.ones_like(simmap_dc_use)
+							else:
+								simmap_dc_use, simmap_dc_cross_use = None, None
+
+							fourier_weights_cross, mean_cl2d_cross, \
+									mean_nl2d_nAsB, var_nl2d_nAsB,\
+									 mean_nl2d_nBsA, var_nl2d_nBsA, \
+									 nl1ds_nAnB, nl1ds_nAsB, nl1ds_nBsA = cbps.estimate_cross_noise_ps(inst, cross_inst, ifield_noise_list[fieldidx], nsims=float_param_dict['n_FW_sims'], n_split=float_param_dict['n_FW_split'],\
+															mask=target_mask, read_noise=pscb_dict['with_inst_noise'], noise_model=read_noise_models[fieldidx], cross_noise_model=read_noise_models_cross[fieldidx], \
+															 photon_noise=pscb_dict['with_photon_noise'], shot_sigma_sb=shot_sigma_sb_zl_noisemodl, cross_shot_sigma_sb=cross_shot_sigma_sb_zl_noisemodl, \
+															 simmap_dc=simmap_dc_use, simmap_dc_cross=simmap_dc_cross_use, image=obs, image_cross=observed_ims_cross[fieldidx], \
+															  mc_ff_estimates = None, mc_ff_estimates_cross=None, gradient_filter=pscb_dict['gradient_filter'], \
+															  inplace=False, show=True, per_quadrant=pscb_dict['per_quadrant'], regrid_cross=False, fc_sub=pscb_dict['fc_sub'], fc_sub_quad_offset=pscb_dict['fc_sub_quad_offset'], \
+															  fc_sub_n_terms=float_param_dict['fc_sub_n_terms'])
+							
+							var_nAnB = np.var(nl1ds_nAnB, axis=0)
+							var_nAsB = np.var(nl1ds_nAsB, axis=0)
+							var_nBsA = np.var(nl1ds_nBsA, axis=0)
+
+							dcl_cross = np.sqrt(var_nAnB+var_nAsB+var_nBsA)
+
+							print('dl dcl cross:', (cbps.Mkk_obj.midbin_ell**2)*dcl_cross/(2*np.pi))
+
+							plot_map(np.log10(fourier_weights_cross), title='log10 fourier_weights_cross')
+							plot_map(mean_cl2d_cross, title='log10 mean_nl2d_cross')
+
+							var_nl2d_total = var_nl2d_nAsB+var_nl2d_nBsA
+
+							mean_nl2d_cross_total = mean_cl2d_cross + mean_nl2d_nAsB + mean_nl2d_nBsA
+							fourier_weights_cross = 1./((1./fourier_weights_cross) + var_nl2d_nAsB + var_nl2d_nBsA)
+
+							plot_map(mean_nl2d_cross_total, title='mean_nl2d_cross_total')
+							plot_map(fourier_weights_cross, title='fourier_weights_cross_total')
+
+							nl_dict = cbps.compute_noise_power_spectrum(inst, noise_Cl2D=mean_nl2d_cross_total.copy(), inplace=False, apply_FW=pscb_dict['apply_FW'], weights=fourier_weights_cross, weight_power=float_param_dict['weight_power'])
+							# lb, N_ell_est, N_ell_err = cbps.compute_noise_power_spectrum(inst, noise_Cl2D=mean_nl2d_cross_total.copy(), inplace=False, apply_FW=pscb_dict['apply_FW'], weights=fourier_weights_cross, weight_power=float_param_dict['weight_power'])
+
+							lb = nl_dict['lbins']
+							N_ell_est = nl_dict['Cl_noise']
+							N_ell_err = nl_dict['Clerr']
+
+
+
+							plt.figure()
+							prefac = lb*(lb+1)/(2*np.pi)
+							plt.errorbar(lb, prefac*N_ell_est, yerr=prefac*N_ell_err, fmt='o')
+							plt.xscale('log')
+							plt.show()
 
 					else:
-						simmap_dc_use = None
-						if pscb_dict['mkk_ffest_hybrid']:
-							simmap_dc_use = simmaps_dc_all[fieldidx] 
+						if pscb_dict['iterate_grad_ff']:
+
+							all_ff_ests_nofluc, all_ff_ests_nofluc_cross = cbps.collect_ff_realiz_estimates(fieldidx, run_name, fpath_dict, pscb_dict, config_dict, float_param_dict, datestr=datestr, ff_min=float_param_dict['ff_min_nr'], ff_max=float_param_dict['ff_max_nr'])
+
+							if pscb_dict['load_cib_fferr'] or pscb_dict['load_isl_fferr']:
+								all_ff_ests_ptsrc, _ = cbps.collect_ff_realiz_estimates(fieldidx, run_name, fpath_dict, pscb_dict, config_dict, float_param_dict, datestr=datestr, ff_min=float_param_dict['ff_min'], ff_max=float_param_dict['ff_max'], \
+																						ff_type='ptsrc_estimate')
+
+						# simmap_dc_use = None
+						# if pscb_dict['mkk_ffest_hybrid']:
+						simmap_dc_use = simmaps_dc_all[fieldidx] 
 
 						if pscb_dict['compute_ps_per_quadrant']:
 
@@ -1760,23 +2443,47 @@ def run_cbps_pipeline(cbps, inst, nsims, run_name, ifield_list = None, \
 								all_ff_ests_readnoiseonly, _ = cbps.collect_ff_realiz_estimates(fieldidx, run_name, fpath_dict, pscb_dict, config_dict, float_param_dict, datestr=datestr, read_noise_fw=True)
 
 								print('Generating read noise Fourier weights..')
-								fourier_weights_readnoiseonly, mean_cl2d_readnoiseonly = cbps.estimate_noise_power_spectrum(nsims=float_param_dict['n_FW_sims'], n_split=float_param_dict['n_FW_split'], apply_mask=pscb_dict['apply_mask'], \
+
+
+								noise_bias_dict = cbps.estimate_noise_power_spectrum(nsims=float_param_dict['n_FW_sims'], n_split=float_param_dict['n_FW_split'], apply_mask=pscb_dict['apply_mask'], \
 											   noise_model=read_noise_models[fieldidx], read_noise=pscb_dict['with_inst_noise'], inst=inst, ifield=ifield_noise_list[fieldidx], show=False, mask=target_mask, \
 												photon_noise=False, ff_estimate=None, inplace=False, \
-												field_nfr=nfr_fields[fieldidx], simmap_dc=simmap_dc_use, ff_truth=None, mc_ff_estimates=all_ff_ests_readnoiseonly, gradient_filter=pscb_dict['gradient_filter'],\
-												chisq=False, per_quadrant=pscb_dict['per_quadrant'], quadoff_grad=pscb_dict['quadoff_grad'], order=float_param_dict['poly_order'], \
-												fc_sub=pscb_dict['fc_sub'], fc_sub_quad_offset=pscb_dict['fc_sub_quad_offset'], fc_sub_n_terms=float_param_dict['fc_sub_n_terms'])
+												field_nfr=nfr_fields[fieldidx], simmap_dc=simmap_dc_use, mc_ff_estimates=all_ff_ests_readnoiseonly, gradient_filter=pscb_dict['gradient_filter'],\
+												per_quadrant=pscb_dict['per_quadrant'], quadoff_grad=pscb_dict['quadoff_grad'], order=float_param_dict['poly_order'], \
+												fc_sub=pscb_dict['fc_sub'], fc_sub_quad_offset=pscb_dict['fc_sub_quad_offset'], fc_sub_n_terms=float_param_dict['fc_sub_n_terms'], theta_masks=theta_masks)
+
+								fourier_weights_readnoiseonly = noise_bias_dict['fourier_weights']
+								mean_cl2d_readnoiseonly = noise_bias_dict['mean_cl2d']
+
+								# fourier_weights_readnoiseonly, mean_cl2d_readnoiseonly = cbps.estimate_noise_power_spectrum(nsims=float_param_dict['n_FW_sims'], n_split=float_param_dict['n_FW_split'], apply_mask=pscb_dict['apply_mask'], \
+								# 			   noise_model=read_noise_models[fieldidx], read_noise=pscb_dict['with_inst_noise'], inst=inst, ifield=ifield_noise_list[fieldidx], show=False, mask=target_mask, \
+								# 				photon_noise=False, ff_estimate=None, inplace=False, \
+								# 				field_nfr=nfr_fields[fieldidx], simmap_dc=simmap_dc_use, mc_ff_estimates=all_ff_ests_readnoiseonly, gradient_filter=pscb_dict['gradient_filter'],\
+								# 				per_quadrant=pscb_dict['per_quadrant'], quadoff_grad=pscb_dict['quadoff_grad'], order=float_param_dict['poly_order'], \
+								# 				fc_sub=pscb_dict['fc_sub'], fc_sub_quad_offset=pscb_dict['fc_sub_quad_offset'], fc_sub_n_terms=float_param_dict['fc_sub_n_terms'])
 
 
 
-							fourier_weights_nofluc, mean_cl2d_nofluc = cbps.estimate_noise_power_spectrum(nsims=float_param_dict['n_FW_sims'], n_split=float_param_dict['n_FW_split'], apply_mask=pscb_dict['apply_mask'], \
+							
+							# fourier_weights_nofluc, mean_cl2d_nofluc = cbps.estimate_noise_power_spectrum(nsims=float_param_dict['n_FW_sims'], n_split=float_param_dict['n_FW_split'], apply_mask=pscb_dict['apply_mask'], \
+							# 			   noise_model=read_noise_models[fieldidx], read_noise=pscb_dict['with_inst_noise'], inst=inst, ifield=ifield_noise_list[fieldidx], show=False, mask=target_mask, \
+							# 				photon_noise=pscb_dict['with_photon_noise'], ff_estimate=None, shot_sigma_sb=shot_sigma_sb_zl_noisemodl, inplace=False, \
+							# 				field_nfr=nfr_fields[fieldidx], simmap_dc=simmap_dc_use, mc_ff_estimates=all_ff_ests_nofluc, gradient_filter=pscb_dict['gradient_filter'],\
+							# 				per_quadrant=pscb_dict['per_quadrant'], point_src_comp=point_src_comps_for_ff[fieldidx], \
+							# 				quadoff_grad=pscb_dict['quadoff_grad'], order=float_param_dict['poly_order'], mc_ff_ptsrc_estimates=all_ff_ests_ptsrc, \
+							# 				fc_sub=pscb_dict['fc_sub'], fc_sub_quad_offset=pscb_dict['fc_sub_quad_offset'], fc_sub_n_terms=float_param_dict['fc_sub_n_terms'])
+
+
+							noise_bias_dict = cbps.estimate_noise_power_spectrum(nsims=float_param_dict['n_FW_sims'], n_split=float_param_dict['n_FW_split'], apply_mask=pscb_dict['apply_mask'], \
 										   noise_model=read_noise_models[fieldidx], read_noise=pscb_dict['with_inst_noise'], inst=inst, ifield=ifield_noise_list[fieldidx], show=False, mask=target_mask, \
 											photon_noise=pscb_dict['with_photon_noise'], ff_estimate=None, shot_sigma_sb=shot_sigma_sb_zl_noisemodl, inplace=False, \
-											field_nfr=nfr_fields[fieldidx], simmap_dc=simmap_dc_use, ff_truth=None, mc_ff_estimates=all_ff_ests_nofluc, gradient_filter=pscb_dict['gradient_filter'],\
-											chisq=False, per_quadrant=pscb_dict['per_quadrant'], point_src_comp=point_src_comps_for_ff[fieldidx], \
+											field_nfr=nfr_fields[fieldidx], simmap_dc=simmap_dc_use, mc_ff_estimates=all_ff_ests_nofluc, gradient_filter=pscb_dict['gradient_filter'],\
+											per_quadrant=pscb_dict['per_quadrant'], point_src_comp=point_src_comps_for_ff[fieldidx], \
 											quadoff_grad=pscb_dict['quadoff_grad'], order=float_param_dict['poly_order'], mc_ff_ptsrc_estimates=all_ff_ests_ptsrc, \
 											fc_sub=pscb_dict['fc_sub'], fc_sub_quad_offset=pscb_dict['fc_sub_quad_offset'], fc_sub_n_terms=float_param_dict['fc_sub_n_terms'])
 
+							fourier_weights_nofluc = noise_bias_dict['fourier_weights']
+							mean_cl2d_nofluc = noise_bias_dict['mean_nl2d']
 
 							# fourier_weights_nofluc, mean_cl2d_nofluc = cbps.estimate_noise_power_spectrum(nsims=float_param_dict['n_FW_sims'], n_split=float_param_dict['n_FW_split'], apply_mask=pscb_dict['apply_mask'], \
 							# 			   noise_model=read_noise_models[fieldidx], read_noise=pscb_dict['with_inst_noise'], inst=inst, ifield=ifield_noise_list[fieldidx], show=False, mask=target_mask, \
@@ -1786,9 +2493,20 @@ def run_cbps_pipeline(cbps, inst, nsims, run_name, ifield_list = None, \
 
 							if pscb_dict['read_noise_fw'] and ifield_list[fieldidx] != 5:
 								print('noise bias with read noise fourier weights')
-								lb, N_ell_est, N_ell_err = cbps.compute_noise_power_spectrum(inst, noise_Cl2D=mean_cl2d_nofluc.copy(), inplace=False, apply_FW=pscb_dict['apply_FW'], weights=fourier_weights_readnoiseonly, weight_power=float_param_dict['weight_power'])
+								nl_dict = cbps.compute_noise_power_spectrum(inst, noise_Cl2D=mean_cl2d_nofluc.copy(), inplace=False, apply_FW=pscb_dict['apply_FW'], weights=fourier_weights_readnoiseonly, weight_power=float_param_dict['weight_power'], theta_masks=theta_masks)
+								# lb, N_ell_est, N_ell_err = cbps.compute_noise_power_spectrum(inst, noise_Cl2D=mean_cl2d_nofluc.copy(), inplace=False, apply_FW=pscb_dict['apply_FW'], weights=fourier_weights_readnoiseonly, weight_power=float_param_dict['weight_power'], theta_masks=theta_masks)
 							else:
-								lb, N_ell_est, N_ell_err = cbps.compute_noise_power_spectrum(inst, noise_Cl2D=mean_cl2d_nofluc.copy(), inplace=False, apply_FW=pscb_dict['apply_FW'], weights=fourier_weights_nofluc, weight_power=float_param_dict['weight_power'])
+								nl_dict = cbps.compute_noise_power_spectrum(inst, noise_Cl2D=mean_cl2d_nofluc.copy(), inplace=False, apply_FW=pscb_dict['apply_FW'], weights=fourier_weights_nofluc, weight_power=float_param_dict['weight_power'], theta_masks=theta_masks)
+								# lb, N_ell_est, N_ell_err = cbps.compute_noise_power_spectrum(inst, noise_Cl2D=mean_cl2d_nofluc.copy(), inplace=False, apply_FW=pscb_dict['apply_FW'], weights=fourier_weights_nofluc, weight_power=float_param_dict['weight_power'], theta_masks)
+
+							lb = nl_dict['lbins']
+							N_ell_est = nl_dict['Cl_noise']
+							N_ell_err = nl_dict['Clerr']
+
+							if pscb_dict['compute_cl_theta']:
+
+								N_ell_theta = nl_dict['N_ell_theta']
+								N_ell_theta_err = nl_dict['N_ell_theta_err']
 
 
 							if not pscb_dict['shut_off_plots']:
@@ -1820,23 +2538,27 @@ def run_cbps_pipeline(cbps, inst, nsims, run_name, ifield_list = None, \
 
 
 					if pscb_dict['save'] or not os.path.exists(noisemodl_fpath):
-						print('SAVING NOISE MODEL BIAS FILE..')
-						if os.path.exists(noisemodl_fpath):
-							print('Overwriting existing noise model bias file..')
 
 						if ciber_cross_ciber:
-							# np.savez(noisemodl_fpath, fourier_weights_nofluc=fourier_weights_cross, mean_cl2d_nofluc=mean_nl2d_cross_total, nl_estFF_nofluc=N_ell_est)
-							np.savez(noisemodl_fpath, fourier_weights_nofluc=fourier_weights_cross, mean_cl2d_nofluc=mean_nl2d_cross_total, nl_estFF_nofluc=N_ell_est, \
-								nl1ds_nAnB=nl1ds_nAnB, nl1ds_nAsB=nl1ds_nAsB, nl1ds_nBsA=nl1ds_nBsA)
+							if pscb_dict['estimate_cross_noise']:
+								print('SAVING CROSS NOISE UNCERTAINTY FILE..')
+								if os.path.exists(noisemodl_fpath):
+									print('Overwriting existing noise model bias file..')
+								# np.savez(noisemodl_fpath, fourier_weights_nofluc=fourier_weights_cross, mean_cl2d_nofluc=mean_nl2d_cross_total, nl_estFF_nofluc=N_ell_est)
+								np.savez(noisemodl_fpath, fourier_weights_nofluc=fourier_weights_cross, mean_cl2d_nofluc=mean_nl2d_cross_total, nl_estFF_nofluc=N_ell_est, \
+									nl1ds_nAnB=nl1ds_nAnB, nl1ds_nAsB=nl1ds_nAsB, nl1ds_nBsA=nl1ds_nBsA)
 
 						else:
-
+							print('SAVING NOISE MODEL BIAS FILE..')
+							if os.path.exists(noisemodl_fpath):
+								print('Overwriting existing noise model bias file..')
 							if pscb_dict['read_noise_fw'] and ifield_list[fieldidx] != 5:
 								print('Saving read noise fourier weights')
 								np.savez(noisemodl_fpath_readnoiseonly, fourier_weights=fourier_weights_readnoiseonly)
 
 
-							np.savez(noisemodl_fpath, fourier_weights_nofluc=fourier_weights_nofluc, mean_cl2d_nofluc=mean_cl2d_nofluc, nl_estFF_nofluc=N_ell_est)
+							np.savez(noisemodl_fpath, fourier_weights_nofluc=fourier_weights_nofluc, mean_cl2d_nofluc=mean_cl2d_nofluc, nl_estFF_nofluc=N_ell_est, \
+									N_ell_theta=N_ell_theta)
 							
 							if pscb_dict['compute_ps_per_quadrant']:
 								for q in range(4):
@@ -1846,14 +2568,18 @@ def run_cbps_pipeline(cbps, inst, nsims, run_name, ifield_list = None, \
 										nl_estFF_nofluc=N_ells_est_per_quadrant[q, fieldidx])
 
 				if ciber_cross_ciber:
-					cbps.FW_image=fourier_weights_cross.copy()
+					if pscb_dict['apply_FW']:
+						cbps.FW_image=fourier_weights_cross.copy()
 				else:
 					if pscb_dict['read_noise_fw'] and ifield_list[fieldidx] != 5:
 						cbps.FW_image=fourier_weights_readnoiseonly.copy()
 					else:
 						cbps.FW_image=fourier_weights_nofluc.copy()
 				
-				N_ells_est[fieldidx] = N_ell_est
+					N_ells_est[fieldidx] = N_ell_est
+
+					# if N_ell_theta is not None:
+					# 	N_ells_theta[fieldidx] = N_ell_theta
 
 			if pscb_dict['load_ptsrc_cib'] or pscb_dict['load_trilegal'] or data_type=='observed':
 				if config_dict['ps_type']=='auto' or config_dict['cross_type'] == 'ciber':
@@ -1910,18 +2636,42 @@ def run_cbps_pipeline(cbps, inst, nsims, run_name, ifield_list = None, \
 						# maskobs[cbps.x0s[q]:cbps.x1s[q], cbps.y0s[q]:cbps.y1s[q]][mquad==1] -= np.mean(maskobs[cbps.x0s[q]:cbps.x1s[q], cbps.y0s[q]:cbps.y1s[q]][mquad==1])
 
 						mquad = target_mask[cbps.x0s[q]:cbps.x1s[q], cbps.y0s[q]:cbps.y1s[q]]
-						maskobs[cbps.x0s[q]:cbps.x1s[q], cbps.y0s[q]:cbps.y1s[q]][mquad==1] -= np.mean(maskobs[cbps.x0s[q]:cbps.x1s[q], cbps.y0s[q]:cbps.y1s[q]][mquad==1])
+
+						obsquad = maskobs[cbps.x0s[q]:cbps.x1s[q], cbps.y0s[q]:cbps.y1s[q]]*mquad
+						maskobs[cbps.x0s[q]:cbps.x1s[q], cbps.y0s[q]:cbps.y1s[q]][obsquad!=0] -= np.mean(maskobs[cbps.x0s[q]:cbps.x1s[q], cbps.y0s[q]:cbps.y1s[q]][obsquad!=0])
+
+						# maskobs[cbps.x0s[q]:cbps.x1s[q], cbps.y0s[q]:cbps.y1s[q]][mquad==1] -= np.mean(maskobs[cbps.x0s[q]:cbps.x1s[q], cbps.y0s[q]:cbps.y1s[q]][mquad==1])
 
 				else:
 					maskobs[maskobs!=0]-=np.mean(maskobs[maskobs!=0])
 				# if not pscb_dict['shut_off_plots']:
-				plot_map(maskobs, title='FF corrected, mean subtracted CIBER map ('+cbps.ciber_field_dict[ifield_list[fieldidx]]+')', hipct=99.999, lopct=0., cmap='bwr')
+
+				plot_map(maskobs, title='FF corrected, mean subtracted CIBER map ('+cbps.ciber_field_dict[ifield_list[fieldidx]]+')', hipct=99.999, lopct=0., cmap='jet')
 
 				if pscb_dict['apply_mask']:
+
+					maskobs_smooth_2 = gaussian_filter(target_mask*maskobs, sigma=2)
+					maskobs_smooth_2[target_mask==1]-=np.mean(maskobs_smooth_2[target_mask==1])
+
+					# maskobs_smooth[maskobs_smooth==0] = np.nan
+
+					plot_map(maskobs_smooth_2, title='Final map smoothed with Gaussian, sigma = 2 pix, ('+cbps.ciber_field_dict[ifield_list[fieldidx]]+')', hipct=99.99, lopct=0., cmap='jet')
+
 					maskobs_smooth = target_mask*gaussian_filter(maskobs, sigma=10)
 					maskobs_smooth[target_mask==1]-=np.mean(maskobs_smooth[target_mask==1])
 					# if not pscb_dict['shut_off_plots']:
 					plot_map(maskobs_smooth, title='FF corrected, smoothed, mean-subtracted CIBER map ('+cbps.ciber_field_dict[ifield_list[fieldidx]]+')', cmap='bwr', vmax=20, vmin=-20)
+
+					hp_image = maskobs-maskobs_smooth
+					hp_image[target_mask==1] -= np.mean(hp_image[target_mask==1])
+					plot_map(hp_image, title='Data - Low-pass filtered map ('+cbps.ciber_field_dict[ifield_list[fieldidx]]+')', hipct=99.99, lopct=0.01, cmap='jet')
+
+					hp_image2 = maskobs_smooth_2-maskobs_smooth
+					hp_image2[target_mask==1] -= np.mean(hp_image2[target_mask==1])
+					fig = plot_map(hp_image2, title='2 pix sigma smoothed - Low-pass filtered map ('+cbps.ciber_field_dict[ifield_list[fieldidx]]+')', hipct=99.99, lopct=0.01, cmap='jet', return_fig=True)
+
+					fig.savefig('figures/ciber_unsharp_image_2pix_10pix_sigma_TM'+str(inst)+'_ifield'+str(ifield_list[fieldidx])+'.png', bbox_inches='tight', dpi=300)
+
 
 
 			if config_dict['ps_type']=='auto':
@@ -1954,9 +2704,16 @@ def run_cbps_pipeline(cbps, inst, nsims, run_name, ifield_list = None, \
 
 					clip_mask = (weighted_cl2d_norm > float_param_dict['diff_cl2d_clipthresh'])
 
-					plot_map(clip_mask.astype(int), title='fw clip mask')
-
+					# plot_map(clip_mask.astype(int), title='fw clip mask')
 					fourier_weights_use[clip_mask] = 0.
+
+				if pscb_dict['compute_cl_theta'] and pscb_dict['cut_cl_theta']:
+					# which_include=[1, 2, 3, 5, 6, 7] # temporary
+
+					for which_exclude in [0, float_param_dict['n_rad_bins']//2]:
+						fourier_weights_use[(theta_masks[which_exclude]==1)] = 0.
+
+					plot_map(fourier_weights_use, title='fourier weights with theta cut')
 
 
 
@@ -1964,13 +2721,15 @@ def run_cbps_pipeline(cbps, inst, nsims, run_name, ifield_list = None, \
 												 mask=target_mask, image=obs, convert_adufr_sb=False, \
 												mkk_correct=pscb_dict['apply_mask'], inv_Mkk=target_invMkk, beam_correct=beam_correct, B_ell=B_ell_field, \
 												apply_FW=pscb_dict['apply_FW'], verbose=verb, noise_debias=pscb_dict['noise_debias'], \
-											 FF_correct=FF_correct, FW_image=fourier_weights_use, FF_image=ff_estimates[fieldidx],\
+												FF_correct=FF_correct, FW_image=fourier_weights_use, \
 												 gradient_filter=gradient_filter, save_intermediate_cls=pscb_dict['save_intermediate_cls'], N_ell=N_ells_est[fieldidx], \
 												 per_quadrant=pscb_dict['per_quadrant'], max_val_after_sub=max_val_after_sub, \
 												 unsharp_mask=pscb_dict['unsharp_mask'], unsharp_pct=float_param_dict['unsharp_pct'], unsharp_sigma=float_param_dict['unsharp_sigma'], \
 												 weight_power=float_param_dict['weight_power'], remove_outlier_fac=float_param_dict['remove_outlier_fac'], \
 												 clip_clproc_premkk=pscb_dict['clip_clproc_premkk'], clip_outlier_norm_modes=pscb_dict['clip_outlier_norm_modes'], clip_norm_thresh=float_param_dict['clip_norm_thresh'], \
-												 fc_sub=pscb_dict['fc_sub'], fc_sub_n_terms=float_param_dict['fc_sub_n_terms'])
+												 fc_sub=pscb_dict['fc_sub'], fc_sub_n_terms=float_param_dict['fc_sub_n_terms'], invert_spliced_matrix=pscb_dict['invert_spliced_matrix'], \
+												 compute_mkk_pinv=pscb_dict['compute_mkk_pinv'], theta_masks=theta_masks, N_ell_theta=N_ell_theta, \
+												 ifield=ifield_list[fieldidx])
 
 				final_masked_images[fieldidx] = masked_image
 
@@ -1987,7 +2746,7 @@ def run_cbps_pipeline(cbps, inst, nsims, run_name, ifield_list = None, \
 									 mask=target_mask_indiv, image=obs_indiv, convert_adufr_sb=False, \
 									mkk_correct=pscb_dict['apply_mask'], inv_Mkk=target_invMkks_per_quadrant[q], beam_correct=beam_correct, B_ell=B_ell_field_quad, \
 									apply_FW=pscb_dict['apply_FW'], verbose=pscb_dict['verbose'], noise_debias=pscb_dict['noise_debias'], \
-								 FF_correct=FF_correct, FW_image=fourier_weights_nofluc_per_quadrant[q], FF_image=ff_estimates[fieldidx,cbps.x0s[q]:cbps.x1s[q], cbps.y0s[q]:cbps.y1s[q]],\
+								 FF_correct=FF_correct, FW_image=fourier_weights_nofluc_per_quadrant[q], \
 									 gradient_filter=gradient_filter, save_intermediate_cls=pscb_dict['save_intermediate_cls'], N_ell=N_ells_est_per_quadrant[q, fieldidx], \
 									 per_quadrant=False)
 						processed_ps_per_quad[q] = processed_ps_indiv
@@ -2012,10 +2771,13 @@ def run_cbps_pipeline(cbps, inst, nsims, run_name, ifield_list = None, \
 
 				if ciber_cross_ciber and pscb_dict['apply_tl_regrid']:
 
-					tl_regrid_fpath = fpath_dict['tls_base_path']+'regrid/tl_ptsrc_regrid_tm2_to_tm1'
+					tl_regrid_fpath = fpath_dict['tls_base_path']+'regrid/tl_ptsrc_regrid_TM2_to_TM1'
 
 					if float_param_dict['interp_order'] is not None:
-						tl_regrid_fpath += '_order='+str(float_param_dict['interp_order'])
+						# tl_regrid_fpath += '_order='+str(float_param_dict['interp_order'])
+
+						tl_regrid_fpath += '_order=1'
+						# tl_regrid_fpath += '_conserve_flux'
 
 						if pscb_dict['conserve_flux']:
 							tl_regrid_fpath += '_conserve_flux'
@@ -2030,20 +2792,40 @@ def run_cbps_pipeline(cbps, inst, nsims, run_name, ifield_list = None, \
 					else:
 						tl_regrid_fpath = fpath_dict['tls_base_path']+'regrid/tl_regrid_tm2_to_tm1_ifield4_041323.npz'
 					tl_regrid = np.load(tl_regrid_fpath)['tl_regrid']
+					
+					tl_regrid = np.sqrt(tl_regrid)
 
-					if pscb_dict['conserve_flux']:
-						tl_regrid = np.sqrt(tl_regrid)
+					# if pscb_dict['conserve_flux']:
+					# 	tl_regrid = np.sqrt(tl_regrid)
 				else:
 					tl_regrid = None
 
 				print('B_ell_field is ', B_ell_field)
+
+				mask_orig = target_mask*(obs!=0)
+				mask_cross = (observed_ims_cross[fieldidx]!=0).astype(int)
+
+				plot_map(mask_orig, title='1.1 band mask before ps')
+				plot_map(mask_cross, title='1.8 band mask before ps')
+
+				print(np.sum(mask_orig)/(1024.**2), np.sum(mask_cross)/(1024.**2))
+				print(np.sum(mask_orig)/(1024.**2), np.sum(mask_cross)/(1024.**2))
+
+				target_mask_update = mask_orig*mask_cross
+				print('target mask orig:', np.sum(joint_maskos[fieldidx])/(1024.**2))
+
+				print('target mask update:', np.sum(target_mask_update)/(1024.**2))
+
+				observed_ims_cross[fieldidx] *= target_mask_update
+
 				lb, processed_ps_nf, cl_proc_err, _, _ = cbps.compute_processed_power_spectrum(inst, apply_mask=pscb_dict['apply_mask'], \
-												 mask=target_mask, image=obs, cross_image=observed_ims_cross[fieldidx], convert_adufr_sb=False, \
+												 mask=target_mask_update, image=obs, cross_image=observed_ims_cross[fieldidx], convert_adufr_sb=False, \
 												mkk_correct=pscb_dict['apply_mask'], inv_Mkk=target_invMkk, beam_correct=beam_correct, B_ell=B_ell_field, \
 												apply_FW=pscb_dict['apply_FW'], verbose=pscb_dict['verbose'], noise_debias=False, \
-											 FF_correct=FF_correct, FF_image=ff_estimates[fieldidx], FW_image=fourier_weights_cross, \
-												 gradient_filter=False, tl_regrid=tl_regrid, save_intermediate_cls=pscb_dict['save_intermediate_cls'], N_ell=N_ells_est[fieldidx], \
-												 fc_sub=pscb_dict['fc_sub'], fc_sub_n_terms=float_param_dict['fc_sub_n_terms'], clip_outlier_norm_modes=pscb_dict['clip_outlier_norm_modes'], clip_norm_thresh=float_param_dict['clip_norm_thresh'])
+												FF_correct=FF_correct, FW_image=None, per_quadrant=pscb_dict['per_quadrant'], \
+												gradient_filter=False, tl_regrid=tl_regrid, save_intermediate_cls=pscb_dict['save_intermediate_cls'], N_ell=None, \
+												fc_sub=pscb_dict['fc_sub'], fc_sub_n_terms=float_param_dict['fc_sub_n_terms'], clip_outlier_norm_modes=pscb_dict['clip_outlier_norm_modes'], clip_norm_thresh=float_param_dict['clip_norm_thresh'], \
+												invert_spliced_matrix=pscb_dict['invert_spliced_matrix'], compute_mkk_pinv=pscb_dict['compute_mkk_pinv'])
 
 				# lb, processed_ps_nf, cl_proc_err, _ = cbps.compute_processed_power_spectrum(inst, apply_mask=pscb_dict['apply_mask'], \
 				# 								 mask=target_mask, image=obs, cross_image=observed_ims_cross[fieldidx], convert_adufr_sb=False, \
@@ -2138,10 +2920,10 @@ def run_cbps_pipeline(cbps, inst, nsims, run_name, ifield_list = None, \
 
 					if float_param_dict['fc_sub_n_terms']==2: # we lose all information on two lowest bandpowers
 						processed_ps_nf[:2] = 0.
-					if float_param_dict['fc_sub_n_terms']==3: # we lose all information on two lowest bandpowers
+					if float_param_dict['fc_sub_n_terms']==3: # we lose all information on three lowest bandpowers
 						processed_ps_nf[:3] = 0.
 
-				if config_dict['ps_type']=='cross' and ciber_cross_ciber:
+				if config_dict['ps_type']=='cross' and ciber_cross_ciber and dcl_cross is not None:
 					print('dividing dcl cross by transfer function..')
 					dcl_cross /= t_ell_av
 
@@ -2156,7 +2938,7 @@ def run_cbps_pipeline(cbps, inst, nsims, run_name, ifield_list = None, \
 					cls_post_tcorr[fieldidx,:] = processed_ps_nf.copy()
 
 
-			if config_dict['ps_type']=='cross' and ciber_cross_ciber:
+			if config_dict['ps_type']=='cross' and ciber_cross_ciber and dcl_cross is not None:
 
 				dcl_cross /= B_ell_field**2
 			
@@ -2183,10 +2965,10 @@ def run_cbps_pipeline(cbps, inst, nsims, run_name, ifield_list = None, \
 
 			recovered_power_spectra[i, fieldidx, :] = processed_ps_nf
 
-			# if config_dict['ps_type']=='cross' and ciber_cross_ciber:
-			# 	recovered_dcl[i, fieldidx, :] = dcl_cross
-			# else:
-			recovered_dcl[i, fieldidx, :] = cl_proc_err
+			if config_dict['ps_type']=='cross' and ciber_cross_ciber and dcl_cross is not None:
+				recovered_dcl[i, fieldidx, :] = dcl_cross
+			else:
+				recovered_dcl[i, fieldidx, :] = cl_proc_err
 
 			if pscb_dict['compute_ps_per_quadrant']:
 

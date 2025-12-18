@@ -10,6 +10,7 @@ from mkk_parallel import *
 from mkk_diagnostics import *
 from flat_field_est import *
 from plotting_fns import *
+from ps_tests import *
 from powerspec_utils import *
 from astropy.coordinates import SkyCoord
 import healpy as hp
@@ -119,13 +120,31 @@ def load_irac_bl(irac_ch, base_path=None):
 	return irac_lb, irac_blval
 
 
-def calc_cl_simp(cl, cl_err, bl=None, t_ell=None, inv_Mkk=None):
+def calc_cl_simp(cl, cl_err, bl=None, t_ell=None, inv_Mkk=None, fc_sub=False, Mkk=None):
 
 	if inv_Mkk is not None:
-		cl = np.dot(inv_Mkk.transpose(), cl)
-		invmkkdiag = np.diagonal(inv_Mkk.transpose())
-		# print('invmkkdiag = ', invmkkdiag)
-		cl_err /= invmkkdiag
+		if fc_sub:
+			cl_clip = np.dot(inv_Mkk.transpose(), cl[2:])
+			cl[2:] = cl_clip
+		else:
+			cl = np.dot(inv_Mkk.transpose(), cl)
+		
+		if Mkk is not None:
+			if fc_sub:
+				cl_err[2:] /= np.diagonal(Mkk)
+			else:
+				cl_err /= np.diagonal(Mkk)
+
+		else:
+
+			invmkkdiag = np.diagonal(inv_Mkk.transpose())
+			# print('invmkkdiag = ', invmkkdiag)
+
+			if fc_sub:
+				cl_err[2:] *= invmkkdiag
+			else:
+				cl_err *= invmkkdiag
+			# cl_err /= invmkkdiag
 
 	if bl is not None:
 		cl /= bl**2
@@ -204,11 +223,14 @@ def plot_ciber_spitzer_auto_cross(spitzer_mask_string=None, ciber_tailstrs=None,
 								 xlim=[180, 1.5e5], ylim=[1e-6, 2e4], alph=0.6, textfs=14, figsize=(7,7),\
 								  yticks = [1e-3, 1e-1, 1e1, 1e3], xticks=[1e3, 1e4, 1e5], \
 								 bbox_to_anchor=[1.0, 1.4], spitz_color='C3', add_str=None, textxpos=200, textypos=None, capsize=3, \
-								 spitzer_ell_min=None):
+								 spitzer_ell_min=None, nsim_mock=1000, include_mirocha_model=False, include_isl_pred=False, linestyle='dashed', \
+								 wspace=0.05, hspace=0.0, datestr='091624', tailstr='test'):
 	
 	irac_lamdict = dict({1:3.6, 2:4.5})
 	bandstr_dict = dict({1:'J', 2:'H'})
 	ciber_lamdict = dict({1:1.1, 2:1.8})
+
+	cbps = CIBER_PS_pipeline()
 	
 	if mag_lims_ciber is None:
 		mag_lims_ciber = [17.5, 17.0] # J, H
@@ -223,6 +245,36 @@ def plot_ciber_spitzer_auto_cross(spitzer_mask_string=None, ciber_tailstrs=None,
 			all_rlx, all_rlx_unc, irac_list_save, inst_list_save, all_rlx_snpred = [[] for x in range(11)]
 
 
+	mirocha_basepath = 'data/mirocha_models/ares_base_best/'
+
+	if include_mirocha_model:
+
+		model_dict = load_mirocha_models()
+
+		lb_pred = model_dict['lb']
+
+		ciber_auto_cross = model_dict['ciber_auto_cross']
+		spitzer_auto_cross = model_dict['spitz_auto_cross']
+
+	if include_isl_pred:
+
+		ciber_irac_pv_c15_fpath = config.ciber_basepath+'data/cl_predictions/irac_vs_ciber_pv_cosmos15_nuInu_CH1CH2mask'
+		if datestr is not None:
+			ciber_irac_pv_c15_fpath += '_'+datestr
+		if tailstr is not None:
+			ciber_irac_pv_c15_fpath += '_'+tailstr
+
+		print('ciber irac pv path is ', ciber_irac_pv_c15_fpath)
+		ciber_irac_pv = np.load(ciber_irac_pv_c15_fpath+'.npz')
+		all_irac_pv_c15 = ciber_irac_pv['all_irac_pv_c15'][2,:]
+		all_ciber_irac_pv_c15 = ciber_irac_pv['all_ciber_irac_pv_c15'][2,:]
+		all_ciber_pv_c15 = ciber_irac_pv['all_ciber_pv_c15'][2,:]
+		modes = ciber_irac_pv['modes']
+		print('Loading ISL prediction from COSMOS '+modes[2])
+
+	    # np.savez(ciber_irac_pv_c15_fpath+'.npz', mag_min_irac=mag_min_irac, modes=modes, irac_ch_list=irac_ch_list, inst_list=inst_list, \
+        # all_irac_pv_c15=all_irac_pv_c15, all_ciber_irac_pv_c15=all_ciber_irac_pv_c15, all_ciber_pv_c15=all_ciber_pv_c15)
+    
 
 	if load_snpred:
 		snpred_file = np.load(config.ciber_basepath+'data/cl_predictions/irac_vs_ciber_pv_cosmos15_nuInu_CH1CH2mask.npz')
@@ -279,9 +331,10 @@ def plot_ciber_spitzer_auto_cross(spitzer_mask_string=None, ciber_tailstrs=None,
 			# ----------------- load CIBER auto spectra ---------------------------
 			# grab bootes fields and compute mean/uncertainty from two-field average
 
-			run_name = 'observed_'+bandstr+'lt'+str(mag_lims_ciber[inst-1])+'_Llt16.0_IRAC_CH'+str(irac_ch)
+			# run_name = 'observed_'+bandstr+'lt'+str(mag_lims_ciber[inst-1])+'_Llt16.0_IRAC_CH'+str(irac_ch)
+			run_name = 'observed_'+bandstr+'lt'+str(mag_lims_ciber[inst-1])+'_IRAC_CH'+str(irac_ch)+'_Vega_16.0_072424_quadoff_grad_fcsub_order2'
 
-			obs_dict, mock_dict, _, cl_fpath = gather_fiducial_auto_ps_results_new(inst, nsim_mock=2000, \
+			obs_dict, mock_dict, _, cl_fpath = gather_fiducial_auto_ps_results(cbps, inst, nsim_mock=nsim_mock, \
 																						 observed_run_name=run_name)
 
 			observed_recov_ps = obs_dict['observed_recov_ps']
@@ -348,7 +401,43 @@ def plot_ciber_spitzer_auto_cross(spitzer_mask_string=None, ciber_tailstrs=None,
 			ax[irac_ch-1, inst-1].errorbar(lb[posmask_ciberauto], (prefac*mean_ciber_bootes_ps)[posmask_ciberauto], yerr=(prefac*std_ciber_bootes_ps)[posmask_ciberauto], markersize=4, fmt='o', alpha=alph, capsize=capsize, color='b', label='CIBER auto')
 			ax[irac_ch-1, inst-1].errorbar(lb[negmask_ciberauto], np.abs((prefac*mean_ciber_bootes_ps)[negmask_ciberauto]), yerr=(prefac*std_ciber_bootes_ps)[negmask_ciberauto], markersize=4, fmt='o', mfc='white', alpha=alph, capsize=capsize, color='b')
 
-			if load_snpred:
+
+			if include_mirocha_model:
+
+				modl_label = 'IGL (Mirocha)'
+				spitz_auto_modl = np.loadtxt(mirocha_basepath+'spitz_auto_irac'+str(irac_ch)+'_'+bandstr_dict[inst]+'_lt_'+str(mag_lims_ciber[inst-1])+'_OR_IRAC'+str(irac_ch)+'_lt_16.txt', skiprows=1)
+				# spitz_auto_modl = np.loadtxt(mirocha_basepath+'spitz_auto_irac'+str(irac_ch)+'_IRAC'+str(irac_ch)+'_lt_16.txt', skiprows=1)
+				ciber_auto_modl = np.loadtxt(mirocha_basepath+'ciber_auto_ch'+str(inst)+'_'+bandstr_dict[inst]+'_lt_'+str(mag_lims_ciber[inst-1])+'_OR_IRAC_lt_16.txt', skiprows=1)
+				
+				ciber_spitz_modl = np.loadtxt(mirocha_basepath+'ciber_x_spitzer_ch'+str(inst)+'xirac'+str(irac_ch)+'_'+bandstr_dict[inst]+'_lt_'+str(mag_lims_ciber[inst-1])+'_OR_IRAC_lt_16.txt', skiprows=1)
+
+				lb_pred = ciber_auto_modl[:,0]
+				pf_pred = lb_pred*(lb_pred+1)/(2*np.pi)
+				spitz_auto_modl_pred = spitz_auto_modl[:,1]
+				ciber_auto_modl_pred = ciber_auto_modl[:,1]
+				ciber_spitz_modl_pred = ciber_spitz_modl[:,1]
+
+				if include_isl_pred:
+
+					modl_label += ' + ISL'
+					irac_isl_pred = pf_pred*all_irac_pv_c15[irac_ch-1, inst-1]
+					ciber_irac_isl_pred = pf_pred*all_ciber_irac_pv_c15[irac_ch-1, inst-1]
+					ciber_isl_pred = pf_pred*all_ciber_pv_c15[irac_ch-1, inst-1]
+
+					spitz_auto_modl_pred += irac_isl_pred
+					ciber_spitz_modl_pred += ciber_irac_isl_pred
+					ciber_auto_modl_pred += ciber_isl_pred
+
+				ax[irac_ch-1, inst-1].plot(lb_pred, ciber_auto_modl_pred, color='b', label=modl_label)
+				ax[irac_ch-1, inst-1].plot(lb_pred, spitz_auto_modl_pred, color='r')
+				ax[irac_ch-1, inst-1].plot(lb_pred, ciber_spitz_modl_pred, color='k')
+
+
+				# ax[irac_ch-1, inst-1].plot(lb_pred, ciber_auto_cross[:,2*inst+1], color='b', label='IGL (Mirocha)', linestyle=linestyle)
+				# ax[irac_ch-1, inst-1].plot(lb_pred, spitzer_auto_cross[:,irac_ch-1], color='r', linestyle=linestyle)
+				# ax[irac_ch-1, inst-1].plot(lb_pred, spitzer_auto_cross[:,2*(irac_ch-1)+inst+1], color='k', linestyle=linestyle)
+
+			elif load_snpred:
 				lb_pred = np.array([50, 100]+list(lb))
 				pf_pred = lb_pred*(lb_pred+1)/(2*np.pi)
 
@@ -365,6 +454,7 @@ def plot_ciber_spitzer_auto_cross(spitzer_mask_string=None, ciber_tailstrs=None,
 			if inst==1:
 				ax[irac_ch-1, inst-1].set_ylabel('$D_{\\ell}$ [nW$^2$ m$^{-4}$ sr$^{-2}$]', fontsize=16)
 			ax[irac_ch-1, inst-1].set_xlim(xlim)
+			print('ylim = ', ylim)
 			ax[irac_ch-1, inst-1].set_ylim(ylim)
 
 			if spitzer_ell_min is not None:
@@ -389,7 +479,7 @@ def plot_ciber_spitzer_auto_cross(spitzer_mask_string=None, ciber_tailstrs=None,
 			if textypos is None:
 				textypos = ylim[1]*1e-2
 
-			ax[irac_ch-1,inst-1].text(textxpos, textypos, str(lam_ciber)+' $\\mu$m $\\times$ '+str(lamirac)+' $\\mu$m\n$'+bandstr+'<'+str(mag_lims_ciber[inst-1])+'\\wedge (CH1, CH2)<16.0$', fontsize=textfs, color='k', bbox=dict({'facecolor':'white', 'alpha':0.8, 'edgecolor':'None'}))
+			ax[irac_ch-1,inst-1].text(textxpos, textypos, str(lam_ciber)+' $\\mu$m $\\times$ '+str(lamirac)+' $\\mu$m\n$'+bandstr+'<'+str(mag_lims_ciber[inst-1])+'$ OR $(CH1, CH2)<16.0$', fontsize=textfs, color='k', bbox=dict({'facecolor':'white', 'alpha':0.8, 'edgecolor':'None'}))
 
 			rlx = fieldav_cl_cross/np.sqrt(np.abs(mean_ciber_bootes_ps*fieldav_cl_spitzer))
 			rlx_unc = compute_rlx_unc_comps(fieldav_cl_spitzer, mean_ciber_bootes_ps, fieldav_cl_cross, \
@@ -399,7 +489,7 @@ def plot_ciber_spitzer_auto_cross(spitzer_mask_string=None, ciber_tailstrs=None,
 			all_rlx_unc.append(rlx_unc)
 			
 	plt.legend(fontsize=14, bbox_to_anchor=bbox_to_anchor, ncol=2)
-	plt.subplots_adjust(wspace=0.0, hspace=0.0)
+	plt.subplots_adjust(wspace=wspace, hspace=hspace)
 
 	plt.show()
 	
@@ -414,12 +504,16 @@ def plot_ciber_spitzer_auto_cross(spitzer_mask_string=None, ciber_tailstrs=None,
 
 
 def load_ciber_spitzer_data_products(cbps, irac_ch, inst, ifield_list, mask_tail, plot=False, \
-									base_path=None, verbose=False, map_mode='gradsub_perep', max_clip=None):
+									base_path=None, verbose=False, map_mode='gradsub_perep', max_clip=None, fc_sub=False, \
+									load_ciber=True):
 	
 	if base_path is None:
 		base_path = config.ciber_basepath+'data/'
 
-	mask_tail_irac = mask_tail + '_IRAC_CH'+str(irac_ch)
+	# if load_ciber:
+	# 	mask_tail_irac = mask_tail + '_IRAC_CH'+str(irac_ch)
+	# else:
+	mask_tail_irac = mask_tail
 		
 	bootes_ifields = [6, 7]
 		
@@ -445,16 +539,31 @@ def load_ciber_spitzer_data_products(cbps, irac_ch, inst, ifield_list, mask_tail
 	# transfer function 
 	if verbose:
 		print('Loading transfer functions..')
-	t_ell_av_grad = np.load(base_path+'transfer_function/t_ell_est_nsims=100.npz')['t_ell_av']
-	t_ell_av_quad = np.load(base_path+'transfer_function/t_ell_masked_wdgl_2500_n=2p5_wgrad_quadrant_nsims=1000.npz')['t_ell_av']
 
-	t_ell_av = np.sqrt(t_ell_av_grad*t_ell_av_quad)
+	t_ell_av_grad = np.load(base_path+'transfer_function/t_ell_est_nsims=100.npz')['t_ell_av']
+
+	t_ell_av_quad = np.load(base_path+'transfer_function/t_ell_quadoff_grad_nsims=500_n=3p0.npz')['t_ell_av']
+	# t_ell_av_quad = np.load(base_path+'transfer_function/t_ell_masked_wdgl_2500_n=2p5_wgrad_quadrant_nsims=1000.npz')['t_ell_av']
+
+	t_ell_av = np.ones_like(t_ell_av_grad)
+
+	if not fc_sub:
+		print('t_ell av is geom mean of individual t_ell')
+		t_ell_av = np.sqrt(t_ell_av_grad*t_ell_av_quad)
+		print('t_ell av:', t_ell_av)
 
 	if 'conserve_flux' in map_mode:
-		tlregrid = np.load(config.ciber_basepath+'data/transfer_function/regrid/tl_regrid_tm2_to_tm1_conserve_flux.npz')
+		tlregrid_ast = np.load(config.ciber_basepath+'data/transfer_function/regrid/tl_regrid_tm2_to_tm1_conserve_flux.npz')
+		
+		tlregrid = np.load(config.ciber_basepath+'data/transfer_function/regrid/tl_regrid_tm2_to_tm1_order=1.npz')
+
 		lb = tlregrid['lb']
 		tl_regrid = tlregrid['tl_regrid']
+
+		tl_regrid_ast = tlregrid_ast['tl_regrid']
+		
 		t_ell_av *= np.sqrt(tl_regrid)
+		t_ell_av *= np.sqrt(tl_regrid_ast)
 		t_ell_av_grad *= tl_regrid
 
 	
@@ -474,23 +583,24 @@ def load_ciber_spitzer_data_products(cbps, irac_ch, inst, ifield_list, mask_tail
 	# compute effective beam functions and loads maps
 	full_bls = np.zeros_like(B_ells)
 
-	for fieldidx, ifield in enumerate(ifield_list):
+	if load_ciber:
+		for fieldidx, ifield in enumerate(ifield_list):
 
-		full_bls[fieldidx] = np.sqrt(cibermatch_bl*B_ells[fieldidx,:])
-		mask_fpath = base_path+'fluctuation_data/TM'+str(inst)+'/masks/'+mask_tail+'/joint_mask_ifield'+str(ifield)+'_inst'+str(inst)+'_observed_'+mask_tail+'.fits'
-		
-		if verbose:
-			print('Loading mask from ', mask_fpath)
-		masks[fieldidx] = fits.open(mask_fpath)[1].data.astype(int)
+			full_bls[fieldidx] = np.sqrt(cibermatch_bl*B_ells[fieldidx,:])
+			mask_fpath = base_path+'fluctuation_data/TM'+str(inst)+'/masks/'+mask_tail+'/joint_mask_ifield'+str(ifield)+'_inst'+str(inst)+'_observed_'+mask_tail+'.fits'
+			
+			if verbose:
+				print('Loading mask from ', mask_fpath)
+			masks[fieldidx] = fits.open(mask_fpath)[1].data.astype(int)
 
-		if verbose:
-			print('Loading flight map..')
-		flight_map = cbps.load_flight_image(ifield, inst, inplace=False, verbose=True)
-		if verbose:
-			print('Subtracting by dark current')
-		dark_current = cbps.load_dark_current_template(inst, inplace=False)
-		flight_map -= dark_current
-		ciber_maps[fieldidx,:,:] = flight_map*cbps.cal_facs[inst]
+			if verbose:
+				print('Loading flight map..')
+			flight_map = cbps.load_flight_image(ifield, inst, inplace=False, verbose=True)
+			if verbose:
+				print('Subtracting by dark current')
+			dark_current = cbps.load_dark_current_template(inst, inplace=False)
+			flight_map -= dark_current
+			ciber_maps[fieldidx,:,:] = flight_map*cbps.cal_facs[inst]
 			
 	spitzer_regrid_maps, spitzer_regrid_masks, \
 		all_diff1, all_diff2, all_spitz_by_epoch, all_coverage_maps = load_spitzer_bootes_maps(inst, irac_ch, bootes_ifields, mask_tail_irac, map_mode=map_mode, max_clip=max_clip)
@@ -567,6 +677,24 @@ def load_spitzer_bootes_maps(inst, irac_ch, bootes_ifields, mask_tail, base_path
 		spitzer_regrid_masks.append(spitzer_ciber_mask)
 		
 	return spitzer_regrid_maps, spitzer_regrid_masks, all_diff1, all_diff2, all_spitz_epochs, all_coverage_maps
+
+
+def grab_nl2ds_spitzer(cbps, diff1_indiv, diff2_indiv, inv_Mkk, Mkk, plot=False):
+	# we want to compute an effective Spitzer noise model, which we do by computing 2D power spectra of the epoch differences. 
+	# since we are drawing from 2D Fourier space, want to apply an approximate mode coupling correction to azimuthally spaced bins
+
+	l2d, nl2d_diff = compute_nl2d_spitzer_crossepoch_diffs(diff1_indiv, diff2_indiv, plot=plot)
+
+	nl2d_diff /= 8. # for full four epoch mosaics, compared to noise of per epoch differences
+
+	nl2d_diff_crossep = nl2d_diff*2
+
+	nl2d_corr = cbps.correct_mkk_azim_cl2d(nl2d_diff, inv_Mkk, Mkk=Mkk)
+	nl2d_corr_crossep = cbps.correct_mkk_azim_cl2d(nl2d_diff_crossep, inv_Mkk, Mkk=Mkk)
+
+	nl2d_corr_crossep = np.abs(nl2d_corr_crossep) 
+
+	return nl2d_corr, nl2d_corr_crossep
 
 def load_ciber_spitzer_bootes_maps_plotting(inst, ifield, masking_maglim=17.5, mask_tail_TM1=None, mask_tail_TM2=None, \
 								  smooth=True, sig_arcmin=None, sig_pix=None,ifield_list_full = [4, 5, 6, 7, 8]):
@@ -764,6 +892,81 @@ def compute_weighted_nl1d_from_nl2d(cbps, var_nl2d, use_weights=True):
 	
 	return std_nl1d, fw
 	
+
+# def spitzer_CH1CH2_cross(irac_ch, irac_ch_cross, inst_regrid=1, mask_tail, base_path=None, compute_mkk=False, bootes_ifields=[6, 7], \
+# 	plot=False, n_mkk_sims=200, n_split=4, n_sims_noise=500, n_split_noise=20, save=True, add_str=None, estimate_cross_noise=False, \
+# 	map_mode='gradsub_perep', fc_sub=False, fc_sub_quad_offset=True, fc_sub_n_terms=2, fc_sub_with_gradient=True):
+
+# 	cbps = CIBER_PS_pipeline()
+# 	spitz_obj = spitzer_cl() # for storing CIBER x Spitzer power spectrum quantities
+
+# 	if base_path is None:
+# 		base_path = config.ciber_basepath+'data/'
+
+# 	mask_tail_irac = mask_tail + '_IRAC_CH'+str(irac_ch)
+
+# 	spitz_crossnoise_basepath = base_path+'Spitzer/cross_noise/'
+# 	mkk_basepath = base_path + 'fluctuation_data/TM'+str(inst)+'/mkk/'+mask_tail_irac
+
+# 	spitzer_regrid_maps = load_spitzer_bootes_maps()
+
+# 	bootes_masks = [masks[idx] for idx in bootes_idxs]
+# 	bootes_bls = [full_bls[idx] for idx in bootes_idxs]
+# 	combined_masks = [bootes_masks[idx]*spitzer_regrid_mask for idx, spitzer_regrid_mask in enumerate(spitzer_regrid_masks)]
+# 	bootes_Mkks, bootes_inv_Mkks = [], []
+
+# 	for idx, ifield in enumerate(bootes_ifields):
+		
+# 		if compute_mkk:
+# 			make_fpaths([mkk_basepath])
+			
+# 			Mkk, inv_Mkk = cbps.compute_mkk_matrix(combined_masks[idx], nsims=n_mkk_sims, n_split=n_split, inplace=False)
+
+# 			# plot_mkk_matrix(inv_Mkk, inverse=True, symlogscale=True)
+# 			hdul = write_Mkk_fits(Mkk, inv_Mkk, ifield, inst, \
+# 								 use_inst_mask=True, dat_type='spitzer_CH1CH2_cross')
+
+# 			mkkpath = mkk_basepath+'/mkk_maskonly_estimate_ifield'+str(ifield)+'_observed_'+mask_tail_irac+'.fits'
+# 			hdul.writeto(mkkpath, overwrite=True)
+
+# 		else:
+# 			mkkpath = mkk_basepath+'/mkk_maskonly_estimate_ifield'+str(ifield)+'_observed_'+mask_tail_irac+'.fits'
+# 			inv_Mkk = fits.open(mkkpath)['inv_Mkk_'+str(ifield)].data
+# 			Mkk = fits.open(mkkpath)['Mkk_'+str(ifield)].data
+
+	
+# 		bootes_inv_Mkks.append(inv_Mkk)
+# 		bootes_Mkks.append(Mkk)
+
+# 		spitz = combined_masks[idx]*(spitzer_regrid_maps[irac_ch-1, idx].copy())
+# 		spitz_cross = combined_masks[idx]*(spitzer_regrid_maps[irac_ch_cross-1, idx].copy())
+
+
+# 		clipmask_1 = iter_sigma_clip_mask(spitz, mask=combined_masks[idx], sig=5, nitermax=5)       
+# 		spitz *= clipmask_1
+
+# 		clipmask_2 = iter_sigma_clip_mask(spitz_cross, mask=combined_masks[idx], sig=5, nitermax=5)       
+# 		spitz_cross *= clipmask_2
+
+# 		spitz[spitz != 0] -= np.mean(spitz[spitz != 0])
+# 		spitz_cross[spitz_cross != 0] -= np.mean(spitz_cross[spitz_cross != 0])
+
+
+# 		nl2d_corr, nl2d_corr_crossep = grab_nl2ds_spitzer(diff1_indiv, diff2_indiv, inv_Mkk, Mkk, plot=plot)
+
+
+# 		lb, cl_spitzer, clerr_spitzer = get_power_spec(spitz, map_b=spitz_cross, lbinedges=cbps.Mkk_obj.binl, lbins=cbps.Mkk_obj.midbin_ell)
+
+# 		cl_spitzer, clerr_spitzer = calc_cl_simp(cl_spitzer, clerr_spitzer, \
+# 												bl=spitz_bl, t_ell=t_ell_av_grad, inv_Mkk=inv_Mkk, fc_sub=fc_sub, \
+# 												Mkk=Mkk)
+
+# 		return lb, cl_spitzer, clerr_spitzer
+
+
+
+
+
 def ciber_spitzer_crosscorr_full(irac_ch, inst, mask_tail, \
 								 compute_mkk=False, photon_noise=True, compute_CIBER_spitz_cross=True, compute_nl_spitzer_unc=True,\
 								 compute_nl_ciber_unc=True, compute_nl_ciber_nl_spitzer_unc=False, bootes_idxs = [2,3],\
@@ -772,10 +975,12 @@ def ciber_spitzer_crosscorr_full(irac_ch, inst, mask_tail, \
 								 observed_run_name = None, include_ff_errors=True, \
 								 save=True, ifield_list_full = [4, 5, 6, 7, 8],\
 								 add_str=None, add_str_ciber=None, add_str_spitzer=None, apply_FW=False, \
-									datestr='111323', nitermax=10, apply_ff_mask=False, ff_min=0.6, ff_max=1.4, \
-									compute_crossep_auto=False, estimate_crossep_noise=False, \
-									include_z14=False, include_snpred=False, map_mode='gradsub_perep', max_clip=None, \
-									mask_tail_noise=None, coverage_map_weight=False, ell_max_FW=None):
+								datestr='111323', nitermax=10, apply_ff_mask=False, ff_min=0.6, ff_max=1.4, \
+								compute_crossep_auto=False, estimate_crossep_noise=False, \
+								include_z14=False, include_snpred=False, map_mode='gradsub_perep', max_clip=None, \
+								mask_tail_noise=None, coverage_map_weight=False, ell_max_FW=None, \
+								fc_sub=False, fc_sub_quad_offset=True, fc_sub_n_terms=2, fc_sub_with_gradient=True, \
+								sigma_clip_bandpowers=False, sig=5):
 	
 	cbps = CIBER_PS_pipeline()
 	spitz_obj = spitzer_cl() # for storing CIBER x Spitzer power spectrum quantities
@@ -784,7 +989,12 @@ def ciber_spitzer_crosscorr_full(irac_ch, inst, mask_tail, \
 	if base_path is None:
 		base_path = config.ciber_basepath+'data/'
 	   
-	mask_tail_irac = mask_tail + '_IRAC_CH'+str(irac_ch)
+	if compute_CIBER_spitz_cross:
+		# mask_tail_irac = mask_tail + '_IRAC_CH'+str(irac_ch)
+		mask_tail_irac = mask_tail
+
+	else:
+		mask_tail_irac = mask_tail
 
 	spitz_crossnoise_basepath = base_path+'Spitzer/cross_noise/'
 
@@ -814,7 +1024,8 @@ def ciber_spitzer_crosscorr_full(irac_ch, inst, mask_tail, \
 				all_diff1, all_diff2, all_spitz_by_epoch, all_coverage_maps = load_ciber_spitzer_data_products(cbps, irac_ch, inst,\
 																				 ifield_list_full,\
 																				 mask_tail, plot=plot, \
-																				base_path=base_path, map_mode=map_mode, max_clip=max_clip)
+																				base_path=base_path, map_mode=map_mode, max_clip=max_clip, \
+																				fc_sub=fc_sub, load_ciber=compute_CIBER_spitz_cross)
 
 	if inst==2:
 		corner_mask = np.ones_like(spitzer_regrid_masks[0])
@@ -824,12 +1035,33 @@ def ciber_spitzer_crosscorr_full(irac_ch, inst, mask_tail, \
 
 
 	if compute_CIBER_spitz_cross:
-		processed_ciber_maps, ff_estimates, masks = process_ciber_maps_perquad(cbps, ifield_list_full, inst, ciber_maps, masks, clip_sigma=20,\
-																				 nitermax=nitermax)
 
-		if apply_ff_mask:
-			print('applying ff mask')
-			masks *= (ff_estimates > ff_min)*(ff_estimates < ff_max)
+
+		if fc_sub:
+			processed_ciber_maps, ff_estimates, final_planes, stack_masks, ff_weights = process_ciber_maps(cbps, ifield_list_full, inst, ciber_maps, masks, clip_sigma=30, nitermax=1)
+
+			if apply_ff_mask:
+				print('applying ff mask')
+				masks *= (ff_estimates > ff_min)*(ff_estimates < ff_max)
+				
+
+			for bootes_idx in bootes_idxs:
+
+				dot1, X, mask_rav = precomp_filter_general(cbps.dimx, cbps.dimy, mask=masks[bootes_idx], fc_sub=fc_sub, fc_sub_quad_offset=fc_sub_quad_offset, fc_sub_n_terms=fc_sub_n_terms, fc_sub_with_gradient=fc_sub_with_gradient)
+
+
+				theta, filter_comp = apply_filter_to_map_precomp(processed_ciber_maps[bootes_idx], dot1, X, mask_rav=mask_rav)
+				processed_ciber_maps[bootes_idx] -= filter_comp
+
+
+		else:
+
+			processed_ciber_maps, ff_estimates, masks = process_ciber_maps_perquad(cbps, ifield_list_full, inst, ciber_maps, masks, clip_sigma=20,\
+																					 nitermax=nitermax)
+
+			if apply_ff_mask:
+				print('applying ff mask')
+				masks *= (ff_estimates > ff_min)*(ff_estimates < ff_max)
 	
 		bootes_obs = [processed_ciber_maps[idx] for idx in bootes_idxs]
 	
@@ -837,7 +1069,7 @@ def ciber_spitzer_crosscorr_full(irac_ch, inst, mask_tail, \
 	bootes_bls = [full_bls[idx] for idx in bootes_idxs]
 	combined_masks = [bootes_masks[idx]*spitzer_regrid_mask for idx, spitzer_regrid_mask in enumerate(spitzer_regrid_masks)]
 		
-	bootes_inv_Mkks = []
+	bootes_inv_Mkks, bootes_Mkks = [], []
 
 	all_avmap_AB, all_avmap_CD = [], []
 	all_nl_crossep_save_fpath = []
@@ -870,12 +1102,24 @@ def ciber_spitzer_crosscorr_full(irac_ch, inst, mask_tail, \
 			mkkpath = mkk_basepath+'/mkk_maskonly_estimate_ifield'+str(ifield)+'_observed_'+mask_tail_irac+'.fits'
 			hdul.writeto(mkkpath, overwrite=True)
 		else:
-			mkkpath = mkk_basepath+'/mkk_maskonly_estimate_ifield'+str(ifield)+'_observed_'+mask_tail_irac+'.fits'
-			inv_Mkk = fits.open(mkkpath)['inv_Mkk_'+str(ifield)].data
+			if fc_sub:
+				mkkpath = mkk_basepath+'/mkk_quadoff_grad_fcsub_order'+str(fc_sub_n_terms)+'_ifield'+str(ifield)+'_observed_'+mask_tail_irac+'.fits'
+				Mkk = fits.open(mkkpath)['Mkk_'+str(ifield)].data 
+				inv_Mkk = np.linalg.inv(Mkk[2:, 2:])
+				Mkk = Mkk[2:, 2:]
+
+			else:
+				mkkpath = mkk_basepath+'/mkk_maskonly_ifield'+str(ifield)+'_observed_'+mask_tail_irac+'.fits'
+
+				# mkkpath = mkk_basepath+'/mkk_maskonly_estimate_ifield'+str(ifield)+'_observed_'+mask_tail_irac+'.fits'
+				inv_Mkk = fits.open(mkkpath)['inv_Mkk_'+str(ifield)].data
+				Mkk = fits.open(mkkpath)['Mkk_'+str(ifield)].data
+
 			
 			# plot_mkk_matrix(inv_Mkk, inverse=True)
 			
 		bootes_inv_Mkks.append(inv_Mkk)
+		bootes_Mkks.append(Mkk)
 
 		meansubspitz = spitzer_regrid_maps[idx].copy()
 		meansubspitz *= combined_masks[idx]
@@ -897,29 +1141,31 @@ def ciber_spitzer_crosscorr_full(irac_ch, inst, mask_tail, \
 
 		combined_masks[idx] *= (meansubspitz != 0)
 		
-		# we want to compute an effective Spitzer noise model, which we do by computing 2D power spectra of the epoch differences. 
-		# since we are drawing from 2D Fourier space, want to apply mode coupling correction to azimuthally spaced bins
-		l2d, nl2d_diff = compute_nl2d_spitzer_crossepoch_diffs(diff1_indiv, diff2_indiv, plot=plot)
-		# noise model is for difference of individual epochs, so divide by 8 to get 4-epoch averaged
-		nl2d_diff /= 8. 
 
-		nl2d_diff_crossep = nl2d_diff*2
-		
-		nl2d_corr = cbps.correct_mkk_azim_cl2d(nl2d_diff, inv_Mkk)
-		nl2d_corr_crossep = cbps.correct_mkk_azim_cl2d(nl2d_diff_crossep, inv_Mkk)
+		nl2d_corr, nl2d_corr_crossep = grab_nl2ds_spitzer(cbps, diff1_indiv, diff2_indiv, inv_Mkk, Mkk, plot=plot)
 
-		nl2d_corr_crossep = np.abs(nl2d_corr_crossep) # ? 
-
+		# l2d, nl2d_diff = compute_nl2d_spitzer_crossepoch_diffs(diff1_indiv, diff2_indiv, plot=plot)
+		# # noise model is for difference of individual epochs, so divide by 8 to get 4-epoch averaged
+		# nl2d_diff /= 8. 
+		# nl2d_diff_crossep = nl2d_diff*2
+		# nl2d_corr = cbps.correct_mkk_azim_cl2d(nl2d_diff, inv_Mkk, Mkk=Mkk)
+		# nl2d_corr_crossep = cbps.correct_mkk_azim_cl2d(nl2d_diff_crossep, inv_Mkk, Mkk=Mkk)
+		# nl2d_corr_crossep = np.abs(nl2d_corr_crossep) # ? 
 		# plot_map(nl2d_corr/nl2d_diff, title='mkk corrected / original')
 		
 		lb, nl1d_diff, nl1d_err_diff = azim_average_cl2d(nl2d_corr, l2d, nbins=25, lbinedges=cbps.Mkk_obj.binl, lbins=cbps.Mkk_obj.midbin_ell, logbin=True, verbose=False)
 		spitz_obj.append_nls(nl1d_diff=nl1d_diff, nl1d_err_diff=nl1d_err_diff, nl2d_diff=nl2d_corr)
 
+
 		hdul = write_noise_model_fits(nl2d_corr, ifield, inst, dat_type='IRAC_CH'+str(irac_ch))
 		noise_fpath = base_path+'fluctuation_data/TM'+str(inst)+'/noise_model/spitzer_noise/'
 		noise_fpath += mask_tail_irac
 		make_fpaths([noise_fpath])
-		noise_fpath += '/spitzer_CH'+str(irac_ch)+'_noisemodl_TM'+str(inst)+'_ifield'+str(ifield)+'.fits'
+		if fc_sub:
+			noise_fpath += '/spitzer_CH'+str(irac_ch)+'_noisemodl_TM'+str(inst)+'_ifield'+str(ifield)+'_fcsub_order'+str(fc_sub_n_terms)+'.fits'
+		else:
+			noise_fpath += '/spitzer_CH'+str(irac_ch)+'_noisemodl_TM'+str(inst)+'_ifield'+str(ifield)+'.fits'
+
 		print('Saving Spitzer noise model to ', noise_fpath)
 		hdul.writeto(noise_fpath, overwrite=True)
 
@@ -947,7 +1193,6 @@ def ciber_spitzer_crosscorr_full(irac_ch, inst, mask_tail, \
 				print('Estimating cross epoch noise!!!')
 
 
-
 				fourier_weights, mean_nl2d_nAnB, mean_nl2d_nAsB,\
 					var_nl2d_nAsB, mean_nl2d_nBsA, var_nl2d_nBsA, \
 						nl1ds_nAnB, nl1ds_nAsB, nl1ds_nBsA= cbps.estimate_cross_noise_ps(inst, inst, ifield, \
@@ -964,7 +1209,11 @@ def ciber_spitzer_crosscorr_full(irac_ch, inst, mask_tail, \
 				spitz_crossep.append_cls(std_nl1ds_nAnB=std_nl1ds_nAnB, std_nl1ds_nAsB=std_nl1ds_nAsB, std_nl1ds_nBsA=std_nl1ds_nBsA, \
 					var_nl2d_nAsB=var_nl2d_nAsB, var_nl2d_nBsA=var_nl2d_nBsA)
 
+
 				nl_crossep_save_fpath = auto_FW_basepath+'spitzer_crossep_noise_TM'+str(inst)+'_IRAC_CH'+str(irac_ch)+'_ifield'+str(ifield)+'_'+mask_tail_irac
+
+				if fc_sub:
+					nl_crossep_save_fpath += '_fcsub_order'+str(fc_sub_n_terms)
 				if add_str is not None:
 					nl_crossep_save_fpath += '_'+add_str
 
@@ -977,12 +1226,22 @@ def ciber_spitzer_crosscorr_full(irac_ch, inst, mask_tail, \
 				all_nl_crossep_save_fpath.append(nl_crossep_save_fpath)
 
 	if compute_CIBER_spitz_cross:
+
+		if fc_sub:
+			add_str_use = 'fcsub_order'+str(fc_sub_n_terms)
+			if add_str is not None:
+				add_str_use += '_'+add_str
+		else:
+			add_str_use = add_str 
+
+
+
 		# computes noise terms for both bootes fields ("both")
 		if compute_nl_spitzer_unc:
 
 			print('Estimating Spitzer noise x CIBER..')
 			all_nl_spitzer_fpath, lb, all_nl1ds_cross_ciber_both = estimate_spitzer_noise_cross_ciber(cbps, irac_ch, inst, bootes_obs, combined_masks, nsims=n_sims_noise, n_split=n_split_noise, \
-														  base_path=spitzn_ciberm_noise_basepath, fft2_spitzer=np.array(spitz_obj.all_fft2_spitzer), compute_spitzer_FW=True, save=True, add_str=add_str)
+														  base_path=spitzn_ciberm_noise_basepath, fft2_spitzer=np.array(spitz_obj.all_fft2_spitzer), compute_spitzer_FW=True, save=True, add_str=add_str_use)
 			
 			
 		if compute_nl_ciber_unc:
@@ -990,7 +1249,7 @@ def ciber_spitzer_crosscorr_full(irac_ch, inst, mask_tail, \
 			print('Estimating CIBER noise x Spitzer..')
 			all_nl_ciber_fpath, lb, all_nl1ds_cross_spitzer_both = estimate_ciber_noise_cross_spitzer(cbps, irac_ch, inst, spitzer_regrid_maps_meansub, combined_masks,\
 																											nsims=n_sims_noise, n_split=n_split_noise, include_ff_errors=include_ff_errors, observed_run_name=observed_run_name, \
-																										  base_path=cibern_spitzm_noise_basepath, save=True, photon_noise=photon_noise, add_str=add_str, \
+																										  base_path=cibern_spitzm_noise_basepath, save=True, photon_noise=photon_noise, add_str=add_str_use, \
 																									 datestr=datestr, apply_ff_mask=apply_ff_mask, ff_min=ff_min, ff_max=ff_max)
 			print('all nl ciber fpath:', all_nl_ciber_fpath)
 
@@ -998,14 +1257,12 @@ def ciber_spitzer_crosscorr_full(irac_ch, inst, mask_tail, \
 		if compute_nl_ciber_nl_spitzer_unc:
 			print('Estimating CIBER noise x Spitzer noise..')
 			all_nl_ciber_nl_spitzer_fpath, lb, all_nl1ds_cross_nl1ds_both = estimate_ciber_noise_cross_spitzer_noise(cbps, irac_ch, inst, combined_masks, np.array(spitz_obj.all_fft2_spitzer), nsims=n_sims_noise, n_split=n_split_noise, \
-																													include_ff_errors=include_ff_errors, observed_run_name=observed_run_name, add_str=add_str, \
+																													include_ff_errors=include_ff_errors, observed_run_name=observed_run_name, add_str=add_str_use, \
 																													base_path=cibern_spitzn_noise_basepath, save=True, photon_noise=photon_noise, datestr=datestr, apply_ff_mask=apply_ff_mask, ff_min=ff_min, ff_max=ff_max)
 
 
 	for idx, ifield in enumerate(bootes_ifields):
 
-
-		# combined_masks[idx] *= ()
 
 		if coverage_map_weight:
 
@@ -1013,7 +1270,6 @@ def ciber_spitzer_crosscorr_full(irac_ch, inst, mask_tail, \
 			# covmap = covmap*combined_masks[idx]
 
 			covmap = all_coverage_maps[idx]*combined_masks[idx]
-
 			covmap_norm = covmap.copy()
 			covmap_norm[covmap_norm != 0] /= np.mean(covmap_norm[covmap_norm != 0])
 
@@ -1024,15 +1280,12 @@ def ciber_spitzer_crosscorr_full(irac_ch, inst, mask_tail, \
 
 			plot_map(covmap, title='masked coverage map (normalized)', figsize=(6, 6))
 
-
 			l2d, ps2d = get_power_spectrum_2d(covmap, pixsize=cbps.pixsize)
 
 			plot_map(np.log10(ps2d), title='coverage map ps2d', figsize=(6, 6), cmap='jet')
-
 			plot_map(np.log10(ps2d[500:525, 500:525]), figsize=(6, 6), cmap='jet', title='zoomed in ps2d')
 
 			fw_crossep = 1./np.abs(ps2d)
-
 			plot_map(np.log10(fw_crossep), title='Fourier weights coverage map', figsize=(6, 6), cmap='jet')
 
 		else:
@@ -1048,6 +1301,9 @@ def ciber_spitzer_crosscorr_full(irac_ch, inst, mask_tail, \
 				nmfile_crossep = np.load(all_nl_crossep_save_fpath[idx])
 			else:
 				nl_crossep_save_fpath = auto_FW_basepath+'spitzer_crossep_noise_TM'+str(inst)+'_IRAC_CH'+str(irac_ch)+'_ifield'+str(ifield)+'_'+mask_tail_noise
+				if fc_sub:
+					nl_crossep_save_fpath += '_fcsub_order'+str(fc_sub_n_terms)
+
 				if add_str is not None:
 					nl_crossep_save_fpath += '_'+add_str 
 				nl_crossep_save_fpath += '.npz'
@@ -1056,6 +1312,12 @@ def ciber_spitzer_crosscorr_full(irac_ch, inst, mask_tail, \
 			std_nl1ds_nAnB = nmfile_crossep['std_nl1ds_nAnB']*cbps.cal_facs[inst]**2
 			std_nl1ds_nAsB = nmfile_crossep['std_nl1ds_nAsB']*cbps.cal_facs[inst]**2
 			std_nl1ds_nBsA = nmfile_crossep['std_nl1ds_nBsA']*cbps.cal_facs[inst]**2
+
+
+			# if fc_sub:
+			# 	t_ell_use = None
+			# else:
+			# 	t_ell_use = t_ell_av_grad
 
 			# var_nl2d_nAsB = nmfile_crossep['var_nl2d_nAsB']
 			# var_nl2d_nBsA = nmfile_crossep['var_nl2d_nBsA']
@@ -1104,8 +1366,10 @@ def ciber_spitzer_crosscorr_full(irac_ch, inst, mask_tail, \
 
 			average_dcl_spitzer_auto = np.sqrt(std_nl1ds_nAsB**2 + std_nl1ds_nBsA**2)
 
+
 			spitzer_crossep_cl, average_dcl_spitzer_crossep = calc_cl_simp(cl_spitzer_masked_AB_CD, average_dcl_spitzer_auto, \
-													bl=cibermatch_bl, t_ell=t_ell_av_grad, inv_Mkk=bootes_inv_Mkks[idx])
+													bl=cibermatch_bl, t_ell=t_ell_av_grad, inv_Mkk=bootes_inv_Mkks[idx], fc_sub=fc_sub, \
+													Mkk=bootes_Mkks[idx])
 
 			auto_knox_errors = np.sqrt(1./((2*lb+1)*cbps.Mkk_obj.delta_ell)) # factor of 1 in numerator since auto is a cross-epoch cross
 			fsky = 2*2/(41253.)    
@@ -1119,6 +1383,9 @@ def ciber_spitzer_crosscorr_full(irac_ch, inst, mask_tail, \
 											std_nl1ds_nAsB, std_nl1ds_nBsA, std_nl1ds_nAnB, return_fig=True, ylim=[1e-6, 1e3])
 			
 			fig_savepath = 'figures/ciber_spitzer/crossep_auto/ciber_spitzer_crossep_auto_TM'+str(inst)+'_IRACCH'+str(irac_ch)+'_ifield'+str(ifield)+'_withcrossterms'
+			if fc_sub:
+				fig_savepath += '_fcsub_order'+str(fc_sub_n_terms)
+
 			if add_str is not None:
 				fig_savepath += '_'+add_str 
 			fig_savepath += '.png'
@@ -1133,6 +1400,10 @@ def ciber_spitzer_crosscorr_full(irac_ch, inst, mask_tail, \
 				nmfile_spitzernoise_ciber = np.load(all_nl_spitzer_fpath[idx])
 			else:
 				nl_spitzer_fpath = spitzn_ciberm_noise_basepath+'nl1ds_TM'+str(inst)+'_ifield'+str(ifield)+'_irac_ch'+str(irac_ch)+'_spitzer_noise_ciber_map'
+				
+				if fc_sub:
+					nl_spitzer_fpath += '_fcsub_order'+str(fc_sub_n_terms)
+
 				if add_str is not None:
 					nl_spitzer_fpath += '_'+add_str 
 				nl_spitzer_fpath += '.npz'
@@ -1144,6 +1415,10 @@ def ciber_spitzer_crosscorr_full(irac_ch, inst, mask_tail, \
 				nmfile_cibernoise_spitzer = np.load(all_nl_ciber_fpath[idx])
 			else:
 				nl_ciber_fpath = cibern_spitzm_noise_basepath+'nl1ds_TM'+str(inst)+'_ifield'+str(ifield)+'_irac_ch'+str(irac_ch)+'_ciber_noise_spitzer_map'
+				
+				if fc_sub:
+					nl_ciber_fpath += '_fcsub_order'+str(fc_sub_n_terms)
+
 				if add_str is not None:
 					nl_ciber_fpath += '_'+add_str 
 				nl_ciber_fpath += '.npz'
@@ -1155,6 +1430,10 @@ def ciber_spitzer_crosscorr_full(irac_ch, inst, mask_tail, \
 				nmfile_cibernoise_spitzernoise = np.load(all_nl_ciber_nl_spitzer_fpath[idx])
 			else:
 				nl_ciber_spitzer_fpath = cibern_spitzn_noise_basepath+'nl1ds_TM'+str(inst)+'_ifield'+str(ifield)+'_irac_ch'+str(irac_ch)+'_ciber_noise_spitzer_noise'
+				
+				if fc_sub:
+					nl_ciber_spitzer_fpath += '_fcsub_order'+str(fc_sub_n_terms)
+
 				if add_str is not None:
 					nl_ciber_spitzer_fpath += '_'+add_str 
 				nl_ciber_spitzer_fpath += '.npz'
@@ -1197,7 +1476,8 @@ def ciber_spitzer_crosscorr_full(irac_ch, inst, mask_tail, \
 			else:
 				fourier_weights = None
 			
-			spitzmask_bootes_obs = cbps.mean_sub_masked_image_per_quadrant(spitzmask_bootes_obs, (spitzmask_bootes_obs != 0))
+
+			# spitzmask_bootes_obs = cbps.mean_sub_masked_image_per_quadrant(spitzmask_bootes_obs, (spitzmask_bootes_obs != 0))
 
 
 			if coverage_map_weight:
@@ -1219,16 +1499,23 @@ def ciber_spitzer_crosscorr_full(irac_ch, inst, mask_tail, \
 				# plot_map(spitzer_final_regrid, title='spitzer final regrid', figsize=(6, 6))
 				print(np.mean(spitzer_final_regrid), np.mean(ciber_final))
 
-				lb, ciber_spitzer_cross_cl, ciber_spitzer_cross_clerr = get_power_spec(ciber_final, map_b=spitzer_final_regrid, mask=None, weights=None, lbinedges=cbps.Mkk_obj.binl, lbins=cbps.Mkk_obj.midbin_ell)
+				lb, ciber_spitzer_cross_cl, ciber_spitzer_cross_clerr = get_power_spec(ciber_final, map_b=spitzer_final_regrid, mask=None, weights=None, lbinedges=cbps.Mkk_obj.binl, lbins=cbps.Mkk_obj.midbin_ell, sigma_clip_bandpowers=sigma_clip_bandpowers)
 				print('ciber spitzer cross:', ciber_spitzer_cross_cl)
 			else:
-				lb, ciber_spitzer_cross_cl, ciber_spitzer_cross_clerr = get_power_spec(spitzmask_bootes_obs, map_b=spitzer_regrid_maps_meansub[idx], mask=None, weights=fourier_weights, lbinedges=cbps.Mkk_obj.binl, lbins=cbps.Mkk_obj.midbin_ell)
+
+				plot_map(spitzmask_bootes_obs, title='CIBER map of Bootes ifield '+str(ifield))
+				plot_map(spitzer_regrid_maps_meansub[idx], title='Spitzer map of Bootes ifield '+str(ifield))
+
+				lb, ciber_spitzer_cross_cl, ciber_spitzer_cross_clerr = get_power_spec(spitzmask_bootes_obs, map_b=spitzer_regrid_maps_meansub[idx], mask=None, weights=fourier_weights, lbinedges=cbps.Mkk_obj.binl, lbins=cbps.Mkk_obj.midbin_ell,\
+																					 sigma_clip_bandpowers=sigma_clip_bandpowers, sig=sig)
 			
 			lb, spitzer_auto_cl, spitzer_auto_clerr = get_power_spec(spitzer_regrid_maps_meansub[idx], mask=None, weights=None, lbinedges=cbps.Mkk_obj.binl, lbins=cbps.Mkk_obj.midbin_ell)
 			ciber_spitzer_cross_cl, ciber_spitzer_cross_clerr = calc_cl_simp(ciber_spitzer_cross_cl, ciber_spitzer_cross_clerr, \
-																						   bl=bootes_bls[idx], t_ell=t_ell_av, inv_Mkk=bootes_inv_Mkks[idx])
+																						   bl=bootes_bls[idx], t_ell=t_ell_av, inv_Mkk=bootes_inv_Mkks[idx], fc_sub=fc_sub, \
+																						   Mkk=bootes_Mkks[idx])
 			spitzer_auto_cl, spitzer_auto_clerr = calc_cl_simp(spitzer_auto_cl, spitzer_auto_clerr, \
-																						   bl=cibermatch_bl, t_ell=t_ell_av, inv_Mkk=bootes_inv_Mkks[idx])
+																						   bl=cibermatch_bl, t_ell=t_ell_av_grad, inv_Mkk=bootes_inv_Mkks[idx], fc_sub=fc_sub, \
+																						   Mkk=bootes_Mkks[idx])
 
 			
 			pf = lb*(lb+1)/(2*np.pi)
@@ -1252,6 +1539,10 @@ def ciber_spitzer_crosscorr_full(irac_ch, inst, mask_tail, \
 			
 
 			fig_savepath = 'figures/ciber_spitzer/ciber_spitzer_crosscl_TM'+str(inst)+'_IRACCH'+str(irac_ch)+'_'+fieldname+'_withcrossterms'
+
+			if fc_sub:
+				fig_savepath += '_fcsub_order'+str(fc_sub_n_terms)
+
 			if add_str is not None:
 				fig_savepath += '_'+add_str
 			fig_savepath += '.png'
@@ -1268,6 +1559,8 @@ def ciber_spitzer_crosscorr_full(irac_ch, inst, mask_tail, \
 	fig = plot_spitzer_auto(inst, irac_ch, lb, fieldav_cl_crossep, fieldav_clerr_crossep, all_cl_crossep, all_clerr_crossep, return_fig=True, include_z14=include_z14)
 	
 	fig_savepath = 'figures/ciber_spitzer/crossep_auto/spitzer_crossep_cl_byfield_TM'+str(inst)+'_IRACCH'+str(irac_ch)
+	if fc_sub:
+		fig_savepath += '_fcsub_order'+str(fc_sub_n_terms)
 	if add_str is not None:
 		fig_savepath += '_'+add_str
 	fig_savepath += '.png'
@@ -1301,6 +1594,8 @@ def ciber_spitzer_crosscorr_full(irac_ch, inst, mask_tail, \
 		fig = plot_fieldav_ciber_spitzer_cross(inst, irac_ch, lb, fieldav_cl_cross, fieldav_clerr_cross, all_cl_cross, all_clerr_cross_tot, include_z14=include_z14)
 		
 		fig_savepath = 'figures/ciber_spitzer/ciber_spitzer_fieldav_crosscl_TM'+str(inst)+'_IRACCH'+str(irac_ch)
+		if fc_sub:
+			fig_savepath += '_fcsub_order'+str(fc_sub_n_terms)
 		if add_str is not None:
 			fig_savepath += '_'+add_str
 		fig_savepath +='.png'
@@ -1309,6 +1604,8 @@ def ciber_spitzer_crosscorr_full(irac_ch, inst, mask_tail, \
 	
 	if save:
 		save_cl_fpath = base_path+'input_recovered_ps/ciber_spitzer/ciber_spitzer_cross_auto_cl_TM'+str(inst)+'_IRACCH'+str(irac_ch)
+		if fc_sub:
+			save_cl_fpath += '_fcsub_order'+str(fc_sub_n_terms)
 		if add_str is not None:
 			save_cl_fpath += '_'+add_str
 		save_cl_fpath += '.npz'

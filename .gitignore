@@ -1,0 +1,108 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Jupyter Notebook
+.ipynb_checkpoints
+*.ipynb_checkpoints/
+
+# VS Code
+.vscode/
+*.code-workspace
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Data files (large/binary)
+*.fits
+*.npz
+*.npy
+*.csv
+*.dat
+*.txt
+*.zip
+*.tar.gz
+*.pdf
+*.png
+*.jpg
+*.jpeg
+
+# But include specific small files if needed
+!README.md
+!requirements.txt
+!environment.yml
+
+# Submodules/external repos (not yours)
+FlatSkyQE/
+LensQuEst/
+
+# Large data directories
+data/fluctuation_data/
+data/TRILEGAL/
+data/Spitzer/
+data/COSMOS20/
+data/catalogs/
+data/mocks*/
+data/unWISE_coadds/
+data/airglow_*/
+data/framedata/
+data/input_recovered_ps*/
+data/lens_prods/
+data/*_maps*/
+data/HSC*/
+data/SWIRE*/
+data/DECaLS/
+data/2MASS/
+data/Bootes/
+data/LEPHARE*/
+data/jordan_mocks/
+data/noise_*/
+data/preprocess_example/
+data/subpixel_psfs*/
+data/astroutputs/
+data/zhou_lrg_ext/
+data/WISE_W1_counts_vs_magnitude_neo8.npz
+data/hsc_iband_counts_vs_magnitude.npz
+data/hsc_iband_counts_vs_redshift.npz
+data/mkk_obj.npz
+data/mock_*.npz
+data/*.npz
+
+# Generated figures
+figures/
+ciber_figures/
+
+# Other large directories
+photos/
+slides/
+ciber_drafts/
+dgl_points/
+scripts/depr/
+paper_comments/
+ppt/
+
+# Temporary files
+*.tmp
+*.bak
+*~
+.png

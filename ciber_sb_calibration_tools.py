@@ -450,8 +450,8 @@ def calc_g1g2_slope_iterclip(pred_fluxes, measured_fluxes, var_measured_fluxes, 
         plt.grid(alpha=0.5)
         plt.ylim(5, 1e3)
         plt.xlim(0.9*np.min(pred_fluxes), 1.1*np.max(pred_fluxes))
-        plt.text(0.1*np.max(pred_fluxes), 20, 'G1G2='+str(np.round(g1g2_init, 1)), color='k', fontsize=16)
-        plt.text(0.1*np.max(pred_fluxes), 10, 'G1G2='+str(np.round(g1g2, 1)), color='r' ,fontsize=16)
+        plt.text(0.1*np.max(pred_fluxes), 20, '$g_ag_1g_2=$'+str(np.round(g1g2_init, 1)), color='k', fontsize=16)
+        plt.text(0.1*np.max(pred_fluxes), 10, '$g_ag_1g_2=$'+str(np.round(g1g2, 1)), color='r' ,fontsize=16)
         plt.show()
     
 #     print('initial/final number of sources:', len(pred_fluxes), len(pred_fluxes_clip))
@@ -715,6 +715,30 @@ def gen_bkg_mask(dx, bkg_rad=0.3):
     bkg_mask[dr > bkg_rad*nx] = 1.
     
     return bkg_mask.astype(int)
+
+def grab_postage_stamps_sdwfs(cal_src_posx, cal_src_posy, mosaic_im, dx, bkg_mask, mask_frac_min=None, plot=False):
+    
+    nx = 2*dx+1
+    npix_post = nx**2
+        
+    aper_mask = np.zeros_like(bkg_mask)
+    aper_mask[bkg_mask==0] = 1
+    all_postage_stamps, all_postage_stamps_mask = [np.zeros((len(cal_src_posx), nx, nx)) for x in range(2)]
+    post_bool = np.zeros_like(cal_src_posx)
+
+    for n in range(len(cal_src_posx)):
+        caty, catx = int(cal_src_posx[n]), int(cal_src_posy[n])
+        x0, x1, y0, y1 = catx-dx, catx+dx+1, caty-dx, caty+dx+1
+
+        sdwfs_post = mosaic_im[x0:x1, y0:y1]
+
+        if n < 5 and plot:
+            plot_map(sdwfs_post, title='flight post, (catx, caty)=('+str(catx)+','+str(caty)+')', figsize=(5,5))
+
+        all_postage_stamps[n] = sdwfs_post
+    
+    return all_postage_stamps, aper_mask
+
 
 def grab_postage_stamps(inst, cal_src_posx, cal_src_posy, flight_im, mask, dx, neighbor_cat=None, mask_frac_min=None, bkg_mask=None, plot=False, \
                        skip_nn=True, neighbor_src_posx=None, neighbor_src_posy=None):
@@ -1084,7 +1108,7 @@ def ciber_sb_cal(inst, ifield, mask_base_path, mask_tail, dx=6, bkg_rad=0.3, m_m
         
 
     fig = plt.figure(figsize=(5,4))
-    plt.title('$\\lambda=$'+str(lam_eff)+' $\\mu$m, '+cbps.ciber_field_dict[ifield])
+    plt.title('$\\lambda=$'+str(lam_eff)+' $\\mu$m, '+cbps.ciber_field_dict[ifield], fontsize=13)
     # plt.title('TM'+str(inst)+', ifield '+str(ifield))
     plt.errorbar(sel_pred_fluxes, -1.*sel_measured_fluxes, yerr=np.sqrt(sel_var_measured_fluxes), color='k', fmt='o', markersize=2, alpha=0.4)
 
@@ -1100,13 +1124,13 @@ def ciber_sb_cal(inst, ifield, mask_base_path, mask_tail, dx=6, bkg_rad=0.3, m_m
         popt, pcov = curve_fit(linear_func_nointercept, sel_pred_fluxes[which_above_fmin], sel_measured_fluxes[which_above_fmin],  sigma=np.sqrt(sel_var_measured_fluxes[which_above_fmin]), absolute_sigma=True)
         plt.axvline(fmin, color='C'+str(fidx), linestyle='solid', linewidth=2)
         slopeunc = (1./popt[0])*(np.sqrt(pcov[0,0])/popt[0])
-        plt.plot(fineflux, -1.*popt[0]*fineflux, label='G1G2='+str(np.round(1./popt[0], 1))+'$\\pm$'+str(np.round(slopeunc, 1)), linestyle='dashed', color='C'+str(fidx), zorder=10)
+        plt.plot(fineflux, -1.*popt[0]*fineflux, label='$g_ag_1g_2=$'+str(np.round(1./popt[0], 1))+'$\\pm$'+str(np.round(slopeunc, 1)), linestyle='dashed', color='C'+str(fidx), zorder=10)
         
     plt.legend()
     plt.xscale('log')
     plt.yscale('log')
-    plt.xlabel('Predicted flux [nW m$^{-2}$]', fontsize=14)
-    plt.ylabel('Measured flux [-1$\\times$ADU fr$^{-1}$]', fontsize=14)
+    plt.xlabel('2MASS flux [nW m$^{-2}$]', fontsize=13)
+    plt.ylabel('Measured signal [-1$\\times$ADU fr$^{-1}$]', fontsize=13)
     plt.grid(alpha=0.5)
     plt.ylim(1e0, 1e3)
     plt.xlim(predmin, 2e5)

@@ -226,88 +226,89 @@ def compute_masked_quantities_by_quadrant(ifield, inst, labidx=1, dimx=1024, dim
     return mameans, cls_2d_noise, cls_noise, inverse_quad_mkks, lb
 
 
-def compute_lab_flight_exp_differences(ifield, inst, cbps, base_path=None, mask=None, use_mask=True, mask_fpath=None, J_mag_lim=17.5, \
-                                      stdpower=1, n_image=10, verbose=True, plot=True):
+# def compute_lab_flight_exp_differences(ifield, inst, cbps, mask, base_path=None, use_mask=True, mask_fpath=None, J_mag_lim=17.5, \
+#                                       stdpower=1, n_image=10, verbose=True, plot=True):
     
-    if base_path is None:
-        base_path = '/Volumes/Seagate Backup Plus Drive/Toolkit/Mirror/Richard/noise_model_validation_data/'
-    if mask_fpath is None:
-        mask_fpath = cbps.data_path+'/TM'+str(inst)+'/mask/field'+str(ifield)+'_TM'+str(inst)+'_strmask_Jlim='+str(J_mag_lim)+'_040521.fits'
-    data_path = base_path+'TM'+str(inst)+'/validationHalfExp/field'+str(ifield)
+#     if base_path is None:
+#         base_path = config.ciber_basepath+'data/noise_model_validation_data/'
+#         # base_path = '/Volumes/Seagate Backup Plus Drive/Toolkit/Mirror/Richard/noise_model_validation_data/'
+#     # if mask_fpath is None:
+#         # mask_fpath = cbps.data_path+'/TM'+str(inst)+'/mask/field'+str(ifield)+'_TM'+str(inst)+'_strmask_Jlim='+str(J_mag_lim)+'_040521.fits'
+#     data_path = base_path+'TM'+str(inst)+'/validationHalfExp/field'+str(ifield)
 
-    print('base_path is ', base_path)
-    print('mask_fpath is ', mask_fpath)
-    print('data_path is ', data_path)
+#     print('base_path is ', base_path)
+#     print('mask_fpath is ', mask_fpath)
+#     print('data_path is ', data_path)
     
-    imarray_shape = (n_image, cbps.dimx, cbps.dimy)
-    psarray_shape = (n_image, cbps.n_ps_bin)
-    lab_diffs, cl2ds_lab = [np.zeros(imarray_shape) for x in range(2)]
+#     imarray_shape = (n_image, cbps.dimx, cbps.dimy)
+#     psarray_shape = (n_image, cbps.n_ps_bin)
+#     lab_diffs, cl2ds_lab = [np.zeros(imarray_shape) for x in range(2)]
 
-    pathA = data_path+'/flightMap_2.FITS'
-    pathB = data_path+'/flightMap_1.FITS'
+#     pathA = data_path+'/flightMap_2.FITS'
+#     pathB = data_path+'/flightMap_1.FITS'
     
-    # load in astronomical + instrument mask
-    if mask is None and use_mask:
-        mask = cbps.load_mask(ifield=ifield, inst=inst, masktype='maskInst_clean', inplace=False)
-    strmask = cbps.load_mask(ifield, inst, mask_fpath=mask_fpath, masktype='strmask', inplace=False)
-    mask *= strmask
+#     # load in astronomical + instrument mask
+#     # if mask is None and use_mask:
+#     #     mask = cbps.load_mask(ifield=ifield, inst=inst, masktype='maskInst_clean', inplace=False)
+#     # strmask = cbps.load_mask(ifield, inst, mask_fpath=mask_fpath, masktype='strmask', inplace=False)
+#     # mask *= strmask
     
-    cl_diffs_lab, cl_diffs_phot = [np.zeros(psarray_shape) for x in range(2)]
+#     cl_diffs_lab, cl_diffs_phot = [np.zeros(psarray_shape) for x in range(2)]
     
-    flight_exp_diff, meanA, meanB = compute_exp_difference(ifield, inst, cal_facs=cbps.cal_facs, pathA=pathA, pathB=pathB, mask=mask, mode='flight')
-    if verbose:
-        print('meanA, meanB ', meanA, meanB)
-        print(cbps.field_nfrs[ifield], cbps.field_nfrs[ifield]//2)
+#     flight_exp_diff, meanA, meanB = compute_exp_difference(ifield, inst, cal_facs=cbps.cal_facs, pathA=pathA, pathB=pathB, mask=mask, mode='flight')
+#     if verbose:
+#         print('meanA, meanB ', meanA, meanB)
+#         print(cbps.field_nfrs[ifield], cbps.field_nfrs[ifield]//2)
     
-    shot_sigma_map = cbps.compute_shot_sigma_map(inst, meanA*np.ones_like(flight_exp_diff), nfr=cbps.field_nfrs[ifield]//2)
+#     shot_sigma_map = cbps.compute_shot_sigma_map(inst, meanA*np.ones_like(flight_exp_diff), nfr=cbps.field_nfrs[ifield]//2)
     
-    dsnmaps = shot_sigma_sb_map*np.sqrt(2)*np.random.normal(0, 1, size=imarray_shape)
+#     dsnmaps = shot_sigma_sb_map*np.sqrt(2)*np.random.normal(0, 1, size=imarray_shape)
 
 
 
-    for i in range(n_image):
-        str_num = '{0:03}'.format(i+1)
+#     for i in range(n_image):
+#         str_num = '{0:03}'.format(i+1)
         
-        pathA = data_path+'/first/labMap_'+str_num+'_1.FITS'
-        pathB = data_path+'/second/labMap_'+str_num+'_2.FITS'
+#         pathA = data_path+'/first/labMap_'+str_num+'_1.FITS'
+#         pathB = data_path+'/second/labMap_'+str_num+'_2.FITS'
         
-        lab_exp_diff, labmeanA, labmeanB = compute_exp_difference(ifield, inst, mask=mask, cal_facs=cbps.cal_facs, pathA=pathA, pathB=pathB)
-        lab_exp_diff += mask*dsnmaps[i]
-        lab_diffs[i] = lab_exp_diff
+#         lab_exp_diff, labmeanA, labmeanB = compute_exp_difference(ifield, inst, mask=mask, cal_facs=cbps.cal_facs, pathA=pathA, pathB=pathB)
+#         lab_exp_diff += mask*dsnmaps[i]
+#         lab_diffs[i] = lab_exp_diff
 
-        l2d, cl2dlab = get_power_spectrum_2d(lab_diffs[i]-np.mean(lab_diffs[i]))
-        cl2ds_lab[i] = cl2dlab
+#         l2d, cl2dlab = get_power_spectrum_2d(lab_diffs[i]-np.mean(lab_diffs[i]))
+#         cl2ds_lab[i] = cl2dlab
 
-    # compute mean 2D power spectrum and compute inverse variance weights
-    mean_cl2d = np.mean(cl2ds_lab, axis=0)
-    fw_std = np.std(cl2ds_lab, axis=0)
-    fourier_weights = 1./fw_std**stdpower
-    fourier_weights /= np.nanmax(fourier_weights)
+#     # compute mean 2D power spectrum and compute inverse variance weights
+#     mean_cl2d = np.mean(cl2ds_lab, axis=0)
+#     fw_std = np.std(cl2ds_lab, axis=0)
+#     fourier_weights = 1./fw_std**stdpower
+#     fourier_weights /= np.nanmax(fourier_weights)
     
-    if plot:
-        fcl2d = plot_map(np.log10(mean_cl2d), title='$\\log_{10}(C(\\ell_x,\\ell_y))$, '+str(cbps.ciber_field_dict[ifield]), noxticks=True, noyticks=True, xlabel='$\\ell_x$', ylabel='$\\ell_y$', return_fig=True)
-        fwf = plot_map(np.log10(fourier_weights), title='$\\log_{10}(w(\\ell_x,\\ell_y))$, '+str(cbps.ciber_field_dict[ifield]),noxticks=True, noyticks=True,  xlabel='$\\ell_x$', ylabel='$\\ell_y$',return_fig=True)
-        fwcl2d = plot_map(np.log10(fourier_weights*mean_cl2d), title='$\\log_{10}(w(\\ell_x,\\ell_y)C(\\ell_x,\\ell_y))$, '+str(cbps.ciber_field_dict[ifield]), noxticks=True, noyticks=True,  xlabel='$\\ell_x$', ylabel='$\\ell_y$', return_fig=True)
+#     if plot:
+#         fcl2d = plot_map(np.log10(mean_cl2d), title='$\\log_{10}(C(\\ell_x,\\ell_y))$, '+str(cbps.ciber_field_dict[ifield]), noxticks=True, noyticks=True, xlabel='$\\ell_x$', ylabel='$\\ell_y$', return_fig=True)
+#         fwf = plot_map(np.log10(fourier_weights), title='$\\log_{10}(w(\\ell_x,\\ell_y))$, '+str(cbps.ciber_field_dict[ifield]),noxticks=True, noyticks=True,  xlabel='$\\ell_x$', ylabel='$\\ell_y$',return_fig=True)
+#         fwcl2d = plot_map(np.log10(fourier_weights*mean_cl2d), title='$\\log_{10}(w(\\ell_x,\\ell_y)C(\\ell_x,\\ell_y))$, '+str(cbps.ciber_field_dict[ifield]), noxticks=True, noyticks=True,  xlabel='$\\ell_x$', ylabel='$\\ell_y$', return_fig=True)
 
-    # now that we have the fourier weights, let's compute the FW'd lab power spectra
-    for i in range(n_image):
+#     # now that we have the fourier weights, let's compute the FW'd lab power spectra
+#     for i in range(n_image):
 
-        lb, cl_diff_phot, _ = get_power_spec(mask*dsnmaps[i], weights=fourier_weights, lbinedges=cbps.Mkk_obj.binl, lbins=cbps.Mkk_obj.midbin_ell)
-        lb, cl_diff_lab, _ = azim_average_cl2d(cl2ds_lab[i], l2d, weights=fourier_weights, lbinedges=cbps.Mkk_obj.binl, lbins=cbps.Mkk_obj.midbin_ell)
+#         lb, cl_diff_phot, _ = get_power_spec(mask*dsnmaps[i], weights=fourier_weights, lbinedges=cbps.Mkk_obj.binl, lbins=cbps.Mkk_obj.midbin_ell)
+#         lb, cl_diff_lab, _ = azim_average_cl2d(cl2ds_lab[i], l2d, weights=fourier_weights, lbinedges=cbps.Mkk_obj.binl, lbins=cbps.Mkk_obj.midbin_ell)
 
-        cl_diffs_lab[i] = cl_diff_lab/2.
-        cl_diffs_phot[i] = cl_diff_phot/2.
+#         cl_diffs_lab[i] = cl_diff_lab/2.
+#         cl_diffs_phot[i] = cl_diff_phot/2.
         
-    # reduce by factor of sqrt(2) to account for difference increasing noise by sqrt(2)
-    lb, cl_diff_flight, _ = get_power_spec(flight_exp_diff-np.mean(flight_exp_diff), weights=fourier_weights, lbinedges=cbps.Mkk_obj.binl, lbins=cbps.Mkk_obj.midbin_ell)
-    cl_diff_flight /= 2.
+#     # reduce by factor of sqrt(2) to account for difference increasing noise by sqrt(2)
+#     lb, cl_diff_flight, _ = get_power_spec(flight_exp_diff-np.mean(flight_exp_diff), weights=fourier_weights, lbinedges=cbps.Mkk_obj.binl, lbins=cbps.Mkk_obj.midbin_ell)
+#     cl_diff_flight /= 2.
     
-    if verbose:
-        print('mean cl_diff_lab : ', np.mean(np.array(cl_diffs_lab), axis=0))
-        print('mean cl_diff_phot : ', np.mean(np.array(cl_diffs_phot), axis=0))
-        print('cl_diff_flight : ', cl_diff_flight)
+#     if verbose:
+#         print('mean cl_diff_lab : ', np.mean(np.array(cl_diffs_lab), axis=0))
+#         print('mean cl_diff_phot : ', np.mean(np.array(cl_diffs_phot), axis=0))
+#         print('cl_diff_flight : ', cl_diff_flight)
         
-    return lb, cl_diff_flight, cl_diffs_lab, cl_diffs_phot
+#     return lb, cl_diff_flight, cl_diffs_lab, cl_diffs_phot
 
 
 def compute_nframe_differences(cbps, ifield_list, nframe=10, inst=1, base_path=None, verbose=True):

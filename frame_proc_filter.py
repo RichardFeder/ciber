@@ -290,10 +290,10 @@ class CIBER1_flight_frames():
         
                 
         if ordered_frames_indiv_field is None:
-            ordered_frames_indiv_field, ordered_tframe = self.load_ordered_frame_file(inst, fieldname, skipfr=skipfr)
+            ordered_frames_indiv_field, ordered_tframe = self.load_ordered_frame_file(inst, fieldname, skipfr=skipfr, nframe=nframe)
             
 #         plot_map(ordered_frames_indiv_field[0], title='initial ADU')
-        slope_map_fullexp = self.slope_fits(inst, fieldname, skipfr=skipfr)
+        slope_map_fullexp = self.slope_fits(inst, fieldname, skipfr=skipfr, nframe=nframe)
     
         ordered_frames_aducorr, aducorr_mask = self.correct_aduflips(inst, fieldname, ifield, ordered_frames_indiv_field=ordered_frames_indiv_field, skipfr=skipfr)
 
