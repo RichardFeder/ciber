@@ -39,6 +39,8 @@ original_files_backup/
 # Documentation from reorganization process
 PHASE*.md
 REORGANIZATION_STATUS.md
+MIGRATION_GUIDE.md
+PROPOSED_DIRECTORY_STRUCTURE.md
 test_internal_imports.py
 test_migration.py
 
