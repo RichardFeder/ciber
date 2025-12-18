@@ -59,15 +59,8 @@ original_files_backup/
 FlatSkyQE/
 LensQuEst/
 
-# Large data directories
-data/fluctuation_data/
-data/TRILEGAL/
-data/Spitzer/
-data/COSMOS20/
-data/catalogs/
-data/mocks*/
-data/unWISE_coadds/
-data/airglow_*/
+# Large data directories - exclude all data subdirectories
+data/
 data/framedata/
 data/input_recovered_ps*/
 data/lens_prods/
