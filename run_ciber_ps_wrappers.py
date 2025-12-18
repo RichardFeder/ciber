@@ -3,12 +3,12 @@ import matplotlib.pyplot as plt
 
 import numpy as np
 from scipy import interpolate
-from noise_model import *
+from ciber.instrument.noise_model import *
 import config
-from ciber_powerspec_pipeline import *
+from ciber.core.powerspec_pipeline import *
 from ps_pipeline_go import *
-from ciber_mocks import *
-from ciber_data_file_utils import *
+from ciber.mocks.cib_mocks import *
+from ciber.io.ciber_data_utils import *
 
 
 def run_ciber_cross_observed(inst, cross_inst, run_name_list, mag_lim_J_list, mask_tail_list=None, mask_tail_ffest_list=None, ifield_list=[4, 5, 6, 7, 8], datestr='111323', \

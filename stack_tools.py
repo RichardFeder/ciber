@@ -1,17 +1,17 @@
 import matplotlib
 import matplotlib.pyplot as plt
-from ciber_mocks import *
+from ciber.mocks.cib_mocks import *
 import numpy as np
 from scipy import interpolate
 import os
 import astropy
 import astropy.wcs as wcs
 import config
-from ciber_powerspec_pipeline import *
+from ciber.core.powerspec_pipeline import *
 from ps_pipeline_go import *
-from ciber_sb_calibration_tools import *
+from ciber.instrument.calibration import *
 from scipy.optimize import curve_fit
-from spitzer_auto_cross import *
+from ciber.cross_correlation.spitzer_cross import *
 
 class stack_obj():
     

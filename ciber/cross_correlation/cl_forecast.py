@@ -10,8 +10,8 @@ import config
 # parent_dir = os.path.abspath(os.path.join(os.getcwd(), ".."))
 # # Add the parent directory to sys.path
 # sys.path.append(parent_dir)
-from ciber_powerspec_pipeline import *
-from ciber_data_file_utils import *
+from ciber.core.powerspec_pipeline import *
+from ciber.io.ciber_data_utils import *
 
 
 def forecast_vs_nbar(ciber_inst, ifield, nbar_fid=2e4, Adeg=20., mask_frac=0.7, \

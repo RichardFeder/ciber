@@ -15,18 +15,18 @@ import os
 # from astropy.wcs import WCS
 # from scipy.io import loadmat
 
-from powerspec_utils import *
-from ciber_powerspec_pipeline import *
-# from ciber_powerspec_pipeline import CIBER_PS_pipeline, iterative_gradient_ff_solve, lin_interp_powerspec,\
+from ciber.core.powerspec_utils import *
+from ciber.core.powerspec_pipeline import *
+# from ciber.core.powerspec_pipeline import CIBER_PS_pipeline, iterative_gradient_ff_solve, lin_interp_powerspec,\
 									 # grab_all_simidx_dat, grab_recovered_cl_dat, generate_synthetic_mock_test_set,\
 									 # instantiate_dat_arrays_fftest, instantiate_cl_arrays_fftest, calculate_powerspec_quantities, compute_powerspectra_realdat
 # from cross_spectrum_analysis import *
 # from ciber_data_helpers import load_psf_params_dict
-from plotting_fns import plot_map
-from gal_plotting_fns import *
-from ciber_mocks import *
-from flat_field_est import *
-from mkk_parallel import compute_inverse_mkk
+from ciber.plotting.plot_utils import plot_map
+from ciber.plotting.galaxy_plots import *
+from ciber.mocks.cib_mocks import *
+from ciber.instrument.flat_field import *
+from ciber.pseudo_cl.mkk_compute import compute_inverse_mkk
 
 from masking_utils import *
 import config

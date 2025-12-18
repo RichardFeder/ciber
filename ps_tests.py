@@ -15,10 +15,10 @@ from astropy import units as u
 import healpy as hp
 from scipy import interpolate
 import os
-from ciber_powerspec_pipeline import *
-from powerspec_utils import *
-from ciber_data_file_utils import *
-from plotting_fns import *
+from ciber.core.powerspec_pipeline import *
+from ciber.core.powerspec_utils import *
+from ciber.io.ciber_data_utils import *
+from ciber.plotting.plot_utils import *
 
 
 def generate_field_consistency_plots(cbps, all_inst=[1, 2], bandstrs=['J', 'H'], mag_lims=[17.5, 17.0], ifield_list=[4, 5, 6, 7, 8], \
