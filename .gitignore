@@ -33,6 +33,9 @@ wheels/
 .AppleDouble
 .LSOverride
 
+# Backup directory for original files
+original_files_backup/
+
 # Data files (large/binary)
 *.fits
 *.npz
