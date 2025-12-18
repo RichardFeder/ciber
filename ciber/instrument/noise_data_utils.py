@@ -15,7 +15,7 @@ from ciber.core.powerspec_pipeline import CIBER_PS_pipeline
 from datetime import datetime
 
 from ciber.pseudo_cl.mkk_compute import *
-from ciber.plotting.plot_utils import plot_map
+from ciber.plotting.plotting_fns import plot_map
 from ciber.io.ciber_data_utils import *
 
 

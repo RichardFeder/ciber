@@ -5,10 +5,7 @@ This module contains functions for processing data from WISE, photo-z analysis,
 and other external datasets.
 """
 
-from .wise_processing import *
-try:
-    from .photo_z import *
-except ImportError:
-    pass  # photo_z module optional
+# Don't import submodules automatically to avoid circular imports
+# Users should explicitly import what they need
 
-__all__ = ['wise_processing']
+__all__ = ['wise_processing', 'photo_z']

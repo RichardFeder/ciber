@@ -5,8 +5,7 @@ This module contains functions for generating masks, classifying sources,
 and constructing automated masking pipelines.
 """
 
-from .mask_utils import *
-from .source_classification import *
-from .mask_pipeline import *
+# Don't import submodules automatically to avoid circular imports
+# Users should explicitly import what they need
 
 __all__ = ['mask_utils', 'source_classification', 'mask_pipeline']

@@ -15,7 +15,6 @@ from . import mocks
 from . import pseudo_cl
 from . import masking
 from . import cross_correlation
-from . import lensing
 from . import theory
 from . import processing
 from . import io
@@ -28,7 +27,6 @@ __all__ = [
     'pseudo_cl',
     'masking',
     'cross_correlation',
-    'lensing',
     'theory',
     'processing',
     'io',

@@ -4,7 +4,7 @@ from astropy.io import fits
 import matplotlib
 import matplotlib.pyplot as plt
 
-from ciber.plotting.plot_utils import plot_map
+from ciber.plotting.plotting_fns import plot_map
 from scipy.stats import chi2
 
 

@@ -4,7 +4,7 @@ from scipy import stats
 from ciber.theory.helgason_model import *
 from ciber.mocks.lognormal import *
 from ciber.io.catalog_utils import *
-from ciber.plotting.plot_utils import *
+from ciber.plotting.plotting_fns import *
 import sys
 import config
 

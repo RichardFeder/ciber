@@ -5,13 +5,8 @@ This module contains functions for CIBER beam/PSF, noise modeling, flat field es
 and surface brightness calibration.
 """
 
-from .beam import *
-from .noise_model import *
-from .noise_data_utils import *
-from .readnoise import *
-from .flat_field import *
-from .calibration import *
-from .frame_processing import *
+# Don't import submodules automatically to avoid circular imports
+# Users should explicitly import what they need
 
 __all__ = ['beam', 'noise_model', 'noise_data_utils', 'readnoise', 
            'flat_field', 'calibration', 'frame_processing']

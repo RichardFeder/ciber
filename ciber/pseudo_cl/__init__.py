@@ -5,9 +5,7 @@ This module contains functions for computing and correcting mode coupling matric
 in pseudo-Cl analysis.
 """
 
-from .mkk_compute import *
-from .mkk_diagnostics import *
-from .mkk_wrappers import *
-from .mkk_torch import *
+# Don't import submodules automatically to avoid circular imports
+# Users should explicitly import what they need
 
-__all__ = ['mkk_compute', 'mkk_diagnostics', 'mkk_wrappers', 'mkk_torch']
+__all__ = ['mkk_compute', 'mkk_diagnostics', 'mkk_wrappers']

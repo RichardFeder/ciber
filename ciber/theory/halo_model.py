@@ -4,7 +4,7 @@ from astropy.cosmology import FlatLambdaCDM
 from scipy.special import sici
 from scipy import interpolate
 import numpy as np
-from hmf import MassFunction
+# from hmf import MassFunction
 import camb
 from camb import model
 from astropy import constants as const

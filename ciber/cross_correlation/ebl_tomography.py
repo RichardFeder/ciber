@@ -9,7 +9,7 @@ from scipy import sparse
 from scipy.stats import norm
 
 from ciber.io.ciber_data_utils import *
-from ciber.plotting.galaxy_plots import *
+from ciber.plotting.gal_plotting_fns import *
 
 
 

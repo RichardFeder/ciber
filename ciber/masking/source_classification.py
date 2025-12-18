@@ -15,11 +15,11 @@ import sys
 from sklearn import tree
 from sklearn.tree import DecisionTreeRegressor
 
-clf = DecisionTreeRegressor(max_depth=max_depth)
-if max_predict is not None:
-	fig = clf.fit(train_features[mags_train < max_predict], mags_train[mags_train < max_predict])
-else:
-	fig = clf.fit(train_features, mags_train)
+# clf = DecisionTreeRegressor(max_depth=max_depth)
+# if max_predict is not None:
+# 	fig = clf.fit(train_features[mags_train < max_predict], mags_train[mags_train < max_predict])
+# else:
+# 	fig = clf.fit(train_features, mags_train)
 
 if sys.version_info[0] == 3:
 	from sklearn.tree import plot_tree

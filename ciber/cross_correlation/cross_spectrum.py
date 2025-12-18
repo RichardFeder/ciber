@@ -1,6 +1,6 @@
 import numpy as np
 from astropy.io import fits
-from ciber.plotting.plot_utils import plot_map
+from ciber.plotting.plotting_fns import plot_map
 from reproject import reproject_interp
 
 import config
@@ -10,13 +10,13 @@ from ciber.mocks.galaxy_catalogs import *
 from ciber.mocks.lognormal import *
 # from ciber_data_helpers import *
 from ciber.theory.helgason_model import *
-from ps_pipeline_go import *
+from ciber.core.ps_pipeline_go import *
 from ciber.instrument.noise_model import *
 # from cross_spectrum_analysis import *
 from ciber.pseudo_cl.mkk_compute import *
 from ciber.pseudo_cl.mkk_diagnostics import *
 from ciber.instrument.flat_field import *
-from ciber.plotting.plot_utils import *
+from ciber.plotting.plotting_fns import *
 from ciber.core.powerspec_utils import *
 from astropy.coordinates import SkyCoord
 import healpy as hp

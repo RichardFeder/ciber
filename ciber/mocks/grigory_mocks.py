@@ -10,7 +10,7 @@ import astropy.wcs as wcs
 
 import config
 from ciber.core.powerspec_pipeline import *
-from ps_pipeline_go import *
+from ciber.core.ps_pipeline_go import *
 from ciber.theory.cl_predictions import *
 
 # %matplotlib inline

@@ -22,8 +22,8 @@ from ciber.core.powerspec_pipeline import *
 									 # instantiate_dat_arrays_fftest, instantiate_cl_arrays_fftest, calculate_powerspec_quantities, compute_powerspectra_realdat
 # from cross_spectrum_analysis import *
 # from ciber_data_helpers import load_psf_params_dict
-from ciber.plotting.plot_utils import plot_map
-from ciber.plotting.galaxy_plots import *
+from ciber.plotting.plotting_fns import plot_map
+from ciber.plotting.gal_plotting_fns import *
 from ciber.mocks.cib_mocks import *
 from ciber.instrument.flat_field import *
 from ciber.pseudo_cl.mkk_compute import compute_inverse_mkk

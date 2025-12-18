@@ -12,7 +12,7 @@ from ciber.core.powerspec_pipeline import *
 from ciber.instrument.noise_model import *
 import pickle
 import os
-from ciber.plotting.plot_utils import *
+from ciber.plotting.plotting_fns import *
 from scipy import stats
 import re
 

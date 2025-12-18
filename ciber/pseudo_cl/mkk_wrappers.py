@@ -10,7 +10,7 @@ import config
 
 from ciber.core.powerspec_pipeline import *
 from ciber.io.catalog_utils import *
-from ps_pipeline_go import *
+from ciber.core.ps_pipeline_go import *
 from ciber.mocks.cib_mocks import *
 from ciber.theory.cl_predictions import *
 from ciber.pseudo_cl.mkk_compute import *

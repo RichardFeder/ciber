@@ -8,7 +8,7 @@ import astropy
 import astropy.wcs as wcs
 import config
 from ciber.core.powerspec_pipeline import *
-from ps_pipeline_go import *
+from ciber.core.ps_pipeline_go import *
 from scipy.optimize import curve_fit
 from sklearn.linear_model import LinearRegression
 

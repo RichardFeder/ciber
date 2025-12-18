@@ -5,7 +5,7 @@ This module contains functions for creating plots, maps, and visualizations
 specific to CIBER analysis.
 """
 
-from .plot_utils import *
-from .galaxy_plots import *
+# Don't import submodules automatically to avoid circular imports
+# Users should explicitly import what they need
 
-__all__ = ['plot_utils', 'galaxy_plots']
+__all__ = ['plotting_fns', 'gal_plotting_fns']

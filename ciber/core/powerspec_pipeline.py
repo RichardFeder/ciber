@@ -25,7 +25,7 @@ from ciber.mocks.cib_mocks import *
 from ciber.processing.fourier_bkg import *
 from ciber.processing.numerical import *
 from ciber.processing.filtering import *
-from ciber.plotting.plot_utils import *
+from ciber.plotting.plotting_fns import *
 # from ciber.instrument.noise_data_utils import iter_sigma_clip_mask, sigma_clip_maskonly
 
 

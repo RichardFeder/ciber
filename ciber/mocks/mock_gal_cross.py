@@ -1,9 +1,9 @@
 import numpy as np
 import config
 from ciber.core.powerspec_pipeline import *
-from powerspec_utils import *
-from proc_jmocks import *
-from ebl_tom import load_norm_bg_dndz
+from ciber.core.powerspec_utils import *
+from ciber.mocks.proc_jmocks import *
+from ciber.cross_correlation.ebl_tom import load_norm_bg_dndz
 
 
 def gen_mock_ciber_obs(mock_rlz, inst, ifield,

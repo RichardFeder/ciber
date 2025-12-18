@@ -5,9 +5,7 @@ This module contains functions for computing theoretical power spectra,
 halo models, and EBL/CIB predictions.
 """
 
-from .cl_predictions import *
-from .halo_model import *
-from .helgason_model import *
-from .cl_wtheta import *
+# Don't import submodules automatically to avoid circular imports
+# Users should explicitly import what they need
 
 __all__ = ['cl_predictions', 'halo_model', 'helgason_model', 'cl_wtheta']

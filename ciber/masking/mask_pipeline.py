@@ -7,7 +7,7 @@ import sys
 from ciber.io.catalog_utils import *
 if sys.version_info[0]==2:
     from ciber.mocks.cib_mocks import *
-from cross_spectrum_analysis import *
+# from cross_spectrum_analysis import *  # Legacy module - no longer exists
 from ciber.masking.source_classification import *
 from ciber.masking.mask_utils import *
 from ciber.pseudo_cl.mkk_compute import *

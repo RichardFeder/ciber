@@ -6,7 +6,7 @@ from astropy.cosmology import Planck18 as cosmo
 from scipy.optimize import minimize
 
 from ciber.io.ciber_data_utils import *
-from ciber.plotting.galaxy_plots import *
+from ciber.plotting.gal_plotting_fns import *
 import config
 from scipy.optimize import minimize
 from scipy import sparse

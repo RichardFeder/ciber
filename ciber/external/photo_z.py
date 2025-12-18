@@ -5,7 +5,7 @@ import scipy.stats
 from astropy.table import Table
 import pandas as pd
 from ciber.mocks.cib_mocks import *
-from cross_spectrum_analysis import *
+# from cross_spectrum_analysis import *  # Legacy module - no longer exists
 
 
 def compute_discrete_pdf_grid(cat_df, range1, range2, minz=0.0, maxz=6.0, nbin=201, key1='r', key2='redshift', target='spec_redshift',\
