@@ -6,7 +6,7 @@ from scipy import interpolate
 from ciber.instrument.noise_model import *
 import config
 from ciber.core.powerspec_pipeline import *
-from ps_pipeline_go import *
+from ciber.core.ps_pipeline_go import *
 from ciber.mocks.cib_mocks import *
 from ciber.io.ciber_data_utils import *
 

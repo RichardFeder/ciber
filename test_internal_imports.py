@@ -36,8 +36,8 @@ def main():
     results.append(test_module_import("ciber.core", "Core module init"))
     results.append(test_module_import("ciber.core.powerspec_pipeline", "Power spectrum pipeline"))
     results.append(test_module_import("ciber.core.powerspec_utils", "Power spectrum utilities"))
-    results.append(test_module_import("ciber.core.pipeline_runner", "Pipeline runner"))
-    results.append(test_module_import("ciber.core.pipeline_tests", "Pipeline tests"))
+    results.append(test_module_import("ciber.core.ps_pipeline_go", "Pipeline runner"))
+    results.append(test_module_import("ciber.core.ps_tests", "Pipeline tests"))
     print()
     
     # Test instrument modules
