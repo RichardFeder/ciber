@@ -106,3 +106,8 @@ ppt/
 *.bak
 *~
 .png
+*.ipynb
+
+# Temporary compatibility shims
+*_COMPAT.py
+create_compat_shims.py
