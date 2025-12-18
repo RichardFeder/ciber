@@ -36,6 +36,12 @@ wheels/
 # Backup directory for original files
 original_files_backup/
 
+# Documentation from reorganization process
+PHASE*.md
+REORGANIZATION_STATUS.md
+test_internal_imports.py
+test_migration.py
+
 # Data files (large/binary)
 *.fits
 *.npz
