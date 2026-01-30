@@ -10,7 +10,7 @@ from ciber.pseudo_cl.mkk_compute import *
 from ciber.pseudo_cl.mkk_diagnostics import *
 from ciber.instrument.flat_field import *
 from ciber.plotting.plotting_fns import *
-from ps_tests import *
+from ciber.core.ps_tests import *
 from ciber.core.powerspec_utils import *
 from astropy.coordinates import SkyCoord
 import healpy as hp

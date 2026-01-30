@@ -6,6 +6,93 @@ from ciber.mocks.proc_jmocks import *
 from ciber.cross_correlation.ebl_tom import load_norm_bg_dndz
 
 
+def compute_correlation_matrices_from_mocks(inst, zbinedges, sigz_phot,
+                                           ifield_list=[4, 5, 6, 7, 8],
+                                           mock_basedir='data/',
+                                           startidx=2, endidx=-1):
+    """
+    Compute correlation matrices from mock power spectrum samples.
+    
+    Parameters
+    ----------
+    inst : int
+        CIBER instrument
+    zbinedges : array_like
+        Redshift bin edges
+    sigz_phot : float
+        Photo-z error
+    ifield_list : list
+        List of field indices
+    mock_basedir : str
+        Base directory for mock files
+    startidx : int
+        Starting bandpower index
+    endidx : int
+        Ending bandpower index
+        
+    Returns
+    -------
+    dict with keys:
+        'corr_matrices': list of correlation matrices (one per z-bin)
+        'cov_matrices': list of covariance matrices (one per z-bin)
+        'lb': multipole bins
+        'zbinedges': redshift bin edges
+    """
+    
+    n_zbins = len(zbinedges) - 1
+    
+    # Load one mock file to get dimensions
+    mock_fpath = f"{mock_basedir}mock_redshift_tom_res_sigmazphot={sigz_phot}_dz=0.2_TM{inst}_ifield{ifield_list[0]}.npz"
+    mock_res = np.load(mock_fpath, allow_pickle=True)
+    lb = mock_res['lb']
+    n_ell = len(lb[startidx:endidx])
+    
+    corr_matrices = []
+    cov_matrices = []
+    
+    for zbin_idx in range(n_zbins):
+        # Collect samples from all realizations and fields
+        all_samples = []
+        
+        for ifield in ifield_list:
+            mock_fpath = f"{mock_basedir}mock_redshift_tom_res_sigmazphot={sigz_phot}_dz=0.2_TM{inst}_ifield{ifield}.npz"
+            
+            try:
+                mock_res = np.load(mock_fpath, allow_pickle=True)
+                all_est_clx = mock_res['all_est_clx']  # (n_realizations, n_zbins, n_ell)
+                
+                # Extract samples for this z-bin and ell range
+                samples = all_est_clx[:, zbin_idx, startidx:endidx]  # (n_realizations, n_ell)
+                all_samples.append(samples)
+                
+            except FileNotFoundError:
+                print(f"Warning: Mock file not found for ifield={ifield}, skipping")
+        
+        # Combine samples from all fields: (n_fields * n_realizations, n_ell)
+        all_samples = np.vstack(all_samples)
+        
+        # Compute covariance matrix
+        cov = np.cov(all_samples.T)  # (n_ell, n_ell)
+        
+        # Compute correlation matrix
+        std = np.sqrt(np.diag(cov))
+        corr = cov / np.outer(std, std)
+        
+        corr_matrices.append(corr)
+        cov_matrices.append(cov)
+        
+        print(f"z-bin {zbin_idx} ({zbinedges[zbin_idx]:.1f}-{zbinedges[zbin_idx+1]:.1f}): "
+              f"using {all_samples.shape[0]} samples, cov shape {cov.shape}")
+    
+    return {
+        'corr_matrices': corr_matrices,
+        'cov_matrices': cov_matrices,
+        'lb': lb[startidx:endidx],
+        'zbinedges': zbinedges,
+        'n_samples': all_samples.shape[0]
+    }
+
+
 def gen_mock_ciber_obs(mock_rlz, inst, ifield,
 					   apply_zl_gradient=False,
 					  with_read_noise=False,

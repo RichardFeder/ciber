@@ -14,6 +14,26 @@ from ciber.core.powerspec_pipeline import *
 from ciber.mocks.cib_mocks import *
 
 
+def grab_ciber_cross_vs_z_predfpaths(inst_list=[1, 2], zbinedges=None, jmock_basedir=None, 
+										headstr='sdss_z_lt_22.0_CIBERfidmask'):
+
+	if zbinedges is None:
+		zbinedges = [0.0, 0.1, 0.2,0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
+		
+	if jmock_basedir is None:
+		jmock_basedir = 'data/jordan_mocks/v2/'
+		
+	all_pred_fpaths = []
+	for idx, inst in enumerate(inst_list):
+		
+		basepath = jmock_basedir+'mock_ps_pred/TM'+str(inst)+'/field_average/'
+	
+		pred_fpaths = [basepath+'pred_cls_TM'+str(inst)+'_'+headstr+'_zmin='+str(zbinedges[zidx])+'_zmax='+str(zbinedges[zidx+1])+'.npz' for zidx in range(len(zbinedges[:-1]))]
+
+		all_pred_fpaths.append(pred_fpaths)
+
+	return all_pred_fpaths
+
 def save_cl_predictions(inst, ifield_list, mag_lims, power_maglim_isl_igl, power_maglim_igl, keywd='meas'):
 	save_fpaths = []
 	for x in range(len(mag_lims)):

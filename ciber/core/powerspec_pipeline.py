@@ -112,7 +112,6 @@ def make_theta_masks(imdim, n_rad_bins=8, theta0=np.pi, rad_offset=0., theta_lxl
 	theta_edges = np.linspace(-np.pi, np.pi, n_rad_bins+1)
 	labels = ['-\\pi', '-3\\pi/4', '-\\pi/2', '-\\pi/4', '0', '\\pi/4', '\\pi/2', '3\\pi/4']
 
-
 	l2d = get_l2d(imdim, imdim, pixsize)
 	
 	if rad_offset != 0:
@@ -122,7 +121,6 @@ def make_theta_masks(imdim, n_rad_bins=8, theta0=np.pi, rad_offset=0., theta_lxl
 		theta_lxly = make_theta_lxly_map(imdim)
 	
 	nbin = len(theta_edges)-1
-	
 	theta_masks = np.zeros((nbin, theta_lxly.shape[0], theta_lxly.shape[1]))
 	
 	for x in range(len(theta_edges)-1):
@@ -134,18 +132,7 @@ def make_theta_masks(imdim, n_rad_bins=8, theta0=np.pi, rad_offset=0., theta_lxl
 			theta_mask[(theta_lxly)>theta0+rad_offset] = 1
 
 		theta_mask[l2d < ell_min_wedge] = 0
-		
 		theta_masks[x] = theta_mask
-
-		# if plot:
-		#     fig = plot_map(theta_masks[x], figsize=(5,5), title='$\\theta_{cen}='+labels[x]+'$, $\\Delta\\theta=\\pi/4$', \
-		#     	xticks=[], yticks=[], xlabel='$\\ell_x$', ylabel='$\\ell_y$', return_fig=True)
-
-			# fig.savefig('figures/cl_theta_compare/theta_masks/theta_mask_idx'+str(x)+'.png', bbox_inches='tight')
-
-			# plot_map(theta_masks[x], figsize=(5,5), title='$\\theta_{cen}='+labels[x]+'$, $\\Delta\\theta=\\pi/8$', \
-			# 	xticks=[], yticks=[], xlabel='$\\ell_x$', ylabel='$\\ell_y$')
-			
 		
 	return theta_masks
 
@@ -4210,7 +4197,10 @@ def estimate_ciber_noise_cross_gal(cbps, inst, ifield, catname, gal_density_map,
 									   include_ff_errors=False, observed_run_name=None, nmc_ff=10, \
 									  base_path=None, datestr='111323', \
 									   ff_est_dirpath=None, save=True, add_str=None, n_FF_realiz=10, \
-									   apply_ff_mask=False, ff_min=None, ff_max=None):
+									   apply_ff_mask=False, ff_min=None, ff_max=None, \
+									   apply_filtering=True, gradient_filter=False, quadoff_grad=True, order=1, \
+									   fc_sub=False, fc_sub_quad_offset=False, fc_sub_n_terms=2, with_gradient=True, 
+									   cl_theta_cut=False, compute_cl_theta=False, n_rad_bins=8, theta0=0, theta_masks=None, rad_offset=None, ell_min_wedge=None):
 
 	if base_path is None:
 		base_path = config.ciber_basepath+'data/fluctuation_data/TM'+str(inst)+'/gal_density/'+catname
@@ -4235,8 +4225,8 @@ def estimate_ciber_noise_cross_gal(cbps, inst, ifield, catname, gal_density_map,
 	lb = cbps.Mkk_obj.midbin_ell
 	all_nl1ds_cross_spitzer_both, nl_save_fpath_both = [], []
 
-	ciber_bootes_noise_models = cbps.grab_noise_model_set([ifield], inst, noise_modl_type='quadsub_021523')
-	ciber_bootes_noise_model = ciber_bootes_noise_models[0]
+	ciber_noise_models_all = cbps.grab_noise_model_set([ifield], inst, noise_modl_type='quadsub_021523')
+	ciber_noise_model = ciber_noise_models_all[0]
 	
 	all_ff_ests_nofluc_both, simmap_dc = None, None
 
@@ -4258,14 +4248,48 @@ def estimate_ciber_noise_cross_gal(cbps, inst, ifield, catname, gal_density_map,
 			ff_ests_nofluc_both[(ff_ests_nofluc_both > ff_max)] = 1.0
 			ff_ests_nofluc_both[(ff_ests_nofluc_both < ff_min)] = 1.0
 
-
-	mean_nl2d, M2_nl2d = [np.zeros_like(ciber_bootes_noise_model) for x in range(2)]
+	mean_nl2d, M2_nl2d = [np.zeros_like(ciber_noise_model) for x in range(2)]
 	count = 0
+
+	# Precompute filter for noise realizations if filtering is enabled
+	if apply_filtering:
+		dot1, X, mask_rav = precomp_filter_general(cbps.dimx, cbps.dimy, mask=mask, gradient_filter=gradient_filter, 
+													quadoff_grad=quadoff_grad, poly_filter_order=order, \
+													fc_sub=fc_sub, fc_sub_quad_offset=fc_sub_quad_offset, 
+													fc_sub_n_terms=fc_sub_n_terms, fc_sub_with_gradient=with_gradient)
+		if plot:
+			print('Filtering enabled for noise realizations')
+			print(f'  gradient_filter={gradient_filter}, quadoff_grad={quadoff_grad}, order={order}')
+			print(f'  fc_sub={fc_sub}, fc_sub_quad_offset={fc_sub_quad_offset}, fc_sub_n_terms={fc_sub_n_terms}')
+	else:
+		dot1, X, mask_rav = None, None, None
+	
+	# Create theta masks for angular wedge exclusion if requested
+	if compute_cl_theta and cl_theta_cut:
+
+		print('Computing theta masks for angular wedge exclusion in noise realizations')
+		if theta_masks is None:
+			if rad_offset is None:
+				rad_offset = -np.pi/n_rad_bins
+			from ciber.masking.mask_utils import make_theta_masks
+			theta_masks = make_theta_masks(cbps.dimx, theta0=theta0, n_rad_bins=n_rad_bins, rad_offset=rad_offset, \
+										   plot=plot, ell_min_wedge=ell_min_wedge)
+		# Create weights that exclude specified angular wedges
+		weights = np.ones((cbps.dimx, cbps.dimy))
+		for which_exclude in [0, n_rad_bins//2]:
+			weights[theta_masks[which_exclude]==1] = 0.
+		if plot:
+			print('Theta masking enabled for noise realizations')
+			print(f'  n_rad_bins={n_rad_bins}, theta0={theta0}, rad_offset={rad_offset}')
+			print(f'  ell_min_wedge={ell_min_wedge}')
+			plot_map(weights, title='Theta mask weights for noise')
+	else:
+		weights = np.ones((cbps.dimx, cbps.dimy))
 
 	if photon_noise:
 		field_nfr = cbps.field_nfrs[ifield]
 		print('field nfr for '+str(ifield)+' is '+str(field_nfr))
-		shot_sigma_sb = cbps.compute_shot_sigma_map(inst, image=simmap_dc*np.ones_like(ciber_bootes_noise_model), nfr=field_nfr)
+		shot_sigma_sb = cbps.compute_shot_sigma_map(inst, image=simmap_dc*np.ones_like(ciber_noise_model), nfr=field_nfr)
 		if plot:
 			plot_map(shot_sigma_sb, title='shot sigma sb for CIBER noise x Spitzer')
 	else:
@@ -4278,12 +4302,12 @@ def estimate_ciber_noise_cross_gal(cbps, inst, ifield, catname, gal_density_map,
 
 	if plot:
 		plot_map(gal_density_map, title='gal density map')
-		plot_map(ciber_bootes_noise_model, title='CIBER noise model')
+		plot_map(ciber_noise_model, title='CIBER noise model')
 
 	for i in range(n_split):
 		print('Split '+str(i+1)+' of '+str(n_split)+'..')
 
-		ciber_noise_realiz, snmaps = cbps.noise_model_realization(inst, maplist_split_shape, ciber_bootes_noise_model, fft_obj=fft_objs[0],\
+		ciber_noise_realiz, snmaps = cbps.noise_model_realization(inst, maplist_split_shape, ciber_noise_model, fft_obj=fft_objs[0],\
 											  read_noise=read_noise, photon_noise=photon_noise, shot_sigma_sb=shot_sigma_sb, adu_to_sb=True)
 		if photon_noise:
 			print('adding photon noise to read noise realizations')
@@ -4300,13 +4324,23 @@ def estimate_ciber_noise_cross_gal(cbps, inst, ifield, catname, gal_density_map,
 			if i==0 and plot:
 				plot_map(ciber_noise_realiz[0], title='added normalization and flat field error')
 
+		# Apply filtering to noise realizations if enabled
+		if apply_filtering:
+			for s in range(len(ciber_noise_realiz)):
+				theta, filter_comp = apply_filter_to_map_precomp(ciber_noise_realiz[s], dot1, X, mask_rav=mask_rav)
+				ciber_noise_realiz[s] -= filter_comp
+				
+			if i==0 and plot:
+				plot_map(ciber_noise_realiz[0], title='Filtered noise realization')
+
 		unmasked_means = [np.mean(simmap[mask==1]) for simmap in ciber_noise_realiz]
 		ciber_noise_realiz -= np.array([mask*unmasked_mean for unmasked_mean in unmasked_means])
 
 		fft_objs[1](mask*ciber_noise_realiz*sterad_per_pix)
 
 		nl2ds_ciber_noise_gal_map = np.array([fftshift(dentry*np.conj(empty_aligned_objs_maps[2][0])).real for dentry in empty_aligned_objs[2]])
-		nl1ds_cross_gal = [azim_average_cl2d(nl2d/V, l2d, lbinedges=cbps.Mkk_obj.binl, lbins=cbps.Mkk_obj.midbin_ell)[1] for nl2d in nl2ds_ciber_noise_gal_map]
+		# Apply same Fourier weights (including theta masks) as used for data during azimuthal averaging
+		nl1ds_cross_gal = [azim_average_cl2d(nl2d/V, l2d, lbinedges=cbps.Mkk_obj.binl, lbins=cbps.Mkk_obj.midbin_ell, weights=weights)[1] for nl2d in nl2ds_ciber_noise_gal_map]
 		count, mean_nl2d, M2_nl2d = update_meanvar(count, mean_nl2d, M2_nl2d, nl2ds_ciber_noise_gal_map/V)
 
 		all_nl1ds_cross_gal.extend(nl1ds_cross_gal)

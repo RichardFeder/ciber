@@ -5,8 +5,69 @@ import pandas as pd
 import config
 import scipy
 import scipy.io
+from astropy.cosmology import Planck15 as cosmo
+
 
 ''' Various numerical routines and general calculations '''
+
+def ell_range_for_physical_scale(zmin, zmax, Rmin, Rmax, num_z=100):
+    """
+    Computes the range of angular multipoles ℓ corresponding to
+    transverse comoving scales Rmin to Rmax over a redshift bin.
+
+    Parameters
+    ----------
+    zmin, zmax : float
+        Minimum and maximum redshift of the bin.
+    Rmin, Rmax : float
+        Minimum and maximum transverse **physical** scale in Mpc.
+    num_z : int
+        Number of redshift points to sample between zmin and zmax.
+
+    Returns
+    -------
+    ell_min : float
+        Maximum ℓ corresponding to largest scale (Rmax) at zmin.
+    ell_max : float
+        Minimum ℓ corresponding to smallest scale (Rmin) at zmax.
+    """
+
+    z_vals = np.linspace(zmin, zmax, num_z)
+    DA_vals = cosmo.angular_diameter_distance(z_vals).value  # in Mpc
+
+    ell_min_arr = np.pi * DA_vals / Rmax
+    ell_max_arr = np.pi * DA_vals / Rmin
+
+    ell_min = np.min(ell_min_arr)  # Conservative: largest scale → smallest ℓ
+    ell_max = np.max(ell_max_arr)  # Conservative: smallest scale → largest ℓ
+
+    return ell_min, ell_max
+
+def weighted_mean_and_uncertainty(measurements, uncertainties):
+    """
+    Calculate the weighted mean and its uncertainty from measurements and their uncertainties.
+
+    Parameters:
+    measurements (list): A list of measurement values.
+    uncertainties (list): A list of measurement uncertainties corresponding to each measurement.
+
+    Returns:
+    tuple: The weighted mean and the uncertainty of the mean.
+    """
+    # Convert lists to numpy arrays for easier calculations
+    measurements = np.array(measurements)
+    uncertainties = np.array(uncertainties)
+    
+    # Calculate inverse-variance weights
+    weights = 1 / uncertainties**2
+    
+    # Calculate weighted mean
+    weighted_mean_value = np.sum(weights * measurements) / np.sum(weights)
+    
+    # Calculate uncertainty of the weighted mean
+    uncertainty = np.sqrt(1 / np.sum(weights))
+    
+    return weighted_mean_value, uncertainty
 
 
 def interp_pred(lb_pred, cl_pred, lb_interp):

@@ -220,6 +220,8 @@ def compute_field_averaged_power_spectrum(per_field_cls, per_field_dcls=None, pe
     
     return field_averaged_cl, field_averaged_std, cl_sumweights, per_field_cl_weights
 
+
+
 def compute_mock_covariance_matrix(lb, inst, all_mock_recov_ps, mock_all_field_averaged_cls, lmax=None, ifield_list = [4, 5, 6, 7, 8], save=False, \
                                   mock_run_name=None, datestr='111323', plot=False, per_field=True, startidx=None, nsim_startidx=0):
     
@@ -443,6 +445,82 @@ def return_frac_knox_error(lb, delta_ell, nsidedeg=2, mask_frac=None, mode='auto
         
     frac_knox_errors /= np.sqrt(fsky)
     return frac_knox_errors
+
+
+def compute_knox_errors_from_model(lb, model_cl, delta_ell, fsky, mode='auto'):
+    """
+    Compute Knox cosmic variance uncertainties from a model prediction.
+    
+    This computes Knox sample variance using a model spectrum rather than the
+    measured data. This avoids bias from cosmic variance in the data itself
+    and is the recommended approach for computing Knox errors in iterative fits.
+    
+    Parameters
+    ----------
+    lb : array_like
+        Multipole bin centers
+    model_cl : array_like
+        Model C_ell prediction (same length as lb)
+    delta_ell : float or array_like
+        Bandpower width(s)
+    fsky : float
+        Sky fraction (0 to 1)
+    mode : str, optional
+        'auto' for auto-spectrum (prefactor=2) or 'cross' for cross-spectrum (prefactor=1)
+        Default is 'auto'
+    
+    Returns
+    -------
+    knox_errors : array_like
+        Knox uncertainty on C_ell (same units and length as model_cl)
+    
+    Notes
+    -----
+    Knox formula for cosmic variance:
+        σ²(C_ℓ) = (prefactor / ((2ℓ+1) * Δℓ * f_sky)) * C_ℓ²
+    
+    where prefactor = 2 for auto-spectra, 1 for cross-spectra
+    
+    This function is useful for:
+    - Two-stage fitting: use Stage 1 results to compute Knox for Stage 2
+    - Iterative Knox covariance: update Knox at each MCMC step
+    - Comparing model predictions with measurement uncertainties
+    
+    Examples
+    --------
+    >>> # Compute Knox errors from a model prediction
+    >>> model_cl = np.array([100, 50, 25, 10])  # C_ell in some units
+    >>> lb = np.array([300, 600, 1200, 2400])
+    >>> knox_err = compute_knox_errors_from_model(lb, model_cl, delta_ell=180, fsky=0.0001)
+    
+    >>> # For two-stage fitting
+    >>> # Stage 1: fit with data-based Knox
+    >>> fit1 = model.fit_model_mcmc(lb, dl_data, dl_err=dl_err_with_data_knox)
+    >>> # Stage 2: compute Knox from Stage 1 model
+    >>> model_cl = model.model(lb, *fit1['params']) / (lb*(lb+1)/(2*np.pi))
+    >>> knox_model = compute_knox_errors_from_model(lb, model_cl, delta_ell, fsky)
+    >>> # Combine with measurement uncertainties (without Knox)
+    >>> total_err = np.sqrt(measurement_err**2 + knox_model**2)
+    >>> fit2 = model.fit_model_mcmc(lb, dl_data, dl_err=total_err)
+    
+    See Also
+    --------
+    return_frac_knox_error : Compute fractional Knox errors (multiply by data)
+    """
+    
+    if mode=='auto':
+        prefactor = 2.
+    elif mode=='cross':
+        prefactor = 1.
+    else:
+        raise ValueError(f"mode must be 'auto' or 'cross', got '{mode}'")
+    
+    # Compute Knox variance
+    knox_variance = (prefactor / ((2*lb + 1) * delta_ell * fsky)) * model_cl**2
+    knox_errors = np.sqrt(knox_variance)
+    
+    return knox_errors
+
 
 def calc_bandpower_cl_info(p, w):
 

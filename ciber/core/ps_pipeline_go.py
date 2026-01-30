@@ -301,13 +301,11 @@ def ciber_gal_cross(inst_list, ifield_list_use, catname, addstr=None, randstr=No
 		else:
 			masking_maglim = masking_maglim_list[idx]
 		
-
-
 		# gal_densities, noise_base_path = load_delta_g_maps(catname, inst, addstr)
-		gal_counts, _, noise_base_path = load_delta_g_maps(catname, inst, addstr)
+		gal_counts, noise_base_path = load_delta_g_maps(catname, inst, addstr)
 
 		if subtract_randoms:
-			rand_counts, _, _ = load_delta_g_maps(catname, inst, randstr)
+			rand_counts, _ = load_delta_g_maps(catname, inst, randstr)
 
 		if mask_tail_list is not None:
 			mask_tail = mask_tail_list[idx]
@@ -475,7 +473,11 @@ def ciber_gal_cross(inst_list, ifield_list_use, catname, addstr=None, randstr=No
 			if estimate_ciber_noise_gal:
 				nl_save_fpath, lb, all_nl1ds = estimate_ciber_noise_cross_gal(cbps, inst, ifield, catname, masked_gal_map, mask, \
 																			 include_ff_errors=include_ff_errors, add_str=addstr, plot=False, \
-																			 nsims=nsims, n_split=n_split, observed_run_name=observed_run_name)
+																			 nsims=nsims, n_split=n_split, observed_run_name=observed_run_name, \
+																			 compute_cl_theta=compute_cl_theta, cl_theta_cut=cl_theta_cut, \
+																			 theta_masks=theta_masks if compute_cl_theta else None, \
+																			 n_rad_bins=n_rad_bins, theta0=theta0, rad_offset=rad_offset, \
+																			 ell_min_wedge=ell_min_wedge)
 			else:
 				nl_save_fpath = noise_base_path+'nl1ds_TM'+str(inst)+'_ifield'+str(ifield)+'_ciber_noise'
 				if addstr is not None:
@@ -555,8 +557,8 @@ def ciber_gal_cross(inst_list, ifield_list_use, catname, addstr=None, randstr=No
 			if tailstr_save is not None:
 				addstr_save += '_'+tailstr_save
 
-			ps_save_fpath = save_ciber_gal_ps(inst, ifield_list_use, catname, lb, all_cl_gal, all_clerr_gal, all_cl_cross, all_clerr_cross, \
-							  masking_maglim=masking_maglim, addstr=addstr_save)
+			ps_save_fpath = save_ciber_gal_ps(inst, ifield_list_use, catname, lb, all_cl_gal, all_clerr_gal, all_cl_cross, all_clerr_cross,
+                                           scaling_factor=scale if subtract_randoms else None)
 		
 			all_ps_save_fpath.append(ps_save_fpath)
 			all_addstr_use.append(addstr_save)
@@ -1658,7 +1660,7 @@ def run_cbps_pipeline(cbps, inst, nsims, run_name, ifield_list = None, \
 					if config_dict['ps_type']=='cross':
 						plot_map(observed_ims_cross[fieldidx], title='observed ims cross ifield = '+str(ifield))
 
-		# 4/28/24 got rid of code for cbps.estimate_b_ell_from_maps, not used but refer to previous versions if interested
+		# 4/28/24 got rid of cbps.estimate_b_ell_from_maps, not used but refer to previous versions if interested
 
 		# ----------- load masks and mkk matrices ------------
 
@@ -1720,7 +1722,7 @@ def run_cbps_pipeline(cbps, inst, nsims, run_name, ifield_list = None, \
 					print('mkk ffest mask tail before load mkk fcsub is ', mkk_ffest_mask_tail)
 					if pscb_dict['fc_sub']:
 
-						inv_Mkk_truncated = load_mkk_fcsub(float_param_dict, mode_couple_base_dir, mkk_ffest_mask_tail, mkk_type, inst, ifield, invert_spliced_matrix=pscb_dict['invert_spliced_matrix'], compute_pinv=pscb_dict['compute_mkk_pinv'])
+						inv_Mkk_truncated = load_mkk_fcsub(float_param_dict, mode_couple_base_dir, mkk_ffest_mask_tail, mkk_type, inst, ifield, cib_setidx=cib_setidx, invert_spliced_matrix=pscb_dict['invert_spliced_matrix'], compute_pinv=pscb_dict['compute_mkk_pinv'])
 
 						inv_Mkks.append(inv_Mkk_truncated)
 
@@ -2232,14 +2234,14 @@ def run_cbps_pipeline(cbps, inst, nsims, run_name, ifield_list = None, \
 						plot_map(fourier_weights_readnoiseonly, title='read noise fourier weights')
 
 					if pscb_dict['compute_ps_per_quadrant']:
-						fourier_weights_nofluc_per_quadrant, mean_cl2d_cross_per_quadrant = [[] for x in range(2)]
+						fourier_weights_nofluc_per_quadrant, mean_cl2d_nofluc_per_quadrant = [[] for x in range(2)]
 						for q in range(4):
 							noisemodl_tailpath_per_quadrant = '/noise_bias_fieldidx'+str(fieldidx)+'_quad'+str(q)+'.npz'
 							noisemodl_fpath_per_quadrant = fpath_dict['noisemodl_basepath'] + fpath_dict['noisemodl_run_name'] + noisemodl_tailpath_per_quadrant
 							noisemodl_file_indiv_quadrant = np.load(noisemodl_fpath_per_quadrant)
 							
 							fourier_weights_nofluc_per_quadrant.append(noisemodl_file_indiv_quadrant['fourier_weights_nofluc'])
-							mean_cl2d_cross_per_quadrant.append(noisemodl_file_indiv_quadrant['mean_cl2d_nofluc'])
+							mean_cl2d_nofluc_per_quadrant.append(noisemodl_file_indiv_quadrant['mean_cl2d_nofluc'])
 							N_ells_est_per_quadrant[q, fieldidx] = noisemodl_file_indiv_quadrant['nl_estFF_nofluc']
 
 					if pscb_dict['verbose']:
@@ -2261,7 +2263,7 @@ def run_cbps_pipeline(cbps, inst, nsims, run_name, ifield_list = None, \
 						dcl_cross = np.sqrt(var_nAnB+var_nAsB+var_nBsA)
 
 						# lb, N_ell_est, N_ell_err = cbps.compute_noise_power_spectrum(inst, noise_Cl2D=mean_cl2d_cross.copy(), inplace=False, apply_FW=pscb_dict['apply_FW'], weights=fourier_weights_cross)
-						nl_dict = cbps.compute_noise_power_spectrum(inst, noise_Cl2D=mean_cl2d_cross.copy(), inplace=False, apply_FW=pscb_dict['apply_FW'], weights=fourier_weights_cross)
+						nl_dict = cbps.compute_noise_power_spectrum(inst, noise_Cl2D=mean_cl2d_cross.copy(), inplace=False, apply_FW=pscb_dict['apply_FW'], weights=fourier_weights_cross, weight_power=float_param_dict['weight_power'], theta_masks=theta_masks)
 						lb = nl_dict['lbins']
 						N_ell_est = nl_dict['Cl_noise']
 						N_ell_err = nl_dict['Clerr']

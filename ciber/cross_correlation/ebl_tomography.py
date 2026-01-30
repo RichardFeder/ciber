@@ -529,7 +529,7 @@ def collect_ngtot(catname, inst=1, ifield_list=[4, 5, 6, 7, 8], zbinedges=None,
         if headstr is not None:
             addstr = headstr + '_' + addstr
 
-        gal_counts, gal_fpath, noise_base_path = load_delta_g_maps(catname, inst, addstr)
+        gal_counts, noise_base_path = load_delta_g_maps(catname, inst, addstr)
         
         perf = [np.sum(gal_counts['ifield'+str(ifield)].data) for ifield in ifield_list]
         print(perf)
