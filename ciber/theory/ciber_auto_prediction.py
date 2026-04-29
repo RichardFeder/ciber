@@ -145,7 +145,7 @@ def fit_galaxy_auto_clustering(lb, cl_gal_auto, cl_gal_auto_err=None,
         dl_1h = components['one_halo']
         dl_shot = components['shot_noise']
         dl_total = components['total']
-        dl_clustering = dl_2h
+        dl_clustering = dl_2h + dl_1h
         
         # Convert clustering back to C_ℓ
         cl_clustering = dl_clustering / pf
@@ -539,6 +539,8 @@ def predict_ciber_auto_vs_redshift(res_ps, inst_idx=0, zbinedges=None,
     # Redshift centers
     if zbinedges is None:
         zbinedges = np.linspace(0, 1, n_zbin + 1)
+    else:
+        zbinedges = np.asarray(zbinedges, dtype=float)
     z_centers = 0.5 * (zbinedges[:-1] + zbinedges[1:])
     
     # Convert to D_ℓ

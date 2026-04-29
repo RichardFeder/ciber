@@ -121,6 +121,66 @@ def calc_cross_cl_shot_noise(mags, lam, aeff=4.0):
 
     return cross_cl_pred
 
+
+def calc_trispectrum_nl_kappa(mags, lam, aeff=4.0, return_moments=False):
+    """
+    Calculate N_L^kappa from intensity field trispectrum due to source fluxes.
+    
+    For source fluxes s, the reconstruction noise from the trispectrum is:
+    N_L^kappa = (1/4) * (<s^4> / <s^2>^2) * (1/nbar)
+    
+    This represents the non-Gaussian contribution to kappa reconstruction noise
+    from the connected 4-point function of the intensity field.
+    
+    Parameters
+    ----------
+    mags : array_like
+        Source magnitudes
+    lam : float
+        Wavelength in microns
+    aeff : float
+        Effective survey area in deg^2
+    return_moments : bool
+        If True, also return <s^2>, <s^4>, and nbar
+        
+    Returns
+    -------
+    nl_kappa_trispec : float
+        N_L^kappa contribution from trispectrum (flat in L)
+    moments : dict (optional)
+        Dictionary with 's2_mean', 's4_mean', 'nbar_sr' if return_moments=True
+    """
+    cmock = ciber_mock()
+    
+    # steradian per mock area
+    volfac = (1. / aeff) / 3.046e-4  # 1 deg^2 = 3.046e-4 sr
+    
+    # Convert magnitudes to fluxes (nu*I_nu per sr)
+    nu_Inu = cmock.mag_2_nu_Inu(mags, lam_eff=lam*1e-6*u.m) * cmock.pix_sr
+    fluxes = nu_Inu.value  # Extract value from astropy Quantity
+    
+    # Number density (per sr)
+    N_sources = len(mags)
+    nbar_sr = N_sources * volfac
+    
+    # Compute flux moments
+    s2_mean = np.mean(fluxes**2)
+    s4_mean = np.mean(fluxes**4)
+    
+    # N_L^kappa from trispectrum: (1/4) * (<s^4> / <s^2>^2) * (1/nbar)
+    nl_kappa_trispec = 0.25 * (s4_mean / s2_mean**2) / nbar_sr
+    
+    if return_moments:
+        moments = {
+            's2_mean': s2_mean,
+            's4_mean': s4_mean,
+            'nbar_sr': nbar_sr,
+            'nbar_deg2': nbar_sr * 3.046e-4  # Convert back to deg^-2
+        }
+        return nl_kappa_trispec, moments
+    
+    return nl_kappa_trispec
+
 def calc_auto_dl_trilegal_simp(lb, cat_sel, lam, idx, aeff=4.0):
     cmock = ciber_mock()
 
@@ -1456,8 +1516,8 @@ def poisson_pred_ciber_spitzer_wrapper(mag_min_irac=16.0, modes = ['full', 'igl'
 		for m, mode in enumerate(modes):
 			for midx, mag in enumerate(ciber_band_mags[idx]):
 
-				auto_pv = calc_catalog_poisson_fluc(inst, c15_df, mag_min=mag, mag_max=mag_max, aeff=cosmos_aeff,\
-													convert_to_AB=True, lam_eff=lam_eff)
+				auto_pv, nl_kappa_trispec = calc_catalog_poisson_fluc(inst, c15_df, mag_min=mag, mag_max=mag_max, aeff=cosmos_aeff,\
+																	convert_to_AB=True, lam_eff=lam_eff)
 
 				if apply_color_correction:
 					ccorr = grab_color_corr(mag, mmin_range_ccorr, ratio_cib_uv)
@@ -1471,7 +1531,7 @@ def poisson_pred_ciber_spitzer_wrapper(mag_min_irac=16.0, modes = ['full', 'igl'
 		
 		print('Saving TM'+str(inst)+' COSMOS 2015 Poisson predictions to '+auto_pv_COSMOS_fpath+'.npz..')
 		np.savez(auto_pv_COSMOS_fpath+'.npz', inst=inst, ifield_list=ifield_list, mag_lims=ciber_band_mags[idx], \
-				auto_pv_c15=auto_pv_c15)
+				auto_pv_c15=auto_pv_c15, nl_kappa_trispec_c15=nl_kappa_trispec_c15)
 
 		# 2MASS 
 			
@@ -1484,7 +1544,7 @@ def poisson_pred_ciber_spitzer_wrapper(mag_min_irac=16.0, modes = ['full', 'igl'
 
 			for midx, mag in enumerate(ciber_band_mags[idx]):
 
-				auto_pv = calc_catalog_poisson_fluc(inst, twomass_df, mag_min=mag, mag_max=mag_max,\
+				auto_pv, nl_kappa_trispec = calc_catalog_poisson_fluc(inst, twomass_df, mag_min=mag, mag_max=mag_max,\
 													bandstr=twomass_bandstrs[idx], aeff=twomass_aeff, convert_to_AB=True)
 
 				auto_pv_2MASS[fieldidx, midx] = auto_pv
@@ -1511,7 +1571,7 @@ def poisson_pred_ciber_spitzer_wrapper(mag_min_irac=16.0, modes = ['full', 'igl'
 	# COSMOS
 	for m, mode in enumerate(modes):
 		for midx, mag in enumerate(J_mag_range):
-			auto_pv, auto_pv_crossinst, cross_pv = calc_catalog_poisson_fluc(1, c15_df, mag_min=mag, mag_max=mag_max, \
+			auto_pv, auto_pv_crossinst, cross_pv, nl_kappa_trispec, nl_kappa_trispec_crossinst = calc_catalog_poisson_fluc(1, c15_df, mag_min=mag, mag_max=mag_max, \
 											  bandstr_cut=bandstr, bandstr=bandstr, aeff=cosmos_aeff, \
 												 lam_eff=1.65, src_type=src_types[m], cross_inst=2, mag_min_cross=H_mag_range[midx], \
 												convert_to_AB=True)
@@ -1536,7 +1596,7 @@ def poisson_pred_ciber_spitzer_wrapper(mag_min_irac=16.0, modes = ['full', 'igl'
 		
 		for midx, mag in enumerate(J_mag_range):
 
-			auto_pv_J, auto_pv_H, cross_pv_JH = calc_catalog_poisson_fluc(inst, twomass_df, cross_inst=cross_inst, mag_min=mag, mag_min_cross=H_mag_range[midx],\
+			auto_pv_J, auto_pv_H, cross_pv_JH, nl_kappa_trispec_J, nl_kappa_trispec_H = calc_catalog_poisson_fluc(inst, twomass_df, cross_inst=cross_inst, mag_min=mag, mag_min_cross=H_mag_range[midx],\
 															mag_max=mag_max, bandstr='j_m', bandstr_cross='h_m', aeff=4.0, convert_to_AB=True, \
 															   lam_eff=lam_eff, lam_eff_cross=lam_eff_cross)
 
@@ -1637,6 +1697,9 @@ def calc_catalog_poisson_fluc(inst, cat_df, irac_ch=None, irac_ch_cross=None, cr
 		
 	nu_Inu = cmock.mag_2_nu_Inu(cat_mag[catmask], lam_eff=lam_eff*1e-6*u.m)*cmock.pix_sr
 	auto_poisson_var = np.sum(volfac*(nu_Inu**2))
+	
+	# Compute trispectrum contribution to N_L^kappa
+	nl_kappa_trispec = calc_trispectrum_nl_kappa(cat_mag[catmask], lam_eff, aeff=aeff)
 
 	if cross_inst is not None:
 		cat_mag_sel_cross = cat_mag_cross[catmask]
@@ -1645,9 +1708,12 @@ def calc_catalog_poisson_fluc(inst, cat_df, irac_ch=None, irac_ch_cross=None, cr
 		auto_poisson_var_crossinst = np.sum(volfac*(nu_Inu_crossinst**2))
 		cross_poisson_var = np.sum(volfac*(nu_Inu*nu_Inu_crossinst))
 		
-		return auto_poisson_var, auto_poisson_var_crossinst, cross_poisson_var
+		# Compute trispectrum for cross instrument
+		nl_kappa_trispec_crossinst = calc_trispectrum_nl_kappa(cat_mag_cross[catmask], lam_eff_cross, aeff=aeff)
+		
+		return auto_poisson_var, auto_poisson_var_crossinst, cross_poisson_var, nl_kappa_trispec, nl_kappa_trispec_crossinst
 	
-	return auto_poisson_var
+	return auto_poisson_var, nl_kappa_trispec
 
 
 def calc_shotnoise_from_cat(inst, cat_df, xlims, ylims, mag_min=17.0, mag_max=30.0, cat_type='predict', convert_to_AB=True):

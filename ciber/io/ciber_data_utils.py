@@ -15,219 +15,181 @@ from ciber.processing.numerical import interp_pred, interp_pred2
 
 '''---------------------- loading functions ----------------------'''
 
-def save_fit_results_npz(all_fit_results_mcmc, zbinedges, inst_list, 
-                         save_path, dataset_name='HSC'):
-    """
-    Save MCMC fit results to .npz file for easy loading and comparison.
-    
-    Saves median, std, and percentiles (16th, 84th, 95th, 99.7th) for each parameter.
-    The 95th and 99.7th percentiles can be used for reporting upper limits when
-    constraints are weak (see should_report_upper_limit function).
-    
-    Parameters
-    ----------
-    all_fit_results_mcmc : dict
-        Dictionary with keys like 'inst1_zbin0', 'inst2_zbin1', etc.
-        Each contains a 'fit_result' dict with params, params_err, etc.
-    zbinedges : list or array
-        Redshift bin edges
-    inst_list : list
-        List of instrument indices (e.g., [1, 2])
-    save_path : str
-        Path to save .npz file
-    dataset_name : str, optional
-        Name of dataset (e.g., 'HSC', 'LS')
-        
-    Returns
-    -------
-    dict
-        Summary of saved data
-        
-    Notes
-    -----
-    Upper limits vs Gaussian uncertainties:
-    - Use upper limits when posterior is truncated by non-negativity (e.g., A_2h)
-    - Report 95th percentile for 2σ upper limit, 99.7th for 3σ
-    - Use Gaussian (median ± std) when posterior is well-constrained and symmetric
-    - See should_report_upper_limit() for automatic determination
-    """
-    # Organize data by instrument and redshift bin
-    n_zbins = len(zbinedges) - 1
-    n_inst = len(inst_list)
-    
-    # Determine max number of parameters from first fit result
-    sample_key = list(all_fit_results_mcmc.keys())[0]
-    n_params = len(all_fit_results_mcmc[sample_key]['fit_result']['params'])
-    
-    # Create arrays to store results
-    params_array = np.full((n_inst, n_zbins, n_params), np.nan)
-    params_err_array = np.full((n_inst, n_zbins, n_params), np.nan)
-    params_16_array = np.full((n_inst, n_zbins, n_params), np.nan)
-    params_84_array = np.full((n_inst, n_zbins, n_params), np.nan)
-    params_95_array = np.full((n_inst, n_zbins, n_params), np.nan)
-    params_997_array = np.full((n_inst, n_zbins, n_params), np.nan)
-    chisq_array = np.full((n_inst, n_zbins), np.nan)
-    reduced_chisq_array = np.full((n_inst, n_zbins), np.nan)
-    
-    # Create object arrays to store variable-length arrays (lb_fit, model_dl, residuals)
-    # These allow storing arrays of different lengths for each (inst, zbin) combination
-    lb_fit_array = np.empty((n_inst, n_zbins), dtype=object)
-    model_dl_array = np.empty((n_inst, n_zbins), dtype=object)
-    residuals_array = np.empty((n_inst, n_zbins), dtype=object)
-    data_dl_array = np.empty((n_inst, n_zbins), dtype=object)
-    data_dlerr_array = np.empty((n_inst, n_zbins), dtype=object)
-    
-    # Extract model configuration from first result (same for all)
-    sample_result = all_fit_results_mcmc[sample_key]['fit_result']
-    model_config = {
-        'use_ihl_templates': 'template_names' in sample_result,
-        'use_powerlaw_2h': sample_result.get('use_powerlaw_2h', True),
-        'alpha_2h_fixed': sample_result.get('alpha_2h_fixed', 0.0),
-        'use_lorentzian_1h': sample_result.get('use_lorentzian_1h', False),
-        'template_names': sample_result.get('template_names', []),
-        'ihl_template_path': 'ihl_templates/',  # Standard path
-    }
-    
-    # Fill arrays
-    for i, inst in enumerate(inst_list):
-        for zidx in range(n_zbins):
-            key = f'inst{inst}_zbin{zidx}'
-            if key in all_fit_results_mcmc:
-                fit_result = all_fit_results_mcmc[key]['fit_result']
-                params_array[i, zidx, :] = fit_result['params']
-                params_err_array[i, zidx, :] = fit_result['params_err']
-                params_16_array[i, zidx, :] = fit_result.get('params_16', fit_result['params'] - fit_result['params_err'])
-                params_84_array[i, zidx, :] = fit_result.get('params_84', fit_result['params'] + fit_result['params_err'])
-                params_95_array[i, zidx, :] = fit_result.get('params_95', fit_result['params'] + 2*fit_result['params_err'])
-                params_997_array[i, zidx, :] = fit_result.get('params_997', fit_result['params'] + 3*fit_result['params_err'])
-                chisq_array[i, zidx] = fit_result['chisq']
-                reduced_chisq_array[i, zidx] = fit_result['reduced_chisq']
-                
-                # Save model and residuals if available
-                lb_fit_array[i, zidx] = fit_result.get('lb_fit', None)
-                model_dl_array[i, zidx] = fit_result.get('model_dl', None)
-                residuals_array[i, zidx] = fit_result.get('residuals', None)
-                data_dl_array[i, zidx] = fit_result.get('data_dl', None)
-                data_dlerr_array[i, zidx] = fit_result.get('data_dlerr', None)
-    
-    # Save to .npz
-    np.savez(save_path,
-             params=params_array,
-             params_err=params_err_array,
-             params_16=params_16_array,
-             params_84=params_84_array,
-             params_95=params_95_array,
-             params_997=params_997_array,
-             chisq=chisq_array,
-             reduced_chisq=reduced_chisq_array,
-             zbinedges=np.array(zbinedges),
-             inst_list=np.array(inst_list),
-             dataset_name=dataset_name,
-             param_names=np.array(all_fit_results_mcmc[sample_key]['fit_result']['param_names']),
-             lb_fit=lb_fit_array,
-             model_dl=model_dl_array,
-             residuals=residuals_array,
-             data_dl=data_dl_array,
-             data_dlerr=data_dlerr_array,
-             use_ihl_templates=model_config['use_ihl_templates'],
-             use_powerlaw_2h=model_config['use_powerlaw_2h'],
-             alpha_2h_fixed=model_config['alpha_2h_fixed'],
-             use_lorentzian_1h=model_config['use_lorentzian_1h'],
-             template_names=np.array(model_config['template_names']),
-             ihl_template_path=model_config['ihl_template_path'])
-    
-    print(f"✓ Saved fit results to: {save_path}")
-    print(f"  Dataset: {dataset_name}")
-    print(f"  Shape: {params_array.shape} (n_inst, n_zbins, n_params)")
-    print(f"  Redshift bins: {n_zbins}")
-    print(f"  Instruments: {inst_list}")
-    print(f"  Parameters: {n_params}")
-    
-    return {
-        'save_path': save_path,
-        'dataset_name': dataset_name,
-        'shape': params_array.shape,
-        'n_zbins': n_zbins,
-        'n_inst': n_inst,
-        'n_params': n_params
-    }
+def save_fit_results_npz(all_fit_results_mcmc, zbinedges, inst_list,
+						 save_path, dataset_name='HSC'):
+	"""Save MCMC fit results to .npz file for easy loading and comparison."""
+	n_zbins = len(zbinedges) - 1
+	n_inst = len(inst_list)
+
+	sample_key = list(all_fit_results_mcmc.keys())[0]
+	n_params = len(all_fit_results_mcmc[sample_key]['fit_result']['params'])
+
+	params_array = np.full((n_inst, n_zbins, n_params), np.nan)
+	params_err_array = np.full((n_inst, n_zbins, n_params), np.nan)
+	params_16_array = np.full((n_inst, n_zbins, n_params), np.nan)
+	params_84_array = np.full((n_inst, n_zbins, n_params), np.nan)
+	params_95_array = np.full((n_inst, n_zbins, n_params), np.nan)
+	params_997_array = np.full((n_inst, n_zbins, n_params), np.nan)
+	chisq_array = np.full((n_inst, n_zbins), np.nan)
+	reduced_chisq_array = np.full((n_inst, n_zbins), np.nan)
+
+	lb_fit_array = np.empty((n_inst, n_zbins), dtype=object)
+	model_dl_array = np.empty((n_inst, n_zbins), dtype=object)
+	residuals_array = np.empty((n_inst, n_zbins), dtype=object)
+	data_dl_array = np.empty((n_inst, n_zbins), dtype=object)
+	data_dlerr_array = np.empty((n_inst, n_zbins), dtype=object)
+	samples_array = np.empty((n_inst, n_zbins), dtype=object)
+	samples_fitted_array = np.empty((n_inst, n_zbins), dtype=object)
+	param_names_fitted_array = np.empty((n_inst, n_zbins), dtype=object)
+	acceptance_fraction_array = np.full((n_inst, n_zbins), np.nan)
+
+	sample_result = all_fit_results_mcmc[sample_key]['fit_result']
+	model_config = {
+		'use_ihl_templates': 'template_names' in sample_result,
+		'use_powerlaw_2h': sample_result.get('use_powerlaw_2h', True),
+		'alpha_2h_fixed': sample_result.get('alpha_2h_fixed', 0.0),
+		'use_lorentzian_1h': sample_result.get('use_lorentzian_1h', False),
+		'template_names': sample_result.get('template_names', []),
+		'ihl_template_path': 'ihl_templates/',
+	}
+
+	for i, inst in enumerate(inst_list):
+		for zidx in range(n_zbins):
+			key = f'inst{inst}_zbin{zidx}'
+			if key not in all_fit_results_mcmc:
+				continue
+
+			fit_result = all_fit_results_mcmc[key]['fit_result']
+			params_array[i, zidx, :] = fit_result['params']
+			params_err_array[i, zidx, :] = fit_result['params_err']
+			params_16_array[i, zidx, :] = fit_result.get('params_16', fit_result['params'] - fit_result['params_err'])
+			params_84_array[i, zidx, :] = fit_result.get('params_84', fit_result['params'] + fit_result['params_err'])
+			params_95_array[i, zidx, :] = fit_result.get('params_95', fit_result['params'] + 2 * fit_result['params_err'])
+			params_997_array[i, zidx, :] = fit_result.get('params_997', fit_result['params'] + 3 * fit_result['params_err'])
+			chisq_array[i, zidx] = fit_result['chisq']
+			reduced_chisq_array[i, zidx] = fit_result['reduced_chisq']
+
+			lb_fit_array[i, zidx] = fit_result.get('lb_fit', None)
+			model_dl_array[i, zidx] = fit_result.get('model_dl', None)
+			residuals_array[i, zidx] = fit_result.get('residuals', None)
+			data_dl_array[i, zidx] = fit_result.get('data_dl', None)
+			data_dlerr_array[i, zidx] = fit_result.get('data_dlerr', None)
+			samples_array[i, zidx] = fit_result.get('samples', None)
+			samples_fitted_array[i, zidx] = fit_result.get('samples_fitted', None)
+			param_names_fitted_array[i, zidx] = fit_result.get('param_names_fitted', None)
+			acceptance_fraction_array[i, zidx] = fit_result.get('acceptance_fraction', np.nan)
+
+	np.savez(
+		save_path,
+		params=params_array,
+		params_err=params_err_array,
+		params_16=params_16_array,
+		params_84=params_84_array,
+		params_95=params_95_array,
+		params_997=params_997_array,
+		chisq=chisq_array,
+		reduced_chisq=reduced_chisq_array,
+		zbinedges=np.array(zbinedges),
+		inst_list=np.array(inst_list),
+		dataset_name=dataset_name,
+		param_names=np.array(all_fit_results_mcmc[sample_key]['fit_result']['param_names']),
+		lb_fit=lb_fit_array,
+		model_dl=model_dl_array,
+		residuals=residuals_array,
+		data_dl=data_dl_array,
+		data_dlerr=data_dlerr_array,
+		samples=samples_array,
+		samples_fitted=samples_fitted_array,
+		param_names_fitted=param_names_fitted_array,
+		acceptance_fraction=acceptance_fraction_array,
+		use_ihl_templates=model_config['use_ihl_templates'],
+		use_powerlaw_2h=model_config['use_powerlaw_2h'],
+		alpha_2h_fixed=model_config['alpha_2h_fixed'],
+		use_lorentzian_1h=model_config['use_lorentzian_1h'],
+		template_names=np.array(model_config['template_names']),
+		ihl_template_path=model_config['ihl_template_path'],
+	)
+
+	print(f"✓ Saved fit results to: {save_path}")
+	print(f"  Dataset: {dataset_name}")
+	print(f"  Shape: {params_array.shape} (n_inst, n_zbins, n_params)")
+	print(f"  Redshift bins: {n_zbins}")
+	print(f"  Instruments: {inst_list}")
+	print(f"  Parameters: {n_params}")
+
+	return {
+		'save_path': save_path,
+		'dataset_name': dataset_name,
+		'shape': params_array.shape,
+		'n_zbins': n_zbins,
+		'n_inst': n_inst,
+		'n_params': n_params,
+	}
 
 
 def load_fit_results_npz(load_path):
-    """
-    Load MCMC fit results from .npz file.
-    
-    Parameters
-    ----------
-    load_path : str
-        Path to .npz file
-        
-    Returns
-    -------
-    dict
-        Dictionary with keys: 'params', 'params_err', 'chisq', 'reduced_chisq',
-        'zbinedges', 'inst_list', 'dataset_name', 'param_names', 'z_centers',
-        and model configuration if available
-    """
-    data = np.load(load_path, allow_pickle=True)
-    
-    results = {
-        'params': data['params'],
-        'params_err': data['params_err'],
-        'chisq': data['chisq'],
-        'reduced_chisq': data['reduced_chisq'],
-        'zbinedges': data['zbinedges'],
-        'inst_list': data['inst_list'],
-        'dataset_name': str(data['dataset_name']),
-        'param_names': data['param_names']
-    }
-    
-    # Load model and residuals if available (for newer saved files)
-    if 'lb_fit' in data:
-        results['lb_fit'] = data['lb_fit']
-    if 'model_dl' in data:
-        results['model_dl'] = data['model_dl']
-    if 'residuals' in data:
-        results['residuals'] = data['residuals']
-    if 'data_dl' in data:
-        results['data_dl'] = data['data_dl']
-    if 'data_dlerr' in data:
-        results['data_dlerr'] = data['data_dlerr']
-    
-    # Load model configuration (for component plotting)
-    if 'use_ihl_templates' in data:
-        results['use_ihl_templates'] = bool(data['use_ihl_templates'])
-    if 'use_powerlaw_2h' in data:
-        results['use_powerlaw_2h'] = bool(data['use_powerlaw_2h'])
-    if 'alpha_2h_fixed' in data:
-        results['alpha_2h_fixed'] = float(data['alpha_2h_fixed'])
-    if 'use_lorentzian_1h' in data:
-        results['use_lorentzian_1h'] = bool(data['use_lorentzian_1h'])
-    if 'template_names' in data:
-        # Handle empty array case (0-d array from np.array([]))
-        template_names_array = data['template_names']
-        if template_names_array.ndim == 0:
-            results['template_names'] = []
-        else:
-            results['template_names'] = list(template_names_array)
-    if 'ihl_template_path' in data:
-        results['ihl_template_path'] = str(data['ihl_template_path'])
-    
-    # Compute redshift centers
-    zbinedges = results['zbinedges']
-    results['z_centers'] = 0.5 * (zbinedges[:-1] + zbinedges[1:])
-    
-    # Flag to indicate this is from a loaded file
-    results['is_loaded_from_file'] = True
-    
-    print(f"✓ Loaded fit results from: {load_path}")
-    print(f"  Dataset: {results['dataset_name']}")
-    print(f"  Shape: {results['params'].shape}")
-    print(f"  Redshift bins: {len(results['z_centers'])}")
-    if 'use_ihl_templates' in results:
-        print(f"  Model: {'IHL templates' if results['use_ihl_templates'] else 'Phenomenological'}")
-    
-    return results
+	"""Load MCMC fit results from .npz file."""
+	data = np.load(load_path, allow_pickle=True)
+
+	results = {
+		'params': data['params'],
+		'params_err': data['params_err'],
+		'chisq': data['chisq'],
+		'reduced_chisq': data['reduced_chisq'],
+		'zbinedges': data['zbinedges'],
+		'inst_list': data['inst_list'],
+		'dataset_name': str(data['dataset_name']),
+		'param_names': data['param_names'],
+	}
+
+	if 'lb_fit' in data:
+		results['lb_fit'] = data['lb_fit']
+	if 'model_dl' in data:
+		results['model_dl'] = data['model_dl']
+	if 'residuals' in data:
+		results['residuals'] = data['residuals']
+	if 'data_dl' in data:
+		results['data_dl'] = data['data_dl']
+	if 'data_dlerr' in data:
+		results['data_dlerr'] = data['data_dlerr']
+	if 'samples' in data:
+		results['samples'] = data['samples']
+	if 'samples_fitted' in data:
+		results['samples_fitted'] = data['samples_fitted']
+	if 'param_names_fitted' in data:
+		results['param_names_fitted'] = data['param_names_fitted']
+	if 'acceptance_fraction' in data:
+		results['acceptance_fraction'] = data['acceptance_fraction']
+
+	if 'use_ihl_templates' in data:
+		results['use_ihl_templates'] = bool(data['use_ihl_templates'])
+	if 'use_powerlaw_2h' in data:
+		results['use_powerlaw_2h'] = bool(data['use_powerlaw_2h'])
+	if 'alpha_2h_fixed' in data:
+		results['alpha_2h_fixed'] = float(data['alpha_2h_fixed'])
+	if 'use_lorentzian_1h' in data:
+		results['use_lorentzian_1h'] = bool(data['use_lorentzian_1h'])
+	if 'template_names' in data:
+		template_names_array = data['template_names']
+		if template_names_array.ndim == 0:
+			results['template_names'] = []
+		else:
+			results['template_names'] = list(template_names_array)
+	if 'ihl_template_path' in data:
+		results['ihl_template_path'] = str(data['ihl_template_path'])
+
+	zbinedges = results['zbinedges']
+	results['z_centers'] = 0.5 * (zbinedges[:-1] + zbinedges[1:])
+	results['is_loaded_from_file'] = True
+
+	print(f"✓ Loaded fit results from: {load_path}")
+	print(f"  Dataset: {results['dataset_name']}")
+	print(f"  Shape: {results['params'].shape}")
+	print(f"  Redshift bins: {len(results['z_centers'])}")
+	if 'use_ihl_templates' in results:
+		print(f"  Model: {'IHL templates' if results['use_ihl_templates'] else 'Phenomenological'}")
+
+	return results
 	
 def grab_wav_dgl_col_from_csv(mean_fpath, upper_fpath):
 	meanfile = np.array(pd.read_csv(mean_fpath, header=None))
@@ -1497,20 +1459,26 @@ def save_mock_items_to_npz(filepath, catalog=None, srcmap_full=None, srcmap_nb=N
 
 def save_ciber_gal_ps(inst, ifield_list_use, catname,\
                       lb, all_cl_gal, all_clerr_gal, all_cl_cross, all_clerr_cross, \
-                      masking_maglim=None, addstr=None, scaling_factor=None):
-	
+                      masking_maglim=None, addstr=None, scaling_factor=None,
+                      all_cl_ciber_auto_inplace=None):
+
 	ps_basepath = config.ciber_basepath+'data/input_recovered_ps/ciber_gal_cross/'+catname+'/TM'+str(inst)+'/'
-	
+
 	ps_save_fpath = ps_basepath + 'ciber_gal_ps_TM'+str(inst)+'_'+catname
-	
+
 	if addstr is not None:
 		ps_save_fpath += '_'+addstr
-		
+
 	print('Saving to ', ps_save_fpath+'.npz')
-	np.savez(ps_save_fpath+'.npz', ifield_list_use=ifield_list_use, masking_maglim=masking_maglim, \
-			lb=lb, all_cl_gal=all_cl_gal, all_clerr_gal=all_clerr_gal, all_cl_cross=all_cl_cross, \
-			all_clerr_cross=all_clerr_cross, scaling_factor=scaling_factor)
-	
+	save_dict = dict(ifield_list_use=ifield_list_use, masking_maglim=masking_maglim,
+	                 lb=lb, all_cl_gal=all_cl_gal, all_clerr_gal=all_clerr_gal,
+	                 all_cl_cross=all_cl_cross, all_clerr_cross=all_clerr_cross,
+	                 scaling_factor=scaling_factor)
+	if all_cl_ciber_auto_inplace is not None:
+		save_dict['all_cl_ciber_auto_inplace'] = all_cl_ciber_auto_inplace
+
+	np.savez(ps_save_fpath+'.npz', **save_dict)
+
 	return ps_save_fpath
 
 

@@ -250,8 +250,9 @@ def ciber_gal_cross(inst_list, ifield_list_use, catname, addstr=None, randstr=No
 				   rad_offset=None, theta0=np.pi, gal_downgrade_fac=None, apply_pixel_corr=True, \
 				   rand_downgrade_fac=4,
 				   include_ff_errors=True,
-				   observed_run_name = 'observed_Jlt16.0_Hlt15.5_072424_quadoff_grad_fcsub_order2', 
-				   tailstr_save=None):
+				   observed_run_name = 'observed_Jlt16.0_Hlt15.5_072424_quadoff_grad_fcsub_order2',
+				   tailstr_save=None, save_ciber_map=False,
+				   noisemodl_basepath=None):
 	
 	
 	cbps = CIBER_PS_pipeline()
@@ -280,11 +281,32 @@ def ciber_gal_cross(inst_list, ifield_list_use, catname, addstr=None, randstr=No
 	t_ell = t_ell_file['t_ell_av']
 	
 
-	for idx, inst in enumerate(inst_list):
-		
-		all_cl_cross, all_cl_gal, all_clerr_cross, all_clerr_gal = [[] for x in range(4)]
+	# Noise model run names for in-situ CIBER auto-spectrum, keyed by inst
+	_noisemodl_run_names = {
+		1: 'observed_J_maglim_Jlt16_Hlt15p5_CH1lt15_122524',
+		2: 'observed_H_maglim_Jlt16_Hlt15p5_CH1lt15_122524',
+	}
+	_noisemodl_datestr = '111323'
+	_noisemodl_extbase = '/Volumes/richext/workmac/ciber/ciber1/data/noise_models_sim'
 
-		
+	for idx, inst in enumerate(inst_list):
+
+		# Auto-discover noise model path for in-situ CIBER auto-spectrum if not provided
+		if noisemodl_basepath is None:
+			_candidate = os.path.join(_noisemodl_extbase, _noisemodl_datestr,
+									  'TM' + str(inst), _noisemodl_run_names[inst])
+			noisemodl_basepath_inst = _candidate if os.path.isdir(_candidate) else None
+			if noisemodl_basepath_inst is None:
+				print(f'[in-situ auto] TM{inst}: noise model dir not found at {_candidate}, skipping in-situ auto')
+			else:
+				print(f'[in-situ auto] TM{inst}: using noise models from {noisemodl_basepath_inst}')
+		else:
+			noisemodl_basepath_inst = noisemodl_basepath
+
+		all_cl_cross, all_cl_gal, all_clerr_cross, all_clerr_gal = [[] for x in range(4)]
+		all_cl_ciber_auto_inplace = []
+
+
 		config_dict, pscb_dict, float_param_dict, fpath_dict = return_default_cbps_dicts()
 		fpath_dict, list_of_dirpaths, base_path, trilegal_base_path = set_up_filepaths_cbps(fpath_dict, inst, 'test', '112022',\
 																						datestr_trilegal='112022', data_type='observed', \
@@ -469,6 +491,15 @@ def ciber_gal_cross(inst_list, ifield_list_use, catname, addstr=None, randstr=No
 			if plot:
 				plot_map(masked_ciber_map, figsize=(6,6), cmap='bwr', title='masked ciber mask after mean subtraction')
 				plot_map(masked_gal_map, figsize=(6,6), cmap='bwr')
+
+			if save_ciber_map:
+				ciber_map_save_fpath = config.ciber_basepath+'data/fluctuation_data/TM'+str(inst)+'/ciber_map_processed_TM'+str(inst)+'_ifield'+str(ifield)
+				ciber_map_save_fpath += '_012926.fits'
+
+				hdu = fits.PrimaryHDU(masked_ciber_map)
+				hdu.writeto(ciber_map_save_fpath, overwrite=True)
+				print('Saved masked ciber map to ', ciber_map_save_fpath)
+
 				
 			if estimate_ciber_noise_gal:
 				nl_save_fpath, lb, all_nl1ds = estimate_ciber_noise_cross_gal(cbps, inst, ifield, catname, masked_gal_map, mask, \
@@ -492,9 +523,6 @@ def ciber_gal_cross(inst_list, ifield_list_use, catname, addstr=None, randstr=No
 					weights[theta_masks[which_exclude]==1] = 0.
 			else:
 				weights = np.ones_like(masked_ciber_map)
-
-
-
 
 			lb, clproc, clerr_raw = get_power_spec(masked_ciber_map, map_b=masked_gal_map, lbinedges=cbps.Mkk_obj.binl, lbins=cbps.Mkk_obj.midbin_ell, weights=weights)
 			lb, clproc_gal, clerr_raw_gal = get_power_spec(masked_gal_map, lbinedges=cbps.Mkk_obj.binl, lbins=cbps.Mkk_obj.midbin_ell, weights=weights)
@@ -526,21 +554,57 @@ def ciber_gal_cross(inst_list, ifield_list_use, catname, addstr=None, randstr=No
 				clproc_gal /= wp_ell
 
 
-			clproc /= B_ells[fieldidx]			
+			clproc /= B_ells[fieldidx]
 			clerr_raw /= B_ells[fieldidx]
 
 			std_nl1ds = np.std(all_nl1ds, axis=0)
 			std_nl1ds /= B_ells[fieldidx]
-	
+
+			# --- In-situ CIBER auto-spectrum with noise subtraction ---
+			# Uses the same masked_ciber_map, Mkk, and beam as the cross-spectrum.
+			# N_ell^{II} is subtracted so only sky signal power enters the covariance term,
+			# since the MC-based std_nl1ds already accounts for N_ell^{II} x C_ell^{gg}.
+			cl_ciber_auto_inplace = None
+			if noisemodl_basepath_inst is not None:
+				noisemodl_fpath = noisemodl_basepath_inst + '/noise_bias_fieldidx' + str(fieldidx) + '.npz'
+				try:
+					noisemodl_file = np.load(noisemodl_fpath)
+					fourier_weights_nofluc = noisemodl_file['fourier_weights_nofluc']
+					mean_cl2d_nofluc = noisemodl_file['mean_cl2d_nofluc']
+					nl_dict = cbps.compute_noise_power_spectrum(
+						inst, noise_Cl2D=mean_cl2d_nofluc.copy(),
+						inplace=False, apply_FW=True, weights=fourier_weights_nofluc
+					)
+					N_ell_est = nl_dict['Cl_noise'] / B_ells[fieldidx]**2
+
+					_, cl_auto_raw, _ = get_power_spec(
+						masked_ciber_map, lbinedges=cbps.Mkk_obj.binl, lbins=cbps.Mkk_obj.midbin_ell
+					)
+					if fc_sub and fc_sub_n_terms == 2:
+						cl_auto_raw[2:] = np.dot(inv_Mkk_truncated.transpose(), cl_auto_raw[2:])
+					else:
+						cl_auto_raw = np.dot(inv_Mkk.transpose(), cl_auto_raw)
+					cl_auto_raw /= B_ells[fieldidx]**2
+					cl_ciber_auto_inplace = cl_auto_raw - N_ell_est
+					print(f'[in-situ auto] ifield={ifield} TM{inst}: cl_auto range [{cl_auto_raw.min():.3e}, {cl_auto_raw.max():.3e}], N_ell range [{N_ell_est.min():.3e}, {N_ell_est.max():.3e}]')
+				except FileNotFoundError:
+					print(f'[in-situ auto] noise model not found at {noisemodl_fpath}, skipping for ifield={ifield}')
+			all_cl_ciber_auto_inplace.append(cl_ciber_auto_inplace)
+			# ----------------------------------------------------------
+
 			all_cl_gal.append(clproc_gal)
 			all_clerr_gal.append(clerr_raw_gal)
-			
+
 			all_cl_cross.append(clproc)
 			all_clerr_cross.append(std_nl1ds)
 	
 		all_cl_cross, all_clerr_cross = np.array(all_cl_cross), np.array(all_clerr_cross)
 		all_cl_gal, all_clerr_gal = np.array(all_cl_gal), np.array(all_clerr_gal)
-		
+		# Convert list (entries may be None if noisemodl not provided) to object array
+		all_cl_ciber_auto_inplace_arr = np.array(all_cl_ciber_auto_inplace, dtype=object) \
+			if any(x is None for x in all_cl_ciber_auto_inplace) \
+			else np.array(all_cl_ciber_auto_inplace)
+
 		if save:
 
 			if subtract_randoms:
@@ -558,7 +622,10 @@ def ciber_gal_cross(inst_list, ifield_list_use, catname, addstr=None, randstr=No
 				addstr_save += '_'+tailstr_save
 
 			ps_save_fpath = save_ciber_gal_ps(inst, ifield_list_use, catname, lb, all_cl_gal, all_clerr_gal, all_cl_cross, all_clerr_cross,
-                                           scaling_factor=scale if subtract_randoms else None)
+                                           masking_maglim=masking_maglim,
+                                           addstr=addstr_save,
+                                           scaling_factor=scale if subtract_randoms else None,
+                                           all_cl_ciber_auto_inplace=all_cl_ciber_auto_inplace_arr)
 		
 			all_ps_save_fpath.append(ps_save_fpath)
 			all_addstr_use.append(addstr_save)

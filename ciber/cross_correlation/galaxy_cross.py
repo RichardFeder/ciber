@@ -486,27 +486,3 @@ def wise_rgb_cuts(mag_W1, mag_W2, rgb_mode):
     return rgb_mask
 
 
-# def plot_gal_ps_vs_redshift(inst, zbinedges, catname='LS', figsize=(5, 4), startidx=0, endidx=-1, \
-#                            xlim=[150, 1.1e5], ylim=[1e-4, 2e2], colors=['b', 'r'], \
-#                              textstr=None, textxpos=200, textypos=5e1, text_fs=16, alph=0.6, \
-#                              bbox_to_anchor=[-0.05, 1.25], legend_fs=10, capsize=3, markersize=3, \
-#                             addstrs=None, headstr=None):
-
-
-# def plot_cross_ps_vs_redshift(inst, zbinedges, lb, all_fieldav_cl_cross, all_fieldav_clerr_cross, catname='LS', figsize=(5, 4), startidx=2, endidx=-1, \
-#                              xlim=[150, 1.1e5], ylim=[1e-4, 2e2], legend_fs=16, capsize=3, markersize=3, alph=0.8, \
-#                              textxpos=280, textypos=1e2, text_fs=12, color=None, color_inst=['b', 'C3'], bbox_to_anchor=[2.0, 1.4]):
-    
-
-# def plot_fieldav_ciber_gal_ps(inst_list, catname, addstr=None, labels=None, \
-#                              figsize=(6, 5), capsize=3, markersize=3, plot_perfield=False, \
-#                              startidx=0, endidx=-1, xlim=[150, 1.1e5], ylim=[1e-4, 2e2], colors=['b', 'r'], \
-#                              textstr=None, textxpos=200, textypos=5e1, text_fs=16, alph=0.6, \
-#                              bbox_to_anchor=[-0.05, 1.25], legend_fs=10, mask_frac=0.7):
-    
-
-# def plot_perfield_gal_auto(catname, inst, addstr=None, figsize=(5, 4), capsize=3, markersize=3, startidx=2, endidx=-1, \
-#                           xlim=[300, 1.05e5], legend_fs=10, ifield_list=[4, 5, 6, 7, 8], alph=0.7, \
-#                           ylim=[1e-4, 2e2]):
-    
-

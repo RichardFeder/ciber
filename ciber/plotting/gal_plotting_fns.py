@@ -1,5 +1,6 @@
 import numpy as np
 import config
+from pathlib import Path
 from astropy.io import fits
 import matplotlib
 import matplotlib.pyplot as plt
@@ -16,6 +17,7 @@ from ciber.processing.numerical import weighted_mean_and_uncertainty
 
 from dataclasses import dataclass
 from matplotlib.gridspec import GridSpec, GridSpecFromSubplotSpec
+from matplotlib.lines import Line2D
 
 
 @dataclass
@@ -34,6 +36,52 @@ class auto_cross_cl:
 	ciber_auto_clerr: np.ndarray
 	r_ell: np.ndarray
 	r_ell_unc: np.ndarray
+
+
+def _load_ciber_auto_file(bandstr):
+	"""Load CIBER auto-spectrum file with backward-compatible path fallback."""
+	base = Path(getattr(config, 'ciber_basepath', '.')) / 'data'
+	if bandstr == 'J':
+		spitzer_name = base / 'input_recovered_ps' / '111323' / 'TM1' / 'observed_J_maglim_Jlt16_Hlt15p5_CH1lt15_122524' / 'ciber_Jband_autos_with_spitzer_mask_F25B.npz'
+	else:
+		spitzer_name = base / 'input_recovered_ps' / '111323' / 'TM2' / 'observed_H_maglim_Jlt16_Hlt15p5_CH1lt15_122524' / 'ciber_Hband_autos_with_spitzer_mask_F25B.npz'
+
+	candidates = [
+		Path('data') / 'feder25_ciber_spitzer' / f'ciber_auto_{bandstr}lt16.0_F25B.npz',
+		base / 'feder25_ciber_spitzer' / f'ciber_auto_{bandstr}lt16.0_F25B.npz',
+		Path('data') / 'feder_ciber_spitzer' / f'ciber_auto_{bandstr}lt16.0_F25B.npz',
+		Path('data') / f'ciber_auto_{bandstr}lt16.0_F25B.npz',
+		base / 'feder_ciber_spitzer' / f'ciber_auto_{bandstr}lt16.0_F25B.npz',
+		base / f'ciber_auto_{bandstr}lt16.0_F25B.npz',
+		spitzer_name,
+	]
+	for path in candidates:
+		if path.exists():
+			dat = np.load(str(path), allow_pickle=True)
+			if all(k in dat for k in ['lb', 'fieldav_cl', 'fieldav_clerr']):
+				out = {
+					'lb': np.asarray(dat['lb']),
+					'fieldav_cl': np.asarray(dat['fieldav_cl']),
+					'fieldav_clerr': np.asarray(dat['fieldav_clerr']),
+					'source_path': str(path),
+					'source_mode': 'fieldav',
+				}
+				if 'fieldav_dl' in dat and 'fieldav_dlerr' in dat:
+					out['fieldav_dl'] = np.asarray(dat['fieldav_dl'])
+					out['fieldav_dlerr'] = np.asarray(dat['fieldav_dlerr'])
+				return out
+			if all(k in dat for k in ['lb', 'recovered_ps_est_nofluc', 'recovered_dcl']):
+				return {
+					'lb': np.asarray(dat['lb']),
+					'fieldav_cl': np.asarray(dat['recovered_ps_est_nofluc'])[-1],
+					'fieldav_clerr': np.asarray(dat['recovered_dcl'])[-1],
+					'source_path': str(path),
+					'source_mode': 'recovered_last',
+				}
+
+	raise FileNotFoundError(
+		"Could not find CIBER auto file. Tried: " + ", ".join(str(p) for p in candidates)
+	)
 
 
 def plot_mean_chi2_per_bandpower(chi2_diag, inst_list=[1, 2], 
@@ -251,8 +299,25 @@ def plot_amplitude_comparison(configs, colors=None, markers=None, linestyles=Non
     markers = (markers * (n_traces // len(markers) + 1))[:n_traces]
     linestyles = (linestyles * (n_traces // len(linestyles) + 1))[:n_traces]
     
-    # Assume param order: [A_2h, A_IHL, A_shot]
-    fig, axes = plt.subplots(2, 1, figsize=figsize)
+    # Check if any configuration has one-halo term (check params shape)
+    # If params has only 2 or 3 elements per redshift bin, there's no one-halo term
+    has_one_halo = False
+    for config in configs:
+        results = config['results']
+        # Check the number of parameters - if > 2, likely has one-halo
+        n_params = results['params'].shape[-1]
+        if n_params >= 3:  # [A_2h, A_1h, A_shot] or more
+            has_one_halo = True
+            break
+    
+    # Create figure with appropriate number of panels
+    if has_one_halo:
+        # Assume param order: [A_2h, A_IHL, A_shot]
+        fig, axes = plt.subplots(2, 1, figsize=figsize)
+    else:
+        # Only A_2h plot (no one-halo term)
+        fig, axes = plt.subplots(1, 1, figsize=(figsize[0], figsize[1]/2))
+        axes = [axes]  # Make it a list for consistent indexing
 
     # Shade redshift bins of width dz=0.2 between z=0 and z=1
     # Use two contrasting pastel shades (alternating) so bins are easily distinguished
@@ -370,55 +435,60 @@ def plot_amplitude_comparison(configs, colors=None, markers=None, linestyles=Non
     ax.set_xlim(0, 1.0)
     ax.tick_params(labelsize=12)
     
-    # Plot 2: IHL amplitude (param index 1)
-    ax = axes[1]
-    for i, config in enumerate(configs):
-        results = config['results']
-        inst = config.get('inst', None)
-        label = config['label']
-        color = colors[i]
-        # color = config.get('color', colors[i])
-        marker = config.get('marker', markers[i])
-        linestyle = config.get('linestyle', linestyles[i])
-        
-        z_centers = results['z_centers']
-        inst_list = results['inst_list']
-        
-        # Calculate x-offset for this trace (same as panel 1)
-        x_offset = (i - (n_traces - 1) / 2) * x_offset_scale
-        
-        # Determine which instrument index to use
-        if inst is not None:
-            try:
-                inst_idx = list(inst_list).index(inst)
-            except ValueError:
-                continue
-            insts_to_plot = [(inst_idx, inst)]
-        else:
-            insts_to_plot = list(enumerate(inst_list))
-        
-        for inst_idx, inst_val in insts_to_plot:
-            A_IHL = results['params'][inst_idx, :, 1]
-            A_IHL_err = results['params_err'][inst_idx, :, 1]
-            
-            # Apply x-offset and remove linestyle (no connecting lines)
-            ax.errorbar(z_centers + x_offset, A_IHL, yerr=A_IHL_err,
-                       fmt=marker, color=color, linestyle='none',
-                       label=label,
-                       markersize=8, capsize=5, capthick=2, alpha=0.8)
+    # Only add x-label if this is the only panel
+    if not has_one_halo:
+        ax.set_xlabel('Redshift', fontsize=14)
     
-    ax.set_xlabel('Redshift', fontsize=14)
-    ax.set_ylabel(r'$A_{1h}$', fontsize=14)
-    # ax.set_title('IHL Amplitude vs Redshift', fontsize=15)
+    # Plot 2: IHL amplitude (param index 1) - only if one-halo term exists
+    if has_one_halo:
+        ax = axes[1]
+        for i, config in enumerate(configs):
+            results = config['results']
+            inst = config.get('inst', None)
+            label = config['label']
+            color = colors[i]
+            # color = config.get('color', colors[i])
+            marker = config.get('marker', markers[i])
+            linestyle = config.get('linestyle', linestyles[i])
+            
+            z_centers = results['z_centers']
+            inst_list = results['inst_list']
+            
+            # Calculate x-offset for this trace (same as panel 1)
+            x_offset = (i - (n_traces - 1) / 2) * x_offset_scale
+            
+            # Determine which instrument index to use
+            if inst is not None:
+                try:
+                    inst_idx = list(inst_list).index(inst)
+                except ValueError:
+                    continue
+                insts_to_plot = [(inst_idx, inst)]
+            else:
+                insts_to_plot = list(enumerate(inst_list))
+            
+            for inst_idx, inst_val in insts_to_plot:
+                A_IHL = results['params'][inst_idx, :, 1]
+                A_IHL_err = results['params_err'][inst_idx, :, 1]
+                
+                # Apply x-offset and remove linestyle (no connecting lines)
+                ax.errorbar(z_centers + x_offset, A_IHL, yerr=A_IHL_err,
+                           fmt=marker, color=color, linestyle='none',
+                           label=label,
+                           markersize=8, capsize=5, capthick=2, alpha=0.8)
+        
+        ax.set_xlabel('Redshift', fontsize=14)
+        ax.set_ylabel(r'$A_{1h}$', fontsize=14)
+        # ax.set_title('IHL Amplitude vs Redshift', fontsize=15)
 
-    # ax.legend(fontsize=10, loc=2, ncol=2)
-    ax.grid(alpha=0.3)
-    if ylim_ihl is not None:
-        ax.set_ylim(ylim_ihl)
-    ax.set_xlim(0, 1.0)
-    ax.tick_params(labelsize=12)
-    plt.subplots_adjust(wspace=0.3)
-    # plt.tight_layout()
+        # ax.legend(fontsize=10, loc=2, ncol=2)
+        ax.grid(alpha=0.3)
+        if ylim_ihl is not None:
+            ax.set_ylim(ylim_ihl)
+        ax.set_xlim(0, 1.0)
+        ax.tick_params(labelsize=12)
+        plt.subplots_adjust(wspace=0.3)
+        # plt.tight_layout()
     
     if save_path:
         plt.savefig(save_path, dpi=200, bbox_inches='tight')
@@ -971,9 +1041,22 @@ def estimate_cross_uncertainties(lb, clx, clx_err, clI_auto, clg_auto, nfield, s
 	nmode_inv /= fsky
 	
 	nbar_inv = np.mean(clg_auto[-4:endidx])
+
+	if np.ndim(clI_auto) > 0:
+		nmask = np.count_nonzero(lbmask)
+		if len(clI_auto) == len(lb):
+			clI_auto_use = clI_auto[lbmask]
+		elif len(clI_auto) == nmask:
+			clI_auto_use = clI_auto
+		else:
+			clI_auto_use = np.zeros(nmask)
+			ncopy = min(nmask, len(clI_auto))
+			clI_auto_use[:ncopy] = clI_auto[:ncopy]
+	else:
+		clI_auto_use = clI_auto
 	
 	# cl_terms = clx[lbmask]**2 + np.abs(clI_auto*clg_auto[lbmask]) + clx_err[lbmask]**2 + clI_auto*nbar_inv
-	cl_terms = clx[lbmask]**2 + np.abs(clI_auto*clg_auto[lbmask]) + clI_auto*nbar_inv
+	cl_terms = clx[lbmask]**2 + np.abs(clI_auto_use*clg_auto[lbmask]) + clI_auto_use*nbar_inv
 	
 
 	dclx_sq_A = nmode_inv[lbmask]*cl_terms 
@@ -1005,8 +1088,14 @@ def compute_rl_ciber_gal(addstr, inst_list=[1, 2], catname='LS', gal_label='LS (
 		pf, posmask_auto, negmask_auto, fieldav_cl_gal_unw, fieldav_clerr_gal = mini_proc_clav(all_cl_gal, all_clerr_gal, lb, startidx, endidx, mode='auto')
 		pf, posmask, negmask, fieldav_cl_cross_unw, fieldav_clerr_cross = mini_proc_clav(all_cl_cross, all_clerr_cross, lb, startidx, endidx, mode='cross')
 
-		
-		if catname=='HSC':
+		# Prefer in-situ auto-spectrum from cross-product file if available
+		if 'all_cl_ciber_auto_inplace' in cgps_file.files:
+			all_cl_ciber_auto_inplace = cgps_file['all_cl_ciber_auto_inplace']
+			# Field-average in-situ auto (already noise-subtracted, already on full lb grid)
+			cl_auto_full = np.nanmean(all_cl_ciber_auto_inplace, axis=0)
+			cl_auto = cl_auto_full[startidx:endidx]
+			clerr_auto = np.zeros(len(cl_auto))  # Placeholder; not used in ratio calculation
+		elif catname=='HSC':
 			bandstr = bandstr_list[idx]
 			mag_lim = 16.0
 
@@ -1020,14 +1109,15 @@ def compute_rl_ciber_gal(addstr, inst_list=[1, 2], catname='LS', gal_label='LS (
 			lb_auto, cl_auto_all, clerr_auto_all = [clfile[key] for key in ['lb', 'recovered_ps_est_nofluc', 'recovered_dcl']]
 
 			# print('cl auto', cl_auto_all[-1])
-			lb_auto = lb_auto[startidx:endidx]
 			cl_auto = cl_auto_all[-1,startidx:endidx]
 			clerr_auto = clerr_auto_all[-1, startidx:endidx]
-			
+
 		else:
-			ciber_auto = np.load('data/ciber_auto_'+bandstr_list[idx]+'lt16.0_F25B.npz')
+			ciber_auto = _load_ciber_auto_file(bandstr_list[idx])
 
 			lb_auto, cl_auto, clerr_auto = [ciber_auto[key] for key in ['lb', 'fieldav_cl', 'fieldav_clerr']]
+			cl_auto = cl_auto[startidx:endidx]
+			clerr_auto = clerr_auto[startidx:endidx]
 
 		# ifield_list_use loaded from file above
 		ifield_list_full = [4, 5, 6, 7, 8]
@@ -1098,23 +1188,30 @@ def plot_gal_and_ciber_auto(all_acdat, pred_fpaths=None,
 							ylims_gal=[[5e-4, 5e1], [2e-3, 2e2]],
 							ylim_ciber=[1, 1e4],
 							gal_labels=None,
+							gal_labels_filenames=None,
 							band_labels=None,
 							startidx=2, endidx=-1,
 							capsize=3, markersize=3,
 							figsize=(10, 4.5), lab_fs=12, title_fs=12, legend_fs=10, \
 						pred_alpha=0.5, spacer_and_ciber_auto=[0.35, 1.2], 
-						tl_pix_correct=True, ifield_use=6):
+						tl_pix_correct=True, ifield_use=6, include_ciber_auto=True,
+						tl_pix_template='data/fluctuation_data/transfer_function/tl_clx_pix_TM{inst}_ifield{ifield}.npz'):
 
 	n_gal = len(all_acdat)  # number of galaxy catalogs
 	if gal_labels is None:
 		gal_labels = [f"Catalog {i+1}" for i in range(n_gal)]
+	if gal_labels_filenames is None:
+		gal_labels_filenames = gal_labels
 	if band_labels is None:
 		band_labels = ['J', 'H']
 
 	fig = plt.figure(figsize=figsize)
-	
-	widths = [1]*n_gal + spacer_and_ciber_auto  # small spacer column + CIBER panel
-	gs = GridSpec(2, n_gal + 2, width_ratios=widths, wspace=0.0, hspace=0)
+
+	if include_ciber_auto:
+		widths = [1]*n_gal + spacer_and_ciber_auto  # small spacer column + CIBER panel
+		gs = GridSpec(2, n_gal + 2, width_ratios=widths, wspace=0.0, hspace=0)
+	else:
+		gs = GridSpec(2, n_gal, wspace=0.0, hspace=0)
 
 
 	# Left block: galaxy autos and crosses
@@ -1146,7 +1243,8 @@ def plot_gal_and_ciber_auto(all_acdat, pred_fpaths=None,
 					intensity_auto_preds.append(intensity_auto)
 
 			if tl_pix_correct:
-				tl_pix = np.load('data/fluctuation_data/transfer_function/tl_clx_pix_TM'+str(idx_band+1)+'_ifield'+str(ifield_use)+'.npz')['tl_clx_pix']
+				tl_pix_path = tl_pix_template.format(inst=idx_band+1, ifield=ifield_use)
+				tl_pix = np.load(tl_pix_path)['tl_clx_pix']
 			
 			else:
 				tl_pix = np.ones_like(lb_pred)
@@ -1158,6 +1256,16 @@ def plot_gal_and_ciber_auto(all_acdat, pred_fpaths=None,
 			
 			pf, lb = acdat.pf, acdat.lb
 			color = colors[idx_band]
+
+			fpath_cl = 'data/ciber_gal_cross_cls/cl_CIBER_TM'+str(idx_band+1)+'_'+gal_labels_filenames[col]+'.npz'
+			print('saving to ', fpath_cl)
+			np.savez(fpath_cl, lb=lb, cl=acdat.fieldav_cl_cross, clerr=acdat.fieldav_clerr_cross, 
+				inst=idx_band+1, gal_label=gal_labels_filenames[col])
+
+			fpath_cl_gal = 'data/ciber_gal_cross_cls/cl_TM'+str(idx_band+1)+'_'+gal_labels_filenames[col]+'.npz'
+			print('saving to ', fpath_cl_gal)
+			np.savez(fpath_cl_gal, lb=lb, cl=acdat.fieldav_cl_gal, clerr=acdat.fieldav_clerr_gal, 
+				inst=idx_band+1, gal_label=gal_labels_filenames[col])
 
 			if idx_band==0:
 				# Row 0: galaxy auto
@@ -1229,46 +1337,115 @@ def plot_gal_and_ciber_auto(all_acdat, pred_fpaths=None,
 	for col in range(n_gal):
 		ax_gal[1, col].set_xlabel(r'$\ell$', fontsize=lab_fs)
 
-	# Right block: CIBER auto, spans both rows
-	# CIBER auto panel: loop over all bands for plotting
-	
-	gs_right = GridSpecFromSubplotSpec(2, 1, subplot_spec=gs[:, -1], hspace=0, wspace=0.0, height_ratios=[0.5, 0.5])
-	ax_ciber = fig.add_subplot(gs_right[1, 0])  # middle row => vertically centered
-	
-#     ax_ciber = fig.add_subplot(gs[:, -1])
-	for idx_band, acdat in enumerate(all_acdat[0]):  # assuming all catalogs have same bands
-		pf, lb = acdat.pf, acdat.lb
-		ax_ciber.errorbar(
-			lb[startidx:endidx],
-			pf[startidx:endidx] * acdat.ciber_auto_cl,
-			yerr=pf[startidx:endidx] * acdat.ciber_auto_clerr,
-			fmt='o', color=colors[idx_band], capsize=capsize, markersize=markersize,
-			label=f"CIBER {band_labels[idx_band]}"
+	if include_ciber_auto:
+		# Right block: CIBER auto, spans both rows
+		gs_right = GridSpecFromSubplotSpec(2, 1, subplot_spec=gs[:, -1], hspace=0, wspace=0.0, height_ratios=[0.5, 0.5])
+		ax_ciber = fig.add_subplot(gs_right[1, 0])  # middle row => vertically centered
+
+		for idx_band, acdat in enumerate(all_acdat[0]):  # assuming all catalogs have same bands
+			pf, lb = acdat.pf, acdat.lb
+			ax_ciber.errorbar(
+				lb[startidx:endidx],
+				pf[startidx:endidx] * acdat.ciber_auto_cl,
+				yerr=pf[startidx:endidx] * acdat.ciber_auto_clerr,
+				fmt='o', color=colors[idx_band], capsize=capsize, markersize=markersize,
+				label=f"CIBER {band_labels[idx_band]}"
+			)
+
+		if pred_fpaths is not None:
+			for idx_band in range(len(cat_acdats)):
+				if idx_band==0:
+					pred_lab = 'IGL + ISL'
+					ax_ciber.plot(lb_pred, np.zeros_like(intensity_auto_preds[idx_band]), color='k', linestyle='dotted', alpha=pred_alpha, \
+				label='IGL prediction')
+				ax_ciber.plot(lb_pred, pf_pred*intensity_auto_preds[idx_band], color=colors[idx_band], linestyle='dashdot', alpha=pred_alpha, \
+							label=pred_lab)
+
+		ax_ciber.set_xscale('log')
+		ax_ciber.set_yscale('log')
+		ax_ciber.set_xlim(xlim)
+		ax_ciber.set_ylim(ylim_ciber)
+		ax_ciber.set_ylabel(r'$D_\ell^{II}$ [nW$^2$ m$^{-4}$ sr$^{-2}$]', fontsize=lab_fs)
+		ax_ciber.set_xlabel(r'$\ell$', fontsize=lab_fs)
+		ax_ciber.grid(alpha=0.3)
+		ax_ciber.legend(fontsize=legend_fs, bbox_to_anchor=[0.05, 1.8], loc=2)
+	else:
+		# For compact 2x2 omnibus (no CIBER auto panel), keep the key style legend
+		# visible at the top of the figure.
+		if n_gal >= 2:
+			panel_labels = {
+				(0, 0): 'DESI-LS auto',
+				(0, 1): 'HSC auto',
+				(1, 0): 'CIBER x DESI-LS',
+				(1, 1): 'CIBER x HSC',
+			}
+			if n_gal >= 3:
+				panel_labels[(0, 2)] = 'WISE auto'
+				panel_labels[(1, 2)] = 'CIBER x WISE'
+			for (row, col), txt in panel_labels.items():
+				ax_gal[row, col].text(
+					0.04,
+					0.93,
+					txt,
+					transform=ax_gal[row, col].transAxes,
+					ha='left',
+					va='top',
+					fontsize=title_fs,
+				)
+
+		legend_handles = [
+			ax_gal[0, 0].errorbar(
+				[1.0],
+				[1.0],
+				yerr=[0.2],
+				fmt='o',
+				color='k',
+				capsize=capsize,
+				markersize=markersize + 1,
+				linestyle='None',
+				label='Galaxy auto',
+			),
+			ax_gal[0, 0].errorbar(
+				[1.0],
+				[1.0],
+				yerr=[0.2],
+				fmt='o',
+				color=colors[0],
+				capsize=capsize,
+				markersize=markersize + 1,
+				linestyle='None',
+				label=f'CIBER {band_labels[0]}',
+			),
+			ax_gal[0, 0].errorbar(
+				[1.0],
+				[1.0],
+				yerr=[0.2],
+				fmt='o',
+				color=colors[1],
+				capsize=capsize,
+				markersize=markersize + 1,
+				linestyle='None',
+				label=f'CIBER {band_labels[1]}',
+			),
+		]
+		if pred_fpaths is not None:
+			legend_handles.append(
+				Line2D([0], [0], color='k', linestyle='dotted', linewidth=1.2, label='IGL prediction')
+			)
+
+		fig.subplots_adjust(top=0.82)
+		leg = fig.legend(
+			handles=legend_handles,
+			loc='upper center',
+			bbox_to_anchor=(0.5, 1.02),
+			ncol=2,
+			fontsize=legend_fs,
+			frameon=True,
+			fancybox=False,
+			edgecolor='k',
+			facecolor='white',
 		)
-		
-	if pred_fpaths is not None:
-				
-		for idx_band in range(len(cat_acdats)):
-			if idx_band==0:
-				pred_lab = 'IGL + ISL'
-				
-				ax_ciber.plot(lb_pred, np.zeros_like(intensity_auto_preds[idx_band]), color='k', linestyle='dotted', alpha=pred_alpha, \
-						label='IGL (Mirocha)')
-			
-			else:
-				pred_lab = None
-
-			ax_ciber.plot(lb_pred, pf_pred*intensity_auto_preds[idx_band], color=colors[idx_band], linestyle='dashdot', alpha=pred_alpha, \
-						label=pred_lab)
-
-	ax_ciber.set_xscale('log')
-	ax_ciber.set_yscale('log')
-	ax_ciber.set_xlim(xlim)
-	ax_ciber.set_ylim(ylim_ciber)
-	ax_ciber.set_ylabel(r'$D_\ell^{II}$ [nW$^2$ m$^{-4}$ sr$^{-2}$]', fontsize=lab_fs)
-	ax_ciber.set_xlabel(r'$\ell$', fontsize=lab_fs)
-	ax_ciber.grid(alpha=0.3)
-	ax_ciber.legend(fontsize=legend_fs, bbox_to_anchor=[0.05, 1.8], loc=2)
+		leg.get_frame().set_linewidth(0.8)
 
 	plt.show()
 	return fig
@@ -1278,7 +1455,13 @@ def create_omnibus_plot(all_addstr=None, jmock_basedir = None,
 						hsc_str='hsc_ilt25.0_0.0_z_1.0_wrandsub_wFFerr',
 					ls_str='0.0_z_1.0_wrandsub_JHlt16_wFFerr',
 					wise_str='unWISE_W1lt17p5_JHlt16_wFFerr', 
-					ylims_gal=[[5e-4, 1e2], [2e-3, 2e2]]):
+					ylims_gal=[[5e-4, 1e2], [2e-3, 2e2]],
+					figsize=(7, 6),
+					tl_pix_correct=True,
+					ifield_use=8,
+					tl_pix_template='data/fluctuation_data/transfer_function/tl_clx_pix_TM{inst}_ifield{ifield}.npz',
+					include_wise=True,
+					include_ciber_auto=True):
 
 	if all_addstr is None:
 		all_addstr = ['sdss_z_lt_22.0_CIBERfidmask_zmax=1.0',
@@ -1288,26 +1471,39 @@ def create_omnibus_plot(all_addstr=None, jmock_basedir = None,
 	if jmock_basedir is None:
 		jmock_basedir = 'data/jordan_mocks/v2/'
 
-	hsc_auto_cross = compute_rl_ciber_gal(hsc_str, catname='HSC')
-	ls_auto_cross = compute_rl_ciber_gal(ls_str, catname='LS')
-	wise_auto_cross = compute_rl_ciber_gal(wise_str, catname='WISE')
+	# Apply transfer-function correction once in the plotting stage for both
+	# measurements and model curves, keeping a consistent correction choice.
+	hsc_auto_cross = compute_rl_ciber_gal(hsc_str, catname='HSC', tl_pix_correct=False)
+	ls_auto_cross = compute_rl_ciber_gal(ls_str, catname='LS', tl_pix_correct=False)
 
-	all_acdat_multi = [ls_auto_cross, hsc_auto_cross, wise_auto_cross]
+	all_acdat_multi = [ls_auto_cross, hsc_auto_cross]
+	gal_labels = ['DESI-LS ($z_{\\rm AB}<22, z_{\\rm phot}<1$)', 'HSC ($i_{\\rm AB}<25, z_{\\rm phot}<1$)']
+	gal_labels_filenames = ['DESI-LS_z_AB_22_z_phot_1', 'HSC_i_AB_25_z_phot_1']
+	addstr_use = [all_addstr[0], all_addstr[1]]
+
+	if include_wise:
+		wise_auto_cross = compute_rl_ciber_gal(wise_str, catname='WISE', tl_pix_correct=False)
+		all_acdat_multi.append(wise_auto_cross)
+		gal_labels.append('unWISE ($W1_{\\rm Vega}<17.5$)')
+		gal_labels_filenames.append('unWISE_W1_Vega_17.5')
+		addstr_use.append(all_addstr[2])
 
 	pred_fpaths_multi = []
-
-	for x in range(len(all_addstr)):
-		pred_fpaths = [jmock_basedir+'mock_ps_pred/TM'+str(inst)+'/field_average/pred_cls_TM'+str(inst)+'_'+all_addstr[x]+'.npz' for inst in [1, 2]]
+	for addstr in addstr_use:
+		pred_fpaths = [jmock_basedir+'mock_ps_pred/TM'+str(inst)+'/field_average/pred_cls_TM'+str(inst)+'_'+addstr+'.npz' for inst in [1, 2]]
 		pred_fpaths_multi.append(pred_fpaths)
 	
 	fig = plot_gal_and_ciber_auto(all_acdat_multi, pred_fpaths=pred_fpaths_multi, colors=['b', 'r'],
 						xlim=[250, 1.1e5],
 							ylims_gal=ylims_gal,
-						gal_labels=['DESI-LS ($z_{AB}<22, z_{phot}<1$)','HSC ($i_{AB}<25, z_{phot}<1$)', 'unWISE ($W1_{Vega}<17.5$)'], band_labels=['1.1 $\\mu$m', '1.8 $\\mu$m'],
+						gal_labels=gal_labels, gal_labels_filenames=gal_labels_filenames, band_labels=['1.1 $\\mu$m', '1.8 $\\mu$m'],
 						startidx=2, endidx=-1,
-						capsize=3, markersize=3, figsize=(12, 6),
+						capsize=3, markersize=3, figsize=figsize,
 						lab_fs=14, legend_fs=14, title_fs=12, pred_alpha=0.8, spacer_and_ciber_auto=[0.35, 1.1], 
-							tl_pix_correct=True)
+							tl_pix_correct=tl_pix_correct,
+							ifield_use=ifield_use,
+							tl_pix_template=tl_pix_template,
+							include_ciber_auto=include_ciber_auto)
 
 	return fig
 
@@ -1477,90 +1673,121 @@ def gen_cross_spectrum_plots_vs_z(inst_list = [1, 2],
 								ifield_list = [4, 5, 6, 7, 8], 
 								maskstr = 'JHlt16_wFFerr', 
 								xlim=[250, 1.1e5], 
-								ylim=[1e-2, 1e3], 
+								ylim=[5e-3, 1e3], 
 								markersize=3, 
 								capsize=3,
 								rescale_gal_auto_bias=False,
 								bias_model='1+z', 
 								headstr_hsc='hsc_ilt25.0', 
 								headstr_ls='sdss_z_lt_22.0', 
-								lab_ls='DESI-LS ($z_{AB}<22$)',
-								lab_hsc='HSC ($18<i_{AB}<25$)'):
+								lab_ls='DESI-LS ($z_{\\rm AB}<22$)',
+								lab_hsc='HSC ($18<i_{\\rm AB}<25$)', 
+								plot_fine=True, 
+								plot_coarse=True):
 
-	zbinedges = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
 
-	# fine bins for LS
-	res_ls = collect_ciber_gal_vs_redshift('LS', subtract_randoms=True, \
-										inst_list=inst_list, zbinedges=zbinedges, \
-										maskstr=maskstr, subtract_sn=False, 
-										tl_pix_correct=True, ifield_list=ifield_list)
-	
-	lb, full_cl_cross_ls, full_clerr_cross_ls = [res_ls[key] for key in ['lb', 'full_cl_cross', 'full_clerr_cross']]
+	if plot_fine:
+		zbinedges = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
 
-	all_pred_fpaths_ls = grab_ciber_cross_vs_z_predfpaths(inst_list=inst_list, zbinedges=zbinedges, 
-																headstr='sdss_z_lt_22.0_CIBERfidmask')
+		# fine bins for LS
+		res_ls = collect_ciber_gal_vs_redshift('LS', subtract_randoms=True, \
+											inst_list=inst_list, zbinedges=zbinedges, \
+											maskstr=maskstr, subtract_sn=False, 
+											tl_pix_correct=True, ifield_list=ifield_list)
+		
+		lb, full_cl_cross_ls, full_clerr_cross_ls = [res_ls[key] for key in ['lb', 'full_cl_cross', 'full_clerr_cross']]
 
-	print('all pred fpaths ls:', len(all_pred_fpaths_ls[0]))
+		all_pred_fpaths_ls = grab_ciber_cross_vs_z_predfpaths(inst_list=inst_list, zbinedges=zbinedges, 
+																	headstr='sdss_z_lt_22.0_CIBERfidmask')
 
-	fig_ls_ciber = plot_cross_ps_vs_redshift(inst_list, zbinedges, lb, full_cl_cross_ls, full_clerr_cross_ls, figsize=(11, 5), \
-							xlim=xlim, ylim=ylim, markersize=markersize, capsize=capsize, alph=0.8, textxpos=300, \
-							color='k', ncols=5, text_fs=11, textypos=300, \
-							all_pred_fpaths=all_pred_fpaths_ls, bbox_to_anchor=[5.2, 1.4], legend_fs=15, 
-							tl_pix_correct=True, nrows=2, catname='DESI-LS',
-							rescale_gal_auto_bias=rescale_gal_auto_bias, bias_model=bias_model)
+		print('all pred fpaths ls:', len(all_pred_fpaths_ls[0]))
 
-	# coarse bins for LS and HSC
-	zbinedges_coarse = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
+		fig_ls_ciber = plot_cross_ps_vs_redshift(inst_list, zbinedges, lb, full_cl_cross_ls, full_clerr_cross_ls, figsize=(11, 9.0), \
+					xlim=xlim, ylim=ylim, markersize=markersize, capsize=capsize, alph=0.8, textxpos=300, \
+					color='k', ncols=4, text_fs=11, textypos=300, \
+					all_pred_fpaths=all_pred_fpaths_ls, bbox_to_anchor=[-0.02, 1.38], legend_fs=15, 
+					tl_pix_correct=True, nrows=3, catname='DESI-LS',
+					rescale_gal_auto_bias=rescale_gal_auto_bias, bias_model=bias_model)
+	else:
+		fig_ls_ciber = None
 
-	res_ls_coarse = collect_ciber_gal_vs_redshift('LS', subtract_randoms=True, \
-										inst_list=inst_list, zbinedges=zbinedges_coarse, \
-										maskstr=maskstr, subtract_sn=False, 
-										tl_pix_correct=True)
-	
-	lb, full_cl_cross_ls_coarse, full_clerr_cross_ls_coarse = [res_ls_coarse[key] for key in ['lb', 'full_cl_cross', 'full_clerr_cross']]
+	if plot_coarse:
+		# coarse bins for LS and HSC
+		zbinedges_coarse = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
 
-	all_pred_fpaths_ls_coarse = grab_ciber_cross_vs_z_predfpaths(inst_list=inst_list, zbinedges=zbinedges_coarse, 
-															headstr=headstr_ls)
+		res_ls_coarse = collect_ciber_gal_vs_redshift('LS', subtract_randoms=True, \
+											inst_list=inst_list, zbinedges=zbinedges_coarse, \
+											maskstr=maskstr, subtract_sn=False, 
+											tl_pix_correct=True)
+		
+		lb, full_cl_cross_ls_coarse, full_clerr_cross_ls_coarse = [res_ls_coarse[key] for key in ['lb', 'full_cl_cross', 'full_clerr_cross']]
 
-	res_hsc = collect_ciber_gal_vs_redshift('HSC', subtract_randoms=True, \
-										inst_list=inst_list, zbinedges=zbinedges_coarse, \
-										maskstr=None, subtract_sn=False, 
-										tl_pix_correct=True, 
-										ifield_list=[8], 
-										with_ff_err=True, 
-										headstr=headstr_hsc)
-	
-	lb, cl_cross_hsc, clerr_cross_hsc = [res_hsc[key] for key in ['lb', 'full_cl_cross', 'full_clerr_cross']]
 
-	all_pred_fpaths_hsc = grab_ciber_cross_vs_z_predfpaths(inst_list=inst_list, zbinedges=zbinedges_coarse, 
-															headstr='hsc_i_lt_25.0')
+		# for zidx in range(len(zbinedges_coarse)-1):
+			# fpath_ls = 'data/ciber_gal_cross_cls/DESILS_coarsez/cl_CIBER_DESILS_zbin'+str(zidx)+'.npz'
+			# np.savez(fpath_ls, lb=lb, cl=full_cl_cross_ls_coarse[zidx], clerr=full_clerr_cross_ls_coarse[zidx], 
+			#    inst_list=inst_list, zmin=zbinedges[zidx], zmax=zbinedges[zidx+1])
 
-	catalog_names = [lab_ls, lab_hsc]
 
-	all_catalogs_data = [full_cl_cross_ls_coarse, cl_cross_hsc]
-	all_catalogs_error = [full_clerr_cross_ls_coarse, clerr_cross_hsc]
-	all_catalogs_pred_fpaths = [all_pred_fpaths_ls_coarse, all_pred_fpaths_hsc]
+		all_pred_fpaths_ls_coarse = grab_ciber_cross_vs_z_predfpaths(inst_list=inst_list, zbinedges=zbinedges_coarse, 
+																headstr=headstr_ls)
 
-	
-	fig_coarse_ls_hsc = plot_cross_ps_by_wavelength_and_redshift(
-		all_catalogs_cl_cross=all_catalogs_data,
-		all_catalogs_clerr_cross=all_catalogs_error,
-		catnames=catalog_names,
-		zbinedges=zbinedges_coarse,
-		lb=lb,
-		figsize=(10, 5), # Adjust figsize for more columns
-		ylim=[5e-3, 1e3],
-		xlim=[250, 1.05e5],
-		all_catalogs_pred_fpaths=all_catalogs_pred_fpaths,
-		textxpos=350,
-		colors_cat=['C0', 'C1', 'C2'],
-		bbox_to_anchor=[0.2, 1.3],
-		linestyles_pred=['dashed', 'dashdot', 'dotted'], 
-		text_fs=10,
-		legend_fs=13,
-		rescale_gal_auto_bias=rescale_gal_auto_bias,
-		bias_model=bias_model
-	)
+		res_hsc = collect_ciber_gal_vs_redshift('HSC', subtract_randoms=True, \
+											inst_list=inst_list, zbinedges=zbinedges_coarse, \
+											maskstr=None, subtract_sn=False, 
+											tl_pix_correct=True, 
+											ifield_list=[8], 
+											with_ff_err=True, 
+											headstr=headstr_hsc)
+		
+		lb, cl_cross_hsc, clerr_cross_hsc = [res_hsc[key] for key in ['lb', 'full_cl_cross', 'full_clerr_cross']]
+
+		for inst in inst_list:
+			for zidx in range(len(zbinedges_coarse)-1):
+				fpath_hsc = 'data/ciber_gal_cross_cls/HSC_coarsez/cl_CIBER_TM'+str(inst)+'_HSC_ilt25.0_zbin'+str(zidx)+'.npz'
+				print('saving to ', fpath_hsc)
+				print('cl_Cross_hsc has shape', cl_cross_hsc.shape)
+				np.savez(fpath_hsc, lb=lb, cl=cl_cross_hsc[inst-1][zidx], clerr=clerr_cross_hsc[inst-1][zidx], 
+						inst=inst, zmin=zbinedges_coarse[zidx], zmax=zbinedges_coarse[zidx+1])
+
+				fpath_ls = 'data/ciber_gal_cross_cls/DESILS_coarsez/cl_CIBER_TM'+str(inst)+'_DESILS_zbin'+str(zidx)+'.npz'
+				np.savez(fpath_ls, lb=lb, cl=full_cl_cross_ls_coarse[inst-1][zidx], clerr=full_clerr_cross_ls_coarse[inst-1][zidx], 
+						inst=inst, zmin=zbinedges_coarse[zidx], zmax=zbinedges_coarse[zidx+1])
+
+
+
+
+		all_pred_fpaths_hsc = grab_ciber_cross_vs_z_predfpaths(inst_list=inst_list, zbinedges=zbinedges_coarse, 
+																headstr='hsc_i_lt_25.0')
+
+		catalog_names = [lab_ls, lab_hsc]
+
+		all_catalogs_data = [full_cl_cross_ls_coarse, cl_cross_hsc]
+		all_catalogs_error = [full_clerr_cross_ls_coarse, clerr_cross_hsc]
+		all_catalogs_pred_fpaths = [all_pred_fpaths_ls_coarse, all_pred_fpaths_hsc]
+
+		
+		fig_coarse_ls_hsc = plot_cross_ps_by_wavelength_and_redshift(
+			all_catalogs_cl_cross=all_catalogs_data,
+			all_catalogs_clerr_cross=all_catalogs_error,
+			catnames=catalog_names,
+			zbinedges=zbinedges_coarse,
+			lb=lb,
+			figsize=(13.0, 5.2), # Wider so per-panel width/height is closer to square
+			ylim=[5e-3, 1e3],
+			xlim=[250, 1.05e5],
+			all_catalogs_pred_fpaths=all_catalogs_pred_fpaths,
+			textxpos=350,
+			colors_cat=['C0', 'C1', 'C2'],
+			bbox_to_anchor=[0.5, 1.3],
+			linestyles_pred=['dotted', 'dotted', 'dotted'], 
+			text_fs=10,
+			legend_fs=13,
+			rescale_gal_auto_bias=rescale_gal_auto_bias,
+			bias_model=bias_model
+		)
+	else:
+		fig_coarse_ls_hsc = None
 
 	return fig_ls_ciber, fig_coarse_ls_hsc
 
@@ -1627,7 +1854,7 @@ def plot_cross_ps_by_wavelength_and_redshift(
 	all_catalogs_pred_fpaths=None, 
 	pred_alpha=0.8,
 	tl_pix_correct=False,
-	linestyles_pred = ['dashed', 'dashdot'],
+	linestyles_pred = ['dotted', 'dotted'],
 	label_fs=13,
 	rescale_gal_auto_bias=False,
 	bias_model='1+z'):
@@ -1702,7 +1929,7 @@ def plot_cross_ps_by_wavelength_and_redshift(
 						cross = jmock_pred['cross']
 
 					if inst_indiv == 1 and cat_idx==0:
-						lab_pred = 'IGL (Mirocha)'
+						lab_pred = 'IGL prediction'
 					else:
 						lab_pred = None
 
@@ -1724,8 +1951,8 @@ def plot_cross_ps_by_wavelength_and_redshift(
 
 			# --- SUBPLOT FORMATTING ---
 			
-			zlab = str(np.round(z0, 1))+'$<z_{phot}<$'+str(np.round(z1, 1))
-#             gal_label = f'{z0:.1f} < $z_{phot}$ < {z1:.1f}'
+			zlab = str(np.round(z0, 1))+'$<z_{\\rm phot}<$'+str(np.round(z1, 1))
+#             gal_label = f'{z0:.1f} < $z_{\\rm phot}$ < {z1:.1f}'
 			
 			gal_label = f'CIBER {lam_dict[inst_indiv]} $\\mu$m\n'+zlab
 			current_ax.text(textxpos, textypos, gal_label, fontsize=text_fs)
@@ -1747,6 +1974,16 @@ def plot_cross_ps_by_wavelength_and_redshift(
 			if zidx == 0:
 				ylabel_text = f'$D_\\ell^{{Ig}}$ [nW m$^{{-2}}$ sr$^{{-1}}$]'
 				current_ax.set_ylabel(ylabel_text, fontsize=label_fs)
+
+	# Remove any extra axes if grid has more slots than redshift bins
+	n_panels = nrows * ncols
+	n_needed = len(zbinedges) - 1
+	if n_needed < n_panels:
+		for idx in range(n_needed, n_panels):
+			try:
+				fig.delaxes(ax[idx])
+			except Exception:
+				pass
 
 	plt.subplots_adjust(wspace=0, hspace=0)
 	plt.show()
@@ -1786,7 +2023,7 @@ def plot_bgdNdz_bIdIdz(figsize=(6, 6), inst_list=[1, 2], zbinedges=None, \
 	for x, inst in enumerate(inst_list):
 
 		ax[inst].errorbar(z_coarse_fine, all_bI_I[x], yerr=all_bI_I_err[x], color='k', fmt='o', capsize=3, markersize=5, xerr=xerr)
-		ax[inst].set_ylabel('$b_I dI/dz_{phot}$', fontsize=14)
+		ax[inst].set_ylabel('$b_I dI/dz_{\\rm phot}$', fontsize=14)
 		ax[inst].set_ylim(ylim)
 
 		all_bI_dIdz = []
@@ -1871,7 +2108,7 @@ def plot_hsc_cross_spectrum(
 		ax[0, 0].tick_params(labelsize=10)
 		jmock_pred = np.load(pred_fpaths[0])
 		lb_pred, clg_pred = [jmock_pred[key] for key in ['lb', 'gal_auto']]
-		modllab = 'IGL (Mirocha)' if m == 0 else None
+		modllab = 'IGL prediction' if m == 0 else None
 		ax[0, 0].plot(
 			lb_pred, pf * clg_pred, color=colors_auto[m], linestyle=linestyle,
 			alpha=alpha_line, linewidth=linewidth, label=modllab
@@ -1895,7 +2132,7 @@ def plot_hsc_cross_spectrum(
 			print([k for k in jmock_pred.keys()])
 			lb_pred, r_ell_ls_pred = [jmock_pred[key] for key in ['lb', 'rlx_tracer_full']]
 			r_ell_ls_pred /= tl_pix
-			modllab = 'IGL (Mirocha)' if m == 0 else None
+			modllab = 'IGL prediction' if m == 0 else None
 			if m == 0:
 				ax[idx, 2].set_xscale('log')
 				ax[idx, 2].set_xlim(xlim)
@@ -2321,7 +2558,7 @@ def field_consistency_gal_cross(catname, addstr, ps_type='cross', inst_list=[1, 
 		# === SELECT DATA AND COMPUTE WEIGHTED FIELD AVERAGE ===
 		if ps_type == 'cross':
 			# For cross-spectra, we need to estimate uncertainties using CIBER auto and galaxy auto.
-			ciber_auto = np.load(f'data/ciber_auto_{bandstr_list[idx]}lt16.0_F25B.npz')
+			ciber_auto = _load_ciber_auto_file(bandstr_list[idx])
 			lb_auto, cl_auto, clerr_auto = [ciber_auto[key] for key in ['lb', 'fieldav_cl', 'fieldav_clerr']]
 
 			# Get unweighted field averages needed for the uncertainty estimation
@@ -2501,122 +2738,874 @@ def plot_deconvolution_comparison(results, figsize=(7, 4)):
 	plt.show()
 
 
-def compare_r_ell_hsc_LS_zlt1(figsize=(4, 6),
-                              ls_addstr='0.0_z_1.0_wrandsub_JHlt16',
-                              hsc_addstr='hsc_ilt24.0_zlt1_wrandsub',
-                              wise_addstr='unWISE_W1lt17p5_JHlt16_wFFerr',
-                              startidx=2, endidx=-1,
-                              title_fs=13, lab_fs=14, legend_fs=12,
-                              textxpos=300, textypos=0.8, text_fs=14,
-                              ylim=[-0.1, 1.1], xlim=[250, 1.1e5],
-                              grid_alpha=0.3, capsize=3, capthick=1.5, markersize=3, \
-                              ls_plotstr='Legacy Survey ($z_{AB}<22$, $z_{phot}<1$)', 
-                              hsc_plotstr='HSC ($i_{AB}<25$, $z_{phot}<1$)', 
-                              wise_plotstr='unWISE ($W1<17.5$)',
-                              hsc_pred_fpaths=None, ls_pred_fpaths=None, 
-                              wise_pred_fpaths=None,
-                                alpha=0.8, tl_pix_correct=True, ifield_use=8, 
-                             bbox_to_anchor=[0.0, 1.3], 
-                             ell_max_mean=2000.):
-    lams = [1.1, 1.8]
-    inst_list = [1, 2]
-    
-    ls_auto_cross = compute_rl_ciber_gal(ls_addstr, catname='LS',
-                                         tl_pix_correct=tl_pix_correct, ifield_use=ifield_use)
-    hsc_auto_cross = compute_rl_ciber_gal(hsc_addstr, catname='HSC',
-                                         tl_pix_correct=tl_pix_correct, ifield_use=ifield_use)
-    
-    wise_auto_cross = compute_rl_ciber_gal(wise_addstr, catname='WISE',
-                                         tl_pix_correct=tl_pix_correct, ifield_use=ifield_use)
+def load_trilegal_unresolved_isl_cl(
+	inst,
+	ifield=8,
+	maglim_vega=16.0,
+	datestr='112022',
+	stat='mean',
+	basepath=None,
+	max_mag_delta=0.26,
+):
+	"""Load unresolved ISL C_ell from TRILEGAL residual spectra at a Vega mag cut.
+
+	Returns
+	-------
+	lb : np.ndarray
+		Multipole bin centers.
+	cl_isl : np.ndarray
+		Residual ISL auto power for the requested mask depth.
+	used_col : str
+		Column name used from FITS table (nearest available mag cut).
+	"""
+	if stat not in {'mean', 'median'}:
+		raise ValueError("stat must be 'mean' or 'median'")
+
+	if basepath is None:
+		basepath = (
+			Path(getattr(config, 'ciber_basepath', '.'))
+			/ 'data'
+			/ 'ciber_mocks'
+			/ str(datestr)
+			/ f'TM{inst}'
+			/ 'isl_resid_ps'
+		)
+	else:
+		basepath = Path(basepath)
+
+	pat = f'cls_isl_vs_maglim_ifield{ifield}_inst{inst}_simidx*_Vega_magcut.fits'
+	fpaths = sorted(basepath.glob(pat))
+	if not fpaths:
+		raise FileNotFoundError(
+			f'No TRILEGAL residual spectra found in {basepath} for pattern {pat}'
+		)
+
+	lb = None
+	cl_stack = []
+	used_cols = []
+	for fp in fpaths:
+		with fits.open(str(fp)) as hdul:
+			tab = hdul[1].data
+			if lb is None:
+				lb = np.asarray(tab['lb'], dtype=float)
+
+			mag_cols = [c for c in tab.columns.names if c.startswith('cl_maglim_')]
+			if not mag_cols:
+				continue
+
+			all_mags = np.array([float(c.replace('cl_maglim_', '')) for c in mag_cols], dtype=float)
+			col_idx = int(np.argmin(np.abs(all_mags - float(maglim_vega))))
+			if np.abs(all_mags[col_idx] - float(maglim_vega)) > float(max_mag_delta):
+				continue
+
+			used_col = mag_cols[col_idx]
+			cl_stack.append(np.asarray(tab[used_col], dtype=float))
+			used_cols.append(used_col)
+
+	if not cl_stack:
+		raise ValueError(
+			f'No TRILEGAL ISL files contained a mag-cut column near {maglim_vega} (delta<={max_mag_delta}).'
+		)
+
+	cl_stack = np.asarray(cl_stack, dtype=float)
+	if stat == 'mean':
+		cl_isl = np.nanmean(cl_stack, axis=0)
+	else:
+		cl_isl = np.nanmedian(cl_stack, axis=0)
+
+	used_col = max(set(used_cols), key=used_cols.count)
+
+	return lb, cl_isl, used_col
 
 
-    fig, ax = plt.subplots(figsize=figsize, ncols=1, nrows=2, sharex=True)
+def estimate_r_ell_with_added_isl_from_ratio(r_ell_igl, cii_isl_over_igl, first_order=False):
+	"""Return ISL-adjusted r_ell given ratio C_ell^ISL / C_ell^II,IGL.
 
-    
-    all_rlmean, all_rlmeanunc = [np.zeros((len(inst_list), 3)) for _ in range(2)]
-    for idx, inst in enumerate(inst_list):
-    
-        title = 'CIBER '+str(lams[idx])+' $\\mu$m $\\times$ $\\delta_g$'
-        ax[idx].text(textxpos, textypos, title, fontsize=text_fs)
-        
-        lb, r_ell_ls, r_ell_unc_ls = ls_auto_cross[idx].lb, ls_auto_cross[idx].r_ell, ls_auto_cross[idx].r_ell_unc
-        _, r_ell_hsc, r_ell_unc_hsc = hsc_auto_cross[idx].lb, hsc_auto_cross[idx].r_ell, hsc_auto_cross[idx].r_ell_unc
-        _, r_ell_wise, r_ell_unc_wise = wise_auto_cross[idx].lb, wise_auto_cross[idx].r_ell, wise_auto_cross[idx].r_ell_unc
+	If ``first_order`` is True, use small-ratio approximation:
+	r_new ~= r_old * (1 - 0.5 * ratio).
+	Otherwise use exact scaling:
+	r_new = r_old / sqrt(1 + ratio).
+	"""
+	r_ell_igl = np.asarray(r_ell_igl, dtype=float)
+	ratio = np.asarray(cii_isl_over_igl, dtype=float)
+	if ratio.ndim == 0:
+		ratio = np.full_like(r_ell_igl, float(ratio))
+	elif ratio.shape != r_ell_igl.shape:
+		raise ValueError("ratio must be scalar or same shape as r_ell_igl")
 
-        ax[idx].errorbar(lb[startidx:endidx], r_ell_ls, yerr=r_ell_unc_ls, fmt='o', capsize=capsize, markersize=markersize, capthick=capthick, color='C0', label=ls_plotstr)
-        ax[idx].errorbar(lb[startidx:endidx], r_ell_hsc, yerr=r_ell_unc_hsc, fmt='o', capsize=capsize, markersize=markersize, capthick=capthick, color='C1', label=hsc_plotstr)
-        ax[idx].errorbar(lb[startidx:endidx], r_ell_wise, yerr=r_ell_unc_wise, fmt='o', capsize=capsize, markersize=markersize, capthick=capthick, color='C2', label=wise_plotstr)
-
-        all_rl = [r_ell_ls, r_ell_hsc, r_ell_wise]
-        all_rl_unc = [r_ell_unc_ls, r_ell_unc_hsc, r_ell_unc_wise]
-        
-        
-        for x in range(len(all_rl)):
-            
-            lbmean_mask = (lb[startidx:endidx] < ell_max_mean)
-            rlmean, rlunc = weighted_mean_and_uncertainty(all_rl[x][lbmean_mask], all_rl_unc[x][lbmean_mask])
-            
-            all_rlmean[idx, x] = rlmean
-            all_rlmeanunc[idx, x] = rlunc
-        
-        ax[idx].set_xscale('log')
-        ax[idx].set_ylim(ylim)
-#         if idx==0:
-        ax[idx].set_ylabel('$r_{\\ell}=C_{\\ell}^{Ig}/\\sqrt{C_{\\ell}^{gg}C_{\\ell}^{II}}$', fontsize=14)
-        if idx==1:
-            ax[idx].set_xlabel('$\\ell$', fontsize=lab_fs)
-        ax[idx].grid(alpha=grid_alpha)
-        ax[idx].set_xlim(xlim)
-        
-        ax[idx].axhspan(ylim[0], 0, facecolor='grey', alpha=0.2)
-
-        # Add grey shading for 1 < y < 1.2
-        ax[idx].axhspan(1, ylim[1], facecolor='grey', alpha=0.2)
-        
-        if tl_pix_correct:
-            tl_pix = np.load('data/fluctuation_data/transfer_function/tl_clx_pix_TM'+str(inst)+'_ifield'+str(ifield_use)+'.npz')['tl_clx_pix']
-        else:
-            tl_pix = np.ones_like(lb_pred)
+	ratio = np.maximum(ratio, 0.0)
+	if first_order:
+		scale = 1.0 - 0.5 * ratio
+	else:
+		scale = 1.0 / np.sqrt(1.0 + ratio)
+	return r_ell_igl * scale
 
 
-        if ls_pred_fpaths is not None:
+def estimate_r_ell_with_added_isl_from_cl(r_ell_igl, cii_igl, cii_isl, first_order=False):
+	"""Return ISL-adjusted r_ell given C_ell^II,IGL and C_ell^II,ISL.
 
-            jmock_pred = np.load(ls_pred_fpaths[idx])
-            lb_pred, r_ell_ls_pred = [jmock_pred[key] for key in ['lb', 'rlx_tracer_full']]
+	This computes ratio = C_ell^ISL / C_ell^IGL and forwards to
+	``estimate_r_ell_with_added_isl_from_ratio``.
+	"""
+	r_ell_igl = np.asarray(r_ell_igl, dtype=float)
+	cii_igl = np.asarray(cii_igl, dtype=float)
+	cii_isl = np.asarray(cii_isl, dtype=float)
+	if cii_igl.shape != r_ell_igl.shape or cii_isl.shape != r_ell_igl.shape:
+		raise ValueError("r_ell_igl, cii_igl, and cii_isl must have matching shapes")
 
-            r_ell_ls_pred /= tl_pix 
+	ratio = np.divide(
+		cii_isl,
+		cii_igl,
+		out=np.zeros_like(cii_isl, dtype=float),
+		where=cii_igl > 0,
+	)
+	return estimate_r_ell_with_added_isl_from_ratio(
+		r_ell_igl,
+		ratio,
+		first_order=first_order,
+	)
 
 
-            ax[idx].plot(lb_pred, r_ell_ls_pred, color='C0', linestyle='dashdot', label='IGL (Mirocha) + ISL', alpha=alpha)
+def compare_r_ell_hsc_LS_zlt1(
+	figsize=(4, 6),
+	ls_addstr='0.0_z_1.0_wrandsub_JHlt16',
+	hsc_addstr='hsc_ilt24.0_zlt1_wrandsub',
+	wise_addstr='unWISE_W1lt17p5_JHlt16_wFFerr',
+	startidx=2,
+	endidx=-1,
+	title_fs=13,
+	lab_fs=14,
+	legend_fs=12,
+	textxpos=300,
+	textypos=0.8,
+	text_fs=14,
+	ylim=[-0.1, 1.1],
+	xlim=[250, 1.1e5],
+	grid_alpha=0.3,
+	capsize=3,
+	capthick=1.5,
+	markersize=3,
+	ls_plotstr='Legacy Survey ($z_{\\rm AB}<22$, $z_{\\rm phot}<1$)',
+	hsc_plotstr='HSC ($i_{\\rm AB}<25$, $z_{\\rm phot}<1$)',
+	wise_plotstr='unWISE ($W1<17.5$)',
+	hsc_pred_fpaths=None,
+	ls_pred_fpaths=None,
+	wise_pred_fpaths=None,
+	alpha=0.8,
+	tl_pix_correct=True,
+	ifield_use=8,
+	bbox_to_anchor=[0.0, 1.3],
+	ell_max_mean=2000.0,
+	include_wise=True,
+	plot_isl_adjusted=False,
+	isl_cii_over_igl=None,
+	isl_cii_over_igl_by_tracer=None,
+	isl_first_order=False,
+	isl_linestyle='dashed',
+	isl_alpha=0.7,
+	isl_label='IGL + ISL (approx)',
+	isl_use_trilegal=False,
+	isl_trilegal_datestr='112022',
+	isl_trilegal_maglim_vega=16.0,
+	isl_trilegal_stat='mean',
+	isl_trilegal_basepath=None,
+):
+	def _resolve_isl_ratio(tracer_key):
+		if isl_cii_over_igl_by_tracer is not None and tracer_key in isl_cii_over_igl_by_tracer:
+			return isl_cii_over_igl_by_tracer[tracer_key]
+		return isl_cii_over_igl
+
+	def _apply_isl_ratio(r_ell_pred, ratio):
+		if ratio is None:
+			return None
+
+		ratio_arr = np.asarray(ratio, dtype=float)
+		if ratio_arr.ndim == 0:
+			ratio_arr = np.full_like(r_ell_pred, float(ratio_arr))
+		elif ratio_arr.shape != r_ell_pred.shape:
+			raise ValueError(
+				"ISL ratio shape mismatch: expected scalar or array matching prediction length"
+			)
+
+		ratio_arr = np.maximum(ratio_arr, 0.0)
+		if isl_first_order:
+			scale = 1.0 - 0.5 * ratio_arr
+		else:
+			scale = 1.0 / np.sqrt(1.0 + ratio_arr)
+		return r_ell_pred * scale
+
+	def _infer_cii_from_prediction(pred):
+		cross = np.asarray(pred['cross'], dtype=float)
+		gal_auto = np.asarray(pred['gal_auto'], dtype=float)
+		r_ell = np.asarray(pred['rlx_tracer_full'], dtype=float)
+		r_denom = np.square(r_ell)
+		return np.divide(
+			np.square(cross),
+			r_denom * gal_auto,
+			out=np.zeros_like(cross, dtype=float),
+			where=(r_denom > 0) & (gal_auto > 0),
+		)
+
+	lams = [1.1, 1.8]
+	inst_list = [1, 2]
+
+	ls_auto_cross = compute_rl_ciber_gal(
+		ls_addstr,
+		catname='LS',
+		tl_pix_correct=tl_pix_correct,
+		ifield_use=ifield_use,
+	)
+	hsc_auto_cross = compute_rl_ciber_gal(
+		hsc_addstr,
+		catname='HSC',
+		tl_pix_correct=tl_pix_correct,
+		ifield_use=ifield_use,
+	)
+
+	wise_auto_cross = None
+	if include_wise:
+		wise_auto_cross = compute_rl_ciber_gal(
+			wise_addstr,
+			catname='WISE',
+			tl_pix_correct=tl_pix_correct,
+			ifield_use=ifield_use,
+		)
+
+	fig, ax = plt.subplots(figsize=figsize, ncols=1, nrows=2, sharex=True)
+
+	n_tracers = 3 if include_wise else 2
+	all_rlmean, all_rlmeanunc = [np.zeros((len(inst_list), n_tracers)) for _ in range(2)]
+	for idx, inst in enumerate(inst_list):
+		title = 'CIBER ' + str(lams[idx]) + ' $\\mu$m $\\times$ $\\delta_g$'
+		ax[idx].text(textxpos, textypos, title, fontsize=text_fs)
+
+		lb = ls_auto_cross[idx].lb
+		r_ell_ls = ls_auto_cross[idx].r_ell
+		r_ell_unc_ls = ls_auto_cross[idx].r_ell_unc
+		r_ell_hsc = hsc_auto_cross[idx].r_ell
+		r_ell_unc_hsc = hsc_auto_cross[idx].r_ell_unc
+
+		ax[idx].errorbar(
+			lb[startidx:endidx],
+			r_ell_ls,
+			yerr=r_ell_unc_ls,
+			fmt='o',
+			capsize=capsize,
+			markersize=markersize,
+			capthick=capthick,
+			color='C0',
+			label=ls_plotstr,
+		)
+		ax[idx].errorbar(
+			lb[startidx:endidx],
+			r_ell_hsc,
+			yerr=r_ell_unc_hsc,
+			fmt='o',
+			capsize=capsize,
+			markersize=markersize,
+			capthick=capthick,
+			color='C1',
+			label=hsc_plotstr,
+		)
+
+		all_rl = [r_ell_ls, r_ell_hsc]
+		all_rl_unc = [r_ell_unc_ls, r_ell_unc_hsc]
+
+		if include_wise and wise_auto_cross is not None:
+			r_ell_wise = wise_auto_cross[idx].r_ell
+			r_ell_unc_wise = wise_auto_cross[idx].r_ell_unc
+			ax[idx].errorbar(
+				lb[startidx:endidx],
+				r_ell_wise,
+				yerr=r_ell_unc_wise,
+				fmt='o',
+				capsize=capsize,
+				markersize=markersize,
+				capthick=capthick,
+				color='C2',
+				label=wise_plotstr,
+			)
+			all_rl.append(r_ell_wise)
+			all_rl_unc.append(r_ell_unc_wise)
+
+		lbmean_mask = lb[startidx:endidx] < ell_max_mean
+		for x in range(len(all_rl)):
+			rlmean, rlunc = weighted_mean_and_uncertainty(
+				all_rl[x][lbmean_mask],
+				all_rl_unc[x][lbmean_mask],
+			)
+			all_rlmean[idx, x] = rlmean
+			all_rlmeanunc[idx, x] = rlunc
+
+		ax[idx].set_xscale('log')
+		ax[idx].set_ylim(ylim)
+		ax[idx].set_ylabel('$r_{\\ell}=C_{\\ell}^{Ig}/\\sqrt{C_{\\ell}^{gg}C_{\\ell}^{II}}$', fontsize=14)
+		if idx == 1:
+			ax[idx].set_xlabel('$\\ell$', fontsize=lab_fs)
+		ax[idx].grid(alpha=grid_alpha)
+		ax[idx].set_xlim(xlim)
+
+		ax[idx].axhspan(ylim[0], 0, facecolor='grey', alpha=0.2)
+		ax[idx].axhspan(1, ylim[1], facecolor='grey', alpha=0.2)
+
+		if tl_pix_correct:
+			tl_pix = np.load(
+				'data/fluctuation_data/transfer_function/tl_clx_pix_TM'
+				+ str(inst)
+				+ '_ifield'
+				+ str(ifield_use)
+				+ '.npz'
+			)['tl_clx_pix']
+		else:
+			tl_pix = np.ones_like(lb)
+
+		trilegal_isl = None
+		trilegal_lb = None
+		if plot_isl_adjusted and isl_use_trilegal:
+			try:
+				trilegal_lb, trilegal_isl, _ = load_trilegal_unresolved_isl_cl(
+					inst=inst,
+					ifield=ifield_use,
+					maglim_vega=isl_trilegal_maglim_vega,
+					datestr=isl_trilegal_datestr,
+					stat=isl_trilegal_stat,
+					basepath=isl_trilegal_basepath,
+				)
+			except Exception as e:
+				print(f'WARNING: could not load TRILEGAL unresolved ISL for TM{inst}: {e}')
+				trilegal_isl = None
+				trilegal_lb = None
+
+		if ls_pred_fpaths is not None:
+			jmock_pred = np.load(ls_pred_fpaths[idx])
+			lb_pred, r_ell_ls_pred = [jmock_pred[key] for key in ['lb', 'rlx_tracer_full']]
+			r_ell_ls_pred /= tl_pix
+			ax[idx].plot(
+				lb_pred,
+				r_ell_ls_pred,
+				color='C0',
+				linestyle='dotted',
+				label='IGL prediction',
+				alpha=alpha,
+			)
+			if plot_isl_adjusted:
+				ratio = _resolve_isl_ratio('ls')
+				if ratio is None and trilegal_isl is not None and trilegal_lb is not None:
+					cii_igl_pred = _infer_cii_from_prediction(jmock_pred)
+					cl_isl_interp = np.interp(lb_pred, trilegal_lb, trilegal_isl)
+					ratio = np.divide(
+						cl_isl_interp,
+						cii_igl_pred,
+						out=np.zeros_like(cl_isl_interp, dtype=float),
+						where=cii_igl_pred > 0,
+					)
+				r_ell_ls_isl = _apply_isl_ratio(r_ell_ls_pred, ratio)
+				if r_ell_ls_isl is not None:
+					ax[idx].plot(
+						lb_pred,
+						r_ell_ls_isl,
+						color='C0',
+						linestyle=isl_linestyle,
+						label=isl_label,
+						alpha=isl_alpha,
+					)
+
+		if hsc_pred_fpaths is not None:
+			jmock_pred = np.load(hsc_pred_fpaths[idx])
+			lb_pred, r_ell_hsc_pred = [jmock_pred[key] for key in ['lb', 'rlx_tracer_full']]
+			r_ell_hsc_pred /= tl_pix
+			ax[idx].plot(lb_pred, r_ell_hsc_pred, color='C1', linestyle='dotted', alpha=alpha)
+			if plot_isl_adjusted:
+				ratio = _resolve_isl_ratio('hsc')
+				if ratio is None and trilegal_isl is not None and trilegal_lb is not None:
+					cii_igl_pred = _infer_cii_from_prediction(jmock_pred)
+					cl_isl_interp = np.interp(lb_pred, trilegal_lb, trilegal_isl)
+					ratio = np.divide(
+						cl_isl_interp,
+						cii_igl_pred,
+						out=np.zeros_like(cl_isl_interp, dtype=float),
+						where=cii_igl_pred > 0,
+					)
+				r_ell_hsc_isl = _apply_isl_ratio(r_ell_hsc_pred, ratio)
+				if r_ell_hsc_isl is not None:
+					ax[idx].plot(
+						lb_pred,
+						r_ell_hsc_isl,
+						color='C1',
+						linestyle=isl_linestyle,
+						alpha=isl_alpha,
+					)
+
+		if include_wise and wise_pred_fpaths is not None:
+			jmock_pred = np.load(wise_pred_fpaths[idx])
+			lb_pred, r_ell_wise_pred = [jmock_pred[key] for key in ['lb', 'rlx_tracer_full']]
+			r_ell_wise_pred /= tl_pix
+			ax[idx].plot(lb_pred, r_ell_wise_pred, color='C2', linestyle='dotted', alpha=alpha)
+			if plot_isl_adjusted:
+				ratio = _resolve_isl_ratio('wise')
+				if ratio is None and trilegal_isl is not None and trilegal_lb is not None:
+					cii_igl_pred = _infer_cii_from_prediction(jmock_pred)
+					cl_isl_interp = np.interp(lb_pred, trilegal_lb, trilegal_isl)
+					ratio = np.divide(
+						cl_isl_interp,
+						cii_igl_pred,
+						out=np.zeros_like(cl_isl_interp, dtype=float),
+						where=cii_igl_pred > 0,
+					)
+				r_ell_wise_isl = _apply_isl_ratio(r_ell_wise_pred, ratio)
+				if r_ell_wise_isl is not None:
+					ax[idx].plot(
+						lb_pred,
+						r_ell_wise_isl,
+						color='C2',
+						linestyle=isl_linestyle,
+						alpha=isl_alpha,
+					)
+
+		if idx == 0:
+			ax[idx].legend(loc=2, bbox_to_anchor=bbox_to_anchor, ncol=1, fontsize=legend_fs)
+
+	plt.subplots_adjust(wspace=0.05, hspace=0.05)
+	plt.show()
+
+	return fig, all_rlmean, all_rlmeanunc
 
 
-        if hsc_pred_fpaths is not None:
+def compare_r_ell_hsc_ls_2x2(
+	figsize=(7, 5.2),
+	ls_addstr='0.0_z_1.0_wrandsub_JHlt16',
+	hsc_addstr='hsc_ilt24.0_zlt1_wrandsub',
+	startidx=2,
+	endidx=-1,
+	title_fs=13,
+	lab_fs=14,
+	legend_fs=12,
+	textxpos=1100,
+	textypos=1.0,
+	text_fs=11,
+	ylim=[-0.15, 1.15],
+	xlim=[250, 1.1e5],
+	grid_alpha=0.3,
+	capsize=3,
+	capthick=1.4,
+	markersize=3,
+	ls_plotstr='DESI-LS ($z_{\\rm AB}<22$, $z_{\\rm phot}<1$)',
+	hsc_plotstr='HSC ($i_{\\rm AB}<25$, $z_{\\rm phot}<1$)',
+	ls_pred_fpaths=None,
+	hsc_pred_fpaths=None,
+	alpha=0.8,
+	tl_pix_correct=True,
+	ifield_use=8,
+	plot_isl_adjusted=True,
+	isl_first_order=False,
+	isl_linestyle='dashed',
+	isl_alpha=0.8,
+	isl_label='IGL + unmasked ISL',
+	isl_use_trilegal=True,
+	isl_trilegal_datestr='112022',
+	isl_trilegal_maglim_vega=16.0,
+	isl_trilegal_stat='mean',
+	isl_trilegal_basepath=None,
+	save_path=None,
+	show=False,
+):
+	"""Plot LS/HSC r_ell in a 2x2 layout (one panel per data combination).
 
-            jmock_pred = np.load(hsc_pred_fpaths[idx])
-            lb_pred, r_ell_hsc_pred = [jmock_pred[key] for key in ['lb', 'rlx_tracer_full']]
+	Rows correspond to CIBER wavelengths (1.1, 1.8 um), columns correspond to
+	tracers (DESI-LS, HSC).
+	"""
+	lams = [1.1, 1.8]
+	inst_list = [1, 2]
 
-            r_ell_hsc_pred /= tl_pix 
+	ls_auto_cross = compute_rl_ciber_gal(
+		ls_addstr,
+		catname='LS',
+		tl_pix_correct=tl_pix_correct,
+		ifield_use=ifield_use,
+	)
+	hsc_auto_cross = compute_rl_ciber_gal(
+		hsc_addstr,
+		catname='HSC',
+		tl_pix_correct=tl_pix_correct,
+		ifield_use=ifield_use,
+	)
 
-            ax[idx].plot(lb_pred, r_ell_hsc_pred, color='C1', linestyle='dashdot', alpha=alpha)
-            
-            
-        if wise_pred_fpaths is not None:
+	fig, ax = plt.subplots(figsize=figsize, ncols=2, nrows=2, sharex=True, sharey=True)
 
-            jmock_pred = np.load(wise_pred_fpaths[idx])
-            lb_pred, r_ell_wise_pred = [jmock_pred[key] for key in ['lb', 'rlx_tracer_full']]
+	legend_handles = None
 
-            r_ell_wise_pred /= tl_pix 
+	def _infer_cii_from_prediction_local(pred):
+		cross = np.asarray(pred['cross'], dtype=float)
+		gal_auto = np.asarray(pred['gal_auto'], dtype=float)
+		r_ell = np.asarray(pred['rlx_tracer_full'], dtype=float)
+		r_denom = np.square(r_ell)
+		return np.divide(
+			np.square(cross),
+			r_denom * gal_auto,
+			out=np.zeros_like(cross, dtype=float),
+			where=(r_denom > 0) & (gal_auto > 0),
+		)
 
-            ax[idx].plot(lb_pred, r_ell_wise_pred, color='C2', linestyle='dashdot', alpha=alpha)
+	for ridx, inst in enumerate(inst_list):
+		lb = ls_auto_cross[ridx].lb
+		# Keep DESI-LS at default b/r while shifting HSC to nearby blue/red shades.
+		if inst == 1:
+			desi_color = 'b'
+			hsc_color = 'dodgerblue'
+		else:
+			desi_color = 'r'
+			hsc_color = 'tomato'
 
-        if idx==0:
-            ax[idx].legend(loc=2, bbox_to_anchor=bbox_to_anchor, ncol=1, fontsize=legend_fs)
+		if tl_pix_correct:
+			tl_pix = np.load(
+				f'data/fluctuation_data/transfer_function/tl_clx_pix_TM{inst}_ifield{ifield_use}.npz'
+			)['tl_clx_pix']
+		else:
+			tl_pix = np.ones_like(lb)
 
-    plt.subplots_adjust(wspace=0.05, hspace=0.05)
+		trilegal_isl = None
+		trilegal_lb = None
+		if plot_isl_adjusted and isl_use_trilegal:
+			try:
+				trilegal_lb, trilegal_isl, _ = load_trilegal_unresolved_isl_cl(
+					inst=inst,
+					ifield=ifield_use,
+					maglim_vega=isl_trilegal_maglim_vega,
+					datestr=isl_trilegal_datestr,
+					stat=isl_trilegal_stat,
+					basepath=isl_trilegal_basepath,
+				)
+			except Exception:
+				trilegal_lb, trilegal_isl = None, None
 
-    plt.show()
-    
-    return fig, all_rlmean, all_rlmeanunc
+		panel_specs = [
+			(0, ls_auto_cross[ridx], ls_plotstr, desi_color, ls_pred_fpaths),
+			(1, hsc_auto_cross[ridx], hsc_plotstr, hsc_color, hsc_pred_fpaths),
+		]
+
+		for cidx, acdat, tracer_label, color, pred_fpaths in panel_specs:
+			ax_use = ax[ridx, cidx]
+
+			h_obs = ax_use.errorbar(
+				lb[startidx:endidx],
+				acdat.r_ell,
+				yerr=acdat.r_ell_unc,
+				fmt='o',
+				capsize=capsize,
+				markersize=markersize,
+				capthick=capthick,
+				color=color,
+				label='Observed',
+			)
+
+			h_igl = None
+			h_isl = None
+
+			if pred_fpaths is not None:
+				jmock_pred = np.load(pred_fpaths[ridx])
+				lb_pred, r_ell_pred = [jmock_pred[key] for key in ['lb', 'rlx_tracer_full']]
+				r_ell_pred /= tl_pix
+				h_igl, = ax_use.plot(
+					lb_pred,
+					r_ell_pred,
+					color='k',
+					linestyle='dotted',
+					alpha=alpha,
+					label='IGL prediction',
+				)
+
+				if plot_isl_adjusted:
+					r_ell_pred_isl = None
+					if trilegal_isl is not None and trilegal_lb is not None:
+						cii_igl = _infer_cii_from_prediction_local(jmock_pred)
+						cii_isl_interp = np.interp(lb_pred, trilegal_lb, trilegal_isl)
+						r_ell_pred_isl = estimate_r_ell_with_added_isl_from_cl(
+							r_ell_pred,
+							cii_igl,
+							cii_isl_interp,
+							first_order=isl_first_order,
+						)
+
+					if r_ell_pred_isl is not None:
+						h_isl, = ax_use.plot(
+							lb_pred,
+							r_ell_pred_isl,
+							color='k',
+							linestyle=isl_linestyle,
+							alpha=isl_alpha,
+							label=isl_label,
+						)
+
+			title = f'CIBER {lams[ridx]} $\\mu$m $\\times$ {"DESI-LS" if cidx == 0 else "HSC"}'
+			ax_use.text(textxpos, textypos, title, fontsize=text_fs)
+			ax_use.set_xscale('log')
+			ax_use.set_xlim(xlim)
+			ax_use.set_ylim(ylim)
+			ax_use.grid(alpha=grid_alpha)
+
+			if legend_handles is None:
+				legend_handles = [h_obs.lines[0] if hasattr(h_obs, 'lines') else h_obs]
+				if h_igl is not None:
+					legend_handles.append(h_igl)
+				if h_isl is not None:
+					legend_handles.append(h_isl)
+
+	for cidx in range(2):
+		ax[1, cidx].set_xlabel('$\\ell$', fontsize=lab_fs)
+
+	ax[0, 0].set_title('DESI-LS ($z_{\\rm AB}<22$, $z_{\\rm phot}<1$)', fontsize=title_fs)
+	ax[0, 1].set_title('HSC ($i_{\\rm AB}<25$, $z_{\\rm phot}<1$)', fontsize=title_fs)
+
+	for ridx in range(2):
+		# ax[ridx, 0].set_ylabel('$r_{\\ell}=C_{\\ell}^{Ig}/\\sqrt{C_{\\ell}^{gg}C_{\\ell}^{II}}$', fontsize=lab_fs)
+		ax[ridx, 0].set_ylabel('Coherence $r_{\\ell}^{I \\times g}$', fontsize=lab_fs)
+
+	if legend_handles is not None:
+		legend_labels = ['Observed', 'IGL prediction']
+		if len(legend_handles) >= 3:
+			legend_labels.append(isl_label)
+		fig.legend(
+			handles=legend_handles,
+			labels=legend_labels,
+			loc='upper center',
+			ncol=len(legend_labels),
+			fontsize=legend_fs,
+			bbox_to_anchor=(0.5, 1.02),
+		)
+
+	plt.subplots_adjust(wspace=0.06, hspace=0.10, top=0.87)
+
+	if save_path is not None:
+		fig.savefig(save_path, bbox_inches='tight')
+
+	if show:
+		plt.show()
+
+	return fig
+
+
+def compare_r_ell_hsc_ls_wise_2x3(
+	figsize=(10, 5.2),
+	ls_addstr='0.0_z_1.0_wrandsub_JHlt16',
+	hsc_addstr='hsc_ilt24.0_zlt1_wrandsub',
+	wise_addstr='unWISE_W1lt17p5_JHlt16_wFFerr',
+	startidx=2,
+	endidx=-1,
+	title_fs=13,
+	lab_fs=14,
+	legend_fs=12,
+	textxpos=1100,
+	textypos=1.0,
+	text_fs=11,
+	ylim=[-0.15, 1.15],
+	xlim=[250, 1.1e5],
+	grid_alpha=0.3,
+	capsize=3,
+	capthick=1.4,
+	markersize=3,
+	ls_plotstr='DESI-LS ($z_{\\rm AB}<22$, $z_{\\rm phot}<1$)',
+	hsc_plotstr='HSC ($i_{\\rm AB}<25$, $z_{\\rm phot}<1$)',
+	wise_plotstr='unWISE ($W1<17.5$)',
+	ls_pred_fpaths=None,
+	hsc_pred_fpaths=None,
+	wise_pred_fpaths=None,
+	alpha=0.8,
+	tl_pix_correct=True,
+	ifield_use=8,
+	plot_isl_adjusted=True,
+	isl_first_order=False,
+	isl_linestyle='dashed',
+	isl_alpha=0.8,
+	isl_label='IGL + unmasked ISL',
+	isl_use_trilegal=True,
+	isl_trilegal_datestr='112022',
+	isl_trilegal_maglim_vega=16.0,
+	isl_trilegal_stat='mean',
+	isl_trilegal_basepath=None,
+	save_path=None,
+	show=False,
+):
+	"""Plot LS/HSC/WISE r_ell in a 2x3 layout.
+
+	Rows correspond to CIBER wavelengths (1.1, 1.8 um), columns correspond to
+	tracers (DESI-LS, HSC, WISE).
+	"""
+	lams = [1.1, 1.8]
+	inst_list = [1, 2]
+
+	ls_auto_cross = compute_rl_ciber_gal(
+		ls_addstr,
+		catname='LS',
+		tl_pix_correct=tl_pix_correct,
+		ifield_use=ifield_use,
+	)
+	hsc_auto_cross = compute_rl_ciber_gal(
+		hsc_addstr,
+		catname='HSC',
+		tl_pix_correct=tl_pix_correct,
+		ifield_use=ifield_use,
+	)
+	wise_auto_cross = compute_rl_ciber_gal(
+		wise_addstr,
+		catname='WISE',
+		tl_pix_correct=tl_pix_correct,
+		ifield_use=ifield_use,
+	)
+
+	fig, ax = plt.subplots(figsize=figsize, ncols=3, nrows=2, sharex=True, sharey=True)
+
+	legend_handles = None
+
+	def _infer_cii_from_prediction_local(pred):
+		cross = np.asarray(pred['cross'], dtype=float)
+		gal_auto = np.asarray(pred['gal_auto'], dtype=float)
+		r_ell = np.asarray(pred['rlx_tracer_full'], dtype=float)
+		r_denom = np.square(r_ell)
+		return np.divide(
+			np.square(cross),
+			r_denom * gal_auto,
+			out=np.zeros_like(cross, dtype=float),
+			where=(r_denom > 0) & (gal_auto > 0),
+		)
+
+	for ridx, inst in enumerate(inst_list):
+		lb = ls_auto_cross[ridx].lb
+		if inst == 1:
+			desi_color = 'b'
+			hsc_color = 'dodgerblue'
+			wise_color = 'royalblue'
+		else:
+			desi_color = 'r'
+			hsc_color = 'tomato'
+			wise_color = 'firebrick'
+
+		if tl_pix_correct:
+			tl_pix = np.load(
+				f'data/fluctuation_data/transfer_function/tl_clx_pix_TM{inst}_ifield{ifield_use}.npz'
+			)['tl_clx_pix']
+		else:
+			tl_pix = np.ones_like(lb)
+
+		trilegal_isl = None
+		trilegal_lb = None
+		if plot_isl_adjusted and isl_use_trilegal:
+			try:
+				trilegal_lb, trilegal_isl, _ = load_trilegal_unresolved_isl_cl(
+					inst=inst,
+					ifield=ifield_use,
+					maglim_vega=isl_trilegal_maglim_vega,
+					datestr=isl_trilegal_datestr,
+					stat=isl_trilegal_stat,
+					basepath=isl_trilegal_basepath,
+				)
+			except Exception:
+				trilegal_lb, trilegal_isl = None, None
+
+		panel_specs = [
+			(0, ls_auto_cross[ridx], 'DESI-LS', desi_color, ls_pred_fpaths),
+			(1, hsc_auto_cross[ridx], 'HSC', hsc_color, hsc_pred_fpaths),
+			(2, wise_auto_cross[ridx], 'WISE', wise_color, wise_pred_fpaths),
+		]
+
+		for cidx, acdat, panel_label, color, pred_fpaths in panel_specs:
+			ax_use = ax[ridx, cidx]
+
+			h_obs = ax_use.errorbar(
+				lb[startidx:endidx],
+				acdat.r_ell,
+				yerr=acdat.r_ell_unc,
+				fmt='o',
+				capsize=capsize,
+				markersize=markersize,
+				capthick=capthick,
+				color=color,
+				label='Observed',
+			)
+
+			h_igl = None
+			h_isl = None
+
+			if pred_fpaths is not None:
+				jmock_pred = np.load(pred_fpaths[ridx])
+				lb_pred, r_ell_pred = [jmock_pred[key] for key in ['lb', 'rlx_tracer_full']]
+				r_ell_pred /= tl_pix
+				h_igl, = ax_use.plot(
+					lb_pred,
+					r_ell_pred,
+					color='k',
+					linestyle='dotted',
+					alpha=alpha,
+					label='IGL prediction',
+				)
+
+				if plot_isl_adjusted:
+					r_ell_pred_isl = None
+					if trilegal_isl is not None and trilegal_lb is not None:
+						cii_igl = _infer_cii_from_prediction_local(jmock_pred)
+						cii_isl_interp = np.interp(lb_pred, trilegal_lb, trilegal_isl)
+						r_ell_pred_isl = estimate_r_ell_with_added_isl_from_cl(
+							r_ell_pred,
+							cii_igl,
+							cii_isl_interp,
+							first_order=isl_first_order,
+						)
+
+					if r_ell_pred_isl is not None:
+						h_isl, = ax_use.plot(
+							lb_pred,
+							r_ell_pred_isl,
+							color='k',
+							linestyle=isl_linestyle,
+							alpha=isl_alpha,
+							label=isl_label,
+						)
+
+			title = f'CIBER {lams[ridx]} $\\mu$m $\\times$ {panel_label}'
+			ax_use.text(textxpos, textypos, title, fontsize=text_fs)
+			ax_use.set_xscale('log')
+			ax_use.set_xlim(xlim)
+			ax_use.set_ylim(ylim)
+			ax_use.grid(alpha=grid_alpha)
+
+			if legend_handles is None:
+				legend_handles = [h_obs.lines[0] if hasattr(h_obs, 'lines') else h_obs]
+				if h_igl is not None:
+					legend_handles.append(h_igl)
+				if h_isl is not None:
+					legend_handles.append(h_isl)
+
+	for cidx in range(3):
+		ax[1, cidx].set_xlabel('$\\ell$', fontsize=lab_fs)
+
+	ax[0, 0].set_title(ls_plotstr, fontsize=title_fs)
+	ax[0, 1].set_title(hsc_plotstr, fontsize=title_fs)
+	ax[0, 2].set_title(wise_plotstr, fontsize=title_fs)
+
+	for ridx in range(2):
+		ax[ridx, 0].set_ylabel('Coherence $r_{\\ell}^{I \\times g}$', fontsize=lab_fs)
+
+	if legend_handles is not None:
+		legend_labels = ['Observed', 'IGL prediction']
+		if len(legend_handles) >= 3:
+			legend_labels.append(isl_label)
+		fig.legend(
+			handles=legend_handles,
+			labels=legend_labels,
+			loc='upper center',
+			ncol=len(legend_labels),
+			fontsize=legend_fs,
+			bbox_to_anchor=(0.5, 1.02),
+		)
+
+	plt.subplots_adjust(wspace=0.06, hspace=0.10, top=0.87)
+
+	if save_path is not None:
+		fig.savefig(save_path, bbox_inches='tight')
+
+	if show:
+		plt.show()
+
+	return fig
 
 
 def plot_bandpowers_vs_magcut(catname, inst, mag_lims, n_bandpowers=6, startidx=0,
@@ -2765,7 +3754,14 @@ def plot_rl_gal(all_acdat, colors=['b', 'r'], inst_list=[1, 2], figsize=(5, 3), 
 			   pred_fpaths=None):
 	
 	lams = [1.1, 1.8]
-	linestyles_pred = ['dashed', 'dashdot']
+	linestyles_pred = ['dotted', 'dotted']
+
+	n_needed = len(zbinedges) - 1
+	bottom_indices = set()
+	for col in range(ncols):
+		col_indices = list(range(col, n_needed, ncols))
+		if len(col_indices) > 0:
+			bottom_indices.add(col_indices[-1])
 
 
 	fig = plt.figure(figsize=figsize)
@@ -2786,7 +3782,7 @@ def plot_rl_gal(all_acdat, colors=['b', 'r'], inst_list=[1, 2], figsize=(5, 3), 
 			lb_pred, rlx = [jmock_pred[key] for key in ['lb', 'rlx_tracer_full']]
 			
 			if inst==1:
-				lab_pred = 'IGL (Mirocha)'
+				lab_pred = 'IGL prediction'
 			else:
 				lab_pred = None
 				
@@ -2852,7 +3848,7 @@ def plot_auto_cross_gal(all_acdat, inst_list=[1, 2], colors=['b', 'r'], \
 			linestyles_pred = ['dashed', 'dashdot']
 			
 			if inst==1:
-				lab_pred = 'IGL (Mirocha)'
+				lab_pred = 'IGL prediction'
 			else:
 				lab_pred = None
 			
@@ -3070,11 +4066,11 @@ def collect_ciber_gal_vs_redshift(catname, subtract_randoms=False, \
 								zbinedges = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0, 1.2, 1.5, 2.0], \
 								 maskstr=None, subtract_sn=False, ell_min_sn=5e4, \
 								  ifield_list=[4, 5, 6, 7, 8], \
-								  startidx=0, endidx=-1, 
-								  tl_pix_correct=False, with_ff_err=False, 
-								  headstr=None, 
+								  startidx=0, endidx=-1,
+								  tl_pix_correct=False, with_ff_err=False,
+								  headstr=None,
 								  ifield_list_full=[4, 5, 6, 7, 8], fmask=0.7,
-								  model_cl_gal_for_knox=None):
+								  model_cl_gal_for_knox=None, use_inplace_auto=True):
 	"""
 	Collect CIBER-galaxy cross and galaxy auto power spectra vs redshift.
 	
@@ -3117,7 +4113,11 @@ def collect_ciber_gal_vs_redshift(catname, subtract_randoms=False, \
 		from these model values rather than from the measured spectra.
 		This avoids bias from cosmic variance in the data and is recommended
 		for two-stage fitting. Default is None (use data-based Knox).
-	
+	use_inplace_auto : bool, optional
+		If True (default) and in-situ CIBER auto-spectrum is available in the
+		cross-product file, use it for error estimation instead of the F25B file.
+		If False, always use the F25B file. Default is True.
+
 	Returns
 	-------
 	dict
@@ -3143,7 +4143,7 @@ def collect_ciber_gal_vs_redshift(catname, subtract_randoms=False, \
 
 	full_cl_cross_perf, full_clerr_cross_perf = [np.zeros((len(inst_list), len(zbinedges)-1, len(ifield_list), len(lb))) for y in range(2)]
 
-	full_cl_ciber_auto, full_clerr_ciber_auto = [np.zeros((2, 22)) for x in range(2)]
+	full_cl_ciber_auto, full_clerr_ciber_auto = [np.zeros((2, len(lb))) for x in range(2)]
 
 	
 	for n in range(nbin):
@@ -3180,6 +4180,10 @@ def collect_ciber_gal_vs_redshift(catname, subtract_randoms=False, \
 
 			all_clerr_cross /= fmask # mask NOT accounted for in MC variance
 
+			# Check for in-situ CIBER auto-spectrum
+			has_inplace_auto = ('all_cl_ciber_auto_inplace' in cgps_file.files
+							   and use_inplace_auto)
+
 			# print('ifield use:', ifield_list_use)
 
 			# print('all cl gal has shape', all_cl_gal)
@@ -3202,11 +4206,43 @@ def collect_ciber_gal_vs_redshift(catname, subtract_randoms=False, \
 				)
 
 			# Load CIBER auto for uncertainty estimation
-			ciber_auto = np.load(f'data/ciber_auto_{bandstr_list[idx]}lt16.0_F25B.npz')
-			lb_auto, cl_auto, clerr_auto = [ciber_auto[key] for key in ['lb', 'fieldav_cl', 'fieldav_clerr']]
+			if has_inplace_auto:
+				all_cl_ciber_auto_inplace = cgps_file['all_cl_ciber_auto_inplace']
+				cl_auto_inplace_fieldav = np.nanmean(all_cl_ciber_auto_inplace, axis=0)
+				cl_auto_use = cl_auto_inplace_fieldav   # already on analysis lb grid
+				lb_auto = lb  # in-situ auto is on same grid as lb
+				if n == 0:
+					print(
+						f"[CIBER auto load] TM{inst} using in-situ auto-spectrum from cross-product file "
+						f"(signal-only, noise-subtracted, per-field shapes: {all_cl_ciber_auto_inplace.shape}) "
+						f"lb=[{lb[0]:.1f},{lb[-1]:.1f}] n={len(lb)}"
+					)
+					print(
+						f"[CIBER auto shown] TM{inst} cl range=[{np.nanmin(cl_auto_use):.3e}, {np.nanmax(cl_auto_use):.3e}]"
+					)
+			else:
+				ciber_auto = _load_ciber_auto_file(bandstr_list[idx])
+				lb_auto, cl_auto, clerr_auto = [ciber_auto[key] for key in ['lb', 'fieldav_cl', 'fieldav_clerr']]
 
-			full_cl_ciber_auto[idx] = cl_auto
-			full_clerr_ciber_auto[idx] = clerr_auto # heeee
+				# Align CIBER auto to analysis ell grid using interpolation.
+				# This avoids zero-padding artifacts when file/binning lengths differ.
+				cl_auto_use = np.interp(lb, lb_auto, cl_auto, left=cl_auto[0], right=cl_auto[-1])
+				clerr_auto_use = np.interp(lb, lb_auto, clerr_auto, left=clerr_auto[0], right=clerr_auto[-1])
+
+				if n == 0:
+					print(
+						f"[CIBER auto load] TM{inst} source={ciber_auto.get('source_path', 'unknown')} "
+						f"mode={ciber_auto.get('source_mode', 'unknown')} "
+						f"lb_file=[{lb_auto[0]:.1f},{lb_auto[-1]:.1f}] n={len(lb_auto)} "
+						f"lb_use=[{lb[0]:.1f},{lb[-1]:.1f}] n={len(lb)}"
+					)
+					print(
+						f"[CIBER auto shown] TM{inst} cl range=[{np.nanmin(cl_auto_use):.3e}, {np.nanmax(cl_auto_use):.3e}] "
+						f"clerr range=[{np.nanmin(clerr_auto_use):.3e}, {np.nanmax(clerr_auto_use):.3e}]"
+					)
+
+			full_cl_ciber_auto[idx] = cl_auto_use
+			full_clerr_ciber_auto[idx] = np.zeros_like(cl_auto_use) if has_inplace_auto else clerr_auto_use
 
 			# Per-field uncertainties
 			perf_clerr_cross = np.zeros((len(ifield_list_use), fieldav_cl_cross.shape[0]))
@@ -3224,9 +4260,14 @@ def collect_ciber_gal_vs_redshift(catname, subtract_randoms=False, \
 
 				idx_full = ifield_list_full.index(ifield)
 
+				if has_inplace_auto:
+					cl_auto_field = all_cl_ciber_auto_inplace[fieldidx]
+				else:
+					cl_auto_field = cl_auto_use*ff_bias_factors[idx_full]
+
 				perf_clerr_cross[fieldidx] = estimate_cross_uncertainties(
 					lb, fieldav_cl_cross, all_clerr_cross[fieldidx],
-					cl_auto*ff_bias_factors[idx_full], fieldav_cl_gal, 1, startidx=2, endidx=-1
+					cl_auto_field, fieldav_cl_gal, 1, startidx=2, endidx=-1
 				)
 
 			full_clerr_cross_perf[idx, n] = perf_clerr_cross
@@ -3458,7 +4499,7 @@ def plot_gal_ps_vs_redshift(inst, zbinedges, catname='LS', figsize=(5, 4), start
 		posmask = lbmask*(fieldav_cl_gal > 0)
 		negmask = lbmask*(fieldav_cl_gal < 0)
 		
-		gal_label = str(np.round(z0, 1))+'$<z_{phot}<$'+str(np.round(z1, 1))
+		gal_label = str(np.round(z0, 1))+'$<z_{\\rm phot}<$'+str(np.round(z1, 1))
 
 
 		plt.errorbar(lb[posmask], (pf*fieldav_cl_gal)[posmask], yerr=(pf*fieldav_clerr_gal)[posmask], color=colors[zidx], fmt='o', \
@@ -3481,7 +4522,7 @@ def plot_gal_ps_vs_redshift(inst, zbinedges, catname='LS', figsize=(5, 4), start
 
 
 def plot_cross_ps_vs_redshift(inst, zbinedges, lb, all_fieldav_cl_cross, all_fieldav_clerr_cross, catname='LS', figsize=(5, 4), startidx=2, endidx=-1, \
-							 xlim=[150, 1.1e5], ylim=[1e-4, 2e2], legend_fs=16, capsize=3, markersize=3, alph=0.8, \
+							 xlim=[150, 1.1e5], ylim=[5e-3, 1e3], legend_fs=16, capsize=3, markersize=3, alph=0.8, \
 							 textxpos=280, textypos=1e2, text_fs=12, color=None, color_inst=['b', 'C3'], bbox_to_anchor=[2.0, 1.4], \
 							 ncols=4, nrows=2, all_pred_fpaths=None, pred_alpha=0.8, \
 							 ncol_legend=3, tl_pix_correct=False, rescale_gal_auto_bias=False, bias_model='1+z'):
@@ -3504,7 +4545,13 @@ def plot_cross_ps_vs_redshift(inst, zbinedges, lb, all_fieldav_cl_cross, all_fie
 	if type(inst)!= list:
 		inst = [inst]
 		
-	linestyles_pred = ['dashed', 'dashdot']
+	linestyles_pred = ['dotted', 'dotted']
+	n_needed = len(zbinedges) - 1
+	bottom_indices = set()
+	for col in range(ncols):
+		col_indices = list(range(col, n_needed, ncols))
+		if len(col_indices) > 0:
+			bottom_indices.add(col_indices[-1])
 
 			
 	for zidx, z0 in enumerate(zbinedges[:-1]):
@@ -3532,7 +4579,7 @@ def plot_cross_ps_vs_redshift(inst, zbinedges, lb, all_fieldav_cl_cross, all_fie
 					cross = jmock_pred['cross']
 			
 				if inst_indiv==1:
-					lab_pred = 'IGL (Mirocha)'
+					lab_pred = 'IGL prediction'
 				else:
 					lab_pred = None
 
@@ -3557,7 +4604,7 @@ def plot_cross_ps_vs_redshift(inst, zbinedges, lb, all_fieldav_cl_cross, all_fie
 			posmask = lbmask*(fieldav_cl_cross > 0)
 			negmask = lbmask*(fieldav_cl_cross < 0)
 
-			gal_label = str(np.round(z0, 1))+'$<z_{phot}<$'+str(np.round(z1, 1))
+			gal_label = str(np.round(z0, 1))+'$<z_{\\rm phot}<$'+str(np.round(z1, 1))
 
 			ax[zidx].errorbar(lb[posmask], (pf*fieldav_cl_cross)[posmask], yerr=(pf*fieldav_clerr_cross)[posmask], color=color_inst[i], fmt='o', \
 				capsize=capsize, markersize=markersize, zorder=15, label=label, alpha=alph)
@@ -3565,22 +4612,36 @@ def plot_cross_ps_vs_redshift(inst, zbinedges, lb, all_fieldav_cl_cross, all_fie
 				capsize=capsize, markersize=markersize, zorder=15, mfc='white', alpha=alph)
 
 		if zidx==0:
-			ax[zidx].legend(bbox_to_anchor=bbox_to_anchor, ncol=ncol_legend, fontsize=legend_fs)
+			# skip per-axis legend; we'll add a centered figure legend below
+			pass
 		ax[zidx].text(textxpos, textypos, gal_label, fontsize=text_fs)
 		
-		# if zidx > 3:
-		if zidx > ncols-1: # second row
-
+		if zidx in bottom_indices:
 			ax[zidx].set_xlabel('$\\ell$', fontsize=12)
 		ax[zidx].set_ylim(ylim)
 		ax[zidx].set_xlim(xlim)
+		# Keep each panel square regardless of figure dimensions.
+		ax[zidx].set_box_aspect(1)
 		
-		if zidx in [0, ncols]:
+		if (zidx % ncols) == 0:
 			ax[zidx].set_ylabel('$D_{\\ell}^{Ig}$ [nW m$^{-2}$ sr$^{-1}$]', fontsize=12)
 		ax[zidx].grid(alpha=0.3)
 		ax[zidx].set_xscale('log')
 		ax[zidx].set_yscale('log')
-	plt.subplots_adjust(wspace=0, hspace=0)
+
+	# Remove extra axes when grid has more slots than z bins.
+	n_panels = nrows * ncols
+	if n_needed < n_panels:
+		for idx in range(n_needed, n_panels):
+			fig.delaxes(ax[idx])
+	# Place a single centered legend at the top of the figure (centered horizontally)
+	handles, labels = ax[0].get_legend_handles_labels()
+	if len(handles) > 0:
+		# Put legend inside the canvas near the top row to avoid extra whitespace.
+		fig.legend(handles, labels, loc='upper center', ncol=ncol_legend, fontsize=legend_fs, bbox_to_anchor=(0.5, 0.965))
+
+	# add a bit more vertical space between rows to avoid ticklabel overlap
+	plt.subplots_adjust(wspace=0, hspace=0.10, top=0.89)
 	plt.show()
 	
 	return fig
@@ -3615,7 +4676,7 @@ def plot_fieldav_ciber_gal_ps(inst_list, catname, addstr=None, labels=None, \
 			all_clerr_cross, ifield_list_use = [cgps_file[key] for key in ['lb', 'all_cl_gal', 'all_clerr_gal', 'all_cl_cross', 'all_clerr_cross', 'ifield_list_use']]
 		
 		# load CIBER auto 
-		ciber_auto = np.load('data/ciber_auto_'+bandstr_list[idx]+'lt16.0_F25B.npz')
+		ciber_auto = _load_ciber_auto_file(bandstr_list[idx])
 
 		lb_auto, cl_auto, clerr_auto = [ciber_auto[key] for key in ['lb', 'fieldav_cl', 'fieldav_clerr']]
 
@@ -3716,7 +4777,7 @@ def plot_fieldav_ciber_gal_ps(inst_list, catname, addstr=None, labels=None, \
 			linestyles_pred = ['dashed', 'dashdot']
 			
 			if inst==1:
-				lab_pred = 'IGL (Mirocha)'
+				lab_pred = 'IGL prediction'
 				cross_sn_pred = 'Cross-shot noise level'
 			else:
 				lab_pred, cross_sn_pred = None, None
@@ -3814,7 +4875,7 @@ def plot_perfield_gal_auto(catname, inst, addstr=None, figsize=(5, 4), capsize=3
 			
 		jmock_pred = np.load(pred_fpaths[0])
 		linestyles_pred = ['dashed', 'dashdot']
-		lab_pred = 'IGL (Mirocha)'
+		lab_pred = 'IGL prediction'
 		lb_pred, gal_auto = [jmock_pred[key] for key in ['lb', 'gal_auto']]
 		pf_pred = lb_pred*(lb_pred+1)/(2*np.pi)
 

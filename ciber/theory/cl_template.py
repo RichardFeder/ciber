@@ -5,6 +5,199 @@ import matplotlib.pyplot as plt
 from typing import Tuple, Dict, Optional, Callable
 import os
 
+def load_ihl_templates(template_dir, template_names=None, zbinedges=None, slopes=None):
+    """
+    Load IHL (Intra-Halo Light) templates from files in the specified directory.
+    
+    Parameters
+    ----------
+    template_dir : str
+        Path to directory containing template files
+    template_names : list of str, optional
+        List of template filenames to load. If None and zbinedges is None, 
+        loads all .txt and .dat files in the directory.
+    zbinedges : array_like, optional
+        Redshift bin edges for automatic filename generation. If provided,
+        generates filenames like "ihl_ps_z_{zlow}_{zhigh}_slope_{slope}.txt"
+    slopes : list of float, optional
+        List of slope values to use with zbinedges. If None, defaults to [1.0]
+    
+    Returns
+    -------
+    templates : dict
+        Dictionary with template names as keys and each value is a dict with:
+        - 'ell': array of multipole values
+        - 'dl': array of D_ell values
+        - 'filename': original filename
+        - 'zbinedges': redshift bin edges (if applicable)
+        - 'slope': slope value (if applicable)
+    
+    Notes
+    -----
+    Files are expected to have:
+    - First column: ell values
+    - Second column: D_ell values  
+    - One header row (which is skipped)
+    
+    Filename format (when using zbinedges):
+    "ihl_ps_z_{zlow}_{zhigh}_slope_{slope}.txt"
+    """
+    import os
+    import glob
+    
+    if not os.path.exists(template_dir):
+        raise ValueError(f"Template directory {template_dir} does not exist")
+    
+    templates = {}
+    
+    if zbinedges is not None:
+        # Auto-generate filenames based on redshift bin edges
+        zbinedges = np.array(zbinedges)
+        if slopes is None:
+            slopes = [1.0]
+        
+        template_files = []
+        for i in range(len(zbinedges) - 1):
+            zlow = zbinedges[i]
+            zhigh = zbinedges[i + 1]
+            for slope in slopes:
+                filename = f"ihl_ps_z_{zlow}_{zhigh}_slope_{slope}.txt"
+                template_files.append((filename, zlow, zhigh, slope, i))
+                
+    elif template_names is None:
+        # Find all .txt and .dat files in directory
+        pattern1 = os.path.join(template_dir, "*.txt")
+        pattern2 = os.path.join(template_dir, "*.dat")
+        found_files = glob.glob(pattern1) + glob.glob(pattern2)
+        template_files = [(os.path.basename(f), None, None, None, None) for f in found_files]
+    else:
+        # Use provided template names
+        template_files = [(name, None, None, None, None) for name in template_names]
+    
+    for file_info in template_files:
+        template_name, zlow, zhigh, slope, zidx = file_info
+        filepath = os.path.join(template_dir, template_name)
+        
+        if not os.path.exists(filepath):
+            print(f"Warning: Template file {filepath} not found, skipping")
+            continue
+            
+        try:
+            # Load data, skipping header row
+            data = np.loadtxt(filepath, skiprows=1)
+            
+            if data.shape[1] < 2:
+                print(f"Warning: Template file {filepath} doesn't have at least 2 columns, skipping")
+                continue
+                
+            ell = data[:, 0]
+            dl = data[:, 1]
+            
+            # Create template key
+            if zbinedges is not None:
+                # Use descriptive key for redshift bin templates
+                template_key = f"z{zlow}_{zhigh}_slope{slope}"
+            else:
+                # Use filename without extension as template key
+                template_key = os.path.splitext(template_name)[0]
+            
+            templates[template_key] = {
+                'ell': ell,
+                'dl': dl, 
+                'filename': template_name,
+                'zbinedges': (zlow, zhigh) if zbinedges is not None else None,
+                'slope': slope,
+                'zbin_index': zidx
+            }
+            
+            if zbinedges is not None:
+                print(f"Loaded template '{template_key}': {len(ell)} data points, "
+                      f"ell range [{ell.min():.0f}, {ell.max():.0f}], z=[{zlow}, {zhigh}], slope={slope}")
+            else:
+                print(f"Loaded template '{template_key}': {len(ell)} data points, "
+                      f"ell range [{ell.min():.0f}, {ell.max():.0f}]")
+                  
+        except Exception as e:
+            print(f"Error loading template {filepath}: {e}")
+            continue
+    
+    print(f"\nSuccessfully loaded {len(templates)} IHL templates")
+    return templates
+
+
+def load_ihl_template_for_zbin(template_dir, zbinedges, zidx, slopes=None):
+    """
+    Load IHL templates for a specific redshift bin.
+    
+    Parameters
+    ----------
+    template_dir : str
+        Path to directory containing template files
+    zbinedges : array_like
+        Redshift bin edges
+    zidx : int
+        Redshift bin index (0 = first bin, etc.)
+    slopes : list of float, optional
+        List of slope values to load. If None, defaults to [1.0]
+    
+    Returns
+    -------
+    templates : dict
+        Dictionary of templates for this redshift bin
+    zlow, zhigh : float
+        Lower and upper redshift bin edges
+    """
+    zbinedges = np.array(zbinedges)
+    
+    if zidx < 0 or zidx >= len(zbinedges) - 1:
+        raise ValueError(f"zidx {zidx} out of range for zbinedges with {len(zbinedges)} edges")
+    
+    zlow = zbinedges[zidx]
+    zhigh = zbinedges[zidx + 1]
+    
+    if slopes is None:
+        slopes = [1.0]
+    
+    # Load only the templates for this redshift bin
+    templates = {}
+    for slope in slopes:
+        filename = f"ihl_ps_z_{zlow}_{zhigh}_slope_{slope}.txt"
+        filepath = os.path.join(template_dir, filename)
+        
+        if not os.path.exists(filepath):
+            print(f"Warning: Template file {filepath} not found, skipping slope {slope}")
+            continue
+        
+        try:
+            data = np.loadtxt(filepath, skiprows=1)
+            if data.shape[1] < 2:
+                print(f"Warning: Template file {filepath} doesn't have at least 2 columns, skipping")
+                continue
+                
+            ell = data[:, 0]
+            dl = data[:, 1]
+            
+            template_key = f"slope_{slope}"
+            templates[template_key] = {
+                'ell': ell,
+                'dl': dl,
+                'filename': filename,
+                'zbinedges': (zlow, zhigh),
+                'slope': slope,
+                'zbin_index': zidx
+            }
+            
+            print(f"Loaded template '{template_key}': {len(ell)} data points, "
+                  f"ell range [{ell.min():.0f}, {ell.max():.0f}], z=[{zlow}, {zhigh}]")
+                  
+        except Exception as e:
+            print(f"Error loading template {filepath}: {e}")
+            continue
+    
+    print(f"Loaded {len(templates)} templates for z-bin [{zlow}, {zhigh}]")
+    return templates, zlow, zhigh
+
+
 def interpolate_1h_params(z_value, slope=None, one_halo_params_dict=None, sigma_fixed=None):
     """
     Calculate 1-halo log-normal parameters for a given redshift.

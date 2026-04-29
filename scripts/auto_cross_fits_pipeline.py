@@ -56,6 +56,7 @@ if str(REPO_ROOT) not in sys.path:
 
 import config  # noqa: E402  (sets ciber_basepath)
 from ciber.theory.cross_ps_parametric_model import (
+    plot_fit_fixed_1h_templates,
     run_gal_auto_fits_two_stage,
     run_gal_cross_fits,
     CrossPowerSpectrumModel,
@@ -182,10 +183,15 @@ def _run_cross_fits(args: argparse.Namespace) -> None:
     # 3-parameter MCMC: [A_2h, A_1h, A_shot]. prior_bounds=None uses the
     # correct 3-param defaults built inside fit_model_mcmc.
     # If use_one_halo=False, fits only 2h+shot (no 1h term).
+    # If use_two_halo=False, fits only 1h+shot (no 2h term).
+    fitstr_to_use = args.fitstr_cross
+    if not args.use_two_halo:
+        fitstr_to_use = args.fitstr_cross + "_no2h"
+    
     for cat in args.cat:
         ifield_list = _ifield_list(cat, args)
         for lMax in args.lmax:
-            fpath = _cross_fpath(args.datadir_cross, cat, args.headstr if cat == "HSC" else None, args.fitstr_cross, lMax)
+            fpath = _cross_fpath(args.datadir_cross, cat, args.headstr if cat == "HSC" else None, fitstr_to_use, lMax)
             if not args.overwrite and fpath.exists():
                 print(f"[run_cross] skipping {fpath.name} (already exists)")
                 continue
@@ -200,12 +206,13 @@ def _run_cross_fits(args: argparse.Namespace) -> None:
                 use_ihl_1h_params=True,
                 fix_ihl_1h_shape=True,
                 ihl_1h_params_path=args.ihl_params,
-                fitstr=args.fitstr_cross,
+                fitstr=fitstr_to_use,
                 save_figs=True,
                 use_astrometry_damping=args.use_damping,
                 chi2_lim=[-5, 5],
                 headstr=args.headstr if cat == "HSC" else None,
                 use_one_halo=args.use_one_halo,
+                use_two_halo=args.use_two_halo,
                 prior_bounds=None,
             )
 
@@ -1169,18 +1176,16 @@ def _plot_redshift_panels_2x2(args: argparse.Namespace) -> None:
     Top row: CIBER × DESILS (TM1 and TM2)
     Bottom row: CIBER × HSC (TM1 and TM2)
     
-    Each panel shows data + fitted components with uncertainty bands.
+    Each panel shows data + fitted model with uncertainty bands.
     Shared x/y axes and a single legend positioned above all panels.
+    Saves to spectra/ subdirectory to match existing plot layout.
     """
-    from ciber.theory.cross_ps_parametric_model import (
-        CrossPowerSpectrumModel, load_fit_results_npz, load_ihl_template_for_zbin
-    )
+    from ciber.theory.cross_ps_parametric_model import load_fit_results_npz
     
-    figdir = Path(args.figdir) / args.fitstr_cross
-    
-    # Load results for both catalogs at fiducial lMax
+    figdir = Path(args.figdir) / args.fitstr_cross / "spectra"
     lMax = args.lmax_components
     
+    # Load results for both catalogs
     results = {}
     for cat in ["DESILS", "HSC"]:
         headstr = args.headstr if cat == "HSC" else None
@@ -1200,14 +1205,15 @@ def _plot_redshift_panels_2x2(args: argparse.Namespace) -> None:
     
     n_zbin = desils_results['params'].shape[1]
     zbinedges = desils_results['zbinedges']
-    ell_model = np.logspace(np.log10(100), np.log10(100000), 500)
+    lams = {1: 1.1, 2: 1.8}
     
-    # Common plotting settings
-    colors_components = {
-        'two_halo': 'C0',
-        'one_halo': 'C1',
-        'shot_noise': 'C2',
-        'total': 'k'
+    # Styling colors matching existing plots
+    colors = {
+        'data': 'k',
+        'total': 'r',
+        'two_halo': 'b',
+        'one_halo': 'g',
+        'shot_noise': 'm',
     }
     
     # For each redshift bin, create 2×2 panel figure
@@ -1215,99 +1221,375 @@ def _plot_redshift_panels_2x2(args: argparse.Namespace) -> None:
         z_low, z_high = zbinedges[z_idx], zbinedges[z_idx + 1]
         z_label = f"z = {z_low:.1f}–{z_high:.1f}"
         
-        fig, axes = plt.subplots(2, 2, figsize=(10, 8), sharex=True, sharey=True)
+        fig, axes = plt.subplots(2, 2, figsize=(6, 5), sharex=True, sharey=True)
         
-        # Title with redshift bin
-        fig.suptitle(f"Power spectrum fits: {z_label}", fontsize=14, y=0.98)
-        
-        # Top-left: DESILS TM1
-        ax = axes[0, 0]
-        _plot_cross_spectrum_panel(
-            ax, desils_results, 0, z_idx, ell_model, None,
-            colors_components, title="DESILS × CIBER 1.1 μm"
+        # Plot each panel
+        _plot_2x2_spectrum_panel(
+            axes[0, 0], desils_results, 0, z_idx, lMax, colors, lams,
+            title=f"CIBER {lams[1]} μm × DESI-LS", chi2_reduced=desils_results['reduced_chisq'][0, z_idx]
         )
-        
-        # Top-right: DESILS TM2
-        ax = axes[0, 1]
-        _plot_cross_spectrum_panel(
-            ax, desils_results, 1, z_idx, ell_model, None,
-            colors_components, title="DESILS × CIBER 1.8 μm"
+        _plot_2x2_spectrum_panel(
+            axes[0, 1], desils_results, 1, z_idx, lMax, colors, lams,
+            title=f"CIBER {lams[2]} μm × DESI-LS", chi2_reduced=desils_results['reduced_chisq'][1, z_idx]
         )
-        
-        # Bottom-left: HSC TM1
-        ax = axes[1, 0]
-        _plot_cross_spectrum_panel(
-            ax, hsc_results, 0, z_idx, ell_model, None,
-            colors_components, title="HSC × CIBER 1.1 μm"
+        _plot_2x2_spectrum_panel(
+            axes[1, 0], hsc_results, 0, z_idx, lMax, colors, lams,
+            title=f"CIBER {lams[1]} μm × HSC", chi2_reduced=hsc_results['reduced_chisq'][0, z_idx]
         )
-        
-        # Bottom-right: HSC TM2
-        ax = axes[1, 1]
-        _plot_cross_spectrum_panel(
-            ax, hsc_results, 1, z_idx, ell_model, None,
-            colors_components, title="HSC × CIBER 1.8 μm"
+        _plot_2x2_spectrum_panel(
+            axes[1, 1], hsc_results, 1, z_idx, lMax, colors, lams,
+            title=f"CIBER {lams[2]} μm × HSC", chi2_reduced=hsc_results['reduced_chisq'][1, z_idx]
         )
         
         # Add shared legend above all panels
         handles = [
-            plt.Line2D([0], [0], color=colors_components['total'], linewidth=2, label='Total model'),
-            plt.Line2D([0], [0], color=colors_components['two_halo'], linewidth=2, label='2-halo'),
-            plt.Line2D([0], [0], color=colors_components['one_halo'], linewidth=2, label='1-halo'),
-            plt.Line2D([0], [0], color=colors_components['shot_noise'], linewidth=2, label='Shot noise'),
-            plt.Line2D([0], [0], color='gray', linewidth=2, label='Data'),
+            plt.Line2D([0], [0], color=colors['data'], marker='o', markersize=3, linestyle='none', label='Data'),
+            plt.Line2D([0], [0], color=colors['total'], linewidth=2, label='Total'),
+            plt.Line2D([0], [0], color=colors['two_halo'], linewidth=1.5, alpha=0.7, label='2-halo'),
+            plt.Line2D([0], [0], color=colors['one_halo'], linewidth=1.5, alpha=0.7, label='1-halo'),
+            plt.Line2D([0], [0], color=colors['shot_noise'], linewidth=1.5, linestyle='--', alpha=0.7, label='Shot noise'),
         ]
         fig.legend(
             handles=handles,
             loc='upper center',
-            bbox_to_anchor=(0.5, 1.00),
+            bbox_to_anchor=(0.5, 0.95),
             ncol=5,
-            fontsize=11,
-            frameon=True,
+            fontsize=10,
         )
         
-        # Common labels
+        # Common axis labels
         axes[1, 0].set_xlabel(r"$\ell$", fontsize=12)
         axes[1, 1].set_xlabel(r"$\ell$", fontsize=12)
-        axes[0, 0].set_ylabel(r"$D_\ell$ [μK$^2$]", fontsize=12)
-        axes[1, 0].set_ylabel(r"$D_\ell$ [μK$^2$]", fontsize=12)
+        axes[0, 0].set_ylabel(r"$D_\ell$ [nW m$^{-2}$ sr$^{-1}$]", fontsize=12)
+        axes[1, 0].set_ylabel(r"$D_\ell$ [nW m$^{-2}$ sr$^{-1}$]", fontsize=12)
         
-        fig.tight_layout(rect=[0, 0, 1, 0.96])
-        stem = figdir / f"cross_spectrum_fit_2x2_zbin_{z_idx}_z{z_low:.1f}-{z_high:.1f}_{args.fitstr_cross}"
+        fig.suptitle(f"{z_low} < z < {z_high}", fontsize=14, y=0.98)
+        plt.subplots_adjust(wspace=0.05, hspace=0.05)
+        # Save to spectra/ subdirectory
+        stem = figdir / f"cross_spectrum_2x2_z{z_low:.01f}_{z_high:.01f}_lMax{lMax}"
         _savefig(fig, stem, args.fig_fmt)
         plt.close(fig)
 
 
-def _plot_cross_spectrum_panel(ax, results, inst_idx, z_idx, ell_model, args, colors_components, title=""):
-    """Plot a single cross-spectrum panel with data and fitted components."""
-    
-    # Extract data
-    data_dl = results['data_dl'][inst_idx, z_idx]
+# def _plot_2x2_spectrum_panel(ax, results, inst_idx, z_idx, lMax, colors, lams,
+#                               title="", chi2_reduced=None):
+#     """Plot a single spectrum panel into a pre-existing axis for the 2x2 figure.
+
+#     Replicates the top-panel (spectrum + components) logic of plot_fit_fixed_1h_templates,
+#     using the same fit_result reconstruction as _plot_fit_spectra.
+#     """
+#     from ciber.theory.cross_ps_parametric_model import CrossPowerSpectrumModel
+
+#     lb_fit     = results['lb_fit'][inst_idx, z_idx]
+#     data_dl    = results['data_dl'][inst_idx, z_idx]
+#     data_dlerr = results['data_dlerr'][inst_idx, z_idx]
+
+#     # Strip NaN-padded params (same as _plot_fit_spectra)
+#     params     = results['params'][inst_idx, z_idx, :]
+#     params_err = results['params_err'][inst_idx, z_idx, :]
+#     n_params   = int(np.sum(~np.isnan(params)))
+#     params     = params[:n_params]
+#     params_err = params_err[:n_params]
+
+#     # Detect damping from fitted param names if available
+#     pnf         = results.get('param_names_fitted', None)
+#     pnf_bin     = pnf[inst_idx, z_idx] if pnf is not None else None
+#     use_damping = (pnf_bin is not None and
+#                    any('damp' in str(p).lower() for p in pnf_bin))
+
+#     use_powerlaw_2h = bool(results.get('use_powerlaw_2h', True))
+#     alpha_2h_fixed  = float(results.get('alpha_2h_fixed', -1.5))
+
+#     model = CrossPowerSpectrumModel(
+#         lb=lb_fit,
+#         use_powerlaw_2h=use_powerlaw_2h,
+#         alpha_2h_fixed=alpha_2h_fixed,
+#         use_astrometry_damping=use_damping,
+#     )
+
+#     # Smooth ell grid for model curves (matches plot_fit_fixed_1h_templates)
+#     ell_m = np.logspace(0.2 * np.log10(lb_fit.min()),
+#                         2.0 * np.log10(lb_fit.max()), 200)
+
+#     # ------------------------------------------------------------------ #
+#     # Build components — pure parametric branch (ihl_templates=None),
+#     # with or without astrometry damping, mirroring plot_fit_fixed_1h_templates
+#     # ------------------------------------------------------------------ #
+#     if use_damping:
+#         # params = [A_2h, A_1h, mu_1h, sigma_1h, A_shot, sigma_damp]
+#         components = model.model_components(ell_m, *params[:5], sigma_damp=params[5])
+#     else:
+#         # params = [A_2h, A_1h, mu_1h, sigma_1h, A_shot]
+#         components = model.model_components(ell_m, *params[:5])
+
+#     # ------------------------------------------------------------------ #
+#     # Uncertainty bands via covariance propagation
+#     # (mirrors the pure parametric MCMC block of plot_fit_fixed_1h_templates)
+#     # ------------------------------------------------------------------ #
+#     uncertainty_bands = None
+#     cov_matrix = results.get('cov_matrix', None)
+#     if cov_matrix is not None:
+#         cov_matrix = cov_matrix[inst_idx, z_idx]
+
+#     if (params_err is not None and
+#             not np.any(np.isnan(params_err)) and
+#             cov_matrix is not None):
+
+#         # Per-component amplitude bounds
+#         if model.use_powerlaw_2h:
+#             dl_2h_upper = model.powerlaw_2h_component(ell_m, params[0] + params_err[0], model.alpha_2h_fixed)
+#             dl_2h_lower = model.powerlaw_2h_component(ell_m, max(0, params[0] - params_err[0]), model.alpha_2h_fixed)
+#         else:
+#             pf = ell_m * (ell_m + 1) / (2 * np.pi)
+#             dl_2h_upper = (params[0] + params_err[0]) * pf * np.interp(ell_m, model.lb, model.cl_2h_pred)
+#             dl_2h_lower = max(0, params[0] - params_err[0]) * pf * np.interp(ell_m, model.lb, model.cl_2h_pred)
+
+#         dl_1h_upper = model.lognormal_component(ell_m, params[1] + params_err[1], params[2], params[3])
+#         dl_1h_lower = model.lognormal_component(ell_m, max(0, params[1] - params_err[1]), params[2], params[3])
+
+#         dl_shot_upper = model.shot_noise_component(ell_m, params[4] + params_err[4])
+#         dl_shot_lower = model.shot_noise_component(ell_m, max(0, params[4] - params_err[4]))
+
+#         # Total uncertainty: σ²(ℓ) = T(ℓ)ᵀ Cov T(ℓ), using first 5 params
+#         # (damping parameter excluded from template matrix, matching plot_fit_fixed_1h_templates)
+#         T = np.zeros((len(ell_m), 5))
+
+#         if model.use_powerlaw_2h:
+#             T[:, 0] = model.powerlaw_2h_component(ell_m, amplitude=1.0, index=model.alpha_2h_fixed)
+#         else:
+#             pf = ell_m * (ell_m + 1) / (2 * np.pi)
+#             T[:, 0] = pf * np.interp(ell_m, model.lb, model.cl_2h_pred)
+
+#         T[:, 1] = model.lognormal_component(ell_m, amplitude=1.0, mu=params[2], sigma=params[3])
+
+#         delta_mu    = 0.01 * params[2] if params[2] != 0 else 0.01
+#         delta_sigma = 0.01 * params[3] if params[3] != 0 else 0.01
+#         T[:, 2] = (model.lognormal_component(ell_m, params[1], params[2] + delta_mu, params[3]) -
+#                    model.lognormal_component(ell_m, params[1], params[2], params[3])) / delta_mu
+#         T[:, 3] = (model.lognormal_component(ell_m, params[1], params[2], params[3] + delta_sigma) -
+#                    model.lognormal_component(ell_m, params[1], params[2], params[3])) / delta_sigma
+
+#         T[:, 4] = model.shot_noise_component(ell_m, amplitude=1.0)
+
+#         # Use only the 5x5 core block (exclude sigma_damp row/col if present)
+#         cov_core  = cov_matrix[:5, :5]
+#         total_var = np.sum((T @ cov_core) * T, axis=1)
+#         total_std = np.sqrt(np.maximum(0, total_var))
+
+#         # Apply damping to uncertainty bounds if enabled
+#         if use_damping:
+#             dl_total_undamped = components.get('total_undamped')
+#             if dl_total_undamped is None:
+#                 dl_total_undamped = (components['two_halo'] +
+#                                      components['one_halo'] +
+#                                      components['shot_noise'])
+#             damping_factor  = model.astrometry_damping_component(ell_m, params[5])
+#             dl_total_upper  = (dl_total_undamped + total_std) * damping_factor
+#             dl_total_lower  = np.maximum(0, (dl_total_undamped - total_std) * damping_factor)
+#         else:
+#             dl_total_upper = components['total'] + total_std
+#             dl_total_lower = np.maximum(0, components['total'] - total_std)
+
+#         uncertainty_bands = {
+#             'two_halo':   (dl_2h_lower,   dl_2h_upper),
+#             'one_halo':   (dl_1h_lower,   dl_1h_upper),
+#             'shot_noise': (dl_shot_lower, dl_shot_upper),
+#             'total':      (dl_total_lower, dl_total_upper),
+#         }
+
+#     # ------------------------------------------------------------------ #
+#     # Plot data
+#     # ------------------------------------------------------------------ #
+#     ax.errorbar(lb_fit, data_dl, yerr=data_dlerr, fmt='o',
+#                 color=colors['data'], markersize=3, capsize=1.5,
+#                 elinewidth=0.8, alpha=0.8, zorder=5)
+
+#     # ------------------------------------------------------------------ #
+#     # Plot model components + uncertainty bands
+#     # ------------------------------------------------------------------ #
+#     ax.loglog(ell_m, components['total'],      color=colors['total'],      lw=2,   zorder=10)
+#     ax.loglog(ell_m, components['two_halo'],   color=colors['two_halo'],   lw=1.5, alpha=0.7)
+#     ax.loglog(ell_m, components['one_halo'],   color=colors['one_halo'],   lw=1.5, alpha=0.7)
+#     ax.loglog(ell_m, components['shot_noise'], color=colors['shot_noise'], lw=1.5, alpha=0.7, linestyle='--')
+
+#     if uncertainty_bands is not None:
+#         ax.fill_between(ell_m,
+#                         uncertainty_bands['total'][0], uncertainty_bands['total'][1],
+#                         color=colors['total'], alpha=0.2, zorder=3)
+#         ax.fill_between(ell_m,
+#                         uncertainty_bands['two_halo'][0], uncertainty_bands['two_halo'][1],
+#                         color=colors['two_halo'], alpha=0.15, zorder=1)
+#         ax.fill_between(ell_m,
+#                         uncertainty_bands['one_halo'][0], uncertainty_bands['one_halo'][1],
+#                         color=colors['one_halo'], alpha=0.15, zorder=1)
+#         ax.fill_between(ell_m,
+#                         uncertainty_bands['shot_noise'][0], uncertainty_bands['shot_noise'][1],
+#                         color=colors['shot_noise'], alpha=0.15, zorder=1)
+
+#     # ------------------------------------------------------------------ #
+#     # Axes formatting
+#     # ------------------------------------------------------------------ #
+#     ax.set_xscale('log')
+#     ax.set_yscale('log')
+#     ax.set_xlim([lb_fit.min() * 0.8, lb_fit.max() * 1.2])
+#     ax.set_ylim([1e-3, 5e2])
+#     ax.grid(True, alpha=0.3, which='major')
+#     ax.set_xticks([1e3, 1e4, 1e5])
+#     ax.tick_params(axis='both', which='major', labelsize=9)
+
+#     # Shade region excluded from fit
+#     ax.axvspan(lMax, lb_fit.max() * 1.2, color='lightgray', alpha=0.3, zorder=0)
+
+#     # Panel label with chi2
+#     chi2_str = f"χ²/dof = {chi2_reduced:.2f}" if chi2_reduced is not None else ""
+#     ax.text(0.04, 0.97, f"{title}\n{chi2_str}",
+#             transform=ax.transAxes, fontsize=9, va='top', ha='left')
+
+def _plot_2x2_spectrum_panel(ax, results, inst_idx, z_idx, lMax, colors, lams,
+                              title="", chi2_reduced=None):
+    """Plot a single spectrum panel into a pre-existing axis for the 2x2 figure.
+
+    Mirrors the uncertainty band logic of plot_fit_fixed_1h_templates as called
+    by _plot_fit_spectra — which never passes cov_matrix, so always uses params_err
+    for per-component bounds and simple linear addition for the total.
+    """
+    from ciber.theory.cross_ps_parametric_model import CrossPowerSpectrumModel
+
+    lb_fit     = results['lb_fit'][inst_idx, z_idx]
+    data_dl    = results['data_dl'][inst_idx, z_idx]
     data_dlerr = results['data_dlerr'][inst_idx, z_idx]
-    lb_fit = results['lb_fit'][inst_idx, z_idx]
-    model_dl = results['model_dl'][inst_idx, z_idx]
-    
-    # model_dl might be on a different ell grid than lb_fit; interpolate if needed
-    if len(model_dl) != len(lb_fit):
-        # Assume model_dl is on a finer grid - interpolate back to lb_fit
-        model_dl_interp = np.interp(lb_fit, np.logspace(np.log10(lb_fit[0]), np.log10(lb_fit[-1]), len(model_dl)), model_dl)
+
+    # Strip NaN-padded params (same as _plot_fit_spectra)
+    params     = results['params'][inst_idx, z_idx, :]
+    params_err = results['params_err'][inst_idx, z_idx, :]
+    n_params   = int(np.sum(~np.isnan(params)))
+    params     = params[:n_params]
+    params_err = params_err[:n_params]
+
+    # Detect damping from fitted param names if available
+    pnf         = results.get('param_names_fitted', None)
+    pnf_bin     = pnf[inst_idx, z_idx] if pnf is not None else None
+    use_damping = (pnf_bin is not None and
+                   any('damp' in str(p).lower() for p in pnf_bin))
+
+    use_powerlaw_2h = bool(results.get('use_powerlaw_2h', True))
+    alpha_2h_fixed  = float(results.get('alpha_2h_fixed', -1.5))
+
+    model = CrossPowerSpectrumModel(
+        lb=lb_fit,
+        use_powerlaw_2h=use_powerlaw_2h,
+        alpha_2h_fixed=alpha_2h_fixed,
+        use_astrometry_damping=use_damping,
+    )
+
+    # Smooth ell grid matching plot_fit_fixed_1h_templates
+    ell_m = np.logspace(0.2 * np.log10(lb_fit.min()),
+                        2.0 * np.log10(lb_fit.max()), 200)
+
+    # ------------------------------------------------------------------ #
+    # Build components
+    # ------------------------------------------------------------------ #
+    if use_damping:
+        # params = [A_2h, A_1h, mu_1h, sigma_1h, A_shot, sigma_damp]
+        components = model.model_components(ell_m, *params[:5], sigma_damp=params[5])
     else:
-        model_dl_interp = model_dl
-    
-    # For IHL templates, just plot the pre-computed model
-    # The model_dl is already computed with all components
-    ax.loglog(lb_fit, model_dl_interp, color=colors_components['total'], linewidth=2.5, zorder=10, label='Total model')
-    
-    # Plot data with error bars
-    ax.errorbar(lb_fit, data_dl, yerr=data_dlerr, fmt='o', color='gray', markersize=5, 
-                elinewidth=1.5, capsize=2, alpha=0.8, zorder=5, label='Data')
-    
-    ax.set_title(title, fontsize=11, fontweight='bold')
-    ax.grid(True, which='both', alpha=0.3, linestyle=':')
+        # params = [A_2h, A_1h, mu_1h, sigma_1h, A_shot]
+        components = model.model_components(ell_m, *params[:5])
+
+    # ------------------------------------------------------------------ #
+    # Uncertainty bands via params_err only (matching _plot_fit_spectra,
+    # which never populates cov_matrix in fit_result)
+    # ------------------------------------------------------------------ #
+    uncertainty_bands = None
+
+    if params_err is not None and not np.any(np.isnan(params_err)):
+
+        # 2-halo bounds
+        if model.use_powerlaw_2h:
+            dl_2h_upper = model.powerlaw_2h_component(ell_m, params[0] + params_err[0], model.alpha_2h_fixed)
+            dl_2h_lower = model.powerlaw_2h_component(ell_m, max(0, params[0] - params_err[0]), model.alpha_2h_fixed)
+        else:
+            pf = ell_m * (ell_m + 1) / (2 * np.pi)
+            dl_2h_upper = (params[0] + params_err[0]) * pf * np.interp(ell_m, model.lb, model.cl_2h_pred)
+            dl_2h_lower = max(0, params[0] - params_err[0]) * pf * np.interp(ell_m, model.lb, model.cl_2h_pred)
+
+        # 1-halo bounds (amplitude only, shape params fixed at best-fit)
+        dl_1h_upper = model.lognormal_component(ell_m, params[1] + params_err[1], params[2], params[3])
+        dl_1h_lower = model.lognormal_component(ell_m, max(0, params[1] - params_err[1]), params[2], params[3])
+
+        # Shot noise bounds
+        dl_shot_upper = model.shot_noise_component(ell_m, params[4] + params_err[4])
+        dl_shot_lower = model.shot_noise_component(ell_m, max(0, params[4] - params_err[4]))
+
+        # Total bounds: simple linear addition (matches plot_fit_fixed_1h_templates fallback)
+        if use_damping:
+            dl_total_undamped = components.get('total_undamped',
+                                               components['two_halo'] +
+                                               components['one_halo'] +
+                                               components['shot_noise'])
+            damping_factor = model.astrometry_damping_component(ell_m, params[5])
+            dl_total_upper = (dl_2h_upper + dl_1h_upper + dl_shot_upper) * damping_factor
+            dl_total_lower = np.maximum(0, (dl_2h_lower + dl_1h_lower + dl_shot_lower) * damping_factor)
+        else:
+            dl_total_upper = dl_2h_upper + dl_1h_upper + dl_shot_upper
+            dl_total_lower = np.maximum(0, dl_2h_lower + dl_1h_lower + dl_shot_lower)
+
+        uncertainty_bands = {
+            'two_halo':   (dl_2h_lower,   dl_2h_upper),
+            'one_halo':   (dl_1h_lower,   dl_1h_upper),
+            'shot_noise': (dl_shot_lower, dl_shot_upper),
+            'total':      (dl_total_lower, dl_total_upper),
+        }
+
+    # ------------------------------------------------------------------ #
+    # Plot data
+    # ------------------------------------------------------------------ #
+    ax.errorbar(lb_fit, data_dl, yerr=data_dlerr, fmt='o',
+                color=colors['data'], markersize=3, capsize=1.5,
+                elinewidth=0.8, alpha=0.8, zorder=5)
+
+    # ------------------------------------------------------------------ #
+    # Plot model components + uncertainty bands
+    # ------------------------------------------------------------------ #
+    ax.loglog(ell_m, components['total'],      color=colors['total'],      lw=1.5)
+    ax.loglog(ell_m, components['two_halo'],   color=colors['two_halo'],   lw=1.5, alpha=0.7)
+    ax.loglog(ell_m, components['one_halo'],   color=colors['one_halo'],   lw=1.5, alpha=0.7)
+    ax.loglog(ell_m, components['shot_noise'], color=colors['shot_noise'], lw=1.5, alpha=0.7, linestyle='--')
+
+    if uncertainty_bands is not None:
+        ax.fill_between(ell_m,
+                        uncertainty_bands['total'][0],      uncertainty_bands['total'][1],
+                        color=colors['total'],      alpha=0.2)
+        ax.fill_between(ell_m,
+                        uncertainty_bands['two_halo'][0],   uncertainty_bands['two_halo'][1],
+                        color=colors['two_halo'],   alpha=0.15, zorder=1)
+        ax.fill_between(ell_m,
+                        uncertainty_bands['one_halo'][0],   uncertainty_bands['one_halo'][1],
+                        color=colors['one_halo'],   alpha=0.15, zorder=1)
+        ax.fill_between(ell_m,
+                        uncertainty_bands['shot_noise'][0], uncertainty_bands['shot_noise'][1],
+                        color=colors['shot_noise'], alpha=0.15, zorder=1)
+
+    # ------------------------------------------------------------------ #
+    # Axes formatting
+    # ------------------------------------------------------------------ #
     ax.set_xscale('log')
     ax.set_yscale('log')
+    ax.set_xlim([lb_fit.min() * 0.8, lb_fit.max() * 1.2])
+    ax.set_ylim([1e-3, 5e2])
+    ax.grid(True, alpha=0.3, which='major')
+    ax.set_xticks([1e3, 1e4, 1e5])
+    ax.tick_params(axis='both', which='major', labelsize=9)
 
+    # Shade region excluded from fit
+    ax.axvspan(lMax, lb_fit.max() * 1.2, color='lightgray', alpha=0.3, zorder=0)
 
-def _plot_chi2_comparison_with_without_1h(args: argparse.Namespace) -> None:
+    # Panel label with chi2
+    chi2_str = f"χ²/dof = {chi2_reduced:.2f}" if chi2_reduced is not None else ""
+    ax.text(0.04, 0.97, f"{title}\n{chi2_str}",
+            transform=ax.transAxes, fontsize=9, va='top', ha='left')
+
+def _chi2_comparison_with_without_1h(args: argparse.Namespace) -> None:
     """Compare chi2 (both total and reduced) from fits with 1h vs without 1h component.
 
     Creates figures for each lmax value showing:
@@ -1550,6 +1832,249 @@ Positive Δχ² → 1h helps fit
 # Argument parsing
 # ---------------------------------------------------------------------------
 
+def _chi2_comparison_with_without_2h(args: argparse.Namespace) -> None:
+    """Compare chi2 (both total and reduced) from fits with 2h vs without 2h component.
+
+    Creates figures for each lmax value showing:
+    - Total chi2 and reduced chi2 comparisons
+    - Degrees of freedom for each fit
+    - Chi2 improvement (delta chi2) from including 2h
+    
+    The improvement shows both how much total chi2 decreases and how the reduced chi2 changes,
+    accounting for the different degrees of freedom (with 2h has 3 params, without has 2 params).
+    """
+    figdir = Path(args.figdir) / args.fitstr_cross
+
+    # Determine the fitstr for no-2h fits
+    fitstr_no2h = args.fitstr_cross + "_no2h"
+
+    # Load results for both with and without 2h
+    cat_results_with2h = {}
+    cat_results_no2h = {}
+
+    for cat in args.cat:
+        headstr = args.headstr if cat == "HSC" else None
+        cat_results_with2h[cat] = {}
+        cat_results_no2h[cat] = {}
+
+        for lMax in args.lmax:
+            # With 2h
+            fpath_with2h = _cross_fpath(args.datadir_cross, cat, headstr, args.fitstr_cross, lMax)
+            if fpath_with2h.exists():
+                cat_results_with2h[cat][lMax] = load_fit_results_npz(str(fpath_with2h))
+
+            # Without 2h
+            fpath_no2h = _cross_fpath(args.datadir_cross, cat, headstr, fitstr_no2h, lMax)
+            if fpath_no2h.exists():
+                cat_results_no2h[cat][lMax] = load_fit_results_npz(str(fpath_no2h))
+
+    if not cat_results_with2h or not cat_results_no2h:
+        print("[plot_chi2_comparison_with_without_2h] missing results for comparison, skipping")
+        return
+
+    # Get common properties
+    first_result = next((r for cat_dict in cat_results_with2h.values() for r in cat_dict.values()), None)
+    if first_result is None:
+        return
+    zbinedges = first_result["zbinedges"]
+    n_zbins = len(zbinedges) - 1
+    z_centers = 0.5 * (zbinedges[:-1] + zbinedges[1:])
+    lams = {1: 1.1, 2: 1.8}
+
+    # Generate separate figures for each lmax
+    for lMax in args.lmax:
+        fig = plt.figure(figsize=(14, 10))
+        gs = fig.add_gridspec(3, 2, hspace=0.35, wspace=0.3)
+
+        for inst_idx, inst in enumerate([1, 2]):
+            col = inst_idx
+
+            # Extract data for this lmax and instrument
+            chi2_with_data = {}
+            chi2_no_data = {}
+            dof_with = {}
+            dof_no = {}
+
+            for cat in args.cat:
+                if (cat not in cat_results_with2h or lMax not in cat_results_with2h[cat] or
+                    cat not in cat_results_no2h or lMax not in cat_results_no2h[cat]):
+                    continue
+
+                res_with = cat_results_with2h[cat][lMax]
+                res_no = cat_results_no2h[cat][lMax]
+
+                inst_list_with = list(res_with["inst_list"])
+                inst_list_no = list(res_no["inst_list"])
+
+                if inst not in inst_list_with or inst not in inst_list_no:
+                    continue
+
+                i_inst_with = inst_list_with.index(inst)
+                i_inst_no = inst_list_no.index(inst)
+
+                chi2_with_data[cat] = res_with["chisq"][i_inst_with, :]
+                chi2_no_data[cat] = res_no["chisq"][i_inst_no, :]
+                chi2red_with = res_with["reduced_chisq"][i_inst_with, :]
+                chi2red_no = res_no["reduced_chisq"][i_inst_no, :]
+
+                # Compute dof from chi2 and reduced chi2
+                dof_with[cat] = chi2_with_data[cat] / chi2red_with
+                dof_no[cat] = chi2_no_data[cat] / chi2red_no
+
+            # ROW 0: Total Chi2 comparison
+            ax0 = fig.add_subplot(gs[0, col])
+            for cat in args.cat:
+                if cat in chi2_with_data:
+                    ax0.plot(z_centers, chi2_with_data[cat], 'o-', label=f"{cat} (with 2h)",
+                            markersize=7, linewidth=2, alpha=0.8)
+                if cat in chi2_no_data:
+                    ax0.plot(z_centers, chi2_no_data[cat], 's--', label=f"{cat} (no 2h)",
+                            markersize=6, linewidth=1.8, alpha=0.6)
+            ax0.set_ylabel(r"$\chi^2$ (total)", fontsize=11, fontweight='bold')
+            ax0.grid(True, alpha=0.3)
+            ax0.legend(loc='best', fontsize=9)
+            ax0.set_title(f"CIBER {lams[inst]:.1f} μm", fontsize=12, fontweight='bold')
+
+            # ROW 1: Reduced Chi2 comparison
+            ax1 = fig.add_subplot(gs[1, col])
+            for cat in args.cat:
+                if cat in chi2_with_data:
+                    chi2red_with = chi2_with_data[cat] / dof_with[cat]
+                    ax1.plot(z_centers, chi2red_with, 'o-', label=f"{cat} (with 2h)",
+                            markersize=7, linewidth=2, alpha=0.8)
+                if cat in chi2_no_data:
+                    chi2red_no = chi2_no_data[cat] / dof_no[cat]
+                    ax1.plot(z_centers, chi2red_no, 's--', label=f"{cat} (no 2h)",
+                            markersize=6, linewidth=1.8, alpha=0.6)
+            ax1.axhline(1.0, color='gray', linestyle='--', linewidth=1, alpha=0.5)
+            ax1.set_ylabel(r"$\chi^2_{\rm red}$", fontsize=11, fontweight='bold')
+            ax1.grid(True, alpha=0.3)
+            ax1.legend(loc='best', fontsize=9)
+
+            # ROW 2: Delta Chi2 (improvement with 2h)
+            ax2 = fig.add_subplot(gs[2, col])
+            for cat in args.cat:
+                if cat in chi2_with_data and cat in chi2_no_data:
+                    delta_chi2 = chi2_no_data[cat] - chi2_with_data[cat]
+                    ax2.plot(z_centers, delta_chi2, 'D-', label=cat, markersize=8, linewidth=2.5)
+            ax2.axhline(0, color='red', linestyle='--', linewidth=1.5, alpha=0.7)
+            ax2.set_xlabel("Redshift", fontsize=11)
+            ax2.set_ylabel(r"$\Delta \chi^2$ (no2h − with2h)", fontsize=11, fontweight='bold')
+            ax2.grid(True, alpha=0.3)
+            ax2.legend(loc='best', fontsize=9)
+            ax2.fill_between(ax2.get_xlim(), 0, ax2.get_ylim()[1], alpha=0.1, color='green',
+                             label='2h improves fit' if col == 0 else '')
+
+        # Add text box with summary info
+        summary_text = f"""
+ℓ_max = {lMax}
+With 2h: 3 params (A₂ₕ, A₁ₕ, Ashot) + damping
+No 2h: 2 params (A₁ₕ, Ashot) + damping
+Positive Δχ² → 2h helps fit
+        """
+        fig.text(0.5, 0.02, summary_text, ha='center', fontsize=10,
+                bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.8))
+
+        fig.suptitle(
+            f"χ² Analysis: With vs Without 2h Component (ℓ_max={lMax})\n"
+            f"Top: Total χ², Middle: Reduced χ², Bottom: Improvement from 2h",
+            fontsize=13, fontweight='bold', y=0.995
+        )
+        _savefig(fig, figdir / f"chi2_analysis_with_vs_without_2h_{args.fitstr_cross}_lMax={lMax}", args.fig_fmt)
+        plt.close(fig)
+
+    # Create a summary heatmap showing delta_chi2 across all lmax and redshift bins
+    fig, axes = plt.subplots(1, 2, figsize=(13, 5))
+
+    for inst_idx, inst in enumerate([1, 2]):
+        ax = axes[inst_idx]
+
+        # Build matrix: rows = z_bins, columns = lmax values
+        delta_chi2_matrix = []
+        dof_diff_matrix = []
+        valid_lmaxes = []
+
+        for lMax in args.lmax:
+            valid_lmaxes.append(lMax)
+            row_delta = []
+            row_dof = []
+
+            for cat in args.cat:
+                if (cat not in cat_results_with2h or lMax not in cat_results_with2h[cat] or
+                    cat not in cat_results_no2h or lMax not in cat_results_no2h[cat]):
+                    row_delta = [np.nan] * n_zbins
+                    row_dof = [np.nan] * n_zbins
+                    break
+
+                res_with = cat_results_with2h[cat][lMax]
+                res_no = cat_results_no2h[cat][lMax]
+
+                inst_list_with = list(res_with["inst_list"])
+                inst_list_no = list(res_no["inst_list"])
+
+                if inst not in inst_list_with or inst not in inst_list_no:
+                    row_delta = [np.nan] * n_zbins
+                    row_dof = [np.nan] * n_zbins
+                    break
+
+                i_inst_with = inst_list_with.index(inst)
+                i_inst_no = inst_list_no.index(inst)
+
+                chi2_with = res_with["chisq"][i_inst_with, :]
+                chi2_no = res_no["chisq"][i_inst_no, :]
+                chi2red_with = res_with["reduced_chisq"][i_inst_with, :]
+                chi2red_no = res_no["reduced_chisq"][i_inst_no, :]
+
+                dof_with_arr = chi2_with / chi2red_with
+                dof_no_arr = chi2_no / chi2red_no
+
+                row_delta = chi2_no - chi2_with
+                row_dof = dof_with_arr - dof_no_arr  # Difference in dof (should be ~1)
+
+            delta_chi2_matrix.append(row_delta)
+            dof_diff_matrix.append(row_dof)
+
+        if not delta_chi2_matrix:
+            continue
+
+        delta_chi2_array = np.array(delta_chi2_matrix).T  # Shape: (n_zbins, n_lmax)
+
+        # Plot heatmap
+        vmax = np.nanpercentile(delta_chi2_array, 95)
+        vmin = -vmax * 0.2  # Allow some negative values
+        im = ax.imshow(delta_chi2_array, cmap='RdYlGn', aspect='auto', vmin=vmin, vmax=vmax)
+
+        # Add text annotations
+        for i in range(n_zbins):
+            for j in range(len(valid_lmaxes)):
+                val = delta_chi2_array[i, j]
+                if not np.isnan(val):
+                    text_color = 'white' if abs(val) > vmax * 0.5 else 'black'
+                    ax.text(j, i, f"{val:.1f}", ha="center", va="center",
+                           color=text_color, fontsize=10, fontweight='bold')
+
+        ax.set_xticks(np.arange(len(valid_lmaxes)))
+        ax.set_yticks(np.arange(n_zbins))
+        ax.set_xticklabels([f"{lm//1000}k" for lm in valid_lmaxes], rotation=45)
+        ax.set_yticklabels([f"z∈[{zbinedges[i]:.1f},{zbinedges[i+1]:.1f}]" for i in range(n_zbins)])
+        ax.set_xlabel("ℓ_max", fontsize=11, fontweight='bold')
+        ax.set_title(f"CIBER {lams[inst]:.1f} μm", fontsize=12, fontweight='bold')
+        cbar = plt.colorbar(im, ax=ax, label=r"$\Delta \chi^2$ (positive = 2h helps)")
+
+    fig.suptitle(
+        f"Total χ² Improvement from Including 2h Component\n"
+        f"Heatmap of Δχ² = χ²(no2h) − χ²(with2h) across ℓ_max and redshift",
+        fontsize=12, fontweight='bold'
+    )
+    fig.tight_layout()
+    _savefig(fig, figdir / f"chi2_improvement_heatmap_2h_all_lmax_{args.fitstr_cross}", args.fig_fmt)
+    plt.close(fig)
+
+
+# ---------------------------------------------------------------------------
+# Argument parsing
+# ---------------------------------------------------------------------------
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Galaxy auto and CIBER x galaxy cross fit pipeline",
@@ -1562,7 +2087,7 @@ def parse_args() -> argparse.Namespace:
         choices=["run_auto", "run_cross", "plot_auto", "plot_cross", "plot_components",
                  "plot_compare_cats", "plot_fit_spectra", "plot_spectra_summary",
                  "plot_corner", "plot_corr_a1h_a2h", "plot_sigma_damp", "plot_chi2_1h",
-                 "plot_redshift_panels_2x2", "all"],
+                 "plot_chi2_2h", "plot_redshift_panels_2x2", "all"],
         default=["plot_auto", "plot_cross"],
         help="Pipeline mode(s) to execute",
     )
@@ -1608,6 +2133,8 @@ def parse_args() -> argparse.Namespace:
                         help="Disable astrometric damping term in cross fits (default: enabled)")
     parser.add_argument("--no-one-halo", action="store_false", dest="use_one_halo", default=True,
                         help="Disable one-halo component in cross fits (default: enabled)")
+    parser.add_argument("--no-two-halo", action="store_false", dest="use_two_halo", default=True,
+                        help="Disable two-halo component in cross fits (default: enabled)")
 
     # Paths
     parser.add_argument("--figdir", default="figures/", help="Output figure directory")
@@ -1650,7 +2177,7 @@ def parse_args() -> argparse.Namespace:
 
 _ALL_MODES = ["run_auto", "run_cross", "plot_auto", "plot_cross", "plot_components",
               "plot_compare_cats", "plot_fit_spectra", "plot_spectra_summary", "plot_corner",
-              "plot_corr_a1h_a2h", "plot_sigma_damp", "plot_chi2_1h", "plot_redshift_panels_2x2"]
+              "plot_corr_a1h_a2h", "plot_sigma_damp", "plot_chi2_1h", "plot_chi2_2h", "plot_redshift_panels_2x2"]
 
 
 def main() -> None:
@@ -1687,7 +2214,9 @@ def main() -> None:
     if "plot_sigma_damp" in modes:
         _plot_sigma_damp(args)
     if "plot_chi2_1h" in modes:
-        _plot_chi2_comparison_with_without_1h(args)
+        _chi2_comparison_with_without_1h(args)
+    if "plot_chi2_2h" in modes:
+        _chi2_comparison_with_without_2h(args)
     if "plot_redshift_panels_2x2" in modes:
         _plot_redshift_panels_2x2(args)
 

@@ -102,15 +102,15 @@ class ciber_cl_forecast():
             return bl
         
         
-    def load_clx(self, ciber_inst, catname='WISE', addstr='unWISE_neo8'):
+    # def load_clx(self, ciber_inst, catname='WISE', addstr='unWISE_neo8'):
     
-        clx_file = np.load('output/fieldav_clx_'+catname+'_'+addstr+'_kappa_TM'+str(ciber_inst)+'.npz')
+    #     clx_file = np.load('output/fieldav_clx_'+catname+'_'+addstr+'_kappa_TM'+str(ciber_inst)+'.npz')
         
-        lC, clx = clx_file['lC'], clx_file['clx']
+    #     lC, clx = clx_file['lC'], clx_file['clx']
         
-        clx_interp = interp1d(lC, clx)
+    #     clx_interp = interp1d(lC, clx)
         
-        self.clx = gaussian_smooth(np.abs(clx_interp(self.lrange)), 50)
+    #     self.clx = gaussian_smooth(np.abs(clx_interp(self.lrange)), 50)
         
     
     def plot_all_cls(self, ylim=[1e-12, 1e-6], bbox_to_anchor=[0.0, 1.2], ncol=3):
