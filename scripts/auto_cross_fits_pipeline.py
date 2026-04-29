@@ -1163,6 +1163,150 @@ def _plot_sigma_damp(args: argparse.Namespace) -> None:
     plt.close(fig)
 
 
+def _plot_redshift_panels_2x2(args: argparse.Namespace) -> None:
+    """Generate 2x2 redshift panel figures for each redshift bin.
+    
+    Top row: CIBER × DESILS (TM1 and TM2)
+    Bottom row: CIBER × HSC (TM1 and TM2)
+    
+    Each panel shows data + fitted components with uncertainty bands.
+    Shared x/y axes and a single legend positioned above all panels.
+    """
+    from ciber.theory.cross_ps_parametric_model import (
+        CrossPowerSpectrumModel, load_fit_results_npz, load_ihl_template_for_zbin
+    )
+    
+    figdir = Path(args.figdir) / args.fitstr_cross
+    
+    # Load results for both catalogs at fiducial lMax
+    lMax = args.lmax_components
+    
+    results = {}
+    for cat in ["DESILS", "HSC"]:
+        headstr = args.headstr if cat == "HSC" else None
+        fpath = _cross_fpath(args.datadir_cross, cat, headstr, args.fitstr_cross, lMax)
+        if not fpath.exists():
+            print(f"[plot_redshift_panels_2x2] missing {fpath}, skipping {cat}")
+            continue
+        results[cat] = load_fit_results_npz(str(fpath))
+    
+    if len(results) < 2:
+        print("[plot_redshift_panels_2x2] need both DESILS and HSC, skipping")
+        return
+    
+    # Extract info
+    desils_results = results["DESILS"]
+    hsc_results = results["HSC"]
+    
+    n_zbin = desils_results['params'].shape[1]
+    zbinedges = desils_results['zbinedges']
+    ell_model = np.logspace(np.log10(100), np.log10(100000), 500)
+    
+    # Common plotting settings
+    colors_components = {
+        'two_halo': 'C0',
+        'one_halo': 'C1',
+        'shot_noise': 'C2',
+        'total': 'k'
+    }
+    
+    # For each redshift bin, create 2×2 panel figure
+    for z_idx in range(n_zbin):
+        z_low, z_high = zbinedges[z_idx], zbinedges[z_idx + 1]
+        z_label = f"z = {z_low:.1f}–{z_high:.1f}"
+        
+        fig, axes = plt.subplots(2, 2, figsize=(10, 8), sharex=True, sharey=True)
+        
+        # Title with redshift bin
+        fig.suptitle(f"Power spectrum fits: {z_label}", fontsize=14, y=0.98)
+        
+        # Top-left: DESILS TM1
+        ax = axes[0, 0]
+        _plot_cross_spectrum_panel(
+            ax, desils_results, 0, z_idx, ell_model, None,
+            colors_components, title="DESILS × CIBER 1.1 μm"
+        )
+        
+        # Top-right: DESILS TM2
+        ax = axes[0, 1]
+        _plot_cross_spectrum_panel(
+            ax, desils_results, 1, z_idx, ell_model, None,
+            colors_components, title="DESILS × CIBER 1.8 μm"
+        )
+        
+        # Bottom-left: HSC TM1
+        ax = axes[1, 0]
+        _plot_cross_spectrum_panel(
+            ax, hsc_results, 0, z_idx, ell_model, None,
+            colors_components, title="HSC × CIBER 1.1 μm"
+        )
+        
+        # Bottom-right: HSC TM2
+        ax = axes[1, 1]
+        _plot_cross_spectrum_panel(
+            ax, hsc_results, 1, z_idx, ell_model, None,
+            colors_components, title="HSC × CIBER 1.8 μm"
+        )
+        
+        # Add shared legend above all panels
+        handles = [
+            plt.Line2D([0], [0], color=colors_components['total'], linewidth=2, label='Total model'),
+            plt.Line2D([0], [0], color=colors_components['two_halo'], linewidth=2, label='2-halo'),
+            plt.Line2D([0], [0], color=colors_components['one_halo'], linewidth=2, label='1-halo'),
+            plt.Line2D([0], [0], color=colors_components['shot_noise'], linewidth=2, label='Shot noise'),
+            plt.Line2D([0], [0], color='gray', linewidth=2, label='Data'),
+        ]
+        fig.legend(
+            handles=handles,
+            loc='upper center',
+            bbox_to_anchor=(0.5, 1.00),
+            ncol=5,
+            fontsize=11,
+            frameon=True,
+        )
+        
+        # Common labels
+        axes[1, 0].set_xlabel(r"$\ell$", fontsize=12)
+        axes[1, 1].set_xlabel(r"$\ell$", fontsize=12)
+        axes[0, 0].set_ylabel(r"$D_\ell$ [μK$^2$]", fontsize=12)
+        axes[1, 0].set_ylabel(r"$D_\ell$ [μK$^2$]", fontsize=12)
+        
+        fig.tight_layout(rect=[0, 0, 1, 0.96])
+        stem = figdir / f"cross_spectrum_fit_2x2_zbin_{z_idx}_z{z_low:.1f}-{z_high:.1f}_{args.fitstr_cross}"
+        _savefig(fig, stem, args.fig_fmt)
+        plt.close(fig)
+
+
+def _plot_cross_spectrum_panel(ax, results, inst_idx, z_idx, ell_model, args, colors_components, title=""):
+    """Plot a single cross-spectrum panel with data and fitted components."""
+    
+    # Extract data
+    data_dl = results['data_dl'][inst_idx, z_idx]
+    data_dlerr = results['data_dlerr'][inst_idx, z_idx]
+    lb_fit = results['lb_fit'][inst_idx, z_idx]
+    model_dl = results['model_dl'][inst_idx, z_idx]
+    
+    # model_dl might be on a different ell grid than lb_fit; interpolate if needed
+    if len(model_dl) != len(lb_fit):
+        # Assume model_dl is on a finer grid - interpolate back to lb_fit
+        model_dl_interp = np.interp(lb_fit, np.logspace(np.log10(lb_fit[0]), np.log10(lb_fit[-1]), len(model_dl)), model_dl)
+    else:
+        model_dl_interp = model_dl
+    
+    # For IHL templates, just plot the pre-computed model
+    # The model_dl is already computed with all components
+    ax.loglog(lb_fit, model_dl_interp, color=colors_components['total'], linewidth=2.5, zorder=10, label='Total model')
+    
+    # Plot data with error bars
+    ax.errorbar(lb_fit, data_dl, yerr=data_dlerr, fmt='o', color='gray', markersize=5, 
+                elinewidth=1.5, capsize=2, alpha=0.8, zorder=5, label='Data')
+    
+    ax.set_title(title, fontsize=11, fontweight='bold')
+    ax.grid(True, which='both', alpha=0.3, linestyle=':')
+    ax.set_xscale('log')
+    ax.set_yscale('log')
+
+
 def _plot_chi2_comparison_with_without_1h(args: argparse.Namespace) -> None:
     """Compare chi2 (both total and reduced) from fits with 1h vs without 1h component.
 
@@ -1417,7 +1561,8 @@ def parse_args() -> argparse.Namespace:
         nargs="+",
         choices=["run_auto", "run_cross", "plot_auto", "plot_cross", "plot_components",
                  "plot_compare_cats", "plot_fit_spectra", "plot_spectra_summary",
-                 "plot_corner", "plot_corr_a1h_a2h", "plot_sigma_damp", "plot_chi2_1h", "all"],
+                 "plot_corner", "plot_corr_a1h_a2h", "plot_sigma_damp", "plot_chi2_1h",
+                 "plot_redshift_panels_2x2", "all"],
         default=["plot_auto", "plot_cross"],
         help="Pipeline mode(s) to execute",
     )
@@ -1505,7 +1650,7 @@ def parse_args() -> argparse.Namespace:
 
 _ALL_MODES = ["run_auto", "run_cross", "plot_auto", "plot_cross", "plot_components",
               "plot_compare_cats", "plot_fit_spectra", "plot_spectra_summary", "plot_corner",
-              "plot_corr_a1h_a2h", "plot_sigma_damp", "plot_chi2_1h"]
+              "plot_corr_a1h_a2h", "plot_sigma_damp", "plot_chi2_1h", "plot_redshift_panels_2x2"]
 
 
 def main() -> None:
@@ -1543,6 +1688,8 @@ def main() -> None:
         _plot_sigma_damp(args)
     if "plot_chi2_1h" in modes:
         _plot_chi2_comparison_with_without_1h(args)
+    if "plot_redshift_panels_2x2" in modes:
+        _plot_redshift_panels_2x2(args)
 
 
 if __name__ == "__main__":
