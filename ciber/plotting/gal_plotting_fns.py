@@ -497,6 +497,340 @@ def plot_amplitude_comparison(configs, colors=None, markers=None, linestyles=Non
     return fig
 
 
+def plot_amplitude_comparison_by_instrument(configs, inst_list=(1, 2), colors=None, markers=None,
+														linestyles=None, figsize=(9, 6.5),
+														save_path=None, legend_ncol=2,
+														ylim_2h=None, ylim_ihl=None,
+														bbox_to_anchor=(0.5, 1.03),
+														use_cmap=True, cmap_name='Blues',
+														x_offset_scale=0.02):
+	"""Panel figure: rows are A_2h/A_1h, columns are instruments.
+
+	configs: list of dicts with keys 'results', optional 'inst', 'label', 'color'.
+	"""
+	if len(configs) > 0 and not isinstance(configs[0], dict):
+		raise ValueError("configs must be a list of dicts")
+
+	if 'params' in configs[0]:
+		new_configs = []
+		for results in configs:
+			dataset_name = results.get('dataset_name', 'dataset')
+			new_configs.append({
+				'results': results,
+				'inst': None,
+				'label': f"{dataset_name}",
+			})
+		configs = new_configs
+
+	n_traces = len(configs)
+	if use_cmap:
+		cmap = plt.get_cmap(cmap_name)
+		colors = cmap(np.linspace(0.3, 1.0, n_traces))
+	else:
+		colors = ['C' + str(i) for i in range(n_traces)]
+	if markers is None:
+		markers = ['o', 's', '^', 'd', 'v', '<', '>', 'p', '*', 'X']
+	if linestyles is None:
+		linestyles = ['-', '--', '-.', ':']
+	markers = (markers * (n_traces // len(markers) + 1))[:n_traces]
+	linestyles = (linestyles * (n_traces // len(linestyles) + 1))[:n_traces]
+
+	has_one_halo = False
+	for config in configs:
+		results = config['results']
+		n_params = results['params'].shape[-1]
+		if n_params >= 2:
+			has_one_halo = True
+			break
+
+	n_rows = 2 if has_one_halo else 1
+	n_cols = len(inst_list)
+	fig, axes = plt.subplots(n_rows, n_cols, figsize=figsize, sharex=True, sharey='row')
+	axes = np.atleast_2d(axes)
+
+	zbin_edges = np.arange(0.0, 1.0 + 1e-9, 0.2)
+	shade_colors = ('#e8f4ff', '#fff3e6')
+	for row in range(n_rows):
+		for col in range(n_cols):
+			ax = axes[row, col]
+			for j in range(len(zbin_edges) - 1):
+				z0 = zbin_edges[j]
+				z1 = zbin_edges[j + 1]
+				ax.axvspan(z0, z1, color=shade_colors[j % 2], alpha=0.22, zorder=0)
+
+	labeled_configs = set()
+	for col, inst in enumerate(inst_list):
+		for i, config in enumerate(configs):
+			results = config['results']
+			inst_sel = config.get('inst', None)
+			if inst_sel is not None and inst_sel != inst:
+				continue
+
+			insts_available = list(results['inst_list'])
+			if inst not in insts_available:
+				continue
+			inst_idx = insts_available.index(inst)
+
+			z_centers = results['z_centers']
+			x_offset = (i - (n_traces - 1) / 2) * x_offset_scale
+			color = config.get('color', colors[i])
+			marker = config.get('marker', markers[i])
+			label = config.get('label', None)
+			label = label if (col == 0 and i not in labeled_configs) else None
+			if label is not None:
+				labeled_configs.add(i)
+
+			# A_2h row
+			ax = axes[0, col]
+			A_2h = results['params'][inst_idx, :, 0]
+			A_2h_err = results['params_err'][inst_idx, :, 0]
+			A_2h_95 = results.get('params_95', None)
+			if A_2h_95 is not None:
+				A_2h_95 = A_2h_95[inst_idx, :, 0]
+			is_ul = (A_2h - 2 * A_2h_err) <= 0
+			detection_mask = ~is_ul
+			if np.any(detection_mask):
+				ax.errorbar(
+					z_centers[detection_mask] + x_offset,
+					A_2h[detection_mask],
+					yerr=A_2h_err[detection_mask],
+					fmt=marker, color=color, linestyle='none',
+					label=label, markersize=5, capsize=5, capthick=2, alpha=0.8,
+				)
+				label = None
+			if np.any(is_ul):
+				upper_limit_values = A_2h_95[is_ul] if A_2h_95 is not None else A_2h[is_ul] + 2 * A_2h_err[is_ul]
+				ax.errorbar(
+					z_centers[is_ul] + x_offset,
+					upper_limit_values,
+					yerr=upper_limit_values,
+					fmt='v', color=color, linestyle='none',
+					uplims=True, label=label, markersize=5, capsize=0, alpha=0.8,
+				)
+
+			# A_1h row
+			if has_one_halo:
+				ax = axes[1, col]
+				A_1h = results['params'][inst_idx, :, 1]
+				A_1h_err = results['params_err'][inst_idx, :, 1]
+				ax.errorbar(
+					z_centers + x_offset,
+					A_1h, yerr=A_1h_err,
+					fmt=marker, color=color, linestyle='none',
+					label=None, markersize=8, capsize=5, capthick=2, alpha=0.8,
+				)
+
+	for col, inst in enumerate(inst_list):
+		ax_top = axes[0, col]
+		ax_top.text(0.04, 0.94, f"CIBER {1.1 if inst == 1 else 1.8} um",
+					transform=ax_top.transAxes, fontsize=12,
+					va='top', ha='left')
+
+	for ax in axes.ravel():
+		ax.grid(alpha=0.3)
+		ax.set_xlim(0, 1.0)
+		ax.tick_params(labelsize=12)
+
+	if ylim_2h is not None:
+		for col in range(n_cols):
+			axes[0, col].set_ylim(ylim_2h)
+	if has_one_halo and ylim_ihl is not None:
+		for col in range(n_cols):
+			axes[1, col].set_ylim(ylim_ihl)
+
+	axes[0, 0].set_ylabel(r'$A_{\rm 2h}$', fontsize=14)
+	if has_one_halo:
+		axes[1, 0].set_ylabel(r'$A_{1h}$', fontsize=14)
+
+	fig.supxlabel('Redshift', fontsize=14)
+
+	handles, labels = axes[0, 0].get_legend_handles_labels()
+	if handles:
+		fig.legend(handles, labels, fontsize=10, loc='upper center',
+					ncol=legend_ncol, bbox_to_anchor=bbox_to_anchor)
+
+	fig.tight_layout()
+	fig.subplots_adjust(top=0.86)
+
+	if save_path:
+		plt.savefig(save_path, dpi=200, bbox_inches='tight')
+		print(f"✓ Saved comparison plot to: {save_path}")
+
+	return fig
+
+
+def plot_amplitude_chi2_by_instrument(configs, inst_list=(1, 2), colors=None, markers=None,
+														linestyles=None, figsize=(9, 9),
+														save_path=None, legend_ncol=2,
+														ylim_2h=None, ylim_ihl=None, ylim_chi2=None,
+														bbox_to_anchor=(0.2, 1.2),
+														use_cmap=True, cmap_name='Blues',
+														x_offset_scale=0.02):
+	"""Panel figure: rows are A_2h/A_1h/chi2, columns are instruments."""
+	if len(configs) > 0 and not isinstance(configs[0], dict):
+		raise ValueError("configs must be a list of dicts")
+
+	if 'params' in configs[0]:
+		new_configs = []
+		for results in configs:
+			dataset_name = results.get('dataset_name', 'dataset')
+			new_configs.append({
+				'results': results,
+				'inst': None,
+				'label': f"{dataset_name}",
+			})
+		configs = new_configs
+
+	n_traces = len(configs)
+	# if use_cmap:
+	cmap = plt.get_cmap(cmap_name)
+	colors = cmap(np.linspace(0.3, 1.0, n_traces))
+	# else:
+		# colors = ['C' + str(i) for i in range(n_traces)]
+	if markers is None:
+		markers = ['o', 's', '^', 'd', 'v', '<', '>', 'p', '*', 'X']
+	if linestyles is None:
+		linestyles = ['-', '--', '-.', ':']
+	markers = (markers * (n_traces // len(markers) + 1))[:n_traces]
+	linestyles = (linestyles * (n_traces // len(linestyles) + 1))[:n_traces]
+
+	has_one_halo = False
+	for config in configs:
+		results = config['results']
+		n_params = results['params'].shape[-1]
+		if n_params >= 2:
+			has_one_halo = True
+			break
+
+	n_rows = 3 if has_one_halo else 2
+	n_cols = len(inst_list)
+	fig, axes = plt.subplots(n_rows, n_cols, figsize=figsize, sharex=True, sharey='row')
+	axes = np.atleast_2d(axes)
+
+	zbin_edges = np.arange(0.0, 1.0 + 1e-9, 0.2)
+	shade_colors = ('#e8f4ff', '#fff3e6')
+	for row in range(n_rows):
+		for col in range(n_cols):
+			ax = axes[row, col]
+			for j in range(len(zbin_edges) - 1):
+				z0 = zbin_edges[j]
+				z1 = zbin_edges[j + 1]
+				ax.axvspan(z0, z1, color=shade_colors[j % 2], alpha=0.22, zorder=0)
+
+	labeled_configs = set()
+	for col, inst in enumerate(inst_list):
+		for i, config in enumerate(configs):
+			results = config['results']
+			inst_sel = config.get('inst', None)
+			if inst_sel is not None and inst_sel != inst:
+				continue
+
+			insts_available = list(results['inst_list'])
+			if inst not in insts_available:
+				continue
+			inst_idx = insts_available.index(inst)
+
+			z_centers = results['z_centers']
+			x_offset = (i - (n_traces - 1) / 2) * x_offset_scale
+			# color = config.get('color', colors[i])
+			marker = config.get('marker', markers[i])
+			label = config.get('label', None)
+			label = label if (col == 0 and i not in labeled_configs) else None
+			if label is not None:
+				labeled_configs.add(i)
+
+			# A_2h row
+			ax = axes[0, col]
+			A_2h = results['params'][inst_idx, :, 0]
+			A_2h_err = results['params_err'][inst_idx, :, 0]
+			A_2h_95 = results.get('params_95', None)
+			if A_2h_95 is not None:
+				A_2h_95 = A_2h_95[inst_idx, :, 0]
+			is_ul = (A_2h - 2 * A_2h_err) <= 0
+			detection_mask = ~is_ul
+			if np.any(detection_mask):
+				ax.errorbar(
+					z_centers[detection_mask] + x_offset,
+					A_2h[detection_mask],
+					yerr=A_2h_err[detection_mask],
+					fmt=marker, color=colors[i], linestyle='none',
+					label=label, markersize=5, capsize=5, capthick=2, alpha=0.8,
+				)
+				label = None
+			if np.any(is_ul):
+				upper_limit_values = A_2h_95[is_ul] if A_2h_95 is not None else A_2h[is_ul] + 2 * A_2h_err[is_ul]
+				ax.errorbar(
+					z_centers[is_ul] + x_offset,
+					upper_limit_values,
+					yerr=upper_limit_values,
+					fmt='v', color=colors[i], linestyle='none',
+					uplims=True, label=label, markersize=5, capsize=0, alpha=0.8,
+				)
+
+			# A_1h row
+			if has_one_halo:
+				ax = axes[1, col]
+				A_1h = results['params'][inst_idx, :, 1]
+				A_1h_err = results['params_err'][inst_idx, :, 1]
+				ax.errorbar(
+					z_centers + x_offset,
+					A_1h, yerr=A_1h_err,
+					fmt=marker, color=colors[i], linestyle='none',
+					label=None, markersize=8, capsize=5, capthick=2, alpha=0.8,
+				)
+
+			# Chi2 row
+			ax = axes[-1, col]
+			chi2_values = results['reduced_chisq'][inst_idx, :]
+			ax.plot(
+				z_centers + x_offset, chi2_values,
+				marker=marker, color=colors[i], linestyle='none',
+				label=None, markersize=8, linewidth=2, alpha=0.8,
+			)
+
+	for col, inst in enumerate(inst_list):
+		ax_top = axes[0, col]
+		ax_top.set_title(f"CIBER {1.1 if inst == 1 else 1.8} $\mu$m", fontsize=16)
+
+	for ax in axes.ravel():
+		ax.grid(alpha=0.3)
+		ax.set_xlim(0, 1.0)
+		ax.tick_params(labelsize=12)
+
+	for col in range(n_cols):
+		axes[-1, col].axhline(y=1.0, color='gray', linestyle='--', alpha=0.5, zorder=1)
+		axes[-1, col].set_xlabel('Redshift', fontsize=14)
+
+	if ylim_2h is not None:
+		for col in range(n_cols):
+			axes[0, col].set_ylim(ylim_2h)
+	if has_one_halo and ylim_ihl is not None:
+		for col in range(n_cols):
+			axes[1, col].set_ylim(ylim_ihl)
+	if ylim_chi2 is not None:
+		for col in range(n_cols):
+			axes[-1, col].set_ylim(ylim_chi2)
+
+	axes[0, 0].set_ylabel(r'$A_{\rm 2h}$', fontsize=14)
+	if has_one_halo:
+		axes[1, 0].set_ylabel(r'$A_{1h}$', fontsize=14)
+	axes[-1, 0].set_ylabel(r'Reduced $\chi^2$', fontsize=14)
+
+	handles, labels = axes[0, 0].get_legend_handles_labels()
+	if handles:
+		fig.legend(handles, labels, fontsize=14, loc='upper center',
+					ncol=legend_ncol, bbox_to_anchor=bbox_to_anchor)
+
+	# fig.tight_layout()
+	fig.subplots_adjust(wspace=0.1, hspace=0.1)
+
+	if save_path:
+		plt.savefig(save_path, dpi=200, bbox_inches='tight')
+		print(f"✓ Saved comparison plot to: {save_path}")
+
+	return fig
+
+
 
 def plot_chi2_comparison(configs, colors=None, markers=None, linestyles=None,
                         figsize=(6, 4), save_path=None, legend_ncol=1, ylim_chi2=None, 
@@ -666,6 +1000,121 @@ def plot_chi2_comparison(configs, colors=None, markers=None, linestyles=None,
         print(f"✓ Saved chi2 comparison plot to: {save_path}")
     
     return fig
+
+
+def plot_chi2_comparison_by_instrument(configs, inst_list=(1, 2), colors=None, markers=None,
+														linestyles=None, figsize=(9, 3.6),
+														save_path=None, legend_ncol=2, ylim_chi2=None,
+														bbox_to_anchor=(0.5, 1.03), plot_reduced=True,
+														use_cmap=False, cmap_name='Blues',
+														x_offset_scale=0.02):
+	"""Two-panel chi2 comparison with one panel per instrument."""
+	if len(configs) > 0 and not isinstance(configs[0], dict):
+		raise ValueError("configs must be a list of dicts")
+
+	if 'params' in configs[0]:
+		new_configs = []
+		for results in configs:
+			dataset_name = results.get('dataset_name', 'dataset')
+			new_configs.append({
+				'results': results,
+				'inst': None,
+				'label': f"{dataset_name}",
+			})
+		configs = new_configs
+
+	n_traces = len(configs)
+	if use_cmap:
+		cmap = plt.get_cmap(cmap_name)
+		colors = cmap(np.linspace(0.3, 1.0, n_traces))
+	else:
+		colors = ['C' + str(i) for i in range(n_traces)]
+	if markers is None:
+		markers = ['o', 's', '^', 'd', 'v', '<', '>', 'p', '*', 'X']
+	if linestyles is None:
+		linestyles = ['-', '--', '-.', ':']
+	markers = (markers * (n_traces // len(markers) + 1))[:n_traces]
+	linestyles = (linestyles * (n_traces // len(linestyles) + 1))[:n_traces]
+	ylabel = r'Reduced $\chi^2$' if plot_reduced else r'$\chi^2$'
+
+	n_cols = len(inst_list)
+	fig, axes = plt.subplots(1, n_cols, figsize=figsize, sharex=True, sharey=True)
+	if n_cols == 1:
+		axes = [axes]
+
+	zbin_edges = np.arange(0.0, 1.0 + 1e-9, 0.2)
+	shade_colors = ('#e8f4ff', '#fff3e6')
+
+	labeled_configs = set()
+	for col, inst in enumerate(inst_list):
+		ax = axes[col]
+		for j in range(len(zbin_edges) - 1):
+			z0 = zbin_edges[j]
+			z1 = zbin_edges[j + 1]
+			ax.axvspan(z0, z1, color=shade_colors[j % 2], alpha=0.22, zorder=0)
+
+		for i, config in enumerate(configs):
+			results = config['results']
+			inst_sel = config.get('inst', None)
+			if inst_sel is not None and inst_sel != inst:
+				continue
+
+			insts_available = list(results['inst_list'])
+			if inst not in insts_available:
+				continue
+			inst_idx = insts_available.index(inst)
+
+			z_centers = results['z_centers']
+			x_offset = (i - (n_traces - 1) / 2) * x_offset_scale
+			color = config.get('color', colors[i])
+			marker = config.get('marker', markers[i])
+			label = config.get('label', None)
+			label = label if (col == 0 and i not in labeled_configs) else None
+			if label is not None:
+				labeled_configs.add(i)
+
+			if plot_reduced:
+				chi2_values = results['reduced_chisq'][inst_idx, :]
+				ylabel = r'Reduced $\chi^2$'
+			else:
+				chi2_values = results['chisq'][inst_idx, :]
+				ylabel = r'$\chi^2$'
+
+			ax.plot(
+				z_centers + x_offset, chi2_values,
+				marker=marker, color=color, linestyle='none',
+				label=label, markersize=8, linewidth=2, alpha=0.8,
+			)
+
+		if plot_reduced:
+			ax.axhline(y=1.0, color='gray', linestyle='--', alpha=0.5, zorder=1)
+		ax.set_xlim(0, 1.0)
+		ax.grid(alpha=0.3)
+		ax.tick_params(labelsize=12)
+		ax.text(0.04, 0.94, f"CIBER {1.1 if inst == 1 else 1.8} um",
+					transform=ax.transAxes, fontsize=12,
+					va='top', ha='left')
+
+	if ylim_chi2 is not None:
+		for ax in axes:
+			ax.set_ylim(ylim_chi2)
+
+	axes[0].set_ylabel(ylabel, fontsize=14)
+	fig.supxlabel('Redshift', fontsize=14)
+
+	handles, labels = axes[0].get_legend_handles_labels()
+	if handles:
+		fig.legend(handles, labels, fontsize=10, loc='upper center',
+					ncol=legend_ncol, bbox_to_anchor=bbox_to_anchor)
+
+	fig.tight_layout()
+	fig.subplots_adjust(top=0.86)
+
+	if save_path:
+		plt.savefig(save_path, dpi=200, bbox_inches='tight')
+		print(f"✓ Saved chi2 comparison plot to: {save_path}")
+
+	return fig
 
 
 def plot_cross_fit_components_from_file(npz_path, zbinedges, inst_list=[1, 2],
@@ -2357,6 +2806,136 @@ def load_rlpred_vs_z_DESILS(catname='LS', inst_list=[1, 2],
 				mean_rl_diffscale_pred[lidx, inst-1, zidx] = np.mean(r_ell_pred[lbmask])
 
 	return mean_rl_diffscale_pred
+
+
+def load_rlmeas_vs_z_DESILS_dz02(catname='LS', inst_list=[1, 2],
+						lb_mins = [304, 2000., 10000.],
+						lb_maxs = [2000., 10000., 80000.],
+						startidx=2, endidx=-1):
+
+	zbinedges = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
+	zcen = [0.5*(zbinedges[x]+zbinedges[x+1]) for x in range(len(zbinedges[:-1]))]
+
+	std_rl_largescale = np.zeros((2, len(zbinedges)-1))
+
+	mean_rl_diffscale = np.zeros((len(lb_mins), 2, len(zbinedges)-1))
+	std_rl_diffscale = np.zeros((len(lb_mins), 2, len(zbinedges)-1))
+
+	for zidx, zbin in enumerate(zbinedges[:-1]):
+
+		addstr = str(zbinedges[zidx])+'_z_'+str(zbinedges[zidx+1])
+		addstr += '_wrandsub_JHlt16_wFFerr'
+
+		acdat = compute_rl_ciber_gal(addstr, inst_list=inst_list, catname=catname)
+
+		for inst in inst_list:
+
+			lb = acdat[inst-1].lb
+			lbrestrict = lb[startidx:endidx]
+
+			r_ell = acdat[inst-1].r_ell
+			r_ell_unc = acdat[inst-1].r_ell_unc
+
+			for lidx in range(len(lb_mins)):
+				lbmask = (lbrestrict > lb_mins[lidx])*(lbrestrict < lb_maxs[lidx])
+				w = 1 / r_ell_unc[lbmask]**2
+				mean_rl_diffscale[lidx, inst-1, zidx] = np.sum(w * r_ell[lbmask]) / np.sum(w)
+				std_rl_diffscale[lidx, inst-1, zidx] = np.sqrt(1 / np.sum(w))
+
+	res = dict({'mean_rl_diffscale': mean_rl_diffscale,
+				'std_rl_diffscale': std_rl_diffscale,
+				'zcen': zcen,
+				'lb_mins': lb_mins,
+				'lb_maxs': lb_maxs,
+				'zbinedges': zbinedges})
+
+	return res
+
+
+def load_rlpred_vs_z_DESILS_dz02(catname='LS', inst_list=[1, 2],
+						lb_mins = [304, 2000., 10000.],
+						lb_maxs = [2000., 10000., 80000.],
+						jmock_basedir = 'data/jordan_mocks/v2/',
+						ifield_use=8):
+
+	zbinedges = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
+
+	all_pred_fpaths = []
+
+	mean_rl_diffscale_pred = np.zeros((len(lb_mins), 2, len(zbinedges)-1))
+
+	for idx, inst in enumerate(inst_list):
+
+		tl_pix = np.load('data/fluctuation_data/transfer_function/tl_clx_pix_TM'+str(inst)+'_ifield'+str(ifield_use)+'.npz')['tl_clx_pix']
+
+		basepath = jmock_basedir+'mock_ps_pred/TM'+str(inst)+'/field_average/'
+
+		pred_fpaths = [basepath+'pred_cls_TM'+str(inst)+'_sdss_z_lt_22.0_CIBERfidmask_zmin='+str(zbinedges[zidx])+'_zmax='+str(zbinedges[zidx+1])+'.npz' for zidx in range(len(zbinedges[:-1]))]
+
+		all_pred_fpaths.append(pred_fpaths)
+
+		for zidx in range(len(zbinedges)-1):
+
+			jmock_pred = np.load(pred_fpaths[zidx])
+			lb_pred, r_ell_pred = [jmock_pred[key] for key in ['lb', 'rlx_tracer_full']]
+
+			for lidx in range(len(lb_mins)):
+
+				lbmask = (lb_pred > lb_mins[lidx])*(lb_pred < lb_maxs[lidx])
+
+				mean_rl_diffscale_pred[lidx, inst-1, zidx] = np.mean(r_ell_pred[lbmask])
+
+	return mean_rl_diffscale_pred
+
+
+def plot_rl_vs_z_vs_scale_DESILS_dz02(res_meas, mean_rl_diffscale_pred,
+								 figsize=(6,6), inst_list=[1, 2], lams=[1.1, 1.8],
+								 colors=['b', 'r'],
+								 colors_ss=['C0', 'C3'],
+								 markersize=8, cmap='inferno_r',
+								 ylim=(-0.05, 0.45)):
+
+	fig = plt.figure(figsize=figsize)
+
+	cmap = plt.get_cmap(cmap)
+	colors = cmap(np.linspace(0.3, 1, 3))
+
+	for inst in inst_list:
+		plt.subplot(2,1,inst)
+		plt.text(0.05, 0.37, 'CIBER '+str(lams[inst-1])+' $\\mu$m $\\times$ DESI-LS ($z<22$)', fontsize=16)
+		plt.axhline(0, color='grey', alpha=0.2)
+
+		for lidx in range(len(res_meas['lb_mins'])):
+			ellstr = str(int(res_meas['lb_mins'][lidx]))+'$<\\ell<$'+str(int(res_meas['lb_maxs'][lidx]))
+
+			plt.errorbar(res_meas['zcen'], np.array(res_meas['mean_rl_diffscale'])[lidx, inst-1],
+						  yerr=np.array(res_meas['std_rl_diffscale'])[lidx, inst-1], fmt='o', color=colors[lidx],
+						label=ellstr, marker='x', markersize=markersize)
+
+			if lidx==len(res_meas['lb_mins'])-1:
+				predlab = 'IGL model prediction\n(Mirocha+25)'
+			else:
+				predlab = None
+
+			plt.plot(res_meas['zcen'], np.array(mean_rl_diffscale_pred)[lidx, inst-1], color=colors[lidx], linestyle='dashed',
+					label=predlab)
+
+		plt.grid(alpha=0.3)
+		plt.ylabel('$\\langle r_{\\ell} \\rangle$', fontsize=14)
+		plt.ylim(ylim)
+
+		if inst==2:
+			plt.tick_params(labelsize=12)
+			plt.xlabel('redshift', fontsize=14)
+			plt.xticks(res_meas['zbinedges'])
+
+		else:
+			plt.legend(fontsize=12, bbox_to_anchor=[-0.02, 1.4], loc=2, ncol=2)
+			plt.xticks(res_meas['zbinedges'], ['' for _ in range(len(res_meas['zbinedges']))])
+
+	plt.show()
+
+	return fig
 
 
 def plot_spectrum_ratios(lb, mag_lims, fieldav_clg_vs_mag, fieldav_clg_vs_mag_norand, 

@@ -187,7 +187,25 @@ def _run_cross_fits(args: argparse.Namespace) -> None:
     fitstr_to_use = args.fitstr_cross
     if not args.use_two_halo:
         fitstr_to_use = args.fitstr_cross + "_no2h"
-    
+
+    # When --combined-zbin is set, treat the full 0<z<1 range as a single bin
+    zbinedges_use = np.array([args.zbinedges[0], args.zbinedges[-1]]) \
+        if args.combined_zbin else args.zbinedges
+
+    # Load effective mu_1h/sigma_1h from cache when using combined z-bin
+    mu_1h_override = None
+    sigma_1h_override = None
+    if args.combined_zbin:
+        try:
+            from ciber.theory.ihl_1h_template_cache import OneHaloTemplateCache
+            cache = OneHaloTemplateCache()
+            mu_1h_override, sigma_1h_override = cache.get_effective_lognormal_params(slope=1.0)
+            print(f"[run_cross] Using effective 1h params from cache: "
+                  f"mu_1h={mu_1h_override:.4f} (ell_peak≈{np.exp(mu_1h_override):.0f}), "
+                  f"sigma_1h={sigma_1h_override:.4f}")
+        except Exception as e:
+            print(f"[run_cross] Warning: Could not load effective 1h params from cache: {e}")
+
     for cat in args.cat:
         ifield_list = _ifield_list(cat, args)
         for lMax in args.lmax:
@@ -201,11 +219,14 @@ def _run_cross_fits(args: argparse.Namespace) -> None:
                 ifield_list=ifield_list,
                 save_results=True,
                 file_fpath=fpath.name,
+                zbinedges=zbinedges_use,
                 lMax_fit=lMax,
                 use_ihl_templates=False,
                 use_ihl_1h_params=True,
                 fix_ihl_1h_shape=True,
                 ihl_1h_params_path=args.ihl_params,
+                mu_1h_fixed_override=mu_1h_override,
+                sigma_1h_fixed_override=sigma_1h_override,
                 fitstr=fitstr_to_use,
                 save_figs=True,
                 use_astrometry_damping=args.use_damping,

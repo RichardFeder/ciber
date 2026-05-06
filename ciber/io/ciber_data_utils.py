@@ -44,12 +44,15 @@ def save_fit_results_npz(all_fit_results_mcmc, zbinedges, inst_list,
 	acceptance_fraction_array = np.full((n_inst, n_zbins), np.nan)
 
 	sample_result = all_fit_results_mcmc[sample_key]['fit_result']
+	# use_ihl_templates is True only if templates are actually present (not None)
+	use_ihl_templates = (sample_result.get('ihl_templates') is not None and
+	                      'template_names' in sample_result)
 	model_config = {
-		'use_ihl_templates': 'template_names' in sample_result,
+		'use_ihl_templates': use_ihl_templates,
 		'use_powerlaw_2h': sample_result.get('use_powerlaw_2h', True),
 		'alpha_2h_fixed': sample_result.get('alpha_2h_fixed', 0.0),
 		'use_lorentzian_1h': sample_result.get('use_lorentzian_1h', False),
-		'template_names': sample_result.get('template_names', []),
+		'template_names': sample_result.get('template_names', []) if use_ihl_templates else [],
 		'ihl_template_path': 'ihl_templates/',
 	}
 

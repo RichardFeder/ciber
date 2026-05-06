@@ -11,6 +11,7 @@ from ciber.plotting.plotting_fns import plot_map
 
 from ciber.core.powerspec_pipeline import *
 from ciber.plotting.gal_plotting_fns import *
+from ciber.io.catalog_utils import *
 
 
 def completeness_model(m, m_lim=25.0, sigma_m=0.5):
@@ -268,7 +269,373 @@ def save_gal_density(inst, ifield_list, gal_densities, catname, basepath=None, a
     return save_fpath
 
 
-def separate_ls_catalog_by_z(zbinedges=None, ifield_list = [4, 5, 6, 7, 8], ls_cat_names = ['ra', 'dec', 'zphot'], mode='data', plot=False):
+def combine_gal_density_zbins(inst_list, ifield_list, zbinedges, catname='LS', mode='data',
+                               basepath=None, field_size=2.0, plot=False):
+    """Combine galaxy density maps across redshift slices into a single map.
+
+    Loads density maps for individual redshift bins and combines them (e.g., to get
+    z < 1.0 total counts). Works with both standard (2×2°) and larger footprints.
+
+    Parameters
+    ----------
+    inst_list : list or int
+        CIBER instrument(s) (1, 2, or [1, 2])
+    ifield_list : list
+        List of CIBER field indices
+    zbinedges : array_like
+        Redshift bin edges to combine
+    catname : str, optional
+        Catalog name (default 'LS')
+    mode : str, optional
+        'data' or 'random' catalog mode
+    basepath : str, optional
+        Base path for loading density maps. If None, uses default.
+    field_size : float, optional
+        Field size in degrees (2.0 for standard 2×2°, 4.0 for 4×4°, etc.)
+    plot : bool, optional
+        Whether to plot combined maps
+
+    Returns
+    -------
+    combined_counts : dict
+        Dictionary with keys 'inst{inst}' containing combined count arrays
+        Shape: [len(ifield_list), imdim, imdim]
+    """
+    if isinstance(inst_list, int):
+        inst_list = [inst_list]
+
+    if basepath is None:
+        basepath = config.ciber_basepath+'data/fluctuation_data/'
+
+    # Determine output map size based on field_size
+    base_imdim = 1024
+    imdim = int(base_imdim * (field_size / 2.0))
+
+    combined_counts = {}
+
+    for inst in inst_list:
+        inst_basepath = basepath + f'TM{inst}/gal_density/'
+        tot_counts = np.zeros((len(ifield_list), imdim, imdim))
+
+        for zidx, z0 in enumerate(zbinedges[:-1]):
+            z1 = zbinedges[zidx+1]
+            addstr = str(np.round(z0, 1))+'_z_'+str(np.round(z1, 1))
+
+            if mode == 'random':
+                addstr += '_random'
+
+            # Add field size to filename if not standard 2×2°
+            if field_size != 2.0:
+                addstr += f'_{field_size:.1f}deg'
+
+            fpath = inst_basepath + f'{catname}/gal_density_{catname}_TM{inst}_{addstr}.fits'
+
+            print(f'[combine] Loading {inst} z={z0:.1f}-{z1:.1f} from {fpath}')
+            hdul = fits.open(fpath)
+
+            for fieldidx, ifield in enumerate(ifield_list):
+                tot_counts[fieldidx] += hdul[f'ifield{ifield}'].data
+
+            hdul.close()
+
+        addstr = 'zlt1.0_random' if mode == 'random' else 'zlt1.0'
+        save_gal_density(inst, ifield_list, tot_counts, catname, basepath=inst_basepath, addstr=addstr)
+
+        if plot:
+            for fieldidx, ifield in enumerate(ifield_list):
+                print(f'[combine] TM{inst} ifield {ifield}: {np.sum(tot_counts[fieldidx])} total counts')
+                plot_map(tot_counts[fieldidx], title=f'{catname} z<{zbinedges[-1]} ifield {ifield} TM{inst}',
+                         figsize=(6, 6))
+
+    return tot_counts
+
+
+def compute_gal_auto_spectrum_large(inst, ifield_list, zbinedges, field_size=4.0,
+                                     catname='LS', subtract_randoms=True,
+                                     save=False, plot=False):
+    """Compute galaxy auto-spectrum from larger footprint density maps.
+
+    Computes power spectra from the density maps extracted with
+    preprocess_ls_density_maps_large() or combined with combine_gal_density_zbins().
+    Processes maps similarly to ciber_gal_cross(): subtracts randoms (scaled to match
+    data), normalizes to galaxy overdensity, and computes 1D power spectrum.
+
+    Parameters
+    ----------
+    inst : int
+        CIBER instrument (1 or 2)
+    ifield_list : list
+        List of CIBER field indices
+    zbinedges : array_like
+        Redshift bin edges
+    field_size : float, optional
+        Field size in degrees (default 4.0 for 4×4°)
+    catname : str, optional
+        Catalog name (default 'LS')
+    subtract_randoms : bool, optional
+        Whether to subtract random catalog contribution (default True)
+    save : bool, optional
+        Whether to save power spectra to .npz file
+    plot : bool, optional
+        Whether to plot power spectra and maps
+
+    Returns
+    -------
+    dict
+        Dictionary containing:
+        - 'lb': multipole bin centers
+        - 'all_cl_gal': galaxy auto C_ell [n_field, n_ell]
+        - 'all_clerr_gal': galaxy auto uncertainties [n_field, n_ell]
+        - 'ifield_list_use': list of fields with valid data
+    """
+    from ciber.core.powerspec_pipeline import CIBER_PS_pipeline
+    from ciber.core.powerspec_utils import get_power_spec
+
+    cbps = CIBER_PS_pipeline(dimx=int(1024*(field_size/2.0)), dimy=int(1024*(field_size/2.0)))
+    basepath = config.ciber_basepath + f'data/fluctuation_data/TM{inst}/gal_density/'
+
+    # Prepare addstr for the first redshift bin
+    z0 = zbinedges[0]
+    z1 = zbinedges[1]
+    addstr = str(np.round(z0, 1)) + '_z_' + str(np.round(z1, 1))
+
+    if field_size != 2.0:
+        field_size_tag = f'_{field_size:.1f}deg'
+    else:
+        field_size_tag = ''
+
+    # Get lbinedges for power spectrum calculation
+    lbinedges = cbps.Mkk_obj.binl
+    lbins = cbps.Mkk_obj.midbin_ell
+
+    # Initialize power spectrum arrays
+    all_cl_gal = []
+    all_clerr_gal = []
+    ifield_list_use = []
+
+    for ifield in ifield_list:
+        # Load data density map
+        data_fpath = basepath + f'{catname}/gal_density_{catname}_TM{inst}_{addstr}{field_size_tag}.fits'
+        print('Loading from ', data_fpath)
+        try:
+            hdul_data = fits.open(data_fpath)
+            gal_map = hdul_data[f'ifield{ifield}'].data.transpose()
+            hdul_data.close()
+        except (FileNotFoundError, KeyError):
+            print(f'[gal_auto_large] Missing data map for ifield {ifield}, skipping')
+            continue
+
+        # Subtract randoms if requested
+        if subtract_randoms:
+            rand_fpath = basepath + f'{catname}/gal_density_{catname}_TM{inst}_{addstr}_random{field_size_tag}.fits'
+            print('random fpath is ', rand_fpath)
+            try:
+                hdul_rand = fits.open(rand_fpath)
+                rand_map = hdul_rand[f'ifield{ifield}'].data.transpose()
+                hdul_rand.close()
+
+                # Scale random to match data (following ciber_gal_cross)
+                gal_sum = gal_map.sum()
+                rand_sum = rand_map.sum()
+                scale = gal_sum / rand_sum
+
+                print(f'[gal_auto_large] ifield {ifield} random scale factor: {scale:.4f}')
+
+                # Subtract scaled randoms and normalize
+                gal_map_masked = gal_map - scale * rand_map
+                mean_rand = np.mean(scale * rand_map)
+                gal_map_masked /= mean_rand
+
+                if plot:
+                    plt.figure(figsize=(10, 4))
+                    plt.subplot(1, 3, 1)
+                    plt.hist(gal_map.ravel(), bins=50)
+                    plt.yscale('log')
+                    plt.xlabel('Data counts')
+                    plt.title(f'ifield {ifield} data')
+                    plt.subplot(1, 3, 2)
+                    plt.hist((scale * rand_map).ravel(), bins=50)
+                    plt.yscale('log')
+                    plt.xlabel('Scaled random counts')
+                    plt.title('Scaled randoms')
+                    plt.subplot(1, 3, 3)
+                    plt.hist(gal_map_masked.ravel(), bins=50)
+                    plt.yscale('log')
+                    plt.xlabel('$\\delta_g$')
+                    plt.title('Galaxy overdensity')
+                    plt.tight_layout()
+                    plt.show()
+
+            except (FileNotFoundError, KeyError):
+                print(f'[gal_auto_large] Missing random map for ifield {ifield}, using data only')
+                # Normalize to overdensity
+                meandens = np.mean(gal_map)
+                gal_map_masked = gal_map.copy()
+                gal_map_masked -= meandens
+                gal_map_masked /= meandens
+        else:
+            # No random subtraction: just normalize to overdensity
+            meandens = np.mean(gal_map)
+            gal_map_masked = gal_map.copy()
+            gal_map_masked -= meandens
+            gal_map_masked /= meandens
+
+        # Compute power spectrum using get_power_spec
+        lb, cl_gal, clerr_gal = get_power_spec(gal_map_masked, map_b=None, mask=None, pixsize=7.,
+                                                lbinedges=lbinedges, lbins=lbins)
+
+        all_cl_gal.append(cl_gal)
+        all_clerr_gal.append(clerr_gal)
+        ifield_list_use.append(ifield)
+
+        if plot:
+            pf = lb*(lb+1)/(2*np.pi)
+            plt.figure(figsize=(5, 4))
+            plt.loglog(lb, pf*cl_gal, 'o-', label=f'ifield {ifield}')
+            plt.errorbar(lb, pf*cl_gal, yerr=pf*clerr_gal, fmt='none', alpha=0.5)
+            plt.xlabel('$\\ell$', fontsize=14)
+            plt.ylabel('$D_\\ell^{gg}$', fontsize=14)
+            plt.title(f'{catname} galaxy auto TM{inst} ifield {ifield} ({field_size:.1f}°)')
+            plt.legend()
+            plt.grid(True, alpha=0.3)
+            plt.xlim(30, 1e5)
+            plt.ylim(1e-4, 5e2)
+            plt.show()
+
+    if save and len(ifield_list_use) > 0:
+        save_addstr = addstr
+        if subtract_randoms:
+            save_addstr += '_wrandsub'
+        save_addstr += field_size_tag
+
+        save_dict = {
+            'lb': lb,
+            'all_cl_gal': np.array(all_cl_gal),
+            'all_clerr_gal': np.array(all_clerr_gal),
+            'ifield_list_use': ifield_list_use,
+            'field_size': field_size,
+            'catname': catname,
+        }
+
+        save_fpath = basepath + f'{catname}/gal_auto_{catname}_TM{inst}_{save_addstr}.npz'
+        print(f'[gal_auto_large] Saving to {save_fpath}')
+        np.savez(save_fpath, **save_dict)
+
+    return {
+        'lb': lb,
+        'all_cl_gal': np.array(all_cl_gal),
+        'all_clerr_gal': np.array(all_clerr_gal),
+        'ifield_list_use': ifield_list_use,
+    }
+
+
+def collect_gal_auto_large_vs_redshift(inst_list, zbinedges, ifield_list,
+                                        field_size=4.0, catname='LS',
+                                        subtract_randoms=True, fmask=0.67):
+    """Load large-footprint galaxy auto-spectra and return field-averaged arrays.
+
+    Loads per-field npz files from compute_gal_auto_spectrum_large() for each
+    redshift bin and instrument, field-averages them, and returns a dict in the
+    same format expected by run_gal_auto_fits_two_stage() via its gal_ps_dict
+    bypass parameter.
+
+    Parameters
+    ----------
+    inst_list : list
+        CIBER instrument indices (e.g. [1, 2])
+    zbinedges : array_like
+        Redshift bin edges
+    ifield_list : list
+        List of CIBER field indices
+    field_size : float, optional
+        Field size in degrees (default 4.0)
+    catname : str, optional
+        Catalog name (default 'LS')
+    subtract_randoms : bool, optional
+        Whether randoms were subtracted when computing spectra
+    fmask : float, optional
+        Mask fraction per field for Knox error calculation
+
+    Returns
+    -------
+    dict
+        Dictionary with keys:
+        - 'lb': multipole bin centers
+        - 'full_cl_gal': field-averaged galaxy auto C_ell [n_inst, n_zbin, n_ell]
+        - 'full_clerr_gal': field-averaged uncertainties with Knox [n_inst, n_zbin, n_ell]
+    """
+    from ciber.core.powerspec_pipeline import CIBER_PS_pipeline
+    from ciber.core.powerspec_utils import compute_field_averaged_power_spectrum
+
+    cbps = CIBER_PS_pipeline(dimx=int(1024*(field_size/2.0)), dimy=int(1024*(field_size/2.0)))
+    lb = cbps.Mkk_obj.midbin_ell
+    n_ell = len(lb)
+    nzbin = len(zbinedges) - 1
+
+    if field_size != 2.0:
+        field_size_tag = f'_{field_size:.1f}deg'
+    else:
+        field_size_tag = ''
+
+    # Knox prefactor using correct field_size² (not hardcoded 2×2 deg²)
+    full_sky_deg2 = 41253.
+    field_area_deg2 = field_size ** 2
+
+    full_cl_gal = np.zeros((len(inst_list), nzbin, n_ell))
+    full_clerr_gal = np.zeros((len(inst_list), nzbin, n_ell))
+
+    for idx, inst in enumerate(inst_list):
+        basepath = config.ciber_basepath + f'data/fluctuation_data/TM{inst}/gal_density/{catname}/'
+
+        for zidx in range(nzbin):
+            z0, z1 = zbinedges[zidx], zbinedges[zidx + 1]
+            addstr = str(np.round(z0, 1)) + '_z_' + str(np.round(z1, 1))
+            if subtract_randoms:
+                addstr += '_wrandsub'
+            addstr += field_size_tag
+
+            fpath = basepath + f'gal_auto_{catname}_TM{inst}_{addstr}.npz'
+            print(f'[collect_large] Loading {fpath}')
+
+            try:
+                dat = np.load(fpath, allow_pickle=True)
+            except FileNotFoundError:
+                print(f'[collect_large] Missing {fpath}, skipping zbin {zidx}')
+                continue
+
+            all_cl_gal = dat['all_cl_gal']     # [n_field, n_ell]
+            all_clerr_gal = dat['all_clerr_gal']
+            nfield = len(all_cl_gal)
+
+            # Field-average with inverse-variance weighting
+            if nfield > 1:
+                fieldav_cl_gal, fieldav_clerr_gal, _, _ = compute_field_averaged_power_spectrum(
+                    all_cl_gal.copy(), per_field_dcls=all_clerr_gal.copy()
+                )
+            else:
+                fieldav_cl_gal = all_cl_gal[0]
+                fieldav_clerr_gal = all_clerr_gal[0]
+
+            # Knox cosmic variance with correct field_size
+            fsky = nfield * fmask * field_area_deg2 / full_sky_deg2
+            gal_knox_errors = np.sqrt(2. / ((2 * lb + 1) * cbps.Mkk_obj.delta_ell))
+            gal_knox_errors /= np.sqrt(fsky)
+            gal_knox_errors *= np.abs(fieldav_cl_gal)
+
+            fieldav_clerr_gal = np.sqrt(gal_knox_errors**2 + fieldav_clerr_gal**2)
+
+            full_cl_gal[idx, zidx] = fieldav_cl_gal
+            full_clerr_gal[idx, zidx] = fieldav_clerr_gal
+
+    return {
+        'lb': lb,
+        'full_cl_gal': full_cl_gal,
+        'full_clerr_gal': full_clerr_gal,
+    }
+
+
+def separate_ls_catalog_by_z(zbinedges=None, ifield_list = [4, 5, 6, 7, 8], ls_cat_names = ['ra', 'dec', 'zphot'], mode='data', plot=False, 
+                             ):
     
     ls_basepath = config.ciber_basepath+'data/ciber_x_gal/'
 
@@ -371,7 +738,7 @@ def preprocess_gal_density_maps(inst, ifield_list, catname, save=False, cat_fpat
 
 def preprocess_ls_density_maps(inst, zbinedges, ifield_list, 
                             save=False, imdim=1024, plot=False,
-                            mode='data', catname='LS', remove_wen_cmgs=False):
+                            mode='data', catname='LS', remove_wen_cmgs=False, tailstr=None):
     
     ls_basepath = config.ciber_basepath+'data/ciber_x_gal/'
     
@@ -391,6 +758,9 @@ def preprocess_ls_density_maps(inst, zbinedges, ifield_list,
 
         if mode=='random':
             addstr += '_random'
+        
+        if tailstr is not None:
+            addstr += '_'+tailstr
         
         for fieldidx, ifield in enumerate(ifield_list):
 
@@ -414,7 +784,7 @@ def preprocess_ls_density_maps(inst, zbinedges, ifield_list,
                 wen_src_coord = SkyCoord(ra=wen_df['ra']*u.degree, dec=wen_df['dec']*u.degree, frame='icrs', unit=u.deg)
 
                 idx_xmatch, d2d_xmatch, _ = match_coordinates_sky(ls_src_coord, wen_src_coord)
-                nodup_mask = np.where(d2d_xmatch.arcsec > 0.2)[0] # find all non-duplicates
+                nodup_mask = np.where(d2d_xmatch.arcsec > 7.0)[0] # find all non-duplicates
 
                 print('cat df before removing wen cmgs is ', len(cat_df))
                 print('wen has ', len(wen_df), 'sources')
@@ -427,8 +797,6 @@ def preprocess_ls_density_maps(inst, zbinedges, ifield_list,
             cat_zphot = np.array(cat_df['zphot'])
         
             mask = (cat_x > 0)*(cat_x < imdim)*(cat_y > 0)*(cat_y < imdim)
-
-
 
             cat_x = cat_x[mask]
             cat_y = cat_y[mask]
@@ -460,6 +828,181 @@ def preprocess_ls_density_maps(inst, zbinedges, ifield_list,
         else:
             save_fpath = None
         
+    return all_gal_counts, ngal_perz_perfield
+
+
+def preprocess_ls_density_maps_large(inst, zbinedges, ifield_list, field_size=4.0,
+                                      save=False, plot=False,
+                                      mode='data', catname='LS', remove_wen_cmgs=False, tailstr=None):
+    """Extract LS galaxy density maps for larger field regions.
+
+    Loads from the full-sky LS catalogs and extracts a user-specified sky region
+    around each CIBER field. This allows extraction of regions larger than the
+    standard 2×2° CIBER FOV.
+
+    Parameters
+    ----------
+    inst : int
+        CIBER instrument (1 or 2)
+    zbinedges : array_like
+        Redshift bin edges
+    ifield_list : list
+        List of CIBER field indices
+    field_size : float, optional
+        Field size in degrees (default 4.0 for 4×4°). Scales output map size.
+        1024 pixels = 2° → output_pixels = 1024 * (field_size / 2.0)
+    save : bool, optional
+        Whether to save density maps
+    plot : bool, optional
+        Whether to plot maps
+    mode : str, optional
+        'data' or 'random' catalog mode
+    catname : str, optional
+        Catalog name for labels
+    remove_wen_cmgs : bool, optional
+        Remove Wen cluster member galaxies
+    tailstr : str, optional
+        Tail string for filenames
+
+    Returns
+    -------
+    all_gal_counts : list
+        List of galaxy count arrays for each redshift bin
+    ngal_perz_perfield : ndarray
+        Number of galaxies per redshift bin per field
+    """
+    ls_basepath = config.ciber_basepath+'data/ciber_x_gal/'
+    cbps = CIBER_PS_pipeline()
+
+    # Scale output map size based on field_size
+    # 1024 pixels = 2.0 degrees → scale by field_size/2.0
+    base_imdim = 1024
+    imdim = int(base_imdim * (field_size / 2.0))
+
+    # Sky region extent (±degrees from field center)
+    sky_extent = field_size
+
+    gal_counts = np.zeros((len(ifield_list), imdim, imdim))
+
+    all_gal_counts = []
+
+    ngal_perz_perfield = np.zeros((len(zbinedges)-1, len(ifield_list)))
+
+    for zidx, z0 in enumerate(zbinedges[:-1]):
+
+        z1 = zbinedges[zidx+1]
+
+        addstr = str(np.round(z0, 1))+'_z_'+str(np.round(z1, 1))
+
+        if mode=='random':
+            addstr += '_random'
+
+        if tailstr is not None:
+            addstr += '_'+tailstr
+
+        # Load full-sky catalog for this redshift bin
+        cat_basepath = ls_basepath+mode+'_catalogs/'
+        ls_fpath = cat_basepath+'LS_Dr8_z22_'+str(np.round(z0, 1))+'_zphot_'+str(np.round(z1, 1))
+
+        if mode=='random':
+            ls_fpath += '_random'
+        ls_fpath += '.fits'
+
+        print(f'[large] reading full catalog from {ls_fpath}')
+        ls_cat_full = fits.open(ls_fpath)[1].data
+
+        ls_cat_ra = ls_cat_full['ra']
+        ls_cat_dec = ls_cat_full['dec']
+        ls_cat_zphot = ls_cat_full['zphot']
+
+        for fieldidx, ifield in enumerate(ifield_list):
+
+            ra_cen = cbps.ra_cen_ciber_fields[ifield]
+            dec_cen = cbps.dec_cen_ciber_fields[ifield]
+
+            # Extract larger sky region
+            sky_mask = ((ls_cat_ra > ra_cen - sky_extent) *
+                        (ls_cat_ra < ra_cen + sky_extent) *
+                        (ls_cat_dec > dec_cen - sky_extent) *
+                        (ls_cat_dec < dec_cen + sky_extent))
+
+            ls_ra_cut = ls_cat_ra[sky_mask]
+            ls_dec_cut = ls_cat_dec[sky_mask]
+            ls_zphot_cut = ls_cat_zphot[sky_mask]
+
+            # Convert to CIBER pixel coordinates
+            ls_cat_names = ['ra', 'dec', 'zphot']
+            ls_df = pd.DataFrame(np.array([ls_ra_cut, ls_dec_cut, ls_zphot_cut]).transpose(),
+                                 columns=ls_cat_names)
+            ls_filt = catalog_df_add_xy(cbps.ciber_field_dict[ifield], ls_df,
+                                        datadir=config.ciber_basepath+'data/', imcut=False)
+            ls_filt, _, _ = check_for_catalog_duplicates(ls_filt)
+
+            if remove_wen_cmgs:
+                wen_basepath = 'data/catalogs/wen_cluster_gals/'
+                wen_fpath = wen_basepath+'wen_cluster_member_gals_CIBER_ifield'+str(ifield)+'_wxy.csv'
+                wen_df = pd.read_csv(wen_fpath)
+
+                ls_src_coord = SkyCoord(ra=ls_filt['ra']*u.degree, dec=ls_filt['dec']*u.degree,
+                                        frame='icrs', unit=u.deg)
+                wen_src_coord = SkyCoord(ra=wen_df['ra']*u.degree, dec=wen_df['dec']*u.degree,
+                                         frame='icrs', unit=u.deg)
+
+                idx_xmatch, d2d_xmatch, _ = match_coordinates_sky(ls_src_coord, wen_src_coord)
+                nodup_mask = np.where(d2d_xmatch.arcsec > 7.0)[0]
+
+                print(f'[large] field {ifield} before removing wen cmgs: {len(ls_filt)}')
+                print(f'[large] wen has {len(wen_df)} sources')
+                ls_filt = ls_filt.iloc[nodup_mask].copy()
+                print(f'[large] field {ifield} after removing wen cmgs: {len(ls_filt)}')
+
+            cat_x = np.array(ls_filt['x'+str(inst)])
+            cat_y = np.array(ls_filt['y'+str(inst)])
+            cat_zphot = np.array(ls_filt['zphot'])
+
+            # For larger fields, calculate offset from field center
+            # The 2×2° CIBER FOV is centered at (512, 512) in 1024×1024 space
+            # For larger field, center is at (imdim/2, imdim/2)
+            offset = (imdim - base_imdim) / 2.0
+            x_min = -offset
+            x_max = base_imdim + offset
+            y_min = -offset
+            y_max = base_imdim + offset
+
+            mask = (cat_x > x_min) * (cat_x < x_max) * (cat_y > y_min) * (cat_y < y_max)
+
+            cat_x = cat_x[mask]
+            cat_y = cat_y[mask]
+
+            # Shift coordinates to pixel space [0, imdim)
+            cat_x_shifted = cat_x + offset
+            cat_y_shifted = cat_y + offset
+
+            ngal_perz_perfield[zidx, fieldidx] = len(cat_x_shifted)
+
+            counts = get_count_field(cat_x_shifted, cat_y_shifted, imdim=imdim)
+
+            if plot:
+                plt.figure()
+                plt.title(str(z0)+'$<z_{phot}<$'+str(z1), fontsize=14)
+                plt.hist(cat_zphot[mask], bins=30, histtype='step')
+                plt.xlabel('zphot')
+                plt.ylabel('$N_g$')
+                plt.show()
+
+                plot_map(counts, title=f'LS ifield {ifield} ({field_size}°)')
+
+            gal_counts[fieldidx] = counts
+
+        all_gal_counts.append(gal_counts)
+
+        if save:
+            # Append field size to addstr for saved filenames
+            save_addstr = addstr + f'_{field_size:.1f}deg'
+            save_fpath = save_gal_density(inst, ifield_list, gal_counts, catname, addstr=save_addstr)
+        else:
+            save_fpath = None
+
     return all_gal_counts, ngal_perz_perfield
 
 

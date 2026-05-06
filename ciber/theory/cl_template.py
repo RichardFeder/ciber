@@ -286,12 +286,12 @@ def interpolate_1h_params(z_value, slope=None, one_halo_params_dict=None, sigma_
 
 
 def fit_and_decompose_ihl_templates(template_dir, zbinedges=None, slopes=None,
-                                    template_names=None, 
+                                    template_names=None,
                                     use_powerlaw_2h=True, alpha_2h_fixed=0.0,
-                                    fit_ell_range=None, plot=True, 
+                                    fit_ell_range=None, plot=True,
                                     figsize=(14, 10), save_path=None,
                                     p0=None, bounds=None, method='leastsq',
-                                    verbose=True, ylim=[1e-4, 1e3]):
+                                    verbose=True, ylim=[1e-4, 1e3], ell_scale=1.0):
     """
     Load IHL templates and fit them to decompose into two-halo, one-halo, and shot noise contributions.
     
@@ -337,7 +337,10 @@ def fit_and_decompose_ihl_templates(template_dir, zbinedges=None, slopes=None,
         Fitting method: 'leastsq' (curve_fit) or 'minimize' (scipy minimize). Default 'leastsq'.
     verbose : bool, optional
         Print detailed information. Default True.
-    
+    ell_scale : float, optional
+        Scaling factor to apply to ell values from templates (e.g., 1/π to correct
+        labeling). Default 1.0 (no scaling).
+
     Returns
     -------
     results : dict
@@ -363,9 +366,16 @@ def fit_and_decompose_ihl_templates(template_dir, zbinedges=None, slopes=None,
     
     templates = load_ihl_templates(template_dir, template_names=template_names,
                                    zbinedges=zbinedges, slopes=slopes)
-    
+
     if len(templates) == 0:
         raise ValueError("No templates loaded. Check template_dir and file naming.")
+
+    # Apply ell scaling if specified (e.g., ell_scale=1/π to correct labeling)
+    if ell_scale != 1.0:
+        if verbose:
+            print(f"\nApplying ell scaling: ell_new = ell * {ell_scale}")
+        for template_name in templates:
+            templates[template_name]['ell'] = templates[template_name]['ell'] * ell_scale
     
     # Initialize results storage
     fits = {}
@@ -379,11 +389,12 @@ def fit_and_decompose_ihl_templates(template_dir, zbinedges=None, slopes=None,
     for template_name, template in templates.items():
         if verbose:
             print(f"\n--- Fitting template: {template_name} ---")
-        
+
         ell_template = template['ell']
         dl_template = template['dl']
-        
+
         # Create model instance
+        from ciber.theory.cross_ps_parametric_model import CrossPowerSpectrumModel
         model = CrossPowerSpectrumModel(
             lb=ell_template,
             use_powerlaw_2h=use_powerlaw_2h,
@@ -647,8 +658,9 @@ def get_ihl_components_at_ell(fit_result, ell_values):
     A_2h, A_1h, mu_1h, sigma_1h, A_shot = params
     
     ell_values = np.asarray(ell_values)
-    
+
     # Create SMOOTH parametric model (log-normal, not template)
+    from ciber.theory.cross_ps_parametric_model import CrossPowerSpectrumModel
     model = CrossPowerSpectrumModel(lb=ell_values, use_powerlaw_2h=True, alpha_2h_fixed=0.0)
     
     # Get smooth parametric components

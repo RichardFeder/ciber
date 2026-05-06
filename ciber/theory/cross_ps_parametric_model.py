@@ -23,6 +23,98 @@ from ciber.plotting.gal_plotting_fns import *
 from ciber.theory.cl_template import *
 
 
+def load_mock_prediction_component(npz_path, component='cross'):
+    """Load a saved mock prediction spectrum and return (ell, cl, cl_err).
+
+    The saved mock products are not perfectly uniform across generators, so this
+    helper accepts the common key variants used in the repository.
+    """
+    pred = np.load(npz_path, allow_pickle=True)
+    lb = np.asarray(pred['lb'], dtype=float)
+
+    key_candidates = {
+        'cross': ('cross', 'clx', 'clx_comb', 'cross_pred'),
+        'gal_auto': ('gal_auto', 'clg', 'clg_comb', 'auto'),
+        'intensity_auto_tracer': ('intensity_auto_tracer',),
+        'intensity_auto_full': ('intensity_auto_full',),
+    }
+    err_candidates = {
+        'cross': ('cross_err', 'clx_err', 'clx_comb_err', 'cross_pred_err'),
+        'gal_auto': ('gal_auto_err', 'clg_err', 'clg_comb_err', 'auto_err'),
+        'intensity_auto_tracer': ('intensity_auto_tracer_err',),
+        'intensity_auto_full': ('intensity_auto_full_err',),
+    }
+
+    if component not in key_candidates:
+        raise KeyError(f"Unsupported mock prediction component: {component}")
+
+    cl = None
+    for key in key_candidates[component]:
+        if key in pred:
+            cl = np.asarray(pred[key], dtype=float)
+            break
+    if cl is None:
+        raise KeyError(f"Could not find a spectrum key for component '{component}' in {npz_path}")
+
+    cl_err = None
+    for key in err_candidates[component]:
+        if key in pred:
+            cl_err = np.asarray(pred[key], dtype=float)
+            break
+
+    return lb, cl, cl_err
+
+
+def estimate_mock_two_halo_amplitude(npz_path, component='cross',
+                                     shot_ell_range=(50000.0, 80000.0),
+                                     signal_ell_max=2000.0):
+    """Estimate an effective 2h amplitude from a saved mock prediction spectrum.
+
+    The estimator works in D_ell units: it converts the loaded spectrum from C_ell,
+    estimates the shot-noise plateau from a high-ell window, subtracts it, and
+    averages the low-ell residual to produce an effective A_2h summary.
+    """
+    lb, cl, cl_err = load_mock_prediction_component(npz_path, component=component)
+    pf = lb * (lb + 1.0) / (2.0 * np.pi)
+    dl = pf * cl
+    dl_err = pf * cl_err if cl_err is not None else None
+
+    shot_mask = np.isfinite(lb) & np.isfinite(dl) & (lb >= shot_ell_range[0]) & (lb <= shot_ell_range[1])
+    if not np.any(shot_mask):
+        shot_mask = np.isfinite(lb) & np.isfinite(dl) & (lb >= 0)
+    signal_mask = np.isfinite(lb) & np.isfinite(dl) & (lb <= signal_ell_max)
+    if not np.any(signal_mask):
+        signal_mask = np.isfinite(lb) & np.isfinite(dl)
+
+    shot_level = float(np.nanmean(dl[shot_mask]))
+    shot_level_err = float(np.nanstd(dl[shot_mask], ddof=1) / np.sqrt(np.sum(shot_mask))) if np.sum(shot_mask) > 1 else np.nan
+
+    dl_sub = dl - shot_level
+    a2h = float(np.nanmean(dl_sub[signal_mask]))
+
+    if dl_err is not None:
+        signal_err = float(np.sqrt(np.nansum(dl_err[signal_mask] ** 2)) / np.sum(signal_mask)) if np.sum(signal_mask) > 0 else np.nan
+    else:
+        signal_err = float(np.nanstd(dl_sub[signal_mask], ddof=1) / np.sqrt(np.sum(signal_mask))) if np.sum(signal_mask) > 1 else np.nan
+
+    a2h_err = float(np.sqrt(signal_err ** 2 + shot_level_err ** 2)) if np.isfinite(signal_err) and np.isfinite(shot_level_err) else signal_err
+
+    return {
+        'path': str(npz_path),
+        'component': component,
+        'ell': lb,
+        'dl': dl,
+        'dl_err': dl_err,
+        'shot_ell_range': tuple(float(v) for v in shot_ell_range),
+        'signal_ell_max': float(signal_ell_max),
+        'shot_level': shot_level,
+        'shot_level_err': shot_level_err,
+        'a2h': a2h,
+        'a2h_err': a2h_err,
+        'dl_subtracted': dl_sub,
+    }
+
+
 class CrossPowerSpectrumModel:
     """
     Parametric model for cross-power spectra decomposition.
@@ -895,10 +987,31 @@ class CrossPowerSpectrumModel:
             else:
                 dl_err_fit = dl_err
         
-        # Check if using one-halo term
-        if not self.use_one_halo:
-            # 2-parameter case: [A_2h, A_shot] (no one-halo term)
-            use_fixed_mu_sigma = False
+        # Check if using one-halo term and two-halo term
+        if not self.use_two_halo:
+            # When fitting without 2h, check if 1h shape parameters are fixed
+            use_fixed_mu_sigma = (self.mu_1h_fixed is not None and self.sigma_1h_fixed is not None)
+            use_fixed_ln_ell_peak = self.ln_ell_peak_relation is not None
+            
+            # Priority: explicit fixed values take precedence over ln_ell_peak_relation
+            if use_fixed_mu_sigma and use_fixed_ln_ell_peak:
+                if verbose:
+                    print("Note: Both mu_1h_fixed/sigma_1h_fixed and ln_ell_peak_relation are set.")
+                    print("      Using explicit fixed values (mu_1h_fixed, sigma_1h_fixed) and ignoring ln_ell_peak_relation.")
+                use_fixed_ln_ell_peak = False
+            
+            if verbose:
+                if use_fixed_mu_sigma:
+                    print(f"Fitting without two-halo term: [A_1h, A_shot] (with fixed 1h shape)")
+                elif use_fixed_ln_ell_peak:
+                    print(f"Fitting without two-halo term: [A_1h, sigma_1h, A_shot] (with fixed ln_ell_peak)")
+                else:
+                    print("Fitting without two-halo term: [A_1h, sigma_1h, A_shot]")
+                if self.use_astrometry_damping:
+                    print("  + damping parameter [sigma_damp]")
+        elif not self.use_one_halo:
+            # When fitting without 1h, check if 2h parameters are fixed
+            use_fixed_mu_sigma = False  # 1h not being used
             use_fixed_ln_ell_peak = False
             if verbose:
                 print("Fitting without one-halo term: [A_2h, A_shot]")
@@ -932,7 +1045,30 @@ class CrossPowerSpectrumModel:
         # Setup prior bounds
         if prior_bounds is None:
             # Default bounds depend on whether using fixed parameters
-            if not self.use_one_halo:
+            if not self.use_two_halo:
+                # When fitting without 2h, only 1h is fitted
+                if use_fixed_mu_sigma:
+                    n_params_base = 2  # [A_1h, A_shot]
+                    lower_bounds = np.array([0., 0.])
+                    upper_bounds = np.array([10., 100.])
+                elif use_fixed_ln_ell_peak:
+                    n_params_base = 3  # [A_1h, sigma_1h, A_shot]
+                    if self.use_lorentzian_1h:
+                        lower_bounds = np.array([0., 100., 0.])
+                        upper_bounds = np.array([10., 3000., 100.])
+                    else:
+                        lower_bounds = np.array([0., 0.2, 0.])
+                        upper_bounds = np.array([10., 1.2, 100.])
+                else:
+                    # Full 1h parameters: [A_1h, mu_1h, sigma_1h, A_shot]
+                    n_params_base = 4
+                    if self.use_lorentzian_1h:
+                        lower_bounds = np.array([0., 1000., 100., 0.])
+                        upper_bounds = np.array([10., 10000., 3000., 100.])
+                    else:
+                        lower_bounds = np.array([0., np.log(1000), 0.2, 0.])
+                        upper_bounds = np.array([10., np.log(10000), 1.2, 100.])
+            elif not self.use_one_halo:
                 # 2-parameter case: [A_2h, A_shot] (no one-halo)
                 n_params_base = 2
                 lower_bounds = np.array([0., 0.])
@@ -1025,7 +1161,23 @@ class CrossPowerSpectrumModel:
             if self.use_astrometry_damping:
                 n_params_base -= 1  # Last parameter is damping
         
-        if not self.use_one_halo:
+        if not self.use_two_halo:
+            if use_fixed_mu_sigma:
+                n_params = 2  # [A_1h, A_shot]
+                param_names = ['A_1h', 'A_shot']
+            elif use_fixed_ln_ell_peak:
+                n_params = 3  # [A_1h, sigma_1h, A_shot]
+                if self.use_lorentzian_1h:
+                    param_names = ['A_1h', 'gamma', 'A_shot']
+                else:
+                    param_names = ['A_1h', 'sigma_1h', 'A_shot']
+            else:
+                n_params = 4  # [A_1h, mu_1h, sigma_1h, A_shot]
+                if self.use_lorentzian_1h:
+                    param_names = ['A_1h', 'ell_0', 'gamma', 'A_shot']
+                else:
+                    param_names = ['A_1h', 'mu_1h', 'sigma_1h', 'A_shot']
+        elif not self.use_one_halo:
             n_params = 2  # [A_2h, A_shot]
             param_names = ['A_2h', 'A_shot']
         elif use_fixed_mu_sigma:
@@ -1095,7 +1247,22 @@ class CrossPowerSpectrumModel:
                 params_no_damp = params
                 sigma_damp = None
             
-            if not self.use_one_halo:
+            if not self.use_two_halo:
+                # NO 2h component case: [A_1h, ...] (+ optional sigma_damp)
+                # Insert zero value for A_2h to make 5-parameter array
+                if use_fixed_mu_sigma:
+                    # mu and sigma are fixed: params = [A_1h, A_shot]
+                    params_full = np.array([0.0, params_no_damp[0], 
+                                           self.mu_1h_fixed, self.sigma_1h_fixed, params_no_damp[1]])
+                elif use_fixed_ln_ell_peak:
+                    # ln_ell_peak is fixed: params = [A_1h, sigma_1h, A_shot]
+                    params_full = np.array([0.0, params_no_damp[0], 
+                                           ln_ell_peak_fixed, params_no_damp[1], params_no_damp[2]])
+                else:
+                    # Full 1h parameters vary: params = [A_1h, mu_1h, sigma_1h, A_shot]
+                    params_full = np.array([0.0, params_no_damp[0], 
+                                           params_no_damp[1], params_no_damp[2], params_no_damp[3]])
+            elif not self.use_one_halo:
                 # 2-parameter case: [A_2h, A_shot] (+ optional sigma_damp)
                 # Insert zero values for 1h parameters to make 5-parameter array
                 params_full = np.array([params_no_damp[0], 0.0, 0.0, 0.0, params_no_damp[1]])
@@ -1294,7 +1461,38 @@ class CrossPowerSpectrumModel:
             
             If zero_fixed=True, set fixed parameter uncertainties to 0.0
             """
-            if not self.use_one_halo:
+            if not self.use_two_halo:
+                # No two-halo: A_2h=0
+                mu_val = 0.0 if zero_fixed else self.mu_1h_fixed
+                sigma_val = 0.0 if zero_fixed else self.sigma_1h_fixed
+                if use_fixed_mu_sigma:
+                    # params_subset = [A_1h, A_shot, sigma_damp (optional)]
+                    if self.use_astrometry_damping:
+                        # Return [A_2h, A_1h, mu_1h, sigma_1h, A_shot, sigma_damp]
+                        return np.array([0.0, params_subset[0], mu_val,
+                                       sigma_val, params_subset[1], params_subset[2]])
+                    else:
+                        # Return [A_2h, A_1h, mu_1h, sigma_1h, A_shot]
+                        return np.array([0.0, params_subset[0], mu_val,
+                                       sigma_val, params_subset[1]])
+                elif use_fixed_ln_ell_peak:
+                    # params_subset = [A_1h, sigma_1h, A_shot, sigma_damp (optional)]
+                    ln_ell_val = 0.0 if zero_fixed else ln_ell_peak_fixed
+                    if self.use_astrometry_damping:
+                        return np.array([0.0, params_subset[0], ln_ell_val,
+                                       params_subset[1], params_subset[2], params_subset[3]])
+                    else:
+                        return np.array([0.0, params_subset[0], ln_ell_val,
+                                       params_subset[1], params_subset[2]])
+                else:
+                    # Full 1h parameters: params_subset = [A_1h, mu_1h, sigma_1h, A_shot, sigma_damp (optional)]
+                    if self.use_astrometry_damping:
+                        return np.array([0.0, params_subset[0], params_subset[1],
+                                       params_subset[2], params_subset[3], params_subset[4]])
+                    else:
+                        return np.array([0.0, params_subset[0], params_subset[1],
+                                       params_subset[2], params_subset[3]])
+            elif not self.use_one_halo:
                 # No one-halo: insert dummy values for A_1h, mu_1h, sigma_1h
                 if self.use_astrometry_damping:
                     # params_subset = [A_2h, A_shot, sigma_damp]
@@ -1409,7 +1607,24 @@ class CrossPowerSpectrumModel:
                 print("\n  ⚠️  Consider reporting A_2h as upper limit (posterior piled up near zero)")
         
         # Create parameter names for only the fitted parameters (for corner plot)
-        if not self.use_one_halo:
+        if not self.use_two_halo:
+            # Fitting without 2-halo term
+            if use_fixed_mu_sigma:
+                # 2-parameter case: only A_1h, A_shot
+                param_names_fitted = ['$A_{1h}$', '$A_{shot}$']
+            elif use_fixed_ln_ell_peak:
+                # 3-parameter case: A_1h, sigma_1h, A_shot
+                if self.use_lorentzian_1h:
+                    param_names_fitted = ['$A_{1h}$', r'$\gamma$', '$A_{shot}$']
+                else:
+                    param_names_fitted = ['$A_{1h}$', r'$\sigma_{1h}$', '$A_{shot}$']
+            else:
+                # 4-parameter case: A_1h, mu_1h, sigma_1h, A_shot
+                if self.use_lorentzian_1h:
+                    param_names_fitted = ['$A_{1h}$', r'$\ell_0$', r'$\gamma$', '$A_{shot}$']
+                else:
+                    param_names_fitted = ['$A_{1h}$', r'$\mu_{1h}$', r'$\sigma_{1h}$', '$A_{shot}$']
+        elif not self.use_one_halo:
             # 2-parameter case: only A_2h, A_shot
             param_names_fitted = ['$A_{2h}$', '$A_{shot}$']
         elif use_fixed_mu_sigma:
@@ -2637,10 +2852,13 @@ def plot_fit_fixed_1h_templates(model, lb_data, dl_data, dl_err, fit_result,
     sigma_fixed = fit_result.get('sigma_fixed', None)
     use_damping = fit_result.get('use_astrometry_damping', False)  # Get damping flag from fit_result
     
-    # Check if this is an IHL template fit result (must have both ihl_templates and template_names as non-None)
-    is_ihl_fit = ('ihl_templates' in fit_result and 
-                  fit_result.get('ihl_templates') is not None and
-                  fit_result.get('template_names') is not None)
+    # Check if this is an IHL template fit result
+    # For npz-loaded results, check use_ihl_templates flag
+    # For in-memory results, check ihl_templates key
+    is_ihl_fit = (fit_result.get('use_ihl_templates', False) or
+                  ('ihl_templates' in fit_result and
+                   fit_result.get('ihl_templates') is not None and
+                   fit_result.get('template_names') is not None))
     
     # Initialize uncertainty_bands to None (will be computed if errors available)
     uncertainty_bands = None
@@ -2650,18 +2868,54 @@ def plot_fit_fixed_1h_templates(model, lb_data, dl_data, dl_err, fit_result,
         # IHL template case: use the new methods
         ihl_templates = fit_result['ihl_templates']
         template_names = fit_result['template_names']
-        
+
+        # If templates not loaded (e.g., from saved npz file), try to load them
+        if ihl_templates is None:
+            # Check if this is a cached effective 1h template fit
+            if template_names and 'effective_1h' in template_names:
+                try:
+                    from ciber.theory.ihl_1h_template_cache import OneHaloTemplateCache
+                    cache = OneHaloTemplateCache()
+                    effective_1h, _, _ = cache.load_cache(slope=1.0)
+                    cached_template = effective_1h[1.0]
+                    # Convert to expected format
+                    ihl_templates = {
+                        'effective_1h': {
+                            'ell': cached_template['ell'],
+                            'dl': cached_template['one_halo_sum'],
+                            'slope': 1.0,
+                        }
+                    }
+                except Exception as e:
+                    print(f"Warning: Could not load cached effective 1h template for plotting: {e}")
+                    # Fall back to parametric model
+                    is_ihl_fit = False
+            else:
+                # Try loading from IHL template files
+                try:
+                    from ciber.theory.cl_template import load_ihl_template_for_zbin
+                    ihl_template_path = fit_result.get('ihl_template_path', 'ihl_templates/')
+                    zbinedges = fit_result.get('zbinedges', np.array([0.0, 1.0]))
+                    templates, _, _ = load_ihl_template_for_zbin(ihl_template_path, zbinedges, 0, slopes=[1.0])
+                    ihl_templates = templates
+                except Exception as e:
+                    print(f"Warning: Could not load IHL templates from files for plotting: {e}")
+                    is_ihl_fit = False
+
+        if ihl_templates is None:
+            raise ValueError(f"IHL template fit detected but templates could not be loaded for template_names={template_names}")
+
         components = model.model_components_with_ihl_templates(
             ell_model, params, ihl_templates, template_names
         )
-        
+
         # Rename keys for compatibility with plotting code below
         components_compat = {
             'two_halo': components['two_halo'],
             'shot_noise': components['shot_noise'],
             'total': components['total']
         }
-        
+
         # For IHL, we'll show the total IHL contribution as "one_halo"
         if 'one_halo_total' in components:
             components_compat['one_halo'] = components['one_halo_total']
@@ -2669,7 +2923,7 @@ def plot_fit_fixed_1h_templates(model, lb_data, dl_data, dl_err, fit_result,
             # Single template case
             template_key = f'ihl_{template_names[0]}'
             components_compat['one_halo'] = components[template_key]
-        
+
         components = components_compat
         
     elif use_single_slope is not None:
@@ -2716,9 +2970,26 @@ def plot_fit_fixed_1h_templates(model, lb_data, dl_data, dl_err, fit_result,
         # Check model type for proper uncertainty calculation
         if is_ihl_fit:
             # IHL template case: compute uncertainty bands for IHL templates
-            ihl_templates = fit_result['ihl_templates']
-            template_names = fit_result['template_names']
-            
+            ihl_templates = fit_result.get('ihl_templates')
+            template_names = fit_result.get('template_names')
+
+            # If templates not loaded, reload them (same as earlier)
+            if ihl_templates is None and template_names and 'effective_1h' in template_names:
+                try:
+                    from ciber.theory.ihl_1h_template_cache import OneHaloTemplateCache
+                    cache = OneHaloTemplateCache()
+                    effective_1h, _, _ = cache.load_cache(slope=1.0)
+                    cached_template = effective_1h[1.0]
+                    ihl_templates = {
+                        'effective_1h': {
+                            'ell': cached_template['ell'],
+                            'dl': cached_template['one_halo_sum'],
+                            'slope': 1.0,
+                        }
+                    }
+                except Exception as e:
+                    print(f"Warning: Could not load cached effective 1h template for uncertainty bands: {e}")
+
             # 2-halo bounds (same as parametric)
             if model.use_powerlaw_2h:
                 dl_2h_upper = model.powerlaw_2h_component(ell_model, params[0] + params_err[0], model.alpha_2h_fixed)
@@ -3617,16 +3888,16 @@ def run_gal_auto_fits(inst_list=[1, 2], cat='DESILS',
     return all_fit_results_mcmc
 
 
-def run_gal_auto_fits_two_stage(inst_list=[1, 2], cat='DESILS', 
+def run_gal_auto_fits_two_stage(inst_list=[1, 2], cat='DESILS',
                                  startidx=2, endidx=-1, zbinedges=[0.0, 0.2, 0.4, 0.6, 0.8, 1.0],
                                  lams=[1.1, 1.8], alpha_from_mock=0.0,
                                  chi2_eval_max=10000., lMax_fit=80000, fitstr='gal_auto_2stage',
                                  figbasedir='figures/gal_auto_fits/', save_figs=True, save_results=False,
                                  file_fpath=None, ihl_1h_params_path='ihl_1h_params.npz',
-                                 nwalkers=32, nsteps_stage1=2000, nsteps_stage2=4000, 
+                                 nwalkers=32, nsteps_stage1=2000, nsteps_stage2=4000,
                                  nburn_stage1=500, nburn_stage2=1000, prior_bounds=None,
-                                 chi2_lim=[-20, 5], headstr='hsc_ilt24.0', ifield_list=[4, 5, 6, 7, 8],
-                                 fmask=0.67):
+                                 chi2_lim=[-20, 5], headstr='hsc_ilt25.0', ifield_list=[4, 5, 6, 7, 8],
+                                 fmask=0.67, gal_ps_dict=None):
     """
     Run galaxy auto-spectrum fits using a two-stage approach with model-based Knox uncertainties.
     
@@ -3725,9 +3996,13 @@ def run_gal_auto_fits_two_stage(inst_list=[1, 2], cat='DESILS',
     fit_model_mcmc_iterative_knox : MCMC fitting with model-based Knox covariance
     """
     
+
+    inst_list = [1] # temporary
+    catname = 'LS' if cat == 'DESILS' else cat
+
     if save_results and file_fpath is None:
-        file_fpath = 'gal_auto_fits_2stage_'+cat+'_coarsez_'+fitstr+'.npz'
-    
+        file_fpath = 'gal_auto_fits_2stage_'+catname+'_coarsez_'+fitstr+'.npz'
+
     # Load IHL one-halo parameters
     import os
     if not os.path.exists(ihl_1h_params_path):
@@ -3750,25 +4025,30 @@ def run_gal_auto_fits_two_stage(inst_list=[1, 2], cat='DESILS',
     fsky = fmask * (field_area / full_sky) * nfield
     
     # Load galaxy auto-spectra
-    from ciber.plotting.gal_plotting_fns import collect_ciber_gal_vs_redshift
-    
-    # Construct parameters for loading data
-    subtract_randoms = True
-    maskstr = 'wFFerr' if cat=='HSC' else 'JHlt16_wFFerr'
-    
-    res_ps = collect_ciber_gal_vs_redshift(
-        cat, subtract_randoms=subtract_randoms,
-        ifield_list=ifield_list,
-        inst_list=inst_list, zbinedges=zbinedges,
-        maskstr=maskstr, subtract_sn=False,
-        tl_pix_correct=False, headstr=headstr,
-        with_ff_err=False, fmask=fmask
-    )
-    
-    lb = res_ps['lb']
-    full_cl_gal = res_ps['full_cl_gal']  # [n_inst, n_zbin, n_ell]
-    full_clerr_gal = res_ps['full_clerr_gal']  # Includes data-based Knox errors
-    
+    if gal_ps_dict is not None:
+        # Use pre-loaded spectra (e.g. from large-footprint maps via collect_gal_auto_large_vs_redshift)
+        lb = gal_ps_dict['lb']
+        full_cl_gal = gal_ps_dict['full_cl_gal']       # [n_inst, n_zbin, n_ell]
+        full_clerr_gal = gal_ps_dict['full_clerr_gal']
+    else:
+        from ciber.plotting.gal_plotting_fns import collect_ciber_gal_vs_redshift
+
+        subtract_randoms = True
+        maskstr = 'wFFerr' if cat=='HSC' else 'JHlt16_wFFerr'
+
+        res_ps = collect_ciber_gal_vs_redshift(
+            catname, subtract_randoms=subtract_randoms,
+            ifield_list=ifield_list,
+            inst_list=inst_list, zbinedges=zbinedges,
+            maskstr=maskstr, subtract_sn=False,
+            tl_pix_correct=False, headstr=headstr,
+            with_ff_err=False, fmask=fmask
+        )
+
+        lb = res_ps['lb']
+        full_cl_gal = res_ps['full_cl_gal']       # [n_inst, n_zbin, n_ell]
+        full_clerr_gal = res_ps['full_clerr_gal']  # Includes data-based Knox errors
+
     pf_data = lb * (lb + 1) / (2 * np.pi)
     
     # Get delta_ell for Knox calculation
@@ -3831,7 +4111,7 @@ def run_gal_auto_fits_two_stage(inst_list=[1, 2], cat='DESILS',
                 lb[startidx:endidx], 
                 dl_data[startidx:endidx], 
                 dl_err=dlerr_data_stage1[startidx:endidx],
-                fit_range=[300, lMax_fit],
+                fit_range=[lb[startidx], lMax_fit],
                 chi2_eval_max=lMax_fit,
                 nwalkers=nwalkers,
                 nsteps=nsteps_stage1,
@@ -3914,7 +4194,7 @@ def run_gal_auto_fits_two_stage(inst_list=[1, 2], cat='DESILS',
                 lb[startidx:endidx], 
                 dl_data[startidx:endidx],
                 dl_err=dlerr_data_stage2,  # Fixed errors from Stage 1 model
-                fit_range=[300, lMax_fit],
+                fit_range=[lb[startidx], lMax_fit],
                 chi2_eval_max=lMax_fit,
                 nwalkers=nwalkers,
                 nsteps=nsteps_stage2,
@@ -3935,7 +4215,7 @@ def run_gal_auto_fits_two_stage(inst_list=[1, 2], cat='DESILS',
             title += f', {zbinedges[zidx]:.1f}<z<{zbinedges[zidx+1]:.1f}'
             
             # Stage 1 plots
-            fig1 = CrossPowerSpectrumModel.mcmc_corner(
+            fig1 = CrossPowerSpectrumModel.plot_mcmc_corner(
                 fit_result_stage1,
                 title=title + ' (Stage 1)', 
                 figsize=(5, 5)
@@ -3948,7 +4228,8 @@ def run_gal_auto_fits_two_stage(inst_list=[1, 2], cat='DESILS',
                 dlerr_data_stage1[startidx:endidx],
                 fit_result_stage1, 
                 save_path=None, 
-                ylim=[1e-3, 5e2], 
+                ylim=[1e-4, 5e2], 
+                xlim=[50, 1e5],
                 figsize=(6, 6), 
                 title=title + ' (Stage 1)', 
                 title_fs=16, 
@@ -3972,7 +4253,8 @@ def run_gal_auto_fits_two_stage(inst_list=[1, 2], cat='DESILS',
                 dlerr_data_stage2,  # Already includes measurement + model-based Knox
                 fit_result_stage2, 
                 save_path=None, 
-                ylim=[1e-3, 5e2], 
+                ylim=[1e-4, 5e2], 
+                xlim=[50, 1e5],
                 figsize=(6, 6), 
                 title=title + ' (Stage 2)', 
                 title_fs=16, 
@@ -3985,18 +4267,20 @@ def run_gal_auto_fits_two_stage(inst_list=[1, 2], cat='DESILS',
             
             # Save figures
             if save_figs:
-                os.makedirs(figbasedir+cat+'_coarsez/corner/', exist_ok=True)
-                os.makedirs(figbasedir+cat+'_coarsez/ps_fits/', exist_ok=True)
-                
-                base_fname = f'gal_auto_fit_{zbinedges[zidx]:.1f}_z_{zbinedges[zidx+1]:.1f}_TM{inst}_{cat}_{fitstr}_lMaxfit={lMax_fit}'
-                
-                fig1.savefig(f'{figbasedir}{cat}_coarsez/corner/{base_fname}_stage1.png', 
+                os.makedirs(figbasedir+catname+'_coarsez/corner/', exist_ok=True)
+                os.makedirs(figbasedir+catname+'_coarsez/ps_fits/', exist_ok=True)
+
+                base_fname = f'gal_auto_fit_{zbinedges[zidx]:.1f}_z_{zbinedges[zidx+1]:.1f}_TM{inst}_{catname}_{fitstr}_lMaxfit={lMax_fit}'
+
+                fig1.savefig(f'{figbasedir}{catname}_coarsez/corner/{base_fname}_stage1.png',
                             bbox_inches='tight', dpi=300)
-                fig1_ps.savefig(f'{figbasedir}{cat}_coarsez/ps_fits/{base_fname}_stage1.png', 
+                fig1_ps.savefig(f'{figbasedir}{catname}_coarsez/ps_fits/{base_fname}_stage1.png',
                                bbox_inches='tight', dpi=300)
-                fig2.savefig(f'{figbasedir}{cat}_coarsez/corner/{base_fname}_stage2.png', 
+                fig2.savefig(f'{figbasedir}{catname}_coarsez/corner/{base_fname}_stage2.png',
                             bbox_inches='tight', dpi=300)
-                fig2_ps.savefig(f'{figbasedir}{cat}_coarsez/ps_fits/{base_fname}_stage2.png', 
+
+                print(f'ps path: {figbasedir}{catname}_coarsez/ps_fits/{base_fname}_stage2.png')
+                fig2_ps.savefig(f'{figbasedir}{catname}_coarsez/ps_fits/{base_fname}_stage2.png',
                                bbox_inches='tight', dpi=300)
             
             # Store only Stage 2 results with standard keys (matching cross-spectrum format)
@@ -4227,14 +4511,14 @@ def combine_auto_cross_A2h_samples(gal_auto_results, gal_cross_results,
     return combined_results
 
 
-def run_gal_cross_fits(inst_list=[1, 2], ifield_list=[4,5,6,7,8], maskstr='JHlt16_wFFerr', cat='DESILS', 
-                       startidx=2, endidx=-1, zbinedges=[0.0, 0.2, 0.4, 0.6,  0.8,  1.0], lams=[1.1, 1.8], alpha_from_mock=0.0, 
-                       chi2_eval_max=10000., lMax_fit=80000, fitstr='IHLtemp', 
+def run_gal_cross_fits(inst_list=[1, 2], ifield_list=[4,5,6,7,8], maskstr='JHlt16_wFFerr', cat='DESILS',
+                       startidx=2, endidx=-1, zbinedges=[0.0, 0.2, 0.4, 0.6,  0.8,  1.0], lams=[1.1, 1.8], alpha_from_mock=0.0,
+                       chi2_eval_max=10000., lMax_fit=80000, fitstr='IHLtemp',
                        figbasedir='figures/ciber_cl_fits_011526/', save_figs=True, save_results=False, file_fpath=None,
                        use_ihl_templates=True, use_lorentzian_1h=False, use_one_halo=True, use_two_halo=True,
                        mu_1h_prior=None, sigma_1h_prior=None, ln_ell_peak_relation=None,
                        ihl_1h_params_path='ihl_1h_params.npz', use_ihl_1h_params=True, fix_ihl_1h_shape=False,
-                       mu_1h_fixed_override=None, sigma_1h_fixed_override=None,
+                       mu_1h_fixed_override=None, sigma_1h_fixed_override=None, ihl_1h_template=None,
                        nwalkers=32, nsteps=4000, nburn=1000, prior_bounds=None, chi2_lim=[-20, 5],
                        use_astrometry_damping=False, initial_guess=None, headstr = 'hsc_ilt24.0'):
     """
@@ -4391,14 +4675,18 @@ def run_gal_cross_fits(inst_list=[1, 2], ifield_list=[4,5,6,7,8], maskstr='JHlt1
 
         # Load IHL templates if using template-based fitting
         if use_ihl_templates:
-            try:
-                templates, _, _ = load_ihl_template_for_zbin(
-                    'ihl_templates/', zbinedges, zidx, slopes=[1.0]
-                )
-            except Exception as e:
-                print(f"Could not load IHL templates for z-bin {zidx}: {e}")
-                print("Skipping this redshift bin...")
-                continue
+            # Use provided template override if available (e.g., cached effective 1h template)
+            if ihl_1h_template is not None:
+                templates = {'effective_1h': ihl_1h_template}
+            else:
+                try:
+                    templates, _, _ = load_ihl_template_for_zbin(
+                        'ihl_templates/', zbinedges, zidx, slopes=[1.0]
+                    )
+                except Exception as e:
+                    print(f"Could not load IHL templates for z-bin {zidx}: {e}")
+                    print("Skipping this redshift bin...")
+                    continue
         else:
             templates = None
 

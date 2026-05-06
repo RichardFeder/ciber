@@ -334,15 +334,10 @@ def ciber_gal_cross(inst_list, ifield_list_use, catname, addstr=None, randstr=No
 		else:
 			mask_tail = 'maglim_'+bandstr+'_Vega_'+str(masking_maglim)+'_111323_ukdebias'
 
-
 		print('Loading from mask tail = ', mask_tail)
 
 		dc_template = cbps.load_dark_current_template(inst, verbose=True, inplace=False)
 
-		# if catname=='WISE':
-
-		# 	wise_masks = np.load('data/unWISE_coadds/unwise_masks/ciber_regrid_wise_bitmasks_all_TM'+str(inst)+'.npz')['wise_mask_regrid']
-		
 		for fieldidx, ifield in enumerate(ifield_list_full):
 			flight_im = cbps.load_flight_image(ifield, inst, inplace=False)
 			flight_im *= cbps.cal_facs[inst]
