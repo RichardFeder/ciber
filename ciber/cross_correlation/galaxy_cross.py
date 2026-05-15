@@ -98,7 +98,7 @@ class cat_select():
         if 'redshift' in self.cat_stack_labs:
             if self.gal_dict['zmin'] is not None:
                 print('Removing z < '+str(self.gal_dict['zmin'])+' sources')
-                mask *= (self.cat_z > gal_dict['zmin'])
+                mask *= (self.cat_z > self.gal_dict['zmin'])
             if self.gal_dict['zmax'] is not None:
                 print('Removing z > '+str(self.gal_dict['zmax'])+' sources')
                 mask *= (self.cat_z < self.gal_dict['zmax'])
@@ -238,6 +238,132 @@ def compute_weighted_cl(all_cl, all_clerr):
     field_averaged_cl = np.nansum(weights*all_cl, axis=0)/cl_sumweights
     
     return field_averaged_cl, field_averaged_std
+
+
+def compute_effective_bias_ls(zbinedges, dz=0.1,
+                               dNdzb_basepath=None, cat_basepath=None,
+                               survey_area_deg2=19400.0):
+    """Compute effective galaxy bias b_g for each broad redshift bin from
+    tomographer b_g*dN/dz estimates.
+
+    The tomographer dNdz_b column stores b_g(z) * dN/dz(z) with units of
+    deg^-2 per unit redshift (i.e. galaxies per deg^2 per dz), normalized by
+    the LS DR8 survey area (19400 deg^2).
+
+    For each dz=0.1 photo-z slice the per-slice effective bias is:
+
+        b_eff_i = integral_allz(b*dN/dz dz) / (N_i / survey_area_deg2)
+
+    where the integral is computed over the full fine-z grid in the file
+    (which spans 0–2 to capture photo-z scatter) and N_i is the galaxy count
+    from the catalog for that slice.
+
+    For a broad bin covering multiple slices the bias is weighted by
+    N_i / survey_area_deg2 (i.e. by the surface density of galaxies):
+
+        b_eff = sum_i( integral_i ) / sum_i( N_i / survey_area_deg2 )
+
+    Parameters
+    ----------
+    zbinedges : array_like
+        Edges of the broad redshift bins (e.g. [0.0, 0.2, 0.4, ...])
+    dz : float, optional
+        Width of fine slices (default 0.1, matching the .fit files)
+    dNdzb_basepath : str, optional
+        Directory containing dNdzb_*.fit files. Defaults to config path.
+    cat_basepath : str, optional
+        Directory containing LS_Dr8_z22_*.fits catalogs. Defaults to config path.
+    survey_area_deg2 : float, optional
+        Survey area in deg^2 used to normalize dNdz_b (default 19400.0 for LS DR8)
+
+    Returns
+    -------
+    b_eff : ndarray
+        Effective bias for each broad bin, shape [len(zbinedges)-1]
+    b_eff_err : ndarray
+        Propagated uncertainty on b_eff, shape [len(zbinedges)-1]
+    z_centers : ndarray
+        Bin center redshifts
+    """
+    if dNdzb_basepath is None:
+        dNdzb_basepath = config.ciber_basepath + 'data/ciber_x_gal/tomographer2_dNdzb/'
+    if cat_basepath is None:
+        cat_basepath = config.ciber_basepath + 'data/ciber_x_gal/data_catalogs/'
+
+    # Build list of fine slices covering the full range
+    z_fine_edges = np.round(np.arange(zbinedges[0], zbinedges[-1] + dz/2, dz), 1)
+
+    # For each fine slice: integral of b*dN/dz dz (in deg^-2) and N_allsky
+    slice_integral     = {}   # z0 -> sum(dNdz_b * dz)  [deg^-2]
+    slice_integral_var = {}   # z0 -> sum((dNdz_b_err * dz)^2)
+    slice_N            = {}   # z0 -> all-sky galaxy count
+
+    for zidx in range(len(z_fine_edges) - 1):
+        z0 = z_fine_edges[zidx]
+        z1 = z_fine_edges[zidx + 1]
+
+        dNdzb_fpath = dNdzb_basepath + f'dNdzb_{z0:.1f}_zphot_{z1:.1f}.fit'
+        try:
+            hdul = fits.open(dNdzb_fpath)
+            data = hdul[1].data
+            hdul.close()
+            slice_integral[z0]     = np.sum(data['dNdz_b'] * data['dz'])
+            slice_integral_var[z0] = np.sum((data['dNdz_b_err'] * data['dz'])**2)
+        except FileNotFoundError:
+            print(f'[effective_bias] Missing dNdzb file for z={z0:.1f}-{z1:.1f}, skipping')
+            slice_integral[z0]     = np.nan
+            slice_integral_var[z0] = np.nan
+
+        cat_fpath = cat_basepath + f'LS_Dr8_z22_{z0:.1f}_zphot_{z1:.1f}.fits'
+        try:
+            hdul = fits.open(cat_fpath)
+            slice_N[z0] = len(hdul[1].data)
+            hdul.close()
+        except FileNotFoundError:
+            print(f'[effective_bias] Missing catalog for z={z0:.1f}-{z1:.1f}, skipping')
+            slice_N[z0] = 0
+
+    # Compute effective bias per broad bin
+    n_bins = len(zbinedges) - 1
+    b_eff     = np.zeros(n_bins)
+    b_eff_err = np.zeros(n_bins)
+    z_centers = 0.5 * (zbinedges[:-1] + zbinedges[1:])
+
+    for bidx in range(n_bins):
+        z0_bin = zbinedges[bidx]
+        z1_bin = zbinedges[bidx + 1]
+
+        slices_in_bin = [z for z in slice_integral
+                         if z >= z0_bin - dz/10 and z < z1_bin - dz/10]
+
+        # numerator = sum_i integral_i  [deg^-2]
+        # denominator = sum_i N_i / fullsky_deg2  [deg^-2]
+        # b_eff = numerator / denominator  (dimensionless)
+        numerator     = 0.0
+        numerator_var = 0.0
+        denominator   = 0.0
+
+        for z0s in slices_in_bin:
+            integ = slice_integral[z0s]
+            ivar  = slice_integral_var[z0s]
+            N     = slice_N[z0s]
+
+            if np.isnan(integ) or N == 0:
+                continue
+
+            numerator     += integ
+            numerator_var += ivar
+            denominator   += N / survey_area_deg2
+
+        if denominator > 0:
+            b_eff[bidx]     = numerator / denominator
+            b_eff_err[bidx] = np.sqrt(numerator_var) / denominator
+        else:
+            b_eff[bidx]     = np.nan
+            b_eff_err[bidx] = np.nan
+
+    return b_eff, b_eff_err, z_centers
+
 
 def save_gal_density(inst, ifield_list, gal_densities, catname, basepath=None, addstr=None):
     
@@ -706,7 +832,7 @@ def preprocess_gal_density_maps(inst, ifield_list, catname, save=False, cat_fpat
     for fieldidx, ifield in enumerate(ifield_list):
         
         if cat_fpath_list is None:
-            cat_fpath = catalog_basepath+catname+'/filt/'+catname+'_CIBER_ifield'+str(ifield)+'.csv'
+            cat_fpath = gal_dict['catalog_basepath']+catname+'/filt/'+catname+'_CIBER_ifield'+str(ifield)+'.csv'
         else:
             cat_fpath = cat_fpath_list[fieldidx]
             

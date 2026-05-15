@@ -714,6 +714,7 @@ def run_omnibus(args: argparse.Namespace) -> List[GeneratedFigure]:
         "tl_pix_correct": tl_pix_correct,
         "ifield_use": args.omnibus_tl_ifield,
         "tl_pix_template": args.omnibus_tl_pix_template,
+        "ls_gal_auto_large_fpath": args.ls_gal_auto_large,
     }
 
     if args.pred_source == "current":
@@ -883,6 +884,210 @@ def run_rl_vs_z_scale(args: argparse.Namespace) -> List[GeneratedFigure]:
     return [GeneratedFigure("rl-vs-z-scale", fig, "plot_rl_vs_z_vs_scale_DESILS")]
 
 
+def fit_gaia_cross_poisson_damping(
+    inst: int,
+    addstr: str = "stars_glt20p5_JHlt14_wFFerr",
+    fit_save_dir: str = "data/gaia_cross_fits",
+    mask_frac: float = 0.7,
+    ifield_list: List[int] = None,
+    ifield_use: int = 8,
+    startidx: int = 2,
+    endidx: int = -1,
+    nwalkers: int = 32,
+    nsteps: int = 2000,
+    nburn: int = 500,
+    verbose: bool = True,
+) -> Dict[str, Any]:
+    """Fit CIBER x Gaia cross spectrum with Poisson + astrometry damping model.
+
+    Model: D_ell = A_shot * ell*(ell+1)/(2*pi) * exp(-0.5 * (sigma_damp_rad * ell)^2)
+    
+    Fitted parameters: [A_shot, sigma_damp_arcsec]
+
+    Results are saved to ``fit_save_dir/gaia_cross_fit_TM{inst}.npz``.
+
+    Parameters
+    ----------
+    inst : int
+        CIBER instrument (1=J, 2=H).
+    addstr : str
+        Suffix identifying the Gaia catalog file.
+    fit_save_dir : str
+        Directory to write the NPZ fit result.
+    mask_frac : float
+        Assumed unmasked sky fraction per field.
+    ifield_list : list of int, optional
+        Fields to include. Defaults to [4, 5, 6, 7, 8].
+    ifield_use : int
+        Reference field for pixel transfer function correction.
+    startidx, endidx : int
+        Multipole index range slice applied before fitting.
+    nwalkers, nsteps, nburn : int
+        MCMC configuration.
+    verbose : bool
+        Print fit diagnostics.
+
+    Returns
+    -------
+    dict
+        Result dict with keys ``lb``, ``fieldav_cl_cross``, ``fieldav_clerr_cross``,
+        ``samples``, ``params``, ``params_16``, ``params_84``, ``param_names_fitted``.
+    """
+    import emcee
+    import ciber.plotting.gal_plotting_fns as gpf
+    from ciber.core.powerspec_pipeline import CIBER_PS_pipeline
+    from ciber.plotting.gal_plotting_fns import (
+        load_ciber_gal_ps,
+        compute_weighted_cl,
+        estimate_cross_uncertainties,
+    )
+
+    if ifield_list is None:
+        ifield_list = [4, 5, 6, 7, 8]
+
+    cbps = CIBER_PS_pipeline()
+    bandstr_list = ["J", "H"]
+
+    cgps_file = load_ciber_gal_ps(inst, "gaia", addstr=addstr)
+    lb = cgps_file["lb"]
+    all_cl_gal = cgps_file["all_cl_gal"]
+    all_cl_cross = cgps_file["all_cl_cross"]
+    all_clerr_cross = cgps_file["all_clerr_cross"]
+    ifield_list_use = cgps_file["ifield_list_use"]
+    nfield = len(ifield_list_use)
+
+    ciber_auto = gpf._load_ciber_auto_file(bandstr_list[inst - 1])
+    lb_auto, cl_auto = ciber_auto["lb"], ciber_auto["fieldav_cl"]
+
+    cl_weights = 1.0 / all_clerr_cross ** 2
+    fieldav_cl_cross, fieldav_clerr_cross = compute_weighted_cl(
+        all_cl_cross.copy(), cl_weights
+    )
+    fieldav_cl_gal = np.mean(all_cl_gal, axis=0)
+
+    cross_knox = np.sqrt(1.0 / ((2 * lb + 1) * cbps.Mkk_obj.delta_ell))
+    fsky = mask_frac * nfield * 2 * 2 / 41253.0
+    cross_knox /= np.sqrt(fsky)
+    cross_knox *= np.abs(fieldav_cl_cross)
+    fieldav_clerr_cross = np.sqrt(cross_knox ** 2 + fieldav_clerr_cross ** 2)
+    fieldav_clerr_cross = estimate_cross_uncertainties(
+        lb, fieldav_cl_cross, fieldav_clerr_cross,
+        cl_auto, fieldav_cl_gal, nfield, startidx=2, endidx=-1,
+    )
+
+    tl_pix = np.load(
+        f"data/fluctuation_data/transfer_function/tl_clx_pix_TM{inst}_ifield{ifield_use}.npz"
+    )["tl_clx_pix"]
+    fieldav_cl_cross = fieldav_cl_cross / tl_pix
+    fieldav_clerr_cross = fieldav_clerr_cross / tl_pix
+
+    pf = lb * (lb + 1) / (2 * np.pi)
+    dl_data = pf * fieldav_cl_cross
+    dl_err = pf * fieldav_clerr_cross
+
+    # Select fit range
+    lbmask = np.ones(len(lb), dtype=bool)
+    lbmask[:startidx] = False
+    if endidx != -1:
+        lbmask[endidx:] = False
+    
+    lb_fit = lb[lbmask]
+    dl_fit = dl_data[lbmask]
+    dl_err_fit = dl_err[lbmask]
+
+    # Only fit positive-signal bins
+    pos_mask = dl_fit > 0
+    lb_fit = lb_fit[pos_mask]
+    dl_fit = dl_fit[pos_mask]
+    dl_err_fit = dl_err_fit[pos_mask]
+
+    pf_fit = lb_fit * (lb_fit + 1) / (2 * np.pi)
+    arcsec_to_rad = (1.0 / 3600.0) * (np.pi / 180.0)
+
+    # MCMC setup: 2 parameters [A_shot, sigma_damp_arcsec]
+    A_shot_lo, A_shot_hi = 0.0, 1e-3
+    sig_lo, sig_hi = 0.1, 20.0  # arcsec
+
+    def _log_prior(p):
+        A, sig = p
+        if A_shot_lo <= A <= A_shot_hi and sig_lo <= sig <= sig_hi:
+            return 0.0
+        return -np.inf
+
+    def _log_likelihood(p):
+        A, sig = p
+        sig_r = sig * arcsec_to_rad
+        model = A * pf_fit * np.exp(-0.5 * (sig_r * lb_fit) ** 2)
+        return -0.5 * np.sum(((dl_fit - model) / dl_err_fit) ** 2)
+
+    def _log_prob(p):
+        lp = _log_prior(p)
+        return lp + _log_likelihood(p) if np.isfinite(lp) else -np.inf
+
+    # Initial guess: A_shot from high-ell mean, sigma_damp = 2 arcsec
+    shot_mask = lb_fit >= 0.5 * lb_fit.max()
+    A_shot_init = float(np.nanmean(dl_fit[shot_mask] / pf_fit[shot_mask])) if np.any(shot_mask) else 1e-5
+    A_shot_init = np.clip(A_shot_init, A_shot_lo + 1e-8, A_shot_hi - 1e-8)
+    p0_center = np.array([A_shot_init, 2.0])
+    p0 = p0_center + np.array([1e-6, 0.5]) * np.random.randn(nwalkers, 2)
+    p0[:, 0] = np.clip(p0[:, 0], A_shot_lo + 1e-10, A_shot_hi - 1e-10)
+    p0[:, 1] = np.clip(p0[:, 1], sig_lo + 1e-4, sig_hi - 1e-4)
+
+    if verbose:
+        print(f"Running Gaia cross MCMC (TM{inst}): [A_shot, sigma_damp], "
+              f"{nwalkers} walkers x {nsteps} steps...")
+
+    sampler = emcee.EnsembleSampler(nwalkers, 2, _log_prob)
+    sampler.run_mcmc(p0, nsteps, progress=verbose)
+    samples = sampler.get_chain(discard=nburn, flat=True)  # (N, 2)
+
+    params_med = np.median(samples, axis=0)
+    params_16 = np.percentile(samples, 16, axis=0)
+    params_84 = np.percentile(samples, 84, axis=0)
+
+    if verbose:
+        print(f"  A_shot   = {params_med[0]:.3e} [{params_16[0]:.3e}, {params_84[0]:.3e}]")
+        print(f"  σ_damp   = {params_med[1]:.2f} [{params_16[1]:.2f}, {params_84[1]:.2f}] arcsec")
+
+    result = {
+        "lb": lb,
+        "fieldav_cl_cross": fieldav_cl_cross,
+        "fieldav_clerr_cross": fieldav_clerr_cross,
+        "samples": samples,
+        "params": params_med,
+        "params_16": params_16,
+        "params_84": params_84,
+        "param_names_fitted": ["A_shot", "sigma_damp_arcsec"],
+    }
+
+    os.makedirs(fit_save_dir, exist_ok=True)
+    save_path = os.path.join(fit_save_dir, f"gaia_cross_fit_TM{inst}.npz")
+    np.savez(
+        save_path,
+        lb=lb,
+        fieldav_cl_cross=fieldav_cl_cross,
+        fieldav_clerr_cross=fieldav_clerr_cross,
+        samples=result["samples"],
+        params=result["params"],
+        params_16=result["params_16"],
+        params_84=result["params_84"],
+        param_names_fitted=result["param_names_fitted"],
+    )
+    if verbose:
+        print(f"Saved Gaia cross fit (TM{inst}) to {save_path}")
+
+    return result
+
+
+def _load_gaia_cross_fit(inst: int, fit_save_dir: str = "data/gaia_cross_fits") -> Optional[Dict[str, Any]]:
+    """Load a previously saved Gaia cross fit NPZ, or return None if not found."""
+    path = os.path.join(fit_save_dir, f"gaia_cross_fit_TM{inst}.npz")
+    if not os.path.exists(path):
+        return None
+    d = np.load(path, allow_pickle=True)
+    return {k: d[k] for k in d.files}
+
+
 def run_gaia_auto(args: argparse.Namespace) -> List[GeneratedFigure]:
     fns = _import_plotting_functions()
     plt = fns["plt"]
@@ -894,10 +1099,11 @@ def run_gaia_auto(args: argparse.Namespace) -> List[GeneratedFigure]:
         inst=1,
         addstr="stars_glt20p5_JHlt14_wFFerr",
         ylabel="$D_{\\ell}$",
-        textxpos=1400,
+        textxpos=300,
         textypos=50,
-        textstr="Gaia star auto\n($g<20.5$, $J>15.0$)",
+        textstr="Gaia star auto\n($G<20.5$, $J>14.0$)",
         ylim=[1e-4, 1e3],
+        xlim=[250, 1.1e5]
     )
 
     # Post-process to match notebook styling:
@@ -941,7 +1147,7 @@ def run_gaia_auto(args: argparse.Namespace) -> List[GeneratedFigure]:
         linewidth=1.0,
         color="k",
         alpha=0.9,
-        label=f"$C_\\ell={cl_shot_best:.2e}$",
+        label=f"Best-fit shot noise",
     )
     ax.set_ylim([1e-4, 1e3])
     ax.legend(loc=4, fontsize=10, ncol=2)
@@ -950,15 +1156,101 @@ def run_gaia_auto(args: argparse.Namespace) -> List[GeneratedFigure]:
 
 
 def run_gaia_cross(args: argparse.Namespace) -> List[GeneratedFigure]:
+    import matplotlib.pyplot as plt
+
     fns = _import_plotting_functions()
     plot_fieldav_ciber_gal_ps = fns["plot_fieldav_ciber_gal_ps"]
 
-    fig, _, _, _ = plot_fieldav_ciber_gal_ps(
-        inst_list=[1, 2],
+    rerun_fit = getattr(args, "rerun_fit", False)
+    fit_save_dir = "data/gaia_cross_fits"
+    addstr = "stars_glt20p5_JHlt14_wFFerr"
+    inst_list = [1, 2]
+    colors = ["b", "r"]
+
+    # Load or rerun fits for each instrument
+    fits: Dict[int, Dict[str, Any]] = {}
+    for inst in inst_list:
+        cached = None if rerun_fit else _load_gaia_cross_fit(inst, fit_save_dir)
+        if cached is None:
+            print(f"Running Gaia cross fit for TM{inst}...")
+            cached = fit_gaia_cross_poisson_damping(
+                inst, addstr=addstr, fit_save_dir=fit_save_dir
+            )
+        fits[inst] = cached
+
+    fig, lb, _, _ = plot_fieldav_ciber_gal_ps(
+        inst_list=inst_list,
         catname="gaia",
-        addstr="stars_glt20p5_JHlt14_wFFerr",
-        textstr="CIBER $\\times$ Gaia stars\n($g<20.5$, $J>15.0$)",
+        addstr=addstr,
+        textstr="CIBER $\\times$ Gaia stars\n($G<20.5$, $J>14.0$)",
+        textxpos=350,
+        labels=["Data", None],  # Only show "Data" label for first instrument
     )
+
+    ax = fig.axes[0]
+    ell_plot = np.geomspace(lb[2], lb[-2], 300)
+    pf_plot = ell_plot * (ell_plot + 1) / (2 * np.pi)
+
+    damping_values = []  # Store damping values for text annotation
+    
+    for idx, inst in enumerate(inst_list):
+        color = colors[idx]
+        fit = fits[inst]
+        samples = fit["samples"]  # shape (N_samples, 2): [A_shot, sigma_damp_arcsec]
+        params = fit["params"]    # [A_shot_median, sigma_damp_median]
+        A_shot_med = float(params[0])
+        sigma_damp_med = float(params[1])
+
+        sigma_rad_med = sigma_damp_med * (1.0 / 3600.0) * (np.pi / 180.0)
+
+        # Best-fit damped curve
+        dl_damped = A_shot_med * pf_plot * np.exp(-0.5 * (sigma_rad_med * ell_plot) ** 2)
+        # Undamped Poisson
+        dl_poisson = A_shot_med * pf_plot
+
+        # 1-sigma band from posterior samples (vectorized: N_samples x N_ell)
+        arcsec_to_rad = (1.0 / 3600.0) * (np.pi / 180.0)
+        A_samp = samples[:, 0][:, np.newaxis]          # (N, 1)
+        sig_r_samp = samples[:, 1][:, np.newaxis] * arcsec_to_rad  # (N, 1)
+        dl_band = A_samp * pf_plot * np.exp(-0.5 * (sig_r_samp * ell_plot) ** 2)
+        dl_lo = np.percentile(dl_band, 16, axis=0)
+        dl_hi = np.percentile(dl_band, 84, axis=0)
+
+        lam_str = {1: "1.1", 2: "1.8"}[inst]
+    
+        # Plot Poisson level (dashed line)
+        label_poisson = "Best-fit shot noise" if idx == 0 else None
+        ax.plot(ell_plot, dl_poisson, color=color, linewidth=1.0,
+                linestyle="--", zorder=4, alpha=0.7, label=label_poisson)
+
+        # Plot with damping (solid line)
+        label_damp = "With damping" if idx == 0 else None
+        ax.plot(ell_plot, dl_damped, color=color, linewidth=1.2, zorder=5,
+                label=label_damp, alpha=0.7)
+        ax.fill_between(ell_plot, dl_lo, dl_hi, color=color, alpha=0.2, zorder=4)
+        
+
+        # Store damping values with color info for bottom-right annotation
+        damping_values.append((sigma_damp_med, lam_str, color))
+
+    # Add data label - plot invisible line for legend
+    # ax.plot([], [], 'k-', linewidth=1.5, label="Data (1.1 $\\mu$m)")
+
+    # Create legend
+    ax.legend(loc=2, bbox_to_anchor=[-0.2, 1.15], fontsize=11, ncol=3)
+    
+    # Add damping values in bottom right with colored text
+    y_pos = 0.2
+    for sigma_damp, lam_str, color in damping_values:
+        text_str = f"$\\sigma_{{\\rm damp}}$ = {sigma_damp:.1f}'' ({lam_str} $\\mu$m)"
+        ax.text(0.95, y_pos, text_str, transform=ax.transAxes, 
+                fontsize=12, verticalalignment='top', horizontalalignment='right',
+                color=color)
+        y_pos -= 0.1
+    
+    ax.set_ylim([1e-3, 1e3])
+    ax.set_xlim([280, 1.1e5])
+
     return [GeneratedFigure("gaia-cross", fig, "ciber_gaia_star_glt20p5_cross")]
 
 
@@ -1050,9 +1342,12 @@ def run_cross_redshift(args: argparse.Namespace) -> List[GeneratedFigure]:
             "parametric mode is not supported for cross-redshift wrapper; use compare-mock-vs-parametric"
         )
 
+    bias_cache = str(getattr(args, "bias_cache_fpath", "") or "").strip() or None
+
     fig_fine, fig_coarse = gen_cross_spectrum_plots_vs_z(
         plot_fine=True,
         plot_coarse=True,
+        bias_cache_fpath=bias_cache,
     )
 
     out: List[GeneratedFigure] = []
@@ -4200,6 +4495,139 @@ def run_compare_desils_cmgs(args: argparse.Namespace) -> List[GeneratedFigure]:
     return [GeneratedFigure("compare-desils-cmgs", fig, "ciber_desils_cmgs")]
 
 
+def run_amplitude_vs_z(args: argparse.Namespace) -> List[GeneratedFigure]:
+    """Plot fitted A_2h (and optionally A_1h) vs redshift with bias-corrected model overlay.
+
+    Loads parametric cross-fit results for DESI-LS and/or HSC, calls
+    plot_amplitude_comparison, and overlays the b_g-rescaled IGL mock A_2h
+    prediction on the two-halo panel.
+
+    Usage example::
+
+        python scripts/generate_gal_cross_paper_figures.py \\
+            amplitude-vs-z \\
+            --fit-results-ls data/cross_cl_fits/ciber_cl_fits_DESILS_coarsez_<tag>.npz \\
+            --fit-results-hsc data/cross_cl_fits/ciber_cl_fits_HSC_coarsez_<tag>.npz \\
+            --bias-cache-fpath scripts/effective_bias_ls_cache.npz
+    """
+    from ciber.plotting.gal_plotting_fns import plot_amplitude_comparison_by_instrument
+    from ciber.theory.cross_ps_parametric_model import load_fit_results_npz
+    from ciber.theory.cl_predictions import grab_ciber_cross_vs_z_predfpaths
+
+    zbinedges_coarse = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
+    z_centers = 0.5 * (np.array(zbinedges_coarse[:-1]) + np.array(zbinedges_coarse[1:]))
+
+    # --- load fit results (one per catalog) ---
+    configs = []
+
+    if args.fit_results_ls:
+        ls_res = load_fit_results_npz(args.fit_results_ls)
+        configs.append({"results": ls_res, "label": "CIBER × DESI-LS", "marker": "o"})
+
+    if args.fit_results_hsc:
+        hsc_res = load_fit_results_npz(args.fit_results_hsc)
+        configs.append({"results": hsc_res, "label": "CIBER × HSC", "marker": "s"})
+
+    if not configs:
+        raise ValueError("At least one of --fit-results-ls or --fit-results-hsc must be provided.")
+
+    # --- build overlays per instrument: one per catalog (LS + HSC if available) ---
+    bias_model_overlays = None
+
+    if args.bias_cache_fpath and (args.fit_results_ls or args.fit_results_hsc):
+        # Default mock basepath to v2 if not supplied
+        mock_basepath = args.pred_basepath if args.pred_basepath else "data/jordan_mocks/v2"
+        base = _normalize_pred_basepath(mock_basepath)
+        cache = np.load(args.bias_cache_fpath, allow_pickle=False)
+        coeffs_ls = np.asarray(cache["coarse_poly_coeffs"])
+        b_g_ls = np.poly1d(coeffs_ls)(z_centers)
+
+        # HSC bias: b(z) = 1 + 0.84*z
+        b_g_hsc = 1.0 + 0.84 * z_centers
+
+        overlays_per_inst = []
+        for inst in args.inst_list:
+            inst_overlays = []
+
+            # LS overlay
+            if args.fit_results_ls:
+                _ls_headstrs = ["sdss_z_lt_22.0_CIBERfidmask", "sdss_z_lt_22.0"]
+                pred_fpaths_ls = None
+                for headstr in _ls_headstrs:
+                    candidate = grab_ciber_cross_vs_z_predfpaths(
+                        inst_list=[inst],
+                        zbinedges=zbinedges_coarse,
+                        jmock_basedir=str(base) + "/",
+                        headstr=headstr,
+                    )[0]
+                    if any(os.path.exists(p) for p in candidate):
+                        pred_fpaths_ls = candidate
+                        break
+
+                if pred_fpaths_ls is not None:
+                    inst_overlays.append({
+                        "pred_fpaths": pred_fpaths_ls,
+                        "z_centers":   z_centers,
+                        "b_g_values":  b_g_ls,
+                        "label":       "IGL prediction",
+                        "color":       "k",
+                        "marker":      "o",
+                        "x_offset":    -0.3,
+                    })
+                else:
+                    print(f"[amplitude-vs-z] No LS mock pred files found for TM{inst}")
+
+            # HSC overlay
+            if args.fit_results_hsc:
+                _hsc_headstrs = ["hsc_i_lt_25.0_CIBERfidmask", "hsc_i_lt_25.0"]
+                pred_fpaths_hsc = None
+                for headstr in _hsc_headstrs:
+                    candidate = grab_ciber_cross_vs_z_predfpaths(
+                        inst_list=[inst],
+                        zbinedges=zbinedges_coarse,
+                        jmock_basedir=str(base) + "/",
+                        headstr=headstr,
+                    )[0]
+                    if any(os.path.exists(p) for p in candidate):
+                        pred_fpaths_hsc = candidate
+                        break
+
+                if pred_fpaths_hsc is not None:
+                    inst_overlays.append({
+                        "pred_fpaths": pred_fpaths_hsc,
+                        "z_centers":   z_centers,
+                        "b_g_values":  b_g_hsc,
+                        "label":       None,
+                        "color":       "k",
+                        "marker":      "s",
+                        "x_offset":    +0.3,
+                    })
+                else:
+                    print(f"[amplitude-vs-z] No HSC mock pred files found for TM{inst}")
+
+            overlays_per_inst.append(inst_overlays if inst_overlays else None)
+
+        if any(ov is not None for ov in overlays_per_inst):
+            bias_model_overlays = overlays_per_inst
+
+    # --- plot using by-instrument layout (columns=inst, rows=A2h/A1h) ---
+    ylim_2h = list(args.ylim_2h) if args.ylim_2h else None
+    ylim_ihl = list(args.ylim_ihl) if args.ylim_ihl else None
+
+    fig = plot_amplitude_comparison_by_instrument(
+        configs,
+        inst_list=tuple(args.inst_list),
+        figsize=tuple(args.figsize),
+        ylim_2h=ylim_2h,
+        ylim_ihl=ylim_ihl,
+        legend_ncol=args.legend_ncol,
+        use_cmap=False,
+        bias_model_overlay=bias_model_overlays,
+    )
+
+    return [GeneratedFigure("amplitude-vs-z", fig, "amplitude_vs_z")]
+
+
 def run_compare_mock_vs_parametric(args: argparse.Namespace) -> List[GeneratedFigure]:
     """Dedicated parametric-fit component plotting for selected fit files.
 
@@ -4786,6 +5214,9 @@ def _dispatch_single(args: argparse.Namespace, command: str) -> List[FigureTimin
     if command == "compare-mock-vs-parametric":
         return _run_generated_figures(args, lambda: run_compare_mock_vs_parametric(args))
 
+    if command == "amplitude-vs-z":
+        return _run_generated_figures(args, lambda: run_amplitude_vs_z(args))
+
     raise ValueError(f"Unknown command: {command}")
 
 
@@ -4804,6 +5235,7 @@ def _default_all_commands() -> List[str]:
         "compare-r-ell",
         "compare-desils-cmgs",
         "compare-mock-vs-parametric",
+        "amplitude-vs-z",
     ]
 
 
@@ -4890,8 +5322,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--omnibus-figsize",
         type=float,
         nargs=2,
-        default=[7, 6],
+        default=[10, 6],
         help="Figure size (width, height) for omnibus plots (default: 7 6)",
+    )
+    parser.add_argument(
+        "--ls-gal-auto-large",
+        default=None,
+        help="Path to .npz from compute_gal_auto_spectrum_large() to replace the LS galaxy auto with a larger-footprint version",
     )
 
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -4932,7 +5369,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     subparsers.add_parser("gaia-auto", help="Generate Gaia star auto-spectrum figure")
-    subparsers.add_parser("gaia-cross", help="Generate CIBER x Gaia star cross-spectrum figure")
+    p_gaia_cross = subparsers.add_parser(
+        "gaia-cross", help="Generate CIBER x Gaia star cross-spectrum figure"
+    )
+    p_gaia_cross.add_argument(
+        "--rerun-fit",
+        action="store_true",
+        dest="rerun_fit",
+        help="Rerun MCMC fit even if cached results exist in data/gaia_cross_fits/",
+    )
 
     p_compare = subparsers.add_parser(
         "compare-r-ell",
@@ -4966,9 +5411,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional explicit path to TRILEGAL ISL residual spectra directory",
     )
 
-    subparsers.add_parser(
+    p_cross_z = subparsers.add_parser(
         "cross-redshift",
         help="Generate DESI-LS dz=0.1 and LS+HSC dz=0.2 cross-spectrum redshift-bin figures",
+    )
+    p_cross_z.add_argument(
+        "--bias-cache-fpath",
+        default=None,
+        metavar="PATH",
+        help="Path to effective_bias_ls_cache.npz produced by compute_effective_bias_ls.py. "
+             "When provided, replaces the noisy mock IGL curve with a smooth shot-noise + "
+             "two-halo model rescaled by the measured b_g at each redshift.",
     )
 
     p_zlt1 = subparsers.add_parser(
@@ -5370,6 +5823,67 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-mock-overlay",
         action="store_true",
         help="Disable dashed mock-prediction overlays in per-z total comparison figures",
+    )
+
+    p_avz = subparsers.add_parser(
+        "amplitude-vs-z",
+        help="Plot fitted A_2h (and A_1h) vs redshift by instrument with IGL model overlay",
+    )
+    p_avz.add_argument(
+        "--fit-results-ls",
+        default=None,
+        metavar="PATH",
+        help="Parametric cross-fit .npz for DESI-LS (from cross_cl_fits/)",
+    )
+    p_avz.add_argument(
+        "--fit-results-hsc",
+        default=None,
+        metavar="PATH",
+        help="Parametric cross-fit .npz for HSC (from cross_cl_fits/)",
+    )
+    p_avz.add_argument(
+        "--bias-cache-fpath",
+        default=None,
+        metavar="PATH",
+        help="Path to effective_bias_ls_cache.npz (from compute_effective_bias_ls.py). "
+             "Enables the b_g-corrected IGL model overlay on the A_2h panel.",
+    )
+    p_avz.add_argument(
+        "--inst-list",
+        nargs="+",
+        type=int,
+        default=[1, 2],
+        help="Instruments to include (default: 1 2)",
+    )
+    p_avz.add_argument(
+        "--ylim-2h",
+        nargs=2,
+        type=float,
+        default=None,
+        metavar=("LO", "HI"),
+        help="Y-axis limits for A_2h panel (default: auto)",
+    )
+    p_avz.add_argument(
+        "--ylim-ihl",
+        nargs=2,
+        type=float,
+        default=None,
+        metavar=("LO", "HI"),
+        help="Y-axis limits for A_1h panel (default: auto)",
+    )
+    p_avz.add_argument(
+        "--figsize",
+        nargs=2,
+        type=float,
+        default=[6.0, 6.5],
+        metavar=("W", "H"),
+        help="Figure size in inches (default: 6 6.5)",
+    )
+    p_avz.add_argument(
+        "--legend-ncol",
+        type=int,
+        default=3,
+        help="Number of legend columns (default: 3)",
     )
 
     p_all = subparsers.add_parser(

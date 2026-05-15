@@ -4520,7 +4520,7 @@ def run_gal_cross_fits(inst_list=[1, 2], ifield_list=[4,5,6,7,8], maskstr='JHlt1
                        ihl_1h_params_path='ihl_1h_params.npz', use_ihl_1h_params=True, fix_ihl_1h_shape=False,
                        mu_1h_fixed_override=None, sigma_1h_fixed_override=None, ihl_1h_template=None,
                        nwalkers=32, nsteps=4000, nburn=1000, prior_bounds=None, chi2_lim=[-20, 5],
-                       use_astrometry_damping=False, initial_guess=None, headstr = 'hsc_ilt24.0'):
+                       use_astrometry_damping=False, initial_guess=None, headstr = 'hsc_ilt24.0', uniform_weight_ell=None):
     """
     Run galaxy cross-spectrum fits for CIBER data.
     
@@ -4646,7 +4646,8 @@ def run_gal_cross_fits(inst_list=[1, 2], ifield_list=[4,5,6,7,8], maskstr='JHlt1
         res_ps = collect_ciber_gal_vs_redshift(catname, subtract_randoms=True, \
                               inst_list=inst_list, zbinedges=zbinedges, \
                               maskstr=maskstr, subtract_sn=False, 
-                              tl_pix_correct=True, ifield_list=ifield_list)
+                              tl_pix_correct=True, ifield_list=ifield_list,
+                              uniform_weight_ell=uniform_weight_ell)
 
     elif cat=='HSC':
         catname = 'HSC'
@@ -4656,7 +4657,8 @@ def run_gal_cross_fits(inst_list=[1, 2], ifield_list=[4,5,6,7,8], maskstr='JHlt1
                                     inst_list=inst_list, zbinedges=zbinedges, \
                                     maskstr=None, subtract_sn=False,
                                     tl_pix_correct=True, ifield_list=ifield_list,
-                                      headstr=headstr, with_ff_err=True)
+                                      headstr=headstr, with_ff_err=True,
+                                      uniform_weight_ell=uniform_weight_ell)
 
     # Import plotting libraries needed for comparison figures
     import matplotlib.pyplot as plt

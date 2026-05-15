@@ -235,6 +235,7 @@ def _run_cross_fits(args: argparse.Namespace) -> None:
                 use_one_halo=args.use_one_halo,
                 use_two_halo=args.use_two_halo,
                 prior_bounds=None,
+                uniform_weight_ell=args.uniform_weight_ell,
             )
 
 
@@ -1193,19 +1194,20 @@ def _plot_sigma_damp(args: argparse.Namespace) -> None:
 
 def _plot_redshift_panels_2x2(args: argparse.Namespace) -> None:
     """Generate 2x2 redshift panel figures for each redshift bin.
-    
+
     Top row: CIBER × DESILS (TM1 and TM2)
     Bottom row: CIBER × HSC (TM1 and TM2)
-    
+
     Each panel shows data + fitted model with uncertainty bands.
     Shared x/y axes and a single legend positioned above all panels.
     Saves to spectra/ subdirectory to match existing plot layout.
     """
     from ciber.theory.cross_ps_parametric_model import load_fit_results_npz
-    
+    from ciber.theory.cl_predictions import grab_ciber_cross_vs_z_predfpaths
+
     figdir = Path(args.figdir) / args.fitstr_cross / "spectra"
     lMax = args.lmax_components
-    
+
     # Load results for both catalogs
     results = {}
     for cat in ["DESILS", "HSC"]:
@@ -1215,53 +1217,80 @@ def _plot_redshift_panels_2x2(args: argparse.Namespace) -> None:
             print(f"[plot_redshift_panels_2x2] missing {fpath}, skipping {cat}")
             continue
         results[cat] = load_fit_results_npz(str(fpath))
-    
+
     if len(results) < 2:
         print("[plot_redshift_panels_2x2] need both DESILS and HSC, skipping")
         return
-    
-    # Extract info
+
     desils_results = results["DESILS"]
     hsc_results = results["HSC"]
-    
+
     n_zbin = desils_results['params'].shape[1]
     zbinedges = desils_results['zbinedges']
     lams = {1: 1.1, 2: 1.8}
-    
-    # Styling colors matching existing plots
+
     colors = {
         'data': 'k',
         'total': 'r',
         'two_halo': 'b',
         'one_halo': 'g',
         'shot_noise': 'm',
+        'igl': 'k',
     }
-    
+
+    # Load bias cache and build mock pred fpaths if requested
+    bias_cache = None
+    ls_pred_fpaths_by_inst = {}   # inst -> list of paths, one per zbin
+    hsc_pred_fpaths_by_inst = {}
+    if args.mock_basepath and args.bias_cache_fpath:
+        bias_cache = np.load(args.bias_cache_fpath, allow_pickle=False)
+        mock_base = args.mock_basepath.rstrip('/') + '/'
+        for inst in [1, 2]:
+            # LS: try CIBERfidmask headstr first, fall back to plain
+            for hs in ['sdss_z_lt_22.0_CIBERfidmask', 'sdss_z_lt_22.0']:
+                cands = grab_ciber_cross_vs_z_predfpaths(
+                    inst_list=[inst], zbinedges=list(zbinedges),
+                    jmock_basedir=mock_base, headstr=hs)[0]
+                if any(os.path.exists(p) for p in cands):
+                    ls_pred_fpaths_by_inst[inst] = cands
+                    break
+            # HSC
+            for hs in ['hsc_i_lt_25.0_CIBERfidmask', 'hsc_i_lt_25.0']:
+                cands = grab_ciber_cross_vs_z_predfpaths(
+                    inst_list=[inst], zbinedges=list(zbinedges),
+                    jmock_basedir=mock_base, headstr=hs)[0]
+                if any(os.path.exists(p) for p in cands):
+                    hsc_pred_fpaths_by_inst[inst] = cands
+                    break
+
     # For each redshift bin, create 2×2 panel figure
     for z_idx in range(n_zbin):
         z_low, z_high = zbinedges[z_idx], zbinedges[z_idx + 1]
-        z_label = f"z = {z_low:.1f}–{z_high:.1f}"
-        
+        z_center = 0.5 * (z_low + z_high)
+
+        # Bias values for this redshift
+        b_g_ls = float(np.poly1d(np.asarray(bias_cache['coarse_poly_coeffs']))(z_center)) \
+            if bias_cache is not None else None
+        b_g_hsc = 1.0 + 0.84 * z_center if bias_cache is not None else None
+
         fig, axes = plt.subplots(2, 2, figsize=(6, 5), sharex=True, sharey=True)
-        
-        # Plot each panel
-        _plot_2x2_spectrum_panel(
-            axes[0, 0], desils_results, 0, z_idx, lMax, colors, lams,
-            title=f"CIBER {lams[1]} μm × DESI-LS", chi2_reduced=desils_results['reduced_chisq'][0, z_idx]
-        )
-        _plot_2x2_spectrum_panel(
-            axes[0, 1], desils_results, 1, z_idx, lMax, colors, lams,
-            title=f"CIBER {lams[2]} μm × DESI-LS", chi2_reduced=desils_results['reduced_chisq'][1, z_idx]
-        )
-        _plot_2x2_spectrum_panel(
-            axes[1, 0], hsc_results, 0, z_idx, lMax, colors, lams,
-            title=f"CIBER {lams[1]} μm × HSC", chi2_reduced=hsc_results['reduced_chisq'][0, z_idx]
-        )
-        _plot_2x2_spectrum_panel(
-            axes[1, 1], hsc_results, 1, z_idx, lMax, colors, lams,
-            title=f"CIBER {lams[2]} μm × HSC", chi2_reduced=hsc_results['reduced_chisq'][1, z_idx]
-        )
-        
+
+        for row, (cat_results, cat_pred_by_inst, b_g) in enumerate([
+            (desils_results, ls_pred_fpaths_by_inst,  b_g_ls),
+            (hsc_results,    hsc_pred_fpaths_by_inst, b_g_hsc),
+        ]):
+            cat_label = "DESI-LS" if row == 0 else "HSC"
+            for col, inst in enumerate([1, 2]):
+                pred_fpath = cat_pred_by_inst.get(inst, [None] * n_zbin)[z_idx] \
+                    if cat_pred_by_inst else None
+                _plot_2x2_spectrum_panel(
+                    axes[row, col], cat_results, col, z_idx, lMax, colors, lams,
+                    title=f"CIBER {lams[inst]} μm × {cat_label}",
+                    chi2_reduced=cat_results['reduced_chisq'][col, z_idx],
+                    igl_pred_fpath=pred_fpath,
+                    b_g=b_g,
+                )
+
         # Add shared legend above all panels
         handles = [
             plt.Line2D([0], [0], color=colors['data'], marker='o', markersize=3, linestyle='none', label='Data'),
@@ -1270,12 +1299,16 @@ def _plot_redshift_panels_2x2(args: argparse.Namespace) -> None:
             plt.Line2D([0], [0], color=colors['one_halo'], linewidth=1.5, alpha=0.7, label='1-halo'),
             plt.Line2D([0], [0], color=colors['shot_noise'], linewidth=1.5, linestyle='--', alpha=0.7, label='Shot noise'),
         ]
+        if bias_cache is not None:
+            handles.append(
+                plt.Line2D([0], [0], color=colors['igl'], linewidth=1.5, linestyle=':', alpha=0.9, label='IGL prediction')
+            )
         fig.legend(
             handles=handles,
             loc='upper center',
-            bbox_to_anchor=(0.5, 0.95),
-            ncol=5,
-            fontsize=10,
+            bbox_to_anchor=(0.5, 1.0),
+            ncol=3,
+            fontsize=9,
         )
         
         # Common axis labels
@@ -1284,7 +1317,7 @@ def _plot_redshift_panels_2x2(args: argparse.Namespace) -> None:
         axes[0, 0].set_ylabel(r"$D_\ell$ [nW m$^{-2}$ sr$^{-1}$]", fontsize=12)
         axes[1, 0].set_ylabel(r"$D_\ell$ [nW m$^{-2}$ sr$^{-1}$]", fontsize=12)
         
-        fig.suptitle(f"{z_low} < z < {z_high}", fontsize=14, y=0.98)
+        fig.suptitle(f"Tomographic bin: {z_low} < z < {z_high}", fontsize=14, y=1.05)
         plt.subplots_adjust(wspace=0.05, hspace=0.05)
         # Save to spectra/ subdirectory
         stem = figdir / f"cross_spectrum_2x2_z{z_low:.01f}_{z_high:.01f}_lMax{lMax}"
@@ -1467,7 +1500,8 @@ def _plot_redshift_panels_2x2(args: argparse.Namespace) -> None:
 #             transform=ax.transAxes, fontsize=9, va='top', ha='left')
 
 def _plot_2x2_spectrum_panel(ax, results, inst_idx, z_idx, lMax, colors, lams,
-                              title="", chi2_reduced=None):
+                              title="", chi2_reduced=None,
+                              igl_pred_fpath=None, b_g=None):
     """Plot a single spectrum panel into a pre-existing axis for the 2x2 figure.
 
     Mirrors the uncertainty band logic of plot_fit_fixed_1h_templates as called
@@ -1583,13 +1617,26 @@ def _plot_2x2_spectrum_panel(ax, results, inst_idx, z_idx, lMax, colors, lams,
                         color=colors['total'],      alpha=0.2)
         ax.fill_between(ell_m,
                         uncertainty_bands['two_halo'][0],   uncertainty_bands['two_halo'][1],
-                        color=colors['two_halo'],   alpha=0.15, zorder=1)
+                        color=colors['two_halo'],   alpha=0.1, zorder=1)
         ax.fill_between(ell_m,
                         uncertainty_bands['one_halo'][0],   uncertainty_bands['one_halo'][1],
                         color=colors['one_halo'],   alpha=0.15, zorder=1)
         ax.fill_between(ell_m,
                         uncertainty_bands['shot_noise'][0], uncertainty_bands['shot_noise'][1],
                         color=colors['shot_noise'], alpha=0.15, zorder=1)
+
+    # ------------------------------------------------------------------ #
+    # IGL prediction overlay (bias-scaled smooth model)
+    # ------------------------------------------------------------------ #
+    if igl_pred_fpath is not None and b_g is not None and os.path.exists(igl_pred_fpath):
+        try:
+            from ciber.plotting.gal_plotting_fns import smooth_mock_cross_with_bias
+            ell_igl = np.geomspace(lb_fit.min() * 0.8, lb_fit.max() * 1.2, 300)
+            _, dl_igl = smooth_mock_cross_with_bias(igl_pred_fpath, 0.0, b_g, ell_eval=ell_igl)
+            ax.plot(ell_igl, dl_igl, color=colors.get('igl', 'darkorange'),
+                    linewidth=2, linestyle=':', alpha=0.9, zorder=4)
+        except Exception as e:
+            print(f"[_plot_2x2_spectrum_panel] IGL overlay failed: {e}")
 
     # ------------------------------------------------------------------ #
     # Axes formatting
@@ -2142,6 +2189,8 @@ def parse_args() -> argparse.Namespace:
         default=[0.0, 0.2, 0.4, 0.6, 0.8, 1.0],
         help="Redshift bin edges",
     )
+    parser.add_argument("--combined-zbin", action="store_true", default=False,
+                        help="Treat full redshift range as a single bin (0<z<1)")
     parser.add_argument("--fmask", type=float, default=0.7, help="Mask fraction")
 
     # MCMC settings
@@ -2156,6 +2205,8 @@ def parse_args() -> argparse.Namespace:
                         help="Disable one-halo component in cross fits (default: enabled)")
     parser.add_argument("--no-two-halo", action="store_false", dest="use_two_halo", default=True,
                         help="Disable two-halo component in cross fits (default: enabled)")
+    parser.add_argument("--uniform-weight-ell", type=float, default=None,
+                        help="Uniform weighting threshold (ell_min). Above this multipole, apply uniform field weighting instead of error-weighted. Default: None (use error-weighted for all)")
 
     # Paths
     parser.add_argument("--figdir", default="figures/", help="Output figure directory")
@@ -2165,7 +2216,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--datadir-cross", default="data/cross_cl_fits/", help="Directory for cross fit .npz files")
     parser.add_argument(
         "--ihl-params",
-        default="data/ihl_templates/ihl_1h_param_fit_v0.npz",
+        default="data/ihl_templates/ihl_1h_params_corrected.npz",
         help="Path to IHL 1h parameter file",
     )
 
@@ -2188,6 +2239,10 @@ def parse_args() -> argparse.Namespace:
                         help="Base directory for v3 boxed sim IGL predictions "
                              "(e.g. data/v3_boxed_outputs/tiles_10p0deg). "
                              "If set, IGL curves are overlaid on spectrum plots.")
+    parser.add_argument("--bias-cache-fpath", default=None,
+                        help="Path to effective_bias_ls_cache.npz from compute_effective_bias_ls.py. "
+                             "When provided with --mock-basepath, overlays bias-scaled smooth IGL "
+                             "prediction on the 2x2 spectrum panels.")
 
     return parser.parse_args()
 

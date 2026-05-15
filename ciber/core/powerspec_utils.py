@@ -162,6 +162,7 @@ def compute_field_averaged_power_spectrum(per_field_cls, per_field_dcls=None, pe
     per_field_dcls (optional) : np.array of shape (nfields, nbins)
     per_field_cl_weights (optional) : np.array of shape (nfields, nbins)
     weight_mode (optional) : 'str'. If set to 'invvar', computes inverse variance weights using per_field_dcls.
+            If set to 'uniform', uses equal weights for all fields.
             Default is 'invvar'.
     which_idxs (optional) : 
     verbose (optional) : 'bool'. 
@@ -190,6 +191,9 @@ def compute_field_averaged_power_spectrum(per_field_cls, per_field_dcls=None, pe
                 print(per_field_cl_weights.shape, per_field_cls.shape)
             per_field_cl_weights = per_field_dcls**(-2)
             # per_field_cl_weights[per_field_cls < 0.] = 0.
+        elif weight_mode=='uniform':
+            # Uniform weighting: all fields weighted equally
+            per_field_cl_weights = np.ones_like(per_field_cls)
                 
     else:
         if which_idxs is not None:
