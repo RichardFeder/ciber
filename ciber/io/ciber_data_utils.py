@@ -13,6 +13,159 @@ import config
 from ciber.processing.numerical import interp_pred, interp_pred2
 # from ciber.theory.cl_predictions import field_av_trilegal_predictions
 
+
+SURVEY_SATELLITE_FRACTIONS = {
+	'desi-ls': 0.1,
+	'hsc': 0.2,
+	'wise': 0.15,
+}
+
+_SURVEY_ALIASES = {
+	'ls': 'desi-ls',
+	'desi_ls': 'desi-ls',
+	'desi-ls': 'desi-ls',
+	'desils': 'desi-ls',
+	'hsc': 'hsc',
+	'wise': 'wise',
+	'unwise': 'wise',
+}
+
+
+def normalize_survey_name(survey):
+	if survey is None:
+		return None
+	key = str(survey).strip().lower().replace(' ', '-').replace('_', '-')
+	return _SURVEY_ALIASES.get(key, key)
+
+
+def satellite_auto_shot_scale(f_sat):
+	return 1.0 - float(f_sat)
+
+
+def satellite_cross_shot_scale(f_sat, j_sat_over_j_cen=0.3):
+	f_sat = float(f_sat)
+	j_sat_over_j_cen = float(j_sat_over_j_cen)
+	return (1.0 - f_sat) * (1.0 - f_sat * (1.0 - j_sat_over_j_cen))
+
+
+def estimate_shot_noise_plateau(cl_total, lb=None, ell_shot_min=5.0e4, ell_shot_max=8.0e4):
+	cl_total = np.asarray(cl_total, dtype=float)
+	if lb is None:
+		shot_mask = np.isfinite(cl_total)
+	else:
+		lb = np.asarray(lb, dtype=float)
+		shot_mask = np.isfinite(lb) & np.isfinite(cl_total) & (lb >= ell_shot_min) & (lb <= ell_shot_max)
+	if not np.any(shot_mask):
+		shot_mask = np.isfinite(cl_total)
+	if not np.any(shot_mask):
+		return 0.0
+	return float(np.nanmean(cl_total[shot_mask]))
+
+
+def apply_satellite_fraction_to_spectrum(
+	cl_total,
+	f_sat,
+	mode='auto',
+	lb=None,
+	ell_shot_min=5.0e4,
+	ell_shot_max=8.0e4,
+	j_sat_over_j_cen=0.5,
+):
+	cl_total = np.asarray(cl_total, dtype=float)
+	shot_level = estimate_shot_noise_plateau(
+		cl_total,
+		lb=lb,
+		ell_shot_min=ell_shot_min,
+		ell_shot_max=ell_shot_max,
+	)
+	if mode == 'auto':
+		shot_scale = satellite_auto_shot_scale(f_sat)
+	elif mode == 'cross':
+		shot_scale = satellite_cross_shot_scale(f_sat, j_sat_over_j_cen=j_sat_over_j_cen)
+	else:
+		shot_scale = float(mode)
+	return cl_total + (shot_scale - 1.0) * shot_level
+
+
+def _npz_to_dict(npz_payload):
+	if hasattr(npz_payload, 'files'):
+		return {key: np.asarray(npz_payload[key]) for key in npz_payload.files}
+	return {key: np.asarray(value) if isinstance(value, np.ndarray) else value for key, value in dict(npz_payload).items()}
+
+
+def apply_survey_satellite_correction(
+	prediction,
+	survey,
+	*,
+	ell_shot_min=5.0e4,
+	ell_shot_max=8.0e4,
+	j_sat_over_j_cen=0.5,
+	satellite_fraction=None,
+	auto_shot_scale_override=None,
+):
+	"""Apply a simple survey-specific satellite correction to a prediction payload."""
+	survey_key = normalize_survey_name(survey)
+	if satellite_fraction is None and survey_key not in SURVEY_SATELLITE_FRACTIONS:
+		raise KeyError(f"Unknown survey '{survey}'. Expected one of: {sorted(SURVEY_SATELLITE_FRACTIONS)}")
+
+	f_sat = float(satellite_fraction) if satellite_fraction is not None else SURVEY_SATELLITE_FRACTIONS[survey_key]
+	pred = _npz_to_dict(prediction)
+	out = {key: (value.copy() if isinstance(value, np.ndarray) else value) for key, value in pred.items()}
+	if 'lb' not in out:
+		raise KeyError("Prediction payload is missing required 'lb' array")
+	lb = np.asarray(out['lb'], dtype=float)
+
+	if 'clg_comb' in out:
+		auto_scale = satellite_auto_shot_scale(f_sat) if auto_shot_scale_override is None else float(auto_shot_scale_override)
+		out['clg_comb'] = apply_satellite_fraction_to_spectrum(
+			out['clg_comb'],
+			f_sat,
+			mode=auto_scale,
+			lb=lb,
+			ell_shot_min=ell_shot_min,
+			ell_shot_max=ell_shot_max,
+			j_sat_over_j_cen=j_sat_over_j_cen,
+		)
+	if 'cross' in out:
+		out['cross'] = apply_satellite_fraction_to_spectrum(
+			out['cross'],
+			f_sat,
+			mode='cross',
+			lb=lb,
+			ell_shot_min=ell_shot_min,
+			ell_shot_max=ell_shot_max,
+			j_sat_over_j_cen=j_sat_over_j_cen,
+		)
+	if 'clx_comb' in out:
+		out['clx_comb'] = apply_satellite_fraction_to_spectrum(
+			out['clx_comb'],
+			f_sat,
+			mode='cross',
+			lb=lb,
+			ell_shot_min=ell_shot_min,
+			ell_shot_max=ell_shot_max,
+			j_sat_over_j_cen=j_sat_over_j_cen,
+		)
+
+	clg = out.get('clg_comb', out.get('gal_auto'))
+	clx = out.get('clx_comb', out.get('cross'))
+	cli = out.get('clI_comb', out.get('intensity_auto_full', out.get('intensity_auto_tracer')))
+	if clg is not None and clx is not None and cli is not None:
+		clg = np.asarray(clg, dtype=float)
+		clx = np.asarray(clx, dtype=float)
+		cli = np.asarray(cli, dtype=float)
+		with np.errstate(divide='ignore', invalid='ignore'):
+			rlx = np.divide(clx, np.sqrt(clg * cli), out=np.zeros_like(clx, dtype=float), where=(clg > 0) & (cli > 0))
+		out['rlx_comb'] = rlx
+		out['rlx_tracer_full'] = rlx
+
+	return out
+
+
+def load_satellite_corrected_prediction(npz_path, survey, **kwargs):
+	"""Load a prediction npz file and apply the survey satellite correction."""
+	return apply_survey_satellite_correction(np.load(npz_path, allow_pickle=True), survey, **kwargs)
+
 '''---------------------- loading functions ----------------------'''
 
 def save_fit_results_npz(all_fit_results_mcmc, zbinedges, inst_list,
@@ -32,6 +185,7 @@ def save_fit_results_npz(all_fit_results_mcmc, zbinedges, inst_list,
 	params_997_array = np.full((n_inst, n_zbins, n_params), np.nan)
 	chisq_array = np.full((n_inst, n_zbins), np.nan)
 	reduced_chisq_array = np.full((n_inst, n_zbins), np.nan)
+	ndof_array = np.full((n_inst, n_zbins), np.nan)
 
 	lb_fit_array = np.empty((n_inst, n_zbins), dtype=object)
 	model_dl_array = np.empty((n_inst, n_zbins), dtype=object)
@@ -41,6 +195,7 @@ def save_fit_results_npz(all_fit_results_mcmc, zbinedges, inst_list,
 	samples_array = np.empty((n_inst, n_zbins), dtype=object)
 	samples_fitted_array = np.empty((n_inst, n_zbins), dtype=object)
 	param_names_fitted_array = np.empty((n_inst, n_zbins), dtype=object)
+	cov_matrix_array = np.empty((n_inst, n_zbins), dtype=object)
 	acceptance_fraction_array = np.full((n_inst, n_zbins), np.nan)
 
 	sample_result = all_fit_results_mcmc[sample_key]['fit_result']
@@ -54,6 +209,7 @@ def save_fit_results_npz(all_fit_results_mcmc, zbinedges, inst_list,
 		'use_lorentzian_1h': sample_result.get('use_lorentzian_1h', False),
 		'template_names': sample_result.get('template_names', []) if use_ihl_templates else [],
 		'ihl_template_path': 'ihl_templates/',
+		'use_linear_2h': sample_result.get('use_linear_2h', False),
 	}
 
 	for i, inst in enumerate(inst_list):
@@ -71,6 +227,7 @@ def save_fit_results_npz(all_fit_results_mcmc, zbinedges, inst_list,
 			params_997_array[i, zidx, :] = fit_result.get('params_997', fit_result['params'] + 3 * fit_result['params_err'])
 			chisq_array[i, zidx] = fit_result['chisq']
 			reduced_chisq_array[i, zidx] = fit_result['reduced_chisq']
+			ndof_array[i, zidx] = fit_result.get('ndof', np.nan)
 
 			lb_fit_array[i, zidx] = fit_result.get('lb_fit', None)
 			model_dl_array[i, zidx] = fit_result.get('model_dl', None)
@@ -80,6 +237,7 @@ def save_fit_results_npz(all_fit_results_mcmc, zbinedges, inst_list,
 			samples_array[i, zidx] = fit_result.get('samples', None)
 			samples_fitted_array[i, zidx] = fit_result.get('samples_fitted', None)
 			param_names_fitted_array[i, zidx] = fit_result.get('param_names_fitted', None)
+			cov_matrix_array[i, zidx] = fit_result.get('cov_matrix', None)
 			acceptance_fraction_array[i, zidx] = fit_result.get('acceptance_fraction', np.nan)
 
 	np.savez(
@@ -92,6 +250,7 @@ def save_fit_results_npz(all_fit_results_mcmc, zbinedges, inst_list,
 		params_997=params_997_array,
 		chisq=chisq_array,
 		reduced_chisq=reduced_chisq_array,
+		ndof=ndof_array,
 		zbinedges=np.array(zbinedges),
 		inst_list=np.array(inst_list),
 		dataset_name=dataset_name,
@@ -104,6 +263,7 @@ def save_fit_results_npz(all_fit_results_mcmc, zbinedges, inst_list,
 		samples=samples_array,
 		samples_fitted=samples_fitted_array,
 		param_names_fitted=param_names_fitted_array,
+		cov_matrix=cov_matrix_array,
 		acceptance_fraction=acceptance_fraction_array,
 		use_ihl_templates=model_config['use_ihl_templates'],
 		use_powerlaw_2h=model_config['use_powerlaw_2h'],
@@ -111,6 +271,7 @@ def save_fit_results_npz(all_fit_results_mcmc, zbinedges, inst_list,
 		use_lorentzian_1h=model_config['use_lorentzian_1h'],
 		template_names=np.array(model_config['template_names']),
 		ihl_template_path=model_config['ihl_template_path'],
+		use_linear_2h=model_config['use_linear_2h'],
 	)
 
 	print(f"✓ Saved fit results to: {save_path}")
@@ -139,11 +300,20 @@ def load_fit_results_npz(load_path):
 		'params_err': data['params_err'],
 		'chisq': data['chisq'],
 		'reduced_chisq': data['reduced_chisq'],
+		'ndof': data.get('ndof', None),
 		'zbinedges': data['zbinedges'],
 		'inst_list': data['inst_list'],
 		'dataset_name': str(data['dataset_name']),
 		'param_names': data['param_names'],
 	}
+	if 'params_16' in data:
+		results['params_16'] = data['params_16']
+	if 'params_84' in data:
+		results['params_84'] = data['params_84']
+	if 'params_95' in data:
+		results['params_95'] = data['params_95']
+	if 'params_997' in data:
+		results['params_997'] = data['params_997']
 
 	if 'lb_fit' in data:
 		results['lb_fit'] = data['lb_fit']
@@ -161,6 +331,8 @@ def load_fit_results_npz(load_path):
 		results['samples_fitted'] = data['samples_fitted']
 	if 'param_names_fitted' in data:
 		results['param_names_fitted'] = data['param_names_fitted']
+	if 'cov_matrix' in data:
+		results['cov_matrix'] = data['cov_matrix']
 	if 'acceptance_fraction' in data:
 		results['acceptance_fraction'] = data['acceptance_fraction']
 
@@ -168,6 +340,8 @@ def load_fit_results_npz(load_path):
 		results['use_ihl_templates'] = bool(data['use_ihl_templates'])
 	if 'use_powerlaw_2h' in data:
 		results['use_powerlaw_2h'] = bool(data['use_powerlaw_2h'])
+	if 'use_linear_2h' in data:
+		results['use_linear_2h'] = bool(data['use_linear_2h'])
 	if 'alpha_2h_fixed' in data:
 		results['alpha_2h_fixed'] = float(data['alpha_2h_fixed'])
 	if 'use_lorentzian_1h' in data:

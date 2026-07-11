@@ -32,7 +32,8 @@ from ciber.theory.cl_template import (
 )
 
 
-def main(template_dir='data/ihl_templates', output_file='ihl_1h_params.npz', ell_scale=1.0):
+def main(template_dir='data/ihl_templates', output_file='ihl_1h_params.npz', ell_scale=1.0,
+         use_linear_2h=False, lmax_fit=500000):
     """Main execution."""
 
     print("\n" + "="*70)
@@ -62,12 +63,15 @@ def main(template_dir='data/ihl_templates', output_file='ihl_1h_params.npz', ell
             template_dir=template_dir,
             zbinedges=zbinedges,
             slopes=slopes,
-            use_powerlaw_2h=True,
+            use_powerlaw_2h=not use_linear_2h,
             alpha_2h_fixed=0.0,
-            fit_ell_range=None,
-            plot=False,
+            fit_ell_range=(500, 500000),
+            plot=True,
+            figsize=(15, 10),
             verbose=True,
-            ell_scale=ell_scale
+            ell_scale=ell_scale,
+            use_linear_2h=use_linear_2h,
+            lmax_fit=lmax_fit
         )
 
         # Save one-halo parameters and compute linear relationships
@@ -134,11 +138,26 @@ if __name__ == '__main__':
         default=1.0,
         help='Scaling factor for ell values (e.g., 0.31831 for 1/π correction)'
     )
+    parser.add_argument(
+        '--use-linear-2h',
+        action='store_true',
+        default=False,
+        help='Generate templates from linear matter power spectrum using Limber projection '
+             'instead of loading IHL templates from files. Pre-computes C_ell^lin for each z-bin.'
+    )
+    parser.add_argument(
+        '--lmax-fit',
+        type=float,
+        default=50000,
+        help='Maximum multipole for template generation / fitting when using linear 2h'
+    )
     args = parser.parse_args()
 
     success = main(
         template_dir=args.template_dir,
         output_file=args.output_file,
-        ell_scale=args.ell_scale
+        ell_scale=args.ell_scale,
+        use_linear_2h=args.use_linear_2h,
+        lmax_fit=args.lmax_fit
     )
     sys.exit(0 if success else 1)

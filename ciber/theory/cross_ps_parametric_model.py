@@ -20,6 +20,7 @@ from scipy.interpolate import interp1d
 import matplotlib.pyplot as plt
 from typing import Tuple, Dict, Optional, Callable
 import os
+from functools import partial
 
 from ciber.plotting.gal_plotting_fns import *
 from ciber.theory.cl_template import *
@@ -50,7 +51,6 @@ class FitConfig:
     # fixed flags
     fixed_A2h: bool
     fixed_mu_sigma: bool
-    fixed_ln_ell_peak: bool
     fixed_sigma_damp: bool
 
     # fixed values
@@ -62,6 +62,20 @@ class FitConfig:
 
     # fitted parameter names (subset space)
     fit_names: list[str] = None
+
+
+@dataclass
+class PlotConfig:
+    """Configuration extracted from fit_result for plotting."""
+    params: np.ndarray
+    params_err: np.ndarray | None = None
+    use_damping: bool = False
+    cov_matrix: np.ndarray | None = None
+    samples: np.ndarray | None = None
+    chi2_eval_max: float | None = None
+    z_value: float | None = None
+    one_halo_params_dict: dict | None = None
+    sigma_fixed: float | None = None
 
 
 def load_mock_prediction_component(npz_path, component='cross'):
@@ -174,24 +188,11 @@ class CrossPowerSpectrumModel:
         Fixed power-law index for 2-halo term (default -1.5 for linear clustering)
     chi2_eval_max : float, optional
         Maximum multipole for chi-square evaluation. Default 5000.
-    mu_1h_prior : tuple or None, optional
-        Gaussian prior on mu_1h (1-halo peak location) as (mean, std).
-        For log-normal: (np.log(2500), 0.3) for prior centered at ell~2500 in log-space.
-        None for no prior.
-    sigma_1h_prior : tuple or None, optional
-        Gaussian prior on sigma_1h (1-halo width) as (mean, std).
-        For log-normal: log-width parameter.
-        None for no prior.
-    ln_ell_peak_relation : tuple or None, optional
-        Linear relation for ln(ell_peak) as (intercept, slope).
-        If provided, ln_ell_peak = intercept + slope * z_value in MCMC fits.
-        This fixes ln_ell_peak and reduces parameters from 5 to 4: [A_2h, A_1h, sigma, A_shot].
-        None for no fixed relation (default behavior).
+
     """
     
     def __init__(self, lb, cl_2h_pred=None, cl_shot_pred=None, use_powerlaw_2h=True, alpha_2h_fixed=-1.5,
-                 chi2_eval_max=5000., mu_1h_prior=None, sigma_1h_prior=None,
-                 ln_ell_peak_relation=None, mu_1h_fixed=None, sigma_1h_fixed=None, use_astrometry_damping=False,
+                 chi2_eval_max=5000., mu_1h_fixed=None, sigma_1h_fixed=None, use_astrometry_damping=False,
                  use_one_halo=True, use_two_halo=True, A_2h_fixed=None, use_linear_2h=False, 
                  dl_2h_lin_per_zbin=None, sigma_damp_fixed=None):
         self.lb = np.asarray(lb)
@@ -200,9 +201,6 @@ class CrossPowerSpectrumModel:
         self.use_powerlaw_2h = use_powerlaw_2h
         self.alpha_2h_fixed = alpha_2h_fixed
         self.chi2_eval_max = chi2_eval_max
-        self.mu_1h_prior = mu_1h_prior
-        self.sigma_1h_prior = sigma_1h_prior
-        self.ln_ell_peak_relation = ln_ell_peak_relation
         self.mu_1h_fixed = mu_1h_fixed
         self.sigma_1h_fixed = sigma_1h_fixed
         self.use_astrometry_damping = use_astrometry_damping
@@ -377,20 +375,9 @@ class CrossPowerSpectrumModel:
     
     def _build_fit_config(self, z_value=None, inst=None, verbose=True):
         fixed_mu_sigma = (self.mu_1h_fixed is not None and self.sigma_1h_fixed is not None)
-        fixed_ln = self.ln_ell_peak_relation is not None
         fixed_A2h = (self.A_2h_fixed is not None) and self.use_one_halo and self.use_two_halo
 
-        if fixed_mu_sigma and fixed_ln:
-            fixed_ln = False
-            if verbose:
-                print("Both fixed mu/sigma and ln_ell_peak relation set; using fixed mu/sigma.")
-
         ln_val = None
-        if fixed_ln:
-            if z_value is None:
-                raise ValueError("z_value required when ln_ell_peak_relation is set")
-            a, b = self.ln_ell_peak_relation
-            ln_val = a + b * z_value
 
         fixed_sigma_damp = False
         sigma_damp_val = None
@@ -417,7 +404,6 @@ class CrossPowerSpectrumModel:
             use_astrometry_damping=self.use_astrometry_damping,
             fixed_A2h=fixed_A2h,
             fixed_mu_sigma=fixed_mu_sigma,
-            fixed_ln_ell_peak=fixed_ln,
             fixed_sigma_damp=fixed_sigma_damp,
             A2h_val=self.A_2h_fixed if fixed_A2h else None,
             mu_val=self.mu_1h_fixed if fixed_mu_sigma else None,
@@ -489,96 +475,7 @@ class CrossPowerSpectrumModel:
             dl_total = dl_total * damping_factor
         
         return dl_total
-    
-    def model_dl_with_ihl_templates(self, ell, amplitudes, ihl_templates, template_names):
-        """
-        Model D_ℓ using IHL templates instead of parametric 1-halo term.
         
-        Parameters
-        ----------
-        ell : array_like
-            Multipole values
-        amplitudes : array_like
-            Amplitudes [A_2h, A_ihl1, A_ihl2, ..., A_shot]
-        ihl_templates : dict
-            Dictionary of IHL templates
-        template_names : list
-            List of template names to use from ihl_templates
-        
-        Returns
-        -------
-        array_like
-            Total D_ℓ model
-        """
-        # Two-halo contribution
-        if self.use_powerlaw_2h:
-            dl_2h = self.powerlaw_2h_component(ell, amplitudes[0], self.alpha_2h_fixed)
-        else:
-            if self.dl_2h_pred is None:
-                raise ValueError("No 2-halo prediction provided and use_powerlaw_2h=False")
-            dl_2h = amplitudes[0] * np.interp(ell, self.lb, self.dl_2h_pred)
-        
-        # IHL template contributions
-        dl_ihl = np.zeros_like(ell)
-        for i, template_name in enumerate(template_names):
-            template = ihl_templates[template_name]
-            dl_ihl += self.ihl_template_component(ell, amplitudes[i+1], 
-                                                  template['ell'], template['dl'])
-        
-        # Shot noise contribution (last amplitude)
-        dl_shot = self.shot_noise_component(ell, amplitudes[-1])
-        
-        return dl_2h + dl_ihl + dl_shot
-    
-    def model_components_with_ihl_templates(self, ell, amplitudes, ihl_templates, template_names):
-        """
-        Get individual model components using IHL templates.
-        
-        Parameters
-        ----------
-        ell : array_like
-            Multipole values
-        amplitudes : array_like
-            Amplitudes [A_2h, A_ihl1, A_ihl2, ..., A_shot]
-        ihl_templates : dict
-            Dictionary of IHL templates
-        template_names : list
-            List of template names to use
-        
-        Returns
-        -------
-        dict
-            Dictionary with component names as keys and D_ℓ arrays as values
-        """
-        # Two-halo component
-        if self.use_powerlaw_2h:
-            dl_2h = self.powerlaw_2h_component(ell, amplitudes[0], self.alpha_2h_fixed)
-        else:
-            dl_2h = amplitudes[0] * np.interp(ell, self.lb, self.dl_2h_pred)
-        
-        components = {'two_halo': dl_2h}
-        
-        # Individual IHL template components
-        dl_ihl_total = np.zeros_like(ell)
-        for i, template_name in enumerate(template_names):
-            template = ihl_templates[template_name]
-            dl_ihl = self.ihl_template_component(ell, amplitudes[i+1], 
-                                                template['ell'], template['dl'])
-            components[f'ihl_{template_name}'] = dl_ihl
-            dl_ihl_total += dl_ihl
-        
-        # Total IHL contribution
-        components['one_halo_total'] = dl_ihl_total
-        
-        # Shot noise component
-        dl_shot = self.shot_noise_component(ell, amplitudes[-1])
-        components['shot_noise'] = dl_shot
-        
-        # Total model
-        components['total'] = dl_2h + dl_ihl_total + dl_shot
-        
-        return components
-    
     def model_components(self, ell, A_2h, A_1h, mu_1h, sigma_1h, A_shot, sigma_damp=None, z_bin_index=None):
         """
         Get individual model components.
@@ -683,59 +580,14 @@ class CrossPowerSpectrumModel:
         dl_shot = self.shot_noise_component(ell, A_shot)
         
         return dl_2h + dl_1h + dl_shot
-    
-    def model_components_fixed_1h_templates(self, ell, A_2h, A_1h_08, A_1h_10, A_1h_12, A_shot,
-                                           z_value, one_halo_params_dict):
-        """
-        Get individual model components for fixed 1-halo template model.
-        
-        Returns
-        -------
-        dict
-            Dictionary with keys 'two_halo', 'one_halo_08', 'one_halo_10', 'one_halo_12', 
-            'one_halo_total', 'shot_noise', 'total'
-        """
-        if self.use_powerlaw_2h:
-            dl_2h = self.powerlaw_2h_component(ell, A_2h, self.alpha_2h_fixed)
-        else:
-            dl_2h = A_2h * np.interp(ell, self.lb, self.dl_2h_pred)
-        
-        # Individual 1-halo components
-        dl_1h_08 = np.zeros_like(ell, dtype=float)
-        dl_1h_10 = np.zeros_like(ell, dtype=float)
-        dl_1h_12 = np.zeros_like(ell, dtype=float)
-        
-        for slope, amplitude, dl_array in zip([0.8, 1.0, 1.2], 
-                                               [A_1h_08, A_1h_10, A_1h_12],
-                                               [dl_1h_08, dl_1h_10, dl_1h_12]):
-            ln_ell_peak, sigma = interpolate_1h_params(z_value, slope, one_halo_params_dict)
-            component = self.lognormal_component(ell, amplitude, ln_ell_peak, sigma)
-            if slope == 0.8:
-                dl_1h_08 = component
-            elif slope == 1.0:
-                dl_1h_10 = component
-            elif slope == 1.2:
-                dl_1h_12 = component
-        
-        dl_1h_total = dl_1h_08 + dl_1h_10 + dl_1h_12
-        dl_shot = self.shot_noise_component(ell, A_shot)
-        
-        return {
-            'two_halo': dl_2h,
-            'one_halo_08': dl_1h_08,
-            'one_halo_10': dl_1h_10,
-            'one_halo_12': dl_1h_12,
-            'one_halo_total': dl_1h_total,
-            'shot_noise': dl_shot,
-            'total': dl_2h + dl_1h_total + dl_shot
-        }
+
     
     def log_prior(self, A_2h, A_1h, mu_1h, sigma_1h, A_shot):
         """
         Calculate log-prior probability for parameters.
         
         Parameters
-        ----------
+        ---------
         A_2h, A_1h, mu_1h, sigma_1h, A_shot : float
             Model parameters
             For log-normal: mu_1h = log(ell_peak), sigma_1h = log-width
@@ -747,22 +599,11 @@ class CrossPowerSpectrumModel:
         """
         log_p = 0.0
         
-        # Prior on mu_1h (location of 1-halo peak)
-        # Note: for log-normal, it's in log-space
-        if self.mu_1h_prior is not None:
-            mu_prior_mean, mu_prior_std = self.mu_1h_prior
-            log_p += -0.5 * ((mu_1h - mu_prior_mean) / mu_prior_std)**2
-        
-        # Prior on sigma_1h (width of 1-halo peak)
-        if self.sigma_1h_prior is not None:
-            sigma_prior_mean, sigma_prior_std = self.sigma_1h_prior
-            log_p += -0.5 * ((sigma_1h - sigma_prior_mean) / sigma_prior_std)**2
-        
         return log_p
     
     def fit_model(self, lb_data, dl_data, dl_err=None, 
                   p0=None, bounds=None, method='leastsq',
-                  fit_range=None, chi2_eval_max=None, verbose=True):
+                  fit_range=None, chi2_eval_max=None, verbose=True, z_bin_index=None):
         """
         Fit the parametric model to data.
         
@@ -809,14 +650,8 @@ class CrossPowerSpectrumModel:
             A_2h_init = np.mean(dl_fit[:3]) if len(dl_fit) > 3 else 1.0
             A_1h_init = np.max(dl_fit) * 0.5
             # Use prior mean if available, otherwise default
-            if self.mu_1h_prior is not None:
-                mu_1h_init = self.mu_1h_prior[0]
-            else:
-                mu_1h_init = np.log(2500.)  # Peak around ℓ~2500 (log space)
-            if self.sigma_1h_prior is not None:
-                sigma_1h_init = self.sigma_1h_prior[0]
-            else:
-                sigma_1h_init = 0.5  # Log-width
+            mu_1h_init = np.log(2500.)  # Peak around ℓ~2500 (log space)
+            sigma_1h_init = 0.5  # Log-width
             A_shot_init = dl_fit[-1] / (lb_fit[-1] * (lb_fit[-1] + 1) / (2 * np.pi))
             p0 = [A_2h_init, A_1h_init, mu_1h_init, sigma_1h_init, A_shot_init]
         
@@ -830,8 +665,15 @@ class CrossPowerSpectrumModel:
         # Perform fit
         if method == 'leastsq':
             try:
+                # Create wrapper function to include z_bin_index parameter
+                if z_bin_index is not None:
+                    def model_func(ell, A_2h, A_1h, mu_1h, sigma_1h, A_shot):
+                        return self.model_dl(ell, A_2h, A_1h, mu_1h, sigma_1h, A_shot, z_bin_index=z_bin_index)
+                else:
+                    model_func = self.model_dl
+                
                 popt, pcov = curve_fit(
-                    self.model_dl, lb_fit, dl_fit,
+                    model_func, lb_fit, dl_fit,
                     p0=p0, sigma=dl_err_fit, absolute_sigma=True,
                     bounds=bounds, maxfev=10000
                 )
@@ -846,7 +688,10 @@ class CrossPowerSpectrumModel:
         elif method == 'minimize':
             # Chi-squared objective with priors
             def objective(params):
-                model = self.model_dl(lb_fit, *params)
+                if z_bin_index is not None:
+                    model = self.model_dl(lb_fit, *params, z_bin_index=z_bin_index)
+                else:
+                    model = self.model_dl(lb_fit, *params)
                 if dl_err_fit is not None:
                     chi2 = np.sum(((dl_fit - model) / dl_err_fit)**2)
                 else:
@@ -904,10 +749,14 @@ class CrossPowerSpectrumModel:
         # Compute chi-squared on restricted range if specified
         if chi2_eval_max is None:
             chi2_eval_max = self.chi2_eval_max
-        chi2_mask = lb_fit <= chi2_eval_max
+        # Apply both lower (300) and upper (chi2_eval_max) bounds for chi2 calculation
+        chi2_mask = (lb_fit >= 300) & (lb_fit <= chi2_eval_max)
         lb_chi2 = lb_fit[chi2_mask]
         dl_chi2 = dl_fit[chi2_mask]
-        model_chi2 = self.model_dl(lb_chi2, *popt)
+        if z_bin_index is not None:
+            model_chi2 = self.model_dl(lb_chi2, *popt, z_bin_index=z_bin_index)
+        else:
+            model_chi2 = self.model_dl(lb_chi2, *popt)
         
         if dl_err_fit is not None:
             dl_err_chi2 = dl_err_fit[chi2_mask]
@@ -915,6 +764,8 @@ class CrossPowerSpectrumModel:
         else:
             chisq = np.sum((dl_chi2 - model_chi2)**2)
         
+        # ndof counts only the FREE parameters being fit: A_2h, A_1h, mu_1h, sigma_1h, A_shot
+        # For the fixed 1h case, this should be 3 (A_2h, A_1h, A_shot)
         ndof = len(lb_chi2) - len(popt)
         reduced_chisq = chisq / ndof if ndof > 0 else np.nan
         
@@ -924,14 +775,8 @@ class CrossPowerSpectrumModel:
             print(f"  A_2h     = {popt[0]:.4f} ± {perr[0]:.4f}")
             print(f"  A_1h     = {popt[1]:.4f} ± {perr[1]:.4f}")
             mu_str = f"  mu_1h    = {popt[2]:.4f} ± {perr[2]:.4f} (ℓ_peak ~ {np.exp(popt[2]):.1f})"
-            if self.mu_1h_prior is not None:
-                mu_prior_mean, mu_prior_std = self.mu_1h_prior
-                mu_str += f" [prior: {mu_prior_mean:.2f}±{mu_prior_std:.2f}]"
             print(mu_str)
             sigma_str = f"  sigma_1h = {popt[3]:.4f} ± {perr[3]:.4f}"
-            if self.sigma_1h_prior is not None:
-                sigma_prior_mean, sigma_prior_std = self.sigma_1h_prior
-                sigma_str += f" [prior: {sigma_prior_mean:.2f}±{sigma_prior_std:.2f}]"
             print(sigma_str)
             print(f"  A_shot   = {popt[4]:.4f} ± {perr[4]:.4f}")
             if self.use_powerlaw_2h:
@@ -1007,53 +852,37 @@ class CrossPowerSpectrumModel:
         except ImportError:
             raise ImportError("emcee is required for MCMC fitting. Install with: pip install emcee")
         
-        cfg = self._build_fit_config(z_value=z_value, inst=inst, verbose=verbose)
-
-
-        use_covariance = False
         if dl_err is None:
             raise ValueError("dl_err is required for MCMC fitting when no covariance provided")
     
         cfg = self._build_fit_config(z_value=z_value, inst=inst, verbose=verbose)
 
+        param_names = cfg.fit_names   
+        n_params = len(param_names)
+
         # Apply fit range mask
         if fit_range is not None:
             mask = (lb_data >= fit_range[0]) & (lb_data <= fit_range[1])
-            lb_fit = lb_data[mask]
+            lb_fit, dl_fit, dl_err_fit = lb_data[mask], dl_data[mask], dl_err[mask]
             dl_fit = dl_data[mask]
             dl_err_fit = dl_err[mask]
         else:
-            lb_fit = lb_data
-            dl_fit = dl_data
-            dl_err_fit = dl_err
+            lb_fit, dl_fit, dl_err_fit = lb_data, dl_data, dl_err
         
         # Check if using one-halo term and two-halo term
         if not self.use_two_halo:
             # When fitting without 2h, check if 1h shape parameters are fixed
             use_fixed_mu_sigma = (self.mu_1h_fixed is not None and self.sigma_1h_fixed is not None)
-            use_fixed_ln_ell_peak = self.ln_ell_peak_relation is not None
             use_fixed_A_2h = False  # 2h is zeroed, not fixed to a value
-            
-            # Priority: explicit fixed values take precedence over ln_ell_peak_relation
-            if use_fixed_mu_sigma and use_fixed_ln_ell_peak:
-                if verbose:
-                    print("Note: Both mu_1h_fixed/sigma_1h_fixed and ln_ell_peak_relation are set.")
-                    print("      Using explicit fixed values (mu_1h_fixed, sigma_1h_fixed) and ignoring ln_ell_peak_relation.")
-                use_fixed_ln_ell_peak = False
             
             if verbose:
                 if use_fixed_mu_sigma:
                     print(f"Fitting without two-halo term: [A_1h, A_shot] (with fixed 1h shape)")
-                elif use_fixed_ln_ell_peak:
-                    print(f"Fitting without two-halo term: [A_1h, sigma_1h, A_shot] (with fixed ln_ell_peak)")
-                else:
-                    print("Fitting without two-halo term: [A_1h, sigma_1h, A_shot]")
                 if self.use_astrometry_damping:
                     print("  + damping parameter [sigma_damp]")
         elif not self.use_one_halo:
             # When fitting without 1h, check if 2h parameters are fixed
             use_fixed_mu_sigma = False  # 1h not being used
-            use_fixed_ln_ell_peak = False
             use_fixed_A_2h = False  # not relevant without 1h
             if verbose:
                 print("Fitting without one-halo term: [A_2h, A_shot]")
@@ -1062,24 +891,7 @@ class CrossPowerSpectrumModel:
         else:
             # Check if using fixed 1h shape parameters
             use_fixed_mu_sigma = (self.mu_1h_fixed is not None and self.sigma_1h_fixed is not None)
-            use_fixed_ln_ell_peak = self.ln_ell_peak_relation is not None
             use_fixed_A_2h = self.A_2h_fixed is not None
-            
-            # Priority: explicit fixed values take precedence over ln_ell_peak_relation
-            if use_fixed_mu_sigma and use_fixed_ln_ell_peak:
-                if verbose:
-                    print("Note: Both mu_1h_fixed/sigma_1h_fixed and ln_ell_peak_relation are set.")
-                    print("      Using explicit fixed values (mu_1h_fixed, sigma_1h_fixed) and ignoring ln_ell_peak_relation.")
-                use_fixed_ln_ell_peak = False  # Override to use explicit fixed values
-            
-            if use_fixed_ln_ell_peak:
-                if z_value is None:
-                    raise ValueError("z_value is required when ln_ell_peak_relation is set")
-                # Compute fixed ln_ell_peak from relation
-                intercept, slope = self.ln_ell_peak_relation
-                ln_ell_peak_fixed = intercept + slope * z_value
-                if verbose:
-                    print(f"Using fixed ln(ell_peak) = {ln_ell_peak_fixed:.3f} from relation ({intercept:.3f} + {slope:.3f} * z)")
             
             if use_fixed_mu_sigma:
                 if verbose:
@@ -1089,144 +901,13 @@ class CrossPowerSpectrumModel:
                 if verbose:
                     print(f"Fixing A_2h to IGL prediction: A_2h={self.A_2h_fixed:.4f} (free params: [A_1h, A_shot])")
         
-        # Setup prior bounds
-        if prior_bounds is None:
-            # Default bounds depend on whether using fixed parameters
-            if not self.use_two_halo:
-                # When fitting without 2h, only 1h is fitted
-                if use_fixed_mu_sigma:
-                    n_params_base = 2  # [A_1h, A_shot]
-                    lower_bounds = np.array([0., 0.])
-                    upper_bounds = np.array([10., 100.])
-                elif use_fixed_ln_ell_peak:
-                    n_params_base = 3  # [A_1h, sigma_1h, A_shot]
-                    lower_bounds = np.array([0., 0.2, 0.])
-                    upper_bounds = np.array([10., 1.2, 100.])
-                else:
-                    # Full 1h parameters: [A_1h, mu_1h, sigma_1h, A_shot]
-                    n_params_base = 4
-                    lower_bounds = np.array([0., np.log(1000), 0.2, 0.])
-                    upper_bounds = np.array([10., np.log(10000), 1.2, 100.])
-            elif not self.use_one_halo:
-                # 2-parameter case: [A_2h, A_shot] (no one-halo)
-                n_params_base = 2
-                lower_bounds = np.array([0., 0.])
-                upper_bounds = np.array([10., 100.])
-            elif use_fixed_A_2h and use_fixed_mu_sigma:
-                # 2-parameter case: [A_1h, A_shot] (A_2h fixed to IGL value, 1h shape fixed)
-                n_params_base = 2
-                lower_bounds = np.array([0., 0.])
-                upper_bounds = np.array([10., 100.])
-            elif use_fixed_mu_sigma:
-                # 3-parameter case: [A_2h, A_1h, A_shot] (mu and sigma fixed)
-                n_params_base = 3
-                lower_bounds = np.array([0., 0., 0.])
-                upper_bounds = np.array([10., 10., 100.])
-            elif use_fixed_ln_ell_peak:
-                # 4-parameter case: [A_2h, A_1h, sigma, A_shot]
-                n_params_base = 4
-                lower_bounds = np.array([0., 0., 0.2, 0.])
-                upper_bounds = np.array([10., 10., 1.2, 100.])
-            else:
-                # 5-parameter case: [A_2h, A_1h, ln_ell_peak, sigma, A_shot]
-                n_params_base = 5
 
-                # Log-normal: ln(ell_peak) between ln(1000)~6.9 and ln(10000)~9.2
-                lower_bounds = np.array([0., 0., np.log(1000), 0.2, 0.])
-                upper_bounds = np.array([10., 10., np.log(10000), 1.2, 100.])
-            
-            # Add damping parameter if enabled
-            if self.use_astrometry_damping:
-                # sigma_damp in arcsec: typical range 1-10 arcsec, allow 0.1-20
-                lower_bounds = np.append(lower_bounds, 0.1)
-                upper_bounds = np.append(upper_bounds, 4.0)
-        else:
-            lower_bounds = np.array(prior_bounds[0])
-            upper_bounds = np.array(prior_bounds[1])
-            
-            # Check if user provided damping parameter (last element if present)
-            has_user_damping = False
-            if self.use_astrometry_damping:
-                # Check expected parameter count WITH damping
-                if use_fixed_mu_sigma:
-                    expected_with_damp = 4  # [A_2h, A_1h, A_shot, sigma_damp]
-                elif use_fixed_ln_ell_peak:
-                    expected_with_damp = 5  # [A_2h, A_1h, sigma, A_shot, sigma_damp]
-                else:
-                    expected_with_damp = 6  # [A_2h, A_1h, mu, sigma, A_shot, sigma_damp]
-                
-                if len(lower_bounds) == expected_with_damp:
-                    has_user_damping = True
-                    # Extract damping bounds and remove from main arrays temporarily
-                    damp_lower = lower_bounds[-1]
-                    damp_upper = upper_bounds[-1]
-                    lower_bounds = lower_bounds[:-1]
-                    upper_bounds = upper_bounds[:-1]
-            
-            # Adjust user-provided bounds to match the actual parameter count (without damping)
-            if use_fixed_mu_sigma:
-                # Need 3 parameters: [A_2h, A_1h, A_shot]
-                # User might provide 4 (for ln_ell_peak case) or 5 (full case)
-                if len(lower_bounds) == 5:
-                    # Remove mu_1h (index 2) and sigma_1h (index 3)
-                    lower_bounds = np.array([lower_bounds[0], lower_bounds[1], lower_bounds[4]])
-                    upper_bounds = np.array([upper_bounds[0], upper_bounds[1], upper_bounds[4]])
-                elif len(lower_bounds) == 4:
-                    # Remove sigma_1h (index 2), assuming [A_2h, A_1h, sigma, A_shot]
-                    lower_bounds = np.array([lower_bounds[0], lower_bounds[1], lower_bounds[3]])
-                    upper_bounds = np.array([upper_bounds[0], upper_bounds[1], upper_bounds[3]])
-            elif use_fixed_ln_ell_peak:
-                # Need 4 parameters: [A_2h, A_1h, sigma, A_shot]
-                # User might provide 5 (full case)
-                if len(lower_bounds) == 5:
-                    # Remove mu_1h (index 2)
-                    lower_bounds = np.array([lower_bounds[0], lower_bounds[1], lower_bounds[3], lower_bounds[4]])
-                    upper_bounds = np.array([upper_bounds[0], upper_bounds[1], upper_bounds[3], upper_bounds[4]])
-            
-            # Re-add damping parameter if user provided it or use defaults
-            if self.use_astrometry_damping:
-                if has_user_damping:
-                    lower_bounds = np.append(lower_bounds, damp_lower)
-                    upper_bounds = np.append(upper_bounds, damp_upper)
-                else:
-                    # User didn't provide damping bounds, use defaults
-                    lower_bounds = np.append(lower_bounds, 0.1)
-                    upper_bounds = np.append(upper_bounds, 7.0)
-            
-            n_params_base = len(lower_bounds)
-            if self.use_astrometry_damping:
-                n_params_base -= 1  # Last parameter is damping
+        lower_bounds, upper_bounds = _bounds_from_names(cfg.fit_names)
         
-        if not self.use_two_halo:
-            if use_fixed_mu_sigma:
-                n_params = 2  # [A_1h, A_shot]
-                param_names = ['A_1h', 'A_shot']
-            elif use_fixed_ln_ell_peak:
-                n_params = 3  # [A_1h, sigma_1h, A_shot]
-                param_names = ['A_1h', 'sigma_1h', 'A_shot']
-            else:
-                n_params = 4  # [A_1h, mu_1h, sigma_1h, A_shot]
-                param_names = ['A_1h', 'mu_1h', 'sigma_1h', 'A_shot']
-
-        elif not self.use_one_halo:
-            n_params = 2  # [A_2h, A_shot]
-            param_names = ['A_2h', 'A_shot']
-        elif use_fixed_A_2h and use_fixed_mu_sigma:
-            n_params = 2  # [A_1h, A_shot] (A_2h fixed to IGL value, 1h shape fixed)
-            param_names = ['A_1h', 'A_shot']
-        elif use_fixed_mu_sigma:
-            n_params = 3  # [A_2h, A_1h, A_shot]
-            param_names = ['A_2h', 'A_1h', 'A_shot']
-        elif use_fixed_ln_ell_peak:
-            n_params = 4  # [A_2h, A_1h, sigma, A_shot]
-            param_names = ['A_2h', 'A_1h', 'sigma_1h', 'A_shot']
-        else:
-            n_params = 5  # [A_2h, A_1h, mu_1h, sigma_1h, A_shot]
-            param_names = ['A_2h', 'A_1h', 'mu_1h', 'sigma_1h', 'A_shot']
-        
-        if self.use_astrometry_damping:
-            n_params += 1  # Add sigma_damp parameter
-            param_names.append('sigma_damp')
+        print('n_params:', n_params)
+        print('param_names:', param_names)
+        print('lower bounds:', lower_bounds)
+        print('upper bounds:', upper_bounds)
         
         # Check if sigma_damp is fixed for this instrument
         use_fixed_sigma_damp = False
@@ -1235,12 +916,14 @@ class CrossPowerSpectrumModel:
             sigma_damp_fixed_value = self.sigma_damp_fixed.get(inst, None)
             if sigma_damp_fixed_value is not None:
                 use_fixed_sigma_damp = True
-                # Remove sigma_damp from the parameters
-                n_params -= 1
-                param_names = param_names[:-1]  # Remove sigma_damp from names
-                # Remove sigma_damp bounds
-                lower_bounds = lower_bounds[:-1]
-                upper_bounds = upper_bounds[:-1]
+                # Only remove sigma_damp from the parameters if it's actually there
+                # (it might not be if _build_fit_config already excluded it)
+                if 'sigma_damp' in param_names:
+                    n_params -= 1
+                    param_names = param_names[:-1]  # Remove sigma_damp from names
+                    # Remove sigma_damp bounds
+                    lower_bounds = lower_bounds[:-1]
+                    upper_bounds = upper_bounds[:-1]
         
         if verbose:
             print("\n" + "="*60)
@@ -1250,8 +933,6 @@ class CrossPowerSpectrumModel:
             print(f"Parameter names: {param_names}")
             if use_fixed_mu_sigma:
                 print(f"Fixed parameters: mu_1h={self.mu_1h_fixed:.3f}, sigma_1h={self.sigma_1h_fixed:.3f}")
-            elif use_fixed_ln_ell_peak:
-                print(f"Fixed parameter: ln(ell_peak)={ln_ell_peak_fixed:.3f} (from z={z_value:.3f})")
             if use_fixed_A_2h:
                 print(f"Fixed A_2h = {self.A_2h_fixed:.4f} (IGL prediction)")
             print(f"Prior bounds:")
@@ -1264,19 +945,6 @@ class CrossPowerSpectrumModel:
             if np.all((params >= lower_bounds) & (params <= upper_bounds)):
                 # Add Gaussian priors if specified (only when not fixing parameters)
                 log_p = 0.0
-                if not use_fixed_mu_sigma and not use_fixed_ln_ell_peak:
-                    # 5-parameter case: check priors on mu_1h (params[2]) and sigma_1h (params[3])
-                    if self.mu_1h_prior is not None:
-                        mu_prior_mean, mu_prior_std = self.mu_1h_prior
-                        log_p += -0.5 * ((params[2] - mu_prior_mean) / mu_prior_std)**2
-                    if self.sigma_1h_prior is not None:
-                        sigma_prior_mean, sigma_prior_std = self.sigma_1h_prior
-                        log_p += -0.5 * ((params[3] - sigma_prior_mean) / sigma_prior_std)**2
-                elif use_fixed_ln_ell_peak and not use_fixed_mu_sigma:
-                    # 4-parameter case: only check prior on sigma_1h (params[2])
-                    if self.sigma_1h_prior is not None:
-                        sigma_prior_mean, sigma_prior_std = self.sigma_1h_prior
-                        log_p += -0.5 * ((params[2] - sigma_prior_mean) / sigma_prior_std)**2
                 # 3-parameter case (use_fixed_mu_sigma): no shape priors needed
                 return log_p
             return -np.inf
@@ -1301,10 +969,6 @@ class CrossPowerSpectrumModel:
                     # mu and sigma are fixed: params = [A_1h, A_shot]
                     params_full = np.array([0.0, params_no_damp[0], 
                                            self.mu_1h_fixed, self.sigma_1h_fixed, params_no_damp[1]])
-                elif use_fixed_ln_ell_peak:
-                    # ln_ell_peak is fixed: params = [A_1h, sigma_1h, A_shot]
-                    params_full = np.array([0.0, params_no_damp[0], 
-                                           ln_ell_peak_fixed, params_no_damp[1], params_no_damp[2]])
                 else:
                     # Full 1h parameters vary: params = [A_1h, mu_1h, sigma_1h, A_shot]
                     params_full = np.array([0.0, params_no_damp[0], 
@@ -1323,11 +987,6 @@ class CrossPowerSpectrumModel:
                 # Insert fixed mu and sigma to make 5-parameter array
                 params_full = np.array([params_no_damp[0], params_no_damp[1], 
                                        self.mu_1h_fixed, self.sigma_1h_fixed, params_no_damp[2]])
-            elif use_fixed_ln_ell_peak:
-                # 4-parameter case: [A_2h, A_1h, sigma, A_shot] (+ optional sigma_damp)
-                # Insert fixed ln_ell_peak to make 5-parameter array
-                params_full = np.array([params_no_damp[0], params_no_damp[1], 
-                                       ln_ell_peak_fixed, params_no_damp[2], params_no_damp[3]])
             else:
                 # 5-parameter case: use as is (+ optional sigma_damp)
                 params_full = params_no_damp
@@ -1340,12 +999,7 @@ class CrossPowerSpectrumModel:
             
             # Compute likelihood
             residual = dl_fit - model
-            if use_covariance:
-                # Use full covariance: -0.5 * residual^T * Cov^-1 * residual
-                return -0.5 * np.dot(residual, np.linalg.solve(cov_fit, residual))
-            else:
-                # Use diagonal errors only
-                return -0.5 * np.sum((residual / dl_err_fit)**2)
+            return -0.5 * np.sum((residual / dl_err_fit)**2)
         
         # Define log probability
         def log_probability(params):
@@ -1357,66 +1011,27 @@ class CrossPowerSpectrumModel:
         # Calculate prior widths for use in initialization
         prior_widths = upper_bounds - lower_bounds
         
-        # Initial guess: use least squares if not provided
+        # Initial guess: draw from prior bounds
         if initial_guess is None:
             if p0 is not None:
                 initial_guess = p0  # Backward compatibility
             else:
-                try:
-                    if verbose:
-                        print("Running initial least squares fit for starting point...")
-                    lsq_result = self.fit_model(
-                        lb_data, dl_data, dl_err=dl_err,
-                        fit_range=fit_range, verbose=False
-                    )
-                    initial_guess_5param = lsq_result['params']
-                    
-                    # Convert to appropriate parameter count
-                    if not self.use_one_halo:
-                        # 2-parameter case: keep only [A_2h, A_shot]
-                        initial_guess = np.array([initial_guess_5param[0], initial_guess_5param[4]])
-                    elif use_fixed_A_2h and use_fixed_mu_sigma:
-                        # [A_1h, A_shot]: A_2h fixed to IGL, 1h shape fixed
-                        initial_guess = np.array([initial_guess_5param[1], initial_guess_5param[4]])
-                    elif use_fixed_mu_sigma:
-                        # 3-parameter case: keep only [A_2h, A_1h, A_shot]
-                        initial_guess = np.array([initial_guess_5param[0], initial_guess_5param[1], initial_guess_5param[4]])
-                    elif use_fixed_ln_ell_peak:
-                        # 4-parameter case: remove ln_ell_peak
-                        initial_guess = np.array([initial_guess_5param[0], initial_guess_5param[1], 
-                                                initial_guess_5param[3], initial_guess_5param[4]])
-                    else:
-                        # 5-parameter case
-                        initial_guess = initial_guess_5param
-                    
-                    # Add damping parameter if enabled
-                    if self.use_astrometry_damping:
-                        # Initial guess for sigma_damp: 2 arcsec (middle of expected range)
-                        initial_guess = np.append(initial_guess, 2.0)
-                    
-                    # Validate initial guess (check array lengths match)
-                    if len(initial_guess) != len(lower_bounds):
-                        raise ValueError(f"Initial guess dimension mismatch: {len(initial_guess)} vs {len(lower_bounds)}")
-                    
-                    if not (np.all(np.isfinite(initial_guess)) and 
-                            np.all(initial_guess >= lower_bounds) and 
-                            np.all(initial_guess <= upper_bounds)):
-                        raise ValueError("LSQ initial guess outside prior bounds or non-finite")
-                    
-                    if verbose:
-                        print(f"Initial guess from LSQ: {initial_guess}")
-                        
-                except Exception as e:
-                    # LSQ failed - draw initial guess from prior
-                    if verbose:
-                        print(f"LSQ fit failed ({e}), drawing initial guess from prior...")
-                    initial_guess = np.zeros(n_params)
-                    prior_widths = upper_bounds - lower_bounds
-                    for i in range(n_params):
-                        # Sample from uniform prior, but prefer middle of range
-                        initial_guess[i] = lower_bounds[i] + 0.5 * prior_widths[i]
-                    if verbose:
-                        print(f"Initial guess from prior: {initial_guess}")
+                # Skip LSQ fitting - initial values from prior bounds are sufficient for MCMC
+                if verbose:
+                    print("Drawing initial guess from prior bounds...")
+                initial_guess = np.zeros(n_params)
+                for i in range(n_params):
+                    # Sample from middle of prior range
+                    initial_guess[i] = lower_bounds[i] + 0.5 * prior_widths[i]
+                
+                # Validate initial guess
+                if not (np.all(np.isfinite(initial_guess)) and 
+                        np.all(initial_guess >= lower_bounds) and 
+                        np.all(initial_guess <= upper_bounds)):
+                    raise ValueError("Initial guess outside prior bounds or non-finite")
+                
+                if verbose:
+                    print(f"Initial guess from prior: {initial_guess}")
         else:
             # User provided initial_guess - ensure it has correct dimension
             initial_guess = np.array(initial_guess)
@@ -1449,19 +1064,6 @@ class CrossPowerSpectrumModel:
         # Initialize walkers with proper spread to ensure linear independence
         prior_widths = upper_bounds - lower_bounds
         perturbation_scale = prior_widths * 0.01  # Default 1% of prior range
-        
-        # Use Gaussian prior widths where available for better initialization
-        if not use_fixed_mu_sigma:
-            if use_fixed_ln_ell_peak:
-                # 4-parameter case: only sigma has potential prior
-                if self.sigma_1h_prior is not None:
-                    perturbation_scale[2] = self.sigma_1h_prior[1] * 0.1
-            else:
-                # 5-parameter case: mu and sigma may have priors
-                if self.mu_1h_prior is not None:
-                    perturbation_scale[2] = self.mu_1h_prior[1] * 0.1
-                if self.sigma_1h_prior is not None:
-                    perturbation_scale[3] = self.sigma_1h_prior[1] * 0.1
         
         # Damping parameter gets larger perturbation scale (~1 arcsec)
         if self.use_astrometry_damping:
@@ -1534,18 +1136,6 @@ class CrossPowerSpectrumModel:
                         # Return [A_2h, A_1h, mu_1h, sigma_1h, A_shot]
                         return np.array([0.0, params_subset[0], mu_val,
                                        sigma_val, params_subset[1]])
-                elif use_fixed_ln_ell_peak:
-                    # params_subset = [A_1h, sigma_1h, A_shot, sigma_damp (optional)]
-                    ln_ell_val = 0.0 if zero_fixed else ln_ell_peak_fixed
-                    if self.use_astrometry_damping and not use_fixed_sigma_damp:
-                        return np.array([0.0, params_subset[0], ln_ell_val,
-                                       params_subset[1], params_subset[2], params_subset[3]])
-                    elif use_fixed_sigma_damp:
-                        return np.array([0.0, params_subset[0], ln_ell_val,
-                                       params_subset[1], params_subset[2], sigma_damp_fixed_value])
-                    else:
-                        return np.array([0.0, params_subset[0], ln_ell_val,
-                                       params_subset[1], params_subset[2]])
                 else:
                     # Full 1h parameters: params_subset = [A_1h, mu_1h, sigma_1h, A_shot, sigma_damp (optional)]
                     if self.use_astrometry_damping and not use_fixed_sigma_damp:
@@ -1594,18 +1184,7 @@ class CrossPowerSpectrumModel:
                 else:
                     return np.array([params_subset[0], params_subset[1], mu_val,
                                    sigma_val, params_subset[2]])
-            elif use_fixed_ln_ell_peak:
-                # Insert ln_ell_peak at index 2
-                ln_ell_val = 0.0 if zero_fixed else ln_ell_peak_fixed
-                if self.use_astrometry_damping and not use_fixed_sigma_damp:
-                    return np.array([params_subset[0], params_subset[1], ln_ell_val,
-                                   params_subset[2], params_subset[3], params_subset[4]])
-                elif use_fixed_sigma_damp:
-                    return np.array([params_subset[0], params_subset[1], ln_ell_val,
-                                   params_subset[2], params_subset[3], sigma_damp_fixed_value])
-                else:
-                    return np.array([params_subset[0], params_subset[1], ln_ell_val,
-                                   params_subset[2], params_subset[3]])
+
             else:
                 # Full parameters
                 if use_fixed_sigma_damp:
@@ -1624,7 +1203,9 @@ class CrossPowerSpectrumModel:
         # Compute chi-squared with median parameters
         if chi2_eval_max is None:
             chi2_eval_max = self.chi2_eval_max
-        chi2_mask = lb_fit <= chi2_eval_max
+        
+        # Apply both lower (300) and upper (chi2_eval_max) bounds for chi2 calculation
+        chi2_mask = (lb_fit >= 300) & (lb_fit <= chi2_eval_max)
         lb_chi2 = lb_fit[chi2_mask]
         dl_chi2 = dl_fit[chi2_mask]
         # Call model_dl with proper parameter handling for damping
@@ -1637,6 +1218,9 @@ class CrossPowerSpectrumModel:
         dl_err_chi2 = dl_err_fit[chi2_mask]
         
         chisq = np.sum(((dl_chi2 - model_chi2) / dl_err_chi2)**2)
+        
+        # ndof = number of data points - number of floated parameters
+        # n_params is the count of parameters actually floated during fitting
         ndof = len(lb_chi2) - n_params
         reduced_chisq = chisq / ndof if ndof > 0 else np.nan
         
@@ -1651,9 +1235,7 @@ class CrossPowerSpectrumModel:
                 print(f"  Model: {'Log-normal'} 1-halo term")
                 if use_fixed_mu_sigma:
                     print(f"  Using fixed mu_1h = {self.mu_1h_fixed:.3f}, sigma_1h = {self.sigma_1h_fixed:.3f}")
-                elif use_fixed_ln_ell_peak:
-                    print(f"  Using fixed ln(ell_peak) = {ln_ell_peak_fixed:.3f} from relation")
-            print(f"  Acceptance fraction: {acceptance_fraction:.3f}")
+                print(f"  Acceptance fraction: {acceptance_fraction:.3f}")
             
             # Determine if 2-halo should be reported as upper limit
             # Rule: report upper limit if 16th percentile is consistent with zero (< 10% of median)
@@ -1668,7 +1250,7 @@ class CrossPowerSpectrumModel:
             
             if self.use_one_halo:
                 print(f"  A_1h     = {params_median_full[1]:.4f} ± {params_std_full[1]:.4f} [{params_16_full[1]:.4f}, {params_84_full[1]:.4f}]")
-                if use_fixed_mu_sigma or use_fixed_ln_ell_peak:
+                if use_fixed_mu_sigma:
                     print(f"  mu_1h    = {params_median_full[2]:.4f} (fixed, ℓ_peak ~ {np.exp(params_median_full[2]):.1f})")
                 else:
                     print(f"  mu_1h    = {params_median_full[2]:.4f} ± {params_std_full[2]:.4f} [{params_16_full[2]:.4f}, {params_84_full[2]:.4f}] (ℓ_peak ~ {np.exp(params_median_full[2]):.1f})")
@@ -1676,7 +1258,7 @@ class CrossPowerSpectrumModel:
                     print(f"  sigma_1h = {params_median_full[3]:.4f} (fixed)")
                 else:
                     print(f"  sigma_1h = {params_median_full[3]:.4f} ± {params_std_full[3]:.4f} [{params_16_full[3]:.4f}, {params_84_full[3]:.4f}]")
-            print(f"  A_shot   = {params_median_full[4]:.4f} ± {params_std_full[4]:.4f} [{params_16_full[4]:.4f}, {params_84_full[4]:.4f}]")
+            print(f"  A_shot   = {1e7*params_median_full[4]:.4f} ± {1e7*params_std_full[4]:.4f} [{1e7*params_16_full[4]:.4f}, {1e7*params_84_full[4]:.4f}]")
             if self.use_astrometry_damping:
                 if use_fixed_sigma_damp:
                     print(f"  σ_damp   = {params_median_full[5]:.2f} arcsec (fixed)")
@@ -1696,21 +1278,12 @@ class CrossPowerSpectrumModel:
             if use_fixed_mu_sigma:
                 # 2-parameter case: only A_1h, A_shot
                 param_names_fitted = ['$A_{1h}$', '$A_{shot}$']
-            elif use_fixed_ln_ell_peak:
-                # 3-parameter case: A_1h, sigma_1h, A_shot
-                param_names_fitted = ['$A_{1h}$', r'$\sigma_{1h}$', '$A_{shot}$']
-            else:
-                # 4-parameter case: A_1h, mu_1h, sigma_1h, A_shot
-                param_names_fitted = ['$A_{1h}$', r'$\mu_{1h}$', r'$\sigma_{1h}$', '$A_{shot}$']
         elif not self.use_one_halo:
             # 2-parameter case: only A_2h, A_shot
             param_names_fitted = ['$A_{2h}$', '$A_{shot}$']
         elif use_fixed_mu_sigma:
             # 3-parameter case: only A_2h, A_1h, A_shot
             param_names_fitted = ['$A_{2h}$', '$A_{1h}$', '$A_{shot}$']
-        elif use_fixed_ln_ell_peak:
-            # 4-parameter case: A_2h, A_1h, sigma_1h, A_shot
-            param_names_fitted = ['$A_{2h}$', '$A_{1h}$', r'$\sigma_{1h}$', '$A_{shot}$']
         else:
             # 5-parameter case: all parameters
             param_names_fitted = ['$A_{2h}$', '$A_{1h}$', r'$\mu_{1h}$', r'$\sigma_{1h}$', '$A_{shot}$']
@@ -1746,16 +1319,13 @@ class CrossPowerSpectrumModel:
             'acceptance_fraction': acceptance_fraction,
             'sampler': sampler,
             'use_fixed_mu_sigma': use_fixed_mu_sigma,
-            'use_fixed_ln_ell_peak': use_fixed_ln_ell_peak,
             'use_astrometry_damping': self.use_astrometry_damping,  # NEW: flag for damping
             'use_powerlaw_2h': self.use_powerlaw_2h,  # Model configuration for 2-halo
             'alpha_2h_fixed': self.alpha_2h_fixed,  # 2-halo power-law index
-            'use_fixed_ln_ell_peak': use_fixed_ln_ell_peak,  # Flag for plotting
             'n_params_fit': n_params,  # Number of parameters actually fitted (4 or 5)
             # Add compatibility fields for plotting
             'z_value': z_value,
             'one_halo_params_dict': None,
-            'use_single_slope': None,
             'sigma_fixed': None,
             # Best-fit model and residuals for diagnostics
             'lb_fit': lb_fit,
@@ -1764,682 +1334,6 @@ class CrossPowerSpectrumModel:
             'template_names': None,
             'ihl_templates': None,
             'model_wrapper': None
-        }
-    
-    def fit_model_fixed_1h_templates(self, lb_data, dl_data, z_value, one_halo_params_dict,
-                                     dl_err=None, p0=None, bounds=None, method='leastsq',
-                                     fit_range=None, chi2_eval_max=None, verbose=True,
-                                     use_single_slope=1.0, sigma_fixed=None):
-        """
-        Fit model with linear combination of fixed 1-halo templates.
-        
-        Parameters
-        ----------
-        lb_data : array_like
-            Multipole bin centers from data
-        dl_data : array_like
-            Measured D_ℓ values
-        z_value : float
-            Redshift for interpolating 1-halo template parameters
-        one_halo_params_dict : dict
-            Dictionary with slope keys (0.8, 1.0, 1.2) and template parameters
-        dl_err : array_like, optional
-            Uncertainties on D_ℓ
-        p0 : array_like, optional
-            Initial parameter guess [A_2h, A_1h_08, A_1h_10, A_1h_12, A_shot] or [A_2h, A_1h, A_shot]
-        bounds : tuple of array_like, optional
-            Lower and upper bounds for parameters
-        method : str, optional
-            Fitting method: 'leastsq' (curve_fit) or 'minimize' (scipy.optimize.minimize)
-        fit_range : tuple, optional
-            (ℓ_min, ℓ_max) range to fit over
-        chi2_eval_max : float, optional
-            Maximum multipole for chi² evaluation (default 5000)
-        verbose : bool, optional
-            Print fit results
-        use_single_slope : float or None, optional
-            If specified (e.g., 1.0), use only this single slope template.
-            If None, fit linear combination of all three slopes (0.8, 1.0, 1.2).
-        sigma_fixed : float, optional
-            If provided, use this fixed sigma value for the 1-halo template instead
-            of the redshift-dependent analytic formula.
-        
-        Returns
-        -------
-        dict
-            Fit results with keys 'params', 'params_err', 'chisq', 'reduced_chisq'
-        """
-        # Apply fit range mask
-        if fit_range is not None:
-            mask = (lb_data >= fit_range[0]) & (lb_data <= fit_range[1])
-            lb_fit = lb_data[mask]
-            dl_fit = dl_data[mask]
-            dl_err_fit = dl_err[mask] if dl_err is not None else None
-        else:
-            lb_fit = lb_data
-            dl_fit = dl_data
-            dl_err_fit = dl_err
-        
-        # CONSTRAINED LINEAR LEAST SQUARES: We're fitting amplitudes for fixed templates
-        # Model: D_ℓ = A_2h * T_2h + A_1h * T_1h + A_shot * T_shot
-        # Enforce non-negativity: all amplitudes >= 0
-        
-        from scipy.optimize import lsq_linear
-        
-        # Build design matrix (each column is a template evaluated at lb_fit)
-        n_data = len(lb_fit)
-        
-        if use_single_slope is not None:
-            # Use only one 1-halo template (e.g., slope=1.0)
-            n_params = 3  # [A_2h, A_1h, A_shot]
-            design_matrix = np.zeros((n_data, n_params))
-            
-            # Column 0: 2-halo template
-            if self.use_powerlaw_2h:
-                design_matrix[:, 0] = self.powerlaw_2h_component(lb_fit, amplitude=1.0, index=self.alpha_2h_fixed)
-            else:
-                pf = lb_fit * (lb_fit + 1) / (2 * np.pi)
-                design_matrix[:, 0] = pf * np.interp(lb_fit, self.lb, self.cl_2h_pred)
-            
-            # Column 1: 1-halo template for specified slope
-            ln_ell_peak, sigma = interpolate_1h_params(z_value, use_single_slope, one_halo_params_dict, sigma_fixed=sigma_fixed)
-            design_matrix[:, 1] = self.lognormal_component(lb_fit, amplitude=1.0, mu=ln_ell_peak, sigma=sigma)
-            
-            # Column 2: Shot noise template
-            design_matrix[:, 2] = self.shot_noise_component(lb_fit, amplitude=1.0)
-            
-            param_names = ['A_2h', 'A_1h', 'A_shot']
-            
-        else:
-            # Use linear combination of all three 1-halo templates
-            n_params = 5  # [A_2h, A_1h_08, A_1h_10, A_1h_12, A_shot]
-            design_matrix = np.zeros((n_data, n_params))
-            
-            # Column 0: 2-halo template
-            if self.use_powerlaw_2h:
-                design_matrix[:, 0] = self.powerlaw_2h_component(lb_fit, amplitude=1.0, index=self.alpha_2h_fixed)
-            else:
-                pf = lb_fit * (lb_fit + 1) / (2 * np.pi)
-                design_matrix[:, 0] = pf * np.interp(lb_fit, self.lb, self.cl_2h_pred)
-            
-            # Columns 1-3: 1-halo templates for slopes 0.8, 1.0, 1.2
-            for i, slope in enumerate([0.8, 1.0, 1.2]):
-                ln_ell_peak, sigma = interpolate_1h_params(z_value, slope, one_halo_params_dict, sigma_fixed=sigma_fixed)
-                design_matrix[:, i+1] = self.lognormal_component(lb_fit, amplitude=1.0, mu=ln_ell_peak, sigma=sigma)
-            
-            # Column 4: Shot noise template
-            design_matrix[:, 4] = self.shot_noise_component(lb_fit, amplitude=1.0)
-            
-            param_names = ['A_2h', 'A_1h_08', 'A_1h_10', 'A_1h_12', 'A_shot']
-        
-        # Setup bounds: all amplitudes must be non-negative
-        lower_bounds = np.zeros(n_params)
-        upper_bounds = np.full(n_params, np.inf)
-        
-        # Apply custom bounds if provided
-        if bounds is not None:
-            if bounds[0] is not None:  # Lower bounds
-                lower_bounds = np.maximum(lower_bounds, np.array(bounds[0]))
-            if bounds[1] is not None:  # Upper bounds
-                upper_bounds = np.minimum(upper_bounds, np.array(bounds[1]))
-        
-        # Solve constrained linear least squares
-        # For weighted case, we need to transform the problem
-        if dl_err_fit is not None and np.all(dl_err_fit > 0):
-            weights = 1.0 / dl_err_fit
-            # Transform: W * A * x = W * b where W is diagonal weight matrix
-            A_weighted = design_matrix * weights[:, np.newaxis]
-            b_weighted = dl_fit * weights
-        else:
-            A_weighted = design_matrix
-            b_weighted = dl_fit
-        
-        # Solve constrained least squares
-        try:
-            result = lsq_linear(A_weighted, b_weighted, bounds=(lower_bounds, upper_bounds))
-            popt = result.x
-            
-            # Compute covariance matrix from the Jacobian
-            # For overdetermined linear systems: cov = (J^T J)^{-1} * sigma^2
-            # where J is the Jacobian (design matrix) and sigma^2 is residual variance
-            residuals = A_weighted @ popt - b_weighted
-            if len(residuals) > len(popt):
-                sigma2 = np.sum(residuals**2) / (len(residuals) - len(popt))
-                try:
-                    JTJ = A_weighted.T @ A_weighted
-                    cov_matrix = np.linalg.inv(JTJ) * sigma2
-                    perr = np.sqrt(np.diag(cov_matrix))
-                except np.linalg.LinAlgError:
-                    # Fallback: use finite differences around solution
-                    cov_matrix = None
-                    perr = np.full(n_params, np.nan)
-                    if verbose:
-                        print("Warning: Could not compute parameter uncertainties")
-            else:
-                cov_matrix = None
-                perr = np.full(n_params, np.nan)
-                
-            if not result.success and verbose:
-                print(f"Warning: Constrained fit may not have converged: {result.message}")
-                
-        except Exception as e:
-            if verbose:
-                print(f"Error in constrained least squares: {e}")
-                print("Returning zeros with NaN uncertainties")
-            popt = np.zeros(n_params)
-            perr = np.full(n_params, np.nan)
-            cov_matrix = None
-        
-        # Compute chi-squared using fitted model
-        if use_single_slope is not None:
-            # Single slope model
-            def model_wrapper(ell):
-                ln_ell_peak, sigma = interpolate_1h_params(z_value, use_single_slope, one_halo_params_dict, sigma_fixed=sigma_fixed)
-                if self.use_powerlaw_2h:
-                    dl_2h = self.powerlaw_2h_component(ell, popt[0], self.alpha_2h_fixed)
-                else:
-                    pf = ell * (ell + 1) / (2 * np.pi)
-                    dl_2h = popt[0] * pf * np.interp(ell, self.lb, self.cl_2h_pred)
-                dl_1h = self.lognormal_component(ell, popt[1], ln_ell_peak, sigma)
-                dl_shot = self.shot_noise_component(ell, popt[2])
-                return dl_2h + dl_1h + dl_shot
-        else:
-            # Multiple slope model
-            def model_wrapper(ell):
-                return self.model_dl_fixed_1h_templates(ell, popt[0], popt[1], popt[2], popt[3], popt[4],
-                                                         z_value, one_halo_params_dict)
-        
-        if chi2_eval_max is None:
-            chi2_eval_max = self.chi2_eval_max
-        chi2_mask = lb_fit <= chi2_eval_max
-        lb_chi2 = lb_fit[chi2_mask]
-        dl_chi2 = dl_fit[chi2_mask]
-        model_chi2 = model_wrapper(lb_chi2)
-        
-        if dl_err_fit is not None:
-            dl_err_chi2 = dl_err_fit[chi2_mask]
-            chisq = np.sum(((dl_chi2 - model_chi2) / dl_err_chi2)**2)
-        else:
-            chisq = np.sum((dl_chi2 - model_chi2)**2)
-        
-        ndof = len(lb_chi2) - len(popt)
-        reduced_chisq = chisq / ndof if ndof > 0 else np.nan
-        
-        if verbose:
-            if use_single_slope is not None:
-                print(f"Fit Results (Single 1-halo template, slope={use_single_slope}):")
-                print(f"  Redshift = {z_value:.2f}")
-                print(f"  A_2h       = {popt[0]:.4f} ± {perr[0]:.4f}")
-                print(f"  A_1h       = {popt[1]:.4f} ± {perr[1]:.4f}")
-                print(f"  A_shot     = {popt[2]:.4f} ± {perr[2]:.4f}")
-            else:
-                print("Fit Results (Fixed 1-halo templates):")
-                print(f"  Redshift = {z_value:.2f}")
-                print(f"  A_2h       = {popt[0]:.4f} ± {perr[0]:.4f}")
-                print(f"  A_1h(0.8)  = {popt[1]:.4f} ± {perr[1]:.4f}")
-                print(f"  A_1h(1.0)  = {popt[2]:.4f} ± {perr[2]:.4f}")
-                print(f"  A_1h(1.2)  = {popt[3]:.4f} ± {perr[3]:.4f}")
-                print(f"  A_shot     = {popt[4]:.4f} ± {perr[4]:.4f}")
-            if self.use_powerlaw_2h:
-                print(f"  alpha_2h   = {self.alpha_2h_fixed:.2f} (fixed)")
-            print(f"  χ²/dof     = {chisq:.2f}/{ndof} = {reduced_chisq:.2f} (ℓ < {chi2_eval_max})")
-        
-        return {
-            'params': popt,
-            'params_err': perr,
-            'cov_matrix': cov_matrix,
-            'param_names': param_names,
-            'chisq': chisq,
-            'reduced_chisq': reduced_chisq,
-            'ndof': ndof,
-            'chi2_eval_max': chi2_eval_max,
-            'z_value': z_value,
-            'one_halo_params_dict': one_halo_params_dict,
-            'use_single_slope': use_single_slope,
-            'sigma_fixed': sigma_fixed
-        }
-    
-    def fit_model_with_ihl_templates(self, lb_data, dl_data, ihl_templates,
-                                     dl_err=None, template_names=None, bounds=None,
-                                     fit_range=None, chi2_eval_max=None, verbose=True,
-                                     method='lsq', **mcmc_kwargs):
-        """
-        Fit model using direct IHL templates loaded from files.
-        
-        Parameters
-        ----------
-        lb_data : array_like
-            Multipole bin centers from data
-        dl_data : array_like
-            Measured D_ℓ values
-        ihl_templates : dict
-            Dictionary of IHL templates from load_ihl_templates()
-        dl_err : array_like, optional
-            Uncertainties on D_ℓ
-        template_names : list of str, optional
-            List of template names to use from ihl_templates. If None, uses all.
-        bounds : tuple of array_like, optional
-            Lower and upper bounds for parameters (for method='lsq')
-        fit_range : tuple, optional
-            (ℓ_min, ℓ_max) range to fit over
-        chi2_eval_max : float, optional
-            Maximum multipole for chi² evaluation (default 5000)
-        verbose : bool, optional
-            Print fit results
-        method : str, optional
-            Fitting method: 'lsq' for least squares (default) or 'mcmc' for MCMC
-        **mcmc_kwargs : dict, optional
-            Additional arguments for MCMC (nwalkers, nsteps, nburn, prior_bounds, etc.)
-            
-        Returns
-        -------
-        dict
-            Fit results with keys 'params', 'params_err', 'chisq', 'reduced_chisq'
-        """
-        if method.lower() == 'mcmc':
-            # Route to MCMC fitting
-            if 'prior_bounds' not in mcmc_kwargs and bounds is not None:
-                mcmc_kwargs['prior_bounds'] = bounds
-            return self.fit_model_with_ihl_templates_mcmc(
-                lb_data, dl_data, ihl_templates,
-                dl_err=dl_err, template_names=template_names,
-                fit_range=fit_range, chi2_eval_max=chi2_eval_max,
-                verbose=verbose, **mcmc_kwargs
-            )
-        
-        # # Apply fit range mask
-        # if fit_range is not None:
-        #     mask = (lb_data >= fit_range[0]) & (lb_data <= fit_range[1])
-        #     lb_fit = lb_data[mask]
-        #     dl_fit = dl_data[mask]
-        #     dl_err_fit = dl_err[mask] if dl_err is not None else None
-        # else:
-        #     lb_fit = lb_data
-        #     dl_fit = dl_data
-        #     dl_err_fit = dl_err
-        
-        # # Select templates to use
-        # if template_names is None:
-        #     template_names = list(ihl_templates.keys())
-        
-        # # Add 2-halo and shot noise components to template list
-        # component_names = ['2h'] + template_names + ['shot']
-        # n_params = len(component_names)
-        
-        # # Build design matrix
-        # n_data = len(lb_fit)
-        # design_matrix = np.zeros((n_data, n_params))
-        
-        # # Column 0: 2-halo template
-        # if self.use_powerlaw_2h:
-        #     design_matrix[:, 0] = self.powerlaw_2h_component(lb_fit, amplitude=1.0, index=self.alpha_2h_fixed)
-        # else:
-        #     pf = lb_fit * (lb_fit + 1) / (2 * np.pi)
-        #     design_matrix[:, 0] = pf * np.interp(lb_fit, self.lb, self.cl_2h_pred)
-        
-        # # Columns 1 to n_templates: IHL templates (interpolated to data ell values)
-        # for i, template_name in enumerate(template_names):
-        #     template = ihl_templates[template_name]
-        #     # Interpolate template to data multipoles
-        #     dl_template = np.interp(lb_fit, template['ell'], template['dl'])
-        #     design_matrix[:, i+1] = dl_template
-        
-        # # Last column: Shot noise template
-        # design_matrix[:, -1] = self.shot_noise_component(lb_fit, amplitude=1.0)
-        
-        # # Setup bounds: all amplitudes must be non-negative
-        # lower_bounds = np.zeros(n_params)
-        # upper_bounds = np.full(n_params, np.inf)
-        
-        # # Apply custom bounds if provided
-        # if bounds is not None:
-        #     if bounds[0] is not None:  # Lower bounds
-        #         lower_bounds = np.maximum(lower_bounds, np.array(bounds[0]))
-        #     if bounds[1] is not None:  # Upper bounds
-        #         upper_bounds = np.minimum(upper_bounds, np.array(bounds[1]))
-        
-        # # Solve constrained linear least squares
-        # if dl_err_fit is not None and np.all(dl_err_fit > 0):
-        #     weights = 1.0 / dl_err_fit
-        #     A_weighted = design_matrix * weights[:, np.newaxis]
-        #     b_weighted = dl_fit * weights
-        # else:
-        #     A_weighted = design_matrix
-        #     b_weighted = dl_fit
-        
-        # # Solve constrained least squares
-        # try:
-        #     result = lsq_linear(A_weighted, b_weighted, bounds=(lower_bounds, upper_bounds))
-        #     popt = result.x
-            
-        #     # Compute covariance matrix
-        #     residuals = A_weighted @ popt - b_weighted
-        #     if len(residuals) > len(popt):
-        #         sigma2 = np.sum(residuals**2) / (len(residuals) - len(popt))
-        #         try:
-        #             JTJ = A_weighted.T @ A_weighted
-        #             cov_matrix = np.linalg.inv(JTJ) * sigma2
-        #             perr = np.sqrt(np.diag(cov_matrix))
-        #         except np.linalg.LinAlgError:
-        #             cov_matrix = None
-        #             perr = np.full(n_params, np.nan)
-        #             if verbose:
-        #                 print("Warning: Could not compute parameter uncertainties")
-        #     else:
-        #         cov_matrix = None
-        #         perr = np.full(n_params, np.nan)
-                
-        #     if not result.success and verbose:
-        #         print(f"Warning: Constrained fit may not have converged: {result.message}")
-                
-        # except Exception as e:
-        #     if verbose:
-        #         print(f"Error in constrained least squares: {e}")
-        #         print("Returning zeros with NaN uncertainties")
-        #     popt = np.zeros(n_params)
-        #     perr = np.full(n_params, np.nan)
-        #     cov_matrix = None
-        
-        # # Compute model for chi-squared calculation
-        # def model_wrapper(ell):
-        #     model_dl = np.zeros_like(ell)
-            
-        #     # 2-halo component
-        #     if self.use_powerlaw_2h:
-        #         model_dl += self.powerlaw_2h_component(ell, popt[0], self.alpha_2h_fixed)
-        #     else:
-        #         pf = ell * (ell + 1) / (2 * np.pi)
-        #         model_dl += popt[0] * pf * np.interp(ell, self.lb, self.cl_2h_pred)
-            
-        #     # IHL template components
-        #     for i, template_name in enumerate(template_names):
-        #         template = ihl_templates[template_name]
-        #         dl_template = np.interp(ell, template['ell'], template['dl'])
-        #         model_dl += popt[i+1] * dl_template
-            
-        #     # Shot noise component
-        #     model_dl += self.shot_noise_component(ell, popt[-1])
-            
-        #     return model_dl
-        
-        # # Compute chi-squared
-        # if chi2_eval_max is None:
-        #     chi2_eval_max = self.chi2_eval_max
-        # chi2_mask = lb_fit <= chi2_eval_max
-        # lb_chi2 = lb_fit[chi2_mask]
-        # dl_chi2 = dl_fit[chi2_mask]
-        # model_chi2 = model_wrapper(lb_chi2)
-        
-        # if dl_err_fit is not None:
-        #     dl_err_chi2 = dl_err_fit[chi2_mask]
-        #     chisq = np.sum(((dl_chi2 - model_chi2) / dl_err_chi2)**2)
-        # else:
-        #     chisq = np.sum((dl_chi2 - model_chi2)**2)
-        
-        # ndof = len(lb_chi2) - len(popt)
-        # reduced_chisq = chisq / ndof if ndof > 0 else np.nan
-        
-        # # Compute best-fit model and residuals for full data range
-        # model_full = model_wrapper(lb_fit)
-        # residuals = (dl_fit - model_full) / dl_err_fit if dl_err_fit is not None else (dl_fit - model_full)
-        
-        # if verbose:
-        #     print("Fit Results (Direct IHL templates):")
-        #     print(f"  A_2h       = {popt[0]:.4f} ± {perr[0]:.4f}")
-        #     for i, template_name in enumerate(template_names):
-        #         print(f"  A_{template_name:<8} = {popt[i+1]:.4f} ± {perr[i+1]:.4f}")
-        #     print(f"  A_shot     = {popt[-1]:.4f} ± {perr[-1]:.4f}")
-        #     if self.use_powerlaw_2h:
-        #         print(f"  alpha_2h   = {self.alpha_2h_fixed:.2f} (fixed)")
-        #     print(f"  χ²/dof     = {chisq:.2f}/{ndof} = {reduced_chisq:.2f} (ℓ < {chi2_eval_max})")
-        
-        # return {
-        #     'params': popt,
-        #     'params_err': perr,
-        #     'cov_matrix': cov_matrix,
-        #     'param_names': component_names,
-        #     'chisq': chisq,
-        #     'reduced_chisq': reduced_chisq,
-        #     'ndof': ndof,
-        #     'chi2_eval_max': chi2_eval_max,
-        #     'template_names': template_names,
-        #     'ihl_templates': ihl_templates,
-        #     'model_wrapper': model_wrapper,
-        #     'use_powerlaw_2h': self.use_powerlaw_2h,  # Model configuration for 2-halo
-        #     'alpha_2h_fixed': self.alpha_2h_fixed,  # 2-halo power-law index
-        #     # Add compatibility fields for existing plotting functions
-        #     'z_value': None,  # Not applicable for IHL templates
-        #     'one_halo_params_dict': None,  # Not used for IHL templates
-        #     'use_single_slope': None,  # Not applicable for IHL templates
-        #     'sigma_fixed': None,  # Not applicable for IHL templates
-        #     # Best-fit model and residuals for diagnostics
-        #     'lb_fit': lb_fit,
-        #     'model_dl': model_full,
-        #     'residuals': residuals
-        # }
-    
-    def fit_model_with_ihl_templates_mcmc(self, lb_data, dl_data, ihl_templates,
-                                          dl_err=None, template_names=None, 
-                                          fit_range=None, chi2_eval_max=None,
-                                          nwalkers=32, nsteps=2000, nburn=500,
-                                          prior_bounds=None, verbose=True,
-                                          progress=True, initial_guess=None):
-        """
-        Fit model using MCMC (emcee) with direct IHL templates.
-        Better handles parameter degeneracies compared to least squares.
-        
-        Parameters
-        ----------
-        lb_data : array_like
-            Multipole bin centers from data
-        dl_data : array_like
-            Measured D_ℓ values
-        ihl_templates : dict
-            Dictionary of IHL templates from load_ihl_templates()
-        dl_err : array_like, optional
-            Uncertainties on D_ℓ (required for MCMC)
-        template_names : list of str, optional
-            List of template names to use. If None, uses all.
-        fit_range : tuple, optional
-            (ℓ_min, ℓ_max) range to fit over
-        chi2_eval_max : float, optional
-            Maximum multipole for chi² evaluation
-        nwalkers : int, optional
-            Number of MCMC walkers (default 32)
-        nsteps : int, optional
-            Number of MCMC steps per walker (default 2000)
-        nburn : int, optional
-            Number of burn-in steps to discard (default 500)
-        prior_bounds : tuple of array_like, optional
-            (lower, upper) bounds for uniform priors on each parameter.
-            Default: all parameters have lower=0, upper=10
-        verbose : bool, optional
-            Print fit results
-        progress : bool, optional
-            Show progress bar during MCMC
-        initial_guess : array_like, optional
-            Initial parameter values. If None, uses least squares fit.
-            
-        Returns
-        -------
-        dict
-            Fit results with keys 'params' (medians), 'params_err' (std), 
-            'samples', 'percentiles', etc.
-        """
-        try:
-            import emcee
-        except ImportError:
-            raise ImportError("emcee is required for MCMC fitting. Install with: pip install emcee")
-        
-        if dl_err is None:
-            raise ValueError("dl_err is required for MCMC fitting (need likelihood)")
-        
-        # Apply fit range mask
-        if fit_range is not None:
-            mask = (lb_data >= fit_range[0]) & (lb_data <= fit_range[1])
-            lb_fit = lb_data[mask]
-            dl_fit = dl_data[mask]
-            dl_err_fit = dl_err[mask]
-        else:
-            lb_fit = lb_data
-            dl_fit = dl_data
-            dl_err_fit = dl_err
-        
-        # Select templates
-        if template_names is None:
-            template_names = list(ihl_templates.keys())
-        
-        component_names = ['2h'] + template_names + ['shot']
-        n_params = len(component_names)
-        
-        # Build design matrix for model evaluation
-        def build_design_matrix(ell):
-            n_data = len(ell)
-            design_matrix = np.zeros((n_data, n_params))
-            
-            # Column 0: 2-halo
-            if self.use_powerlaw_2h:
-                design_matrix[:, 0] = self.powerlaw_2h_component(ell, amplitude=1.0, index=self.alpha_2h_fixed)
-            else:
-                pf = ell * (ell + 1) / (2 * np.pi)
-                design_matrix[:, 0] = pf * np.interp(ell, self.lb, self.cl_2h_pred)
-            
-            # IHL templates
-            for i, template_name in enumerate(template_names):
-                template = ihl_templates[template_name]
-                design_matrix[:, i+1] = self.ihl_template_component(ell, amplitude=1.0,
-                                                                     template_ell=template['ell'],
-                                                                     template_dl=template['dl'])
-            
-            # Shot noise
-            design_matrix[:, -1] = self.shot_noise_component(ell, amplitude=1.0)
-            
-            return design_matrix
-        
-        # Setup prior bounds
-        if prior_bounds is None:
-            lower_bounds = np.zeros(n_params)
-            upper_bounds = np.full(n_params, 10.0)
-        else:
-            lower_bounds = np.array(prior_bounds[0])
-            upper_bounds = np.array(prior_bounds[1])
-        
-        # Define log prior
-        def log_prior(params):
-            if np.all((params >= lower_bounds) & (params <= upper_bounds)):
-                return 0.0  # Uniform prior
-            return -np.inf
-        
-        # Define log likelihood
-        design_matrix_fit = build_design_matrix(lb_fit)
-        
-        def log_likelihood(params):
-            model = design_matrix_fit @ params
-            return -0.5 * np.sum(((dl_fit - model) / dl_err_fit)**2)
-        
-        # Define log probability
-        def log_probability(params):
-            lp = log_prior(params)
-            if not np.isfinite(lp):
-                return -np.inf
-            return lp + log_likelihood(params)
-        
-        # Initial guess: use least squares if not provided
-        if initial_guess is None:
-            if verbose:
-                print("Running initial least squares fit for starting point...")
-            lsq_result = self.fit_model_with_ihl_templates(
-                lb_data, dl_data, ihl_templates, dl_err=dl_err,
-                template_names=template_names, fit_range=fit_range,
-                verbose=False
-            )
-            initial_guess = lsq_result['params']
-            if verbose:
-                print(f"Initial guess: {initial_guess}")
-        
-        # Initialize walkers with small perturbations around initial guess
-        pos = initial_guess + 1e-4 * np.random.randn(nwalkers, n_params)
-        # Ensure all walkers start within prior bounds
-        pos = np.clip(pos, lower_bounds + 1e-6, upper_bounds - 1e-6)
-        
-        # Run MCMC
-        if verbose:
-            print(f"\nRunning MCMC with {nwalkers} walkers for {nsteps} steps...")
-        
-        sampler = emcee.EnsembleSampler(nwalkers, n_params, log_probability)
-        sampler.run_mcmc(pos, nsteps, progress=progress)
-        
-        # Extract samples (discard burn-in)
-        samples = sampler.get_chain(discard=nburn, flat=True)
-        
-        # Compute statistics
-        params_median = np.median(samples, axis=0)
-        params_std = np.std(samples, axis=0)
-        params_16, params_84 = np.percentile(samples, [16, 84], axis=0)
-        
-        # Compute covariance matrix
-        cov_matrix = np.cov(samples.T)
-        
-        # Compute model for chi-squared
-        def model_wrapper(ell):
-            design_matrix_eval = build_design_matrix(ell)
-            return design_matrix_eval @ params_median
-        
-        # Compute chi-squared with median parameters
-        if chi2_eval_max is None:
-            chi2_eval_max = self.chi2_eval_max
-        chi2_mask = lb_fit <= chi2_eval_max
-        lb_chi2 = lb_fit[chi2_mask]
-        dl_chi2 = dl_fit[chi2_mask]
-        model_chi2 = model_wrapper(lb_chi2)
-        dl_err_chi2 = dl_err_fit[chi2_mask]
-        
-        chisq = np.sum(((dl_chi2 - model_chi2) / dl_err_chi2)**2)
-        ndof = len(lb_chi2) - n_params
-        reduced_chisq = chisq / ndof if ndof > 0 else np.nan
-        
-        # Compute acceptance fraction
-        acceptance_fraction = np.mean(sampler.acceptance_fraction)
-        
-        if verbose:
-            print("\nMCMC Fit Results (Direct IHL templates):")
-            print(f"  Acceptance fraction: {acceptance_fraction:.3f}")
-            print(f"  A_2h       = {params_median[0]:.4f} ± {params_std[0]:.4f} [{params_16[0]:.4f}, {params_84[0]:.4f}]")
-            for i, template_name in enumerate(template_names):
-                print(f"  A_{template_name:<8} = {params_median[i+1]:.4f} ± {params_std[i+1]:.4f} [{params_16[i+1]:.4f}, {params_84[i+1]:.4f}]")
-            print(f"  A_shot     = {params_median[-1]:.4f} ± {params_std[-1]:.4f} [{params_16[-1]:.4f}, {params_84[-1]:.4f}]")
-            if self.use_powerlaw_2h:
-                print(f"  alpha_2h   = {self.alpha_2h_fixed:.2f} (fixed)")
-            print(f"  χ²/dof     = {chisq:.2f}/{ndof} = {reduced_chisq:.2f} (ℓ < {chi2_eval_max})")
-        
-        return {
-            'params': params_median,
-            'params_err': params_std,
-            'params_16': params_16,
-            'params_84': params_84,
-            'cov_matrix': cov_matrix,
-            'samples': samples,
-            'param_names': component_names,
-            'chisq': chisq,
-            'reduced_chisq': reduced_chisq,
-            'ndof': ndof,
-            'chi2_eval_max': chi2_eval_max,
-            'template_names': template_names,
-            'ihl_templates': ihl_templates,
-            'model_wrapper': model_wrapper,
-            'acceptance_fraction': acceptance_fraction,
-            'sampler': sampler,
-            'use_powerlaw_2h': self.use_powerlaw_2h,  # Model configuration for 2-halo
-            'alpha_2h_fixed': self.alpha_2h_fixed,  # 2-halo power-law index
-            # Add compatibility fields for plotting
-            'z_value': None,
-            'one_halo_params_dict': None,
-            'use_single_slope': None,
-            'sigma_fixed': None,
-            # Best-fit model and residuals for diagnostics
-            'lb_fit': lb_fit,
-            'model_dl': model_wrapper(lb_fit),
-            'residuals': (dl_fit - model_wrapper(lb_fit)) / dl_err_fit
         }
     
     @staticmethod
@@ -2498,10 +1392,7 @@ class CrossPowerSpectrumModel:
             
             # Detect model type
             is_parametric = True  # Always assume parametric log-normal model
-            
-            is_ihl = 'ihl_templates' in fit_result
-            use_fixed_ln_ell_peak = fit_result.get('use_fixed_ln_ell_peak', False)
-            
+                        
             # Scale shot noise amplitude for better display
             samples = samples_original.copy()
             samples[:, -1] = samples[:, -1] * 1e7  # Scale shot noise by 10^7
@@ -2513,34 +1404,14 @@ class CrossPowerSpectrumModel:
                 
                 if is_parametric:
                     # Parametric model
-                    if use_fixed_ln_ell_peak:
-                        # 4-parameter case: [A_2h, A_1h, sigma, A_shot]
-                        labels = [
-                            r'$A_{\rm 2h}$',
-                            r'$A_{\rm 1h}$',
-                            r'$\sigma_{\rm 1h}$',
-                            r'$A_{\rm shot} \times 10^7$'
-                        ]
-                    else:
-                        # 5-parameter case: [A_2h, A_1h, mu_1h, sigma_1h, A_shot]
-                        labels = [
-                            r'$A_{\rm 2h}$',
-                            r'$A_{\rm 1h}$',
-                            r'$\mu_{\rm 1h}$',
-                            r'$\sigma_{\rm 1h}$',
-                            r'$A_{\rm shot} \times 10^7$'
-                        ]
-                elif is_ihl:
-                    # IHL template model: [A_2h, A_ihl1, A_ihl2, ..., A_shot]
-                    for i, name in enumerate(param_names):
-                        if 'shot' in name.lower():
-                            labels.append(r'$A_{\rm shot} \times 10^7$')
-                        elif '2h' in name:
-                            labels.append(r'$A_{\rm 2h}$')
-                        elif 'ihl' in name.lower() or 'slope' in name.lower():
-                            labels.append(r'$A_{\rm IHL}$')
-                        else:
-                            labels.append(name)
+                    # 5-parameter case: [A_2h, A_1h, mu_1h, sigma_1h, A_shot]
+                    labels = [
+                        r'$A_{\rm 2h}$',
+                        r'$A_{\rm 1h}$',
+                        r'$\mu_{\rm 1h}$',
+                        r'$\sigma_{\rm 1h}$',
+                        r'$A_{\rm shot} \times 10^7$'
+                    ]
             else:
                 # Generic fallback
                 for i, name in enumerate(param_names):
@@ -2681,7 +1552,7 @@ class CrossPowerSpectrumModel:
                 chi2_scale = int(chi2_eval_max)
             except Exception:
                 chi2_scale = chi2_eval_max
-            chisq_text = chisq_text + f" $(\\ell<{chi2_scale})$"
+            chisq_text = chisq_text + f" $(300<\\ell<{chi2_scale})$"
 
         # Key amplitudes with 3 significant digits and uncertainties if available
         try:
@@ -2861,6 +1732,38 @@ def separate_2h_shot_from_prediction(lb, cl_pred_total, ell_fit_max=3000, ell_sh
     return cl_2h, cl_shot, fit_params
 
 
+def _extract_plot_config(fit_result, model):
+    """
+    Extract PlotConfig from fit_result dictionary.
+    
+    Consolidates all the scattered fit_result.get() calls into one place,
+    applying sensible defaults and validation.
+    
+    Parameters
+    ----------
+    fit_result : dict
+        Output from fit_model_mcmc() or similar
+    model : CrossPowerSpectrumModel
+        Model instance for accessing defaults
+    
+    Returns
+    -------
+    PlotConfig
+        Structured configuration object
+    """
+    return PlotConfig(
+        params=fit_result['params'],
+        params_err=fit_result.get('params_err', None),
+        use_damping=fit_result.get('use_astrometry_damping', False),
+        cov_matrix=fit_result.get('cov_matrix', None),
+        samples=fit_result.get('samples', None),
+        chi2_eval_max=fit_result.get('chi2_eval_max', model.chi2_eval_max),
+        z_value=fit_result.get('z_value', None),
+        one_halo_params_dict=fit_result.get('one_halo_params_dict', None),
+        sigma_fixed=fit_result.get('sigma_fixed', None),
+    )
+
+
 def plot_fit_fixed_1h_templates(model, lb_data, dl_data, dl_err, fit_result,
                                 figsize=(5, 4), xlim=[250, 1e5], ylim=None,
                                 show_components=True, title=None, save_path=None, 
@@ -2893,7 +1796,10 @@ def plot_fit_fixed_1h_templates(model, lb_data, dl_data, dl_err, fit_result,
     title : str, optional
         Title for the plot
     save_path : str, optional
+    save_path : str, optional
         Path to save figure
+    floated_params : int, optional
+        Number of floated parameters in the fit (used for chi2 calculation)
     """
     fig, (ax1, ax2) = plt.subplots(
         2, 1, figsize=figsize, gridspec_kw={'height_ratios': [3, 1]}, sharex=True
@@ -2907,554 +1813,319 @@ def plot_fit_fixed_1h_templates(model, lb_data, dl_data, dl_err, fit_result,
                 color='k', markersize=4, capsize=3,
                 label='Data', zorder=5)
     
-    # Generate smooth model curve
-    ell_model = np.logspace(0.2*np.log10(lb_data.min()),
-                            2.0*np.log10(lb_data.max()), 200)
+    # Generate finely sampled smooth model curve in log ell, extending slightly beyond plot limits
+    # Use a wider range than xlim to ensure smooth curves outside the visible range
+    if xlim is not None:
+        ell_min = xlim[0] / 2.0  # Extend below lower xlim
+        ell_max = xlim[1] * 2.0  # Extend above upper xlim
+    else:
+        ell_min = lb_data.min() / 2.0
+        ell_max = lb_data.max() * 2.0
     
-    params = fit_result['params']
-    params_err = fit_result.get('params_err', None)
-    z_value = fit_result.get('z_value', None)
-    one_halo_params_dict = fit_result.get('one_halo_params_dict', None)
-    use_single_slope = fit_result.get('use_single_slope', None)
-    sigma_fixed = fit_result.get('sigma_fixed', None)
-    use_damping = fit_result.get('use_astrometry_damping', False)  # Get damping flag from fit_result
+    # Finely sample in log-ell space (500 points for smooth curves)
+    ell_model = np.logspace(np.log10(ell_min), np.log10(ell_max), 500)
     
-    # Check if this is an IHL template fit result
-    # For npz-loaded results, check use_ihl_templates flag
-    # For in-memory results, check ihl_templates key
-    is_ihl_fit = (fit_result.get('use_ihl_templates', False) or
-                  ('ihl_templates' in fit_result and
-                   fit_result.get('ihl_templates') is not None and
-                   fit_result.get('template_names') is not None))
+    # Extract plot configuration from fit_result
+    plot_cfg = _extract_plot_config(fit_result, model)
     
     # Initialize uncertainty_bands to None (will be computed if errors available)
     uncertainty_bands = None
     
-    # Build model components based on whether using IHL templates or parametric
-    if is_ihl_fit:
-        # IHL template case: use the new methods
-        ihl_templates = fit_result['ihl_templates']
-        template_names = fit_result['template_names']
+    # Pure parametric MCMC case
+    # params structure depends on use_damping:
+    # - Without damping: [A_2h, A_1h, mu_1h, sigma_1h, A_shot] (5 elements)
+    # - With damping: [A_2h, A_1h, mu_1h, sigma_1h, A_shot, sigma_damp] (6 elements)
+    if plot_cfg.use_damping:
+        # Extract damping parameter (always last)
+        params_no_damp = plot_cfg.params[:5]  # First 5 are the standard params
+        sigma_damp = plot_cfg.params[5]
+        components = model.model_components(ell_model, *params_no_damp, sigma_damp=sigma_damp, z_bin_index=z_bin_index)
+    else:
+        # No damping: use all 5 params
+        components = model.model_components(ell_model, *plot_cfg.params[:5], z_bin_index=z_bin_index)
 
-        # If templates not loaded (e.g., from saved npz file), try to load them
-        if ihl_templates is None:
-            # Check if this is a cached effective 1h template fit
-            if template_names and 'effective_1h' in template_names:
-                try:
-                    from ciber.theory.ihl_1h_template_cache import OneHaloTemplateCache
-                    cache = OneHaloTemplateCache()
-                    effective_1h, _, _ = cache.load_cache(slope=1.0)
-                    cached_template = effective_1h[1.0]
-                    # Convert to expected format
-                    ihl_templates = {
-                        'effective_1h': {
-                            'ell': cached_template['ell'],
-                            'dl': cached_template['one_halo_sum'],
-                            'slope': 1.0,
-                        }
-                    }
-                except Exception as e:
-                    print(f"Warning: Could not load cached effective 1h template for plotting: {e}")
-                    # Fall back to parametric model
-                    is_ihl_fit = False
+    # Compute uncertainty bands from MCMC samples if available, otherwise from param errors
+    if plot_cfg.samples is not None and len(plot_cfg.samples) > 0:
+        # Use MCMC samples to compute posterior percentiles for each component
+        # samples shape: (n_samples, n_fitted_params) - may not include fixed params like mu_1h, sigma_1h
+        # Need to expand to full parameter space
+        
+        samples_arr = np.asarray(plot_cfg.samples, dtype=float)
+        if samples_arr.ndim == 1:
+            # Only one sample - wrap it
+            samples_arr = samples_arr[np.newaxis, :]
+        
+        # Expand fitted-parameter samples to the full model parameter vector.
+        # Saved chains often exclude fixed parameters (e.g. mu_1h, sigma_1h, sigma_damp).
+        n_samples = len(samples_arr)
+        n_params_full = 6 if plot_cfg.use_damping else 5
+        n_params_fit = samples_arr.shape[1]
+
+        if n_params_fit == n_params_full:
+            samples_expanded = samples_arr
+        else:
+            samples_expanded = np.tile(np.asarray(plot_cfg.params[:n_params_full], dtype=float), (n_samples, 1))
+
+            if model.use_one_halo and plot_cfg.use_damping:
+                # Common fixed-shape+damping cases:
+                # fit=[A_2h, A_1h, A_shot] or [A_2h, A_1h, A_shot, sigma_damp]
+                if n_params_fit >= 3:
+                    samples_expanded[:, 0] = samples_arr[:, 0]  # A_2h
+                    samples_expanded[:, 1] = samples_arr[:, 1]  # A_1h
+                    samples_expanded[:, 4] = samples_arr[:, 2]  # A_shot
+                if n_params_fit >= 4:
+                    samples_expanded[:, 5] = samples_arr[:, 3]  # sigma_damp
+            elif model.use_one_halo and (not plot_cfg.use_damping):
+                # Common fixed-shape case: fit=[A_2h, A_1h, A_shot]
+                if n_params_fit >= 3:
+                    samples_expanded[:, 0] = samples_arr[:, 0]  # A_2h
+                    samples_expanded[:, 1] = samples_arr[:, 1]  # A_1h
+                    samples_expanded[:, 4] = samples_arr[:, 2]  # A_shot
             else:
-                # Try loading from IHL template files
-                try:
-                    from ciber.theory.cl_template import load_ihl_template_for_zbin
-                    ihl_template_path = fit_result.get('ihl_template_path', 'ihl_templates/')
-                    zbinedges = fit_result.get('zbinedges', np.array([0.0, 1.0]))
-                    templates, _, _ = load_ihl_template_for_zbin(ihl_template_path, zbinedges, 0, slopes=[1.0])
-                    ihl_templates = templates
-                except Exception as e:
-                    print(f"Warning: Could not load IHL templates from files for plotting: {e}")
-                    is_ihl_fit = False
-
-        if ihl_templates is None:
-            raise ValueError(f"IHL template fit detected but templates could not be loaded for template_names={template_names}")
-
-        components = model.model_components_with_ihl_templates(
-            ell_model, params, ihl_templates, template_names
-        )
-
-        # Rename keys for compatibility with plotting code below
-        components_compat = {
-            'two_halo': components['two_halo'],
-            'shot_noise': components['shot_noise'],
-            'total': components['total']
+                # No-one-halo variants: map the first fitted parameters in order.
+                ncopy = min(n_params_fit, n_params_full)
+                samples_expanded[:, :ncopy] = samples_arr[:, :ncopy]
+        
+        # Initialize arrays to store component values for each sample
+        dl_2h_samples = np.zeros((n_samples, len(ell_model)))
+        dl_1h_samples = np.zeros((n_samples, len(ell_model))) if model.use_one_halo else None
+        dl_shot_samples = np.zeros((n_samples, len(ell_model)))
+        dl_total_samples = np.zeros((n_samples, len(ell_model)))
+        
+        # Evaluate model components for each MCMC sample
+        for i in range(n_samples):
+            A_2h = samples_expanded[i, 0]
+            A_1h = samples_expanded[i, 1]
+            mu_1h = samples_expanded[i, 2]
+            sigma_1h = samples_expanded[i, 3]
+            A_shot = samples_expanded[i, 4]
+            
+            if plot_cfg.use_damping and samples_expanded.shape[1] > 5:
+                sigma_damp = samples_expanded[i, 5]
+            else:
+                sigma_damp = None
+            
+            # Compute components for this sample
+            sample_components = model.model_components(ell_model, A_2h, A_1h, mu_1h, sigma_1h, A_shot,
+                                                       sigma_damp=sigma_damp, 
+                                                       z_bin_index=z_bin_index)
+            
+            dl_2h_samples[i] = sample_components['two_halo']
+            if model.use_one_halo:
+                dl_1h_samples[i] = sample_components['one_halo']
+            dl_shot_samples[i] = sample_components['shot_noise']
+            dl_total_samples[i] = sample_components['total']
+        
+        # Compute 16th and 84th percentiles for each component
+        dl_2h_lower = np.percentile(dl_2h_samples, 16, axis=0)
+        dl_2h_upper = np.percentile(dl_2h_samples, 84, axis=0)
+        
+        if model.use_one_halo:
+            dl_1h_lower = np.percentile(dl_1h_samples, 16, axis=0)
+            dl_1h_upper = np.percentile(dl_1h_samples, 84, axis=0)
+        
+        dl_shot_lower = np.percentile(dl_shot_samples, 16, axis=0)
+        dl_shot_upper = np.percentile(dl_shot_samples, 84, axis=0)
+        
+        dl_total_lower = np.percentile(dl_total_samples, 16, axis=0)
+        dl_total_upper = np.percentile(dl_total_samples, 84, axis=0)
+        
+        # Store uncertainty bands
+        uncertainty_bands = {
+            'two_halo': (dl_2h_lower, dl_2h_upper),
+            'shot_noise': (dl_shot_lower, dl_shot_upper),
+            'total': (dl_total_lower, dl_total_upper)
         }
+        if model.use_one_halo:
+            uncertainty_bands['one_halo'] = (dl_1h_lower, dl_1h_upper)
+    
+    elif plot_cfg.params_err is not None and not np.any(np.isnan(plot_cfg.params_err)):
+        # Fallback to parameter error method if samples not available
+        # Check model type for proper uncertainty calculation
 
-        # For IHL, we'll show the total IHL contribution as "one_halo"
-        if 'one_halo_total' in components:
-            components_compat['one_halo'] = components['one_halo_total']
-        elif len(template_names) == 1:
-            # Single template case
-            template_key = f'ihl_{template_names[0]}'
-            components_compat['one_halo'] = components[template_key]
-
-        components = components_compat
+        # Pure parametric MCMC case (with or without damping)
+        # params[:5] are always [A_2h, A_1h, mu_1h, sigma_1h, A_shot]
+        # params[5] is sigma_damp (if use_damping=True)
         
-    elif use_single_slope is not None:
-        # Single slope case: manually build components
-        from ciber.theory.cross_ps_parametric_model import interpolate_1h_params
-        
-        ln_ell_peak, sigma = interpolate_1h_params(z_value, use_single_slope, one_halo_params_dict, sigma_fixed=sigma_fixed)
-        
-        # 2-halo
+        # 2-halo bounds
         if model.use_powerlaw_2h:
-            dl_2h = model.powerlaw_2h_component(ell_model, params[0], model.alpha_2h_fixed)
+            dl_2h_upper = model.powerlaw_2h_component(ell_model, plot_cfg.params[0] + plot_cfg.params_err[0], model.alpha_2h_fixed)
+            dl_2h_lower = model.powerlaw_2h_component(ell_model, max(0, plot_cfg.params[0] - plot_cfg.params_err[0]), model.alpha_2h_fixed)
         else:
             # Check if using linear 2h templates
             if model.use_linear_2h and z_bin_index is not None and z_bin_index in model.dl_2h_lin_per_zbin:
-                # Get linear template for this z-bin (already in D_ell units)
+                # Get linear template for this z-bin
                 ell_lin, dl_2h_lin = model.dl_2h_lin_per_zbin[z_bin_index]
-                dl_2h = params[0] * np.interp(ell_model, ell_lin, dl_2h_lin)
+                # Interpolate linear template to ell_model grid (already in D_ell units)
+                dl_2h_template = np.interp(ell_model, ell_lin, dl_2h_lin)
+                dl_2h_upper = (plot_cfg.params[0] + plot_cfg.params_err[0]) * dl_2h_template
+                dl_2h_lower = max(0, plot_cfg.params[0] - plot_cfg.params_err[0]) * dl_2h_template
             else:
                 pf = ell_model * (ell_model + 1) / (2 * np.pi)
-                dl_2h = params[0] * pf * np.interp(ell_model, model.lb, model.cl_2h_pred)
+                dl_2h_upper = (plot_cfg.params[0] + plot_cfg.params_err[0]) * pf * np.interp(ell_model, model.lb, model.cl_2h_pred)
+                dl_2h_lower = max(0, plot_cfg.params[0] - plot_cfg.params_err[0]) * pf * np.interp(ell_model, model.lb, model.cl_2h_pred)
         
-        # 1-halo (single template)
-        dl_1h = model.lognormal_component(ell_model, params[1], ln_ell_peak, sigma)
-        
-        # Shot noise
-        dl_shot = model.shot_noise_component(ell_model, params[2])
-        
-        components = {
-            'two_halo': dl_2h,
-            'one_halo': dl_1h,
-            'shot_noise': dl_shot,
-            'total': dl_2h + dl_1h + dl_shot
-        }
-    else:
-        # Pure parametric MCMC case
-        # params structure depends on use_damping:
-        # - Without damping: [A_2h, A_1h, mu_1h, sigma_1h, A_shot] (5 elements)
-        # - With damping: [A_2h, A_1h, mu_1h, sigma_1h, A_shot, sigma_damp] (6 elements)
-        if use_damping:
-            # Extract damping parameter (always last)
-            params_no_damp = params[:5]  # First 5 are the standard params
-            sigma_damp = params[5]
-            components = model.model_components(ell_model, *params_no_damp, sigma_damp=sigma_damp, z_bin_index=z_bin_index)
-        else:
-            # No damping: use all 5 params
-            components = model.model_components(ell_model, *params[:5], z_bin_index=z_bin_index)
+        # 1-halo bounds (only if one-halo term is enabled)
+        if model.use_one_halo:
+            # Vary amplitude while keeping shape parameters at best-fit   
+            dl_1h_upper = model.lognormal_component(ell_model, plot_cfg.params[1] + plot_cfg.params_err[1], plot_cfg.params[2], plot_cfg.params[3])
+            dl_1h_lower = model.lognormal_component(ell_model, max(0, plot_cfg.params[1] - plot_cfg.params_err[1]), plot_cfg.params[2], plot_cfg.params[3])
     
-    # Compute uncertainty bands if parameter errors are available (for all cases)
-    if params_err is not None and not np.any(np.isnan(params_err)):
-        # Check model type for proper uncertainty calculation
-        if is_ihl_fit:
-            # IHL template case: compute uncertainty bands for IHL templates
-            ihl_templates = fit_result.get('ihl_templates')
-            template_names = fit_result.get('template_names')
-
-            # If templates not loaded, reload them (same as earlier)
-            if ihl_templates is None and template_names and 'effective_1h' in template_names:
-                try:
-                    from ciber.theory.ihl_1h_template_cache import OneHaloTemplateCache
-                    cache = OneHaloTemplateCache()
-                    effective_1h, _, _ = cache.load_cache(slope=1.0)
-                    cached_template = effective_1h[1.0]
-                    ihl_templates = {
-                        'effective_1h': {
-                            'ell': cached_template['ell'],
-                            'dl': cached_template['one_halo_sum'],
-                            'slope': 1.0,
-                        }
-                    }
-                except Exception as e:
-                    print(f"Warning: Could not load cached effective 1h template for uncertainty bands: {e}")
-
-            # 2-halo bounds (same as parametric)
-            if model.use_powerlaw_2h:
-                dl_2h_upper = model.powerlaw_2h_component(ell_model, params[0] + params_err[0], model.alpha_2h_fixed)
-                dl_2h_lower = model.powerlaw_2h_component(ell_model, max(0, params[0] - params_err[0]), model.alpha_2h_fixed)
-            else:
-                # Check if using linear 2h templates
-                if model.use_linear_2h and z_bin_index is not None and z_bin_index in model.dl_2h_lin_per_zbin:
-                    # Get linear template for this z-bin (already in D_ell units)
-                    ell_lin, dl_2h_lin = model.dl_2h_lin_per_zbin[z_bin_index]
-                    dl_2h_template = np.interp(ell_model, ell_lin, dl_2h_lin)
-                    dl_2h_upper = (params[0] + params_err[0]) * dl_2h_template
-                    dl_2h_lower = max(0, params[0] - params_err[0]) * dl_2h_template
-                else:
-                    pf = ell_model * (ell_model + 1) / (2 * np.pi)
-                    dl_2h_upper = (params[0] + params_err[0]) * pf * np.interp(ell_model, model.lb, model.cl_2h_pred)
-                    dl_2h_lower = max(0, params[0] - params_err[0]) * pf * np.interp(ell_model, model.lb, model.cl_2h_pred)
+        # Shot noise bounds (parameter index depends on whether one-halo is enabled)
+        shot_idx = 4 if model.use_one_halo else 1
+        dl_shot_upper = model.shot_noise_component(ell_model, plot_cfg.params[shot_idx] + plot_cfg.params_err[shot_idx])
+        dl_shot_lower = model.shot_noise_component(ell_model, max(0, plot_cfg.params[shot_idx] - plot_cfg.params_err[shot_idx]))
+        
+        # For total: use proper uncertainty propagation with covariance matrix
+        if plot_cfg.cov_matrix is not None:
+            # Check which parameters were fixed
+            use_fixed_mu_sigma = (model.mu_1h_fixed is not None and model.sigma_1h_fixed is not None)
             
-            # IHL template bounds (sum over all templates)
-            dl_1h_upper = np.zeros_like(ell_model)
-            dl_1h_lower = np.zeros_like(ell_model)
-            
-            for i, template_name in enumerate(template_names):
-                template = ihl_templates[template_name]
-                # Upper bound: increase this template's amplitude
-                dl_1h_upper += model.ihl_template_component(ell_model, params[i+1] + params_err[i+1], 
-                                                           template['ell'], template['dl'])
-                # Lower bound: decrease this template's amplitude  
-                dl_1h_lower += model.ihl_template_component(ell_model, max(0, params[i+1] - params_err[i+1]),
-                                                           template['ell'], template['dl'])
-            
-            # Shot noise bounds (last parameter)
-            dl_shot_upper = model.shot_noise_component(ell_model, params[-1] + params_err[-1])
-            dl_shot_lower = model.shot_noise_component(ell_model, max(0, params[-1] - params_err[-1]))
-            
-            # For total: use proper uncertainty propagation with covariance matrix
-            cov_matrix = fit_result.get('cov_matrix', None)
-            if cov_matrix is not None:
-                # Build template matrix for IHL case
-                n_templates = len(template_names)
-                n_params = 2 + n_templates  # 2h + IHL templates + shot
-                templates_matrix = np.zeros((len(ell_model), n_params))
+            # Handle case where one-halo term is disabled
+            if not model.use_one_halo:
+                # 2-parameter case (or 3 with damping): [A_2h, A_shot] or [A_2h, A_shot, sigma_damp]
+                n_params_no_damp = 2
                 
-                # Column 0: 2-halo template
+                templates_matrix = np.zeros((len(ell_model), n_params_no_damp))
+                
+                # Column 0: 2-halo
                 if model.use_powerlaw_2h:
                     templates_matrix[:, 0] = model.powerlaw_2h_component(ell_model, amplitude=1.0, index=model.alpha_2h_fixed)
                 else:
-                    pf = ell_model * (ell_model + 1) / (2 * np.pi)
-                    templates_matrix[:, 0] = pf * np.interp(ell_model, model.lb, model.cl_2h_pred)
+                    # Check if using linear 2h templates
+                    if model.use_linear_2h and z_bin_index is not None and z_bin_index in model.dl_2h_lin_per_zbin:
+                        # Get linear template for this z-bin (already in D_ell units)
+                        ell_lin, dl_2h_lin = model.dl_2h_lin_per_zbin[z_bin_index]
+                        templates_matrix[:, 0] = np.interp(ell_model, ell_lin, dl_2h_lin)
+                    else:
+                        pf = ell_model * (ell_model + 1) / (2 * np.pi)
+                        templates_matrix[:, 0] = pf * np.interp(ell_model, model.lb, model.cl_2h_pred)
                 
-                # Columns 1 to n_templates: IHL templates
-                for i, template_name in enumerate(template_names):
-                    template = ihl_templates[template_name]
-                    templates_matrix[:, i+1] = model.ihl_template_component(ell_model, amplitude=1.0,
-                                                                            template_ell=template['ell'], 
-                                                                            template_dl=template['dl'])
-                
-                # Last column: shot noise
-                templates_matrix[:, -1] = model.shot_noise_component(ell_model, amplitude=1.0)
+                # Column 1: shot noise
+                templates_matrix[:, 1] = model.shot_noise_component(ell_model, amplitude=1.0)
                 
                 # Uncertainty at each ℓ: σ²(ℓ) = T(ℓ)^T * Cov * T(ℓ)
-                total_var = np.sum((templates_matrix @ cov_matrix) * templates_matrix, axis=1)
+                # Note: cov_matrix is 2x2 for [A_2h, A_shot] (damping handled separately if needed)
+                total_var = np.sum((templates_matrix @ plot_cfg.cov_matrix[:2, :2]) * templates_matrix, axis=1)
                 total_std = np.sqrt(np.maximum(0, total_var))
                 
-                dl_total_upper = components['total'] + total_std
-                dl_total_lower = np.maximum(0, components['total'] - total_std)
-            else:
-                # Fallback: simple addition
-                dl_total_upper = dl_2h_upper + dl_1h_upper + dl_shot_upper
-                dl_total_lower = dl_2h_lower + dl_1h_lower + dl_shot_lower
-            
-            uncertainty_bands = {
-                'two_halo': (dl_2h_lower, dl_2h_upper),
-                'one_halo': (dl_1h_lower, dl_1h_upper),
-                'shot_noise': (dl_shot_lower, dl_shot_upper),
-                'total': (dl_total_lower, dl_total_upper)
-            }
-            
-        elif use_single_slope is not None:
-            # Parametric case: original uncertainty calculation
-            # Get 1-halo parameters for the parametric case
-            ln_ell_peak, sigma = interpolate_1h_params(z_value, use_single_slope, one_halo_params_dict, sigma_fixed=sigma_fixed)
-            
-            # For individual components: amplitude ± 1σ (keeping others fixed)
-            # 2-halo bounds
-            if model.use_powerlaw_2h:
-                dl_2h_upper = model.powerlaw_2h_component(ell_model, params[0] + params_err[0], model.alpha_2h_fixed)
-                dl_2h_lower = model.powerlaw_2h_component(ell_model, max(0, params[0] - params_err[0]), model.alpha_2h_fixed)
-            else:
-                # Check if using linear 2h templates
-                if model.use_linear_2h and z_bin_index is not None and z_bin_index in model.dl_2h_lin_per_zbin:
-                    # Get linear template for this z-bin (already in D_ell units)
-                    ell_lin, dl_2h_lin = model.dl_2h_lin_per_zbin[z_bin_index]
-                    dl_2h_template = np.interp(ell_model, ell_lin, dl_2h_lin)
-                    dl_2h_upper = (params[0] + params_err[0]) * dl_2h_template
-                    dl_2h_lower = max(0, params[0] - params_err[0]) * dl_2h_template
-                else:
-                    pf = ell_model * (ell_model + 1) / (2 * np.pi)
-                    dl_2h_upper = (params[0] + params_err[0]) * pf * np.interp(ell_model, model.lb, model.cl_2h_pred)
-                    dl_2h_lower = max(0, params[0] - params_err[0]) * pf * np.interp(ell_model, model.lb, model.cl_2h_pred)
-            
-            # 1-halo bounds
-            dl_1h_upper = model.lognormal_component(ell_model, params[1] + params_err[1], ln_ell_peak, sigma)
-            dl_1h_lower = model.lognormal_component(ell_model, max(0, params[1] - params_err[1]), ln_ell_peak, sigma)
-            
-            # Shot noise bounds
-            dl_shot_upper = model.shot_noise_component(ell_model, params[2] + params_err[2])
-            dl_shot_lower = model.shot_noise_component(ell_model, max(0, params[2] - params_err[2]))
-            
-            # For total: use proper uncertainty propagation with covariance matrix
-            # Get covariance matrix from fit result if available
-            cov_matrix = fit_result.get('cov_matrix', None)
-            if cov_matrix is not None:
-                # Build template matrix
-                templates_matrix = np.zeros((len(ell_model), 3))  # 2h + 1h + shot
-                
-                # Column 0: 2-halo template
-                if model.use_powerlaw_2h:
-                    templates_matrix[:, 0] = model.powerlaw_2h_component(ell_model, amplitude=1.0, index=model.alpha_2h_fixed)
-                else:
-                    pf = ell_model * (ell_model + 1) / (2 * np.pi)
-                    templates_matrix[:, 0] = pf * np.interp(ell_model, model.lb, model.cl_2h_pred)
-                
-                # Column 1: 1-halo template 
-                templates_matrix[:, 1] = model.lognormal_component(ell_model, amplitude=1.0, ln_ell_peak=ln_ell_peak, sigma=sigma)
-                
-                # Column 2: shot noise
-                templates_matrix[:, 2] = model.shot_noise_component(ell_model, amplitude=1.0)
-                
-                # Uncertainty at each ℓ: σ²(ℓ) = T(ℓ)^T * Cov * T(ℓ)
-                total_var = np.sum((templates_matrix @ cov_matrix) * templates_matrix, axis=1)
-                total_std = np.sqrt(np.maximum(0, total_var))
-                
-                dl_total_upper = components['total'] + total_std
-                dl_total_lower = np.maximum(0, components['total'] - total_std)
-            else:
-                # Fallback: simple linear addition (not ideal but better than nothing)
-                dl_total_upper = dl_2h_upper + dl_1h_upper + dl_shot_upper
-                dl_total_lower = dl_2h_lower + dl_1h_lower + dl_shot_lower
-            
-            uncertainty_bands = {
-                'two_halo': (dl_2h_lower, dl_2h_upper),
-                'one_halo': (dl_1h_lower, dl_1h_upper),
-                'shot_noise': (dl_shot_lower, dl_shot_upper),
-                'total': (dl_total_lower, dl_total_upper)
-            }
-        
-        elif use_single_slope is None and not is_ihl_fit:
-            # Pure parametric MCMC case (with or without damping)
-            # params[:5] are always [A_2h, A_1h, mu_1h, sigma_1h, A_shot]
-            # params[5] is sigma_damp (if use_damping=True)
-            
-            # 2-halo bounds
-            if model.use_powerlaw_2h:
-                dl_2h_upper = model.powerlaw_2h_component(ell_model, params[0] + params_err[0], model.alpha_2h_fixed)
-                dl_2h_lower = model.powerlaw_2h_component(ell_model, max(0, params[0] - params_err[0]), model.alpha_2h_fixed)
-            else:
-                # Check if using linear 2h templates
-                if model.use_linear_2h and z_bin_index is not None and z_bin_index in model.dl_2h_lin_per_zbin:
-                    # Get linear template for this z-bin
-                    ell_lin, dl_2h_lin = model.dl_2h_lin_per_zbin[z_bin_index]
-                    # Interpolate linear template to ell_model grid (already in D_ell units)
-                    dl_2h_template = np.interp(ell_model, ell_lin, dl_2h_lin)
-                    dl_2h_upper = (params[0] + params_err[0]) * dl_2h_template
-                    dl_2h_lower = max(0, params[0] - params_err[0]) * dl_2h_template
-                else:
-                    pf = ell_model * (ell_model + 1) / (2 * np.pi)
-                    dl_2h_upper = (params[0] + params_err[0]) * pf * np.interp(ell_model, model.lb, model.cl_2h_pred)
-                    dl_2h_lower = max(0, params[0] - params_err[0]) * pf * np.interp(ell_model, model.lb, model.cl_2h_pred)
-            
-            # 1-halo bounds (only if one-halo term is enabled)
-            if model.use_one_halo:
-                # Vary amplitude while keeping shape parameters at best-fit   
-                dl_1h_upper = model.lognormal_component(ell_model, params[1] + params_err[1], params[2], params[3])
-                dl_1h_lower = model.lognormal_component(ell_model, max(0, params[1] - params_err[1]), params[2], params[3])
-        
-            # Shot noise bounds (parameter index depends on whether one-halo is enabled)
-            shot_idx = 4 if model.use_one_halo else 1
-            dl_shot_upper = model.shot_noise_component(ell_model, params[shot_idx] + params_err[shot_idx])
-            dl_shot_lower = model.shot_noise_component(ell_model, max(0, params[shot_idx] - params_err[shot_idx]))
-            
-            # For total: use proper uncertainty propagation with covariance matrix
-            cov_matrix = fit_result.get('cov_matrix', None)
-            if cov_matrix is not None:
-                # Check which parameters were fixed
-                use_fixed_ln_ell_peak = fit_result.get('use_fixed_ln_ell_peak', False)
-                use_fixed_mu_sigma = (model.mu_1h_fixed is not None and model.sigma_1h_fixed is not None)
-                
-                # Handle case where one-halo term is disabled
-                if not model.use_one_halo:
-                    # 2-parameter case (or 3 with damping): [A_2h, A_shot] or [A_2h, A_shot, sigma_damp]
-                    n_params_no_damp = 2
+                # Apply damping if enabled
+                if plot_cfg.use_damping:
+                    # Get undamped total
+                    dl_total_undamped = components.get('total_undamped')
+                    if dl_total_undamped is None:
+                        dl_total_undamped = components['two_halo'] + components['shot_noise']
                     
-                    templates_matrix = np.zeros((len(ell_model), n_params_no_damp))
-                    
-                    # Column 0: 2-halo
-                    if model.use_powerlaw_2h:
-                        templates_matrix[:, 0] = model.powerlaw_2h_component(ell_model, amplitude=1.0, index=model.alpha_2h_fixed)
-                    else:
-                        # Check if using linear 2h templates
-                        if model.use_linear_2h and z_bin_index is not None and z_bin_index in model.dl_2h_lin_per_zbin:
-                            # Get linear template for this z-bin (already in D_ell units)
-                            ell_lin, dl_2h_lin = model.dl_2h_lin_per_zbin[z_bin_index]
-                            templates_matrix[:, 0] = np.interp(ell_model, ell_lin, dl_2h_lin)
-                        else:
-                            pf = ell_model * (ell_model + 1) / (2 * np.pi)
-                            templates_matrix[:, 0] = pf * np.interp(ell_model, model.lb, model.cl_2h_pred)
-                    
-                    # Column 1: shot noise
-                    templates_matrix[:, 1] = model.shot_noise_component(ell_model, amplitude=1.0)
-                    
-                    # Uncertainty at each ℓ: σ²(ℓ) = T(ℓ)^T * Cov * T(ℓ)
-                    # Note: cov_matrix is 2x2 for [A_2h, A_shot] (damping handled separately if needed)
-                    total_var = np.sum((templates_matrix @ cov_matrix[:2, :2]) * templates_matrix, axis=1)
-                    total_std = np.sqrt(np.maximum(0, total_var))
-                    
-                    # Apply damping if enabled
-                    if use_damping:
-                        # Get undamped total
-                        dl_total_undamped = components.get('total_undamped')
-                        if dl_total_undamped is None:
-                            dl_total_undamped = components['two_halo'] + components['shot_noise']
-                        
-                        sigma_damp = params[2]  # Third parameter is damping when no one-halo
-                        damping_factor = model.astrometry_damping_component(ell_model, sigma_damp)
-                        
-                        dl_total_upper = (dl_total_undamped + total_std) * damping_factor
-                        dl_total_lower = np.maximum(0, (dl_total_undamped - total_std) * damping_factor)
-                    else:
-                        dl_total_upper = components['total'] + total_std
-                        dl_total_lower = np.maximum(0, components['total'] - total_std)
-                    
-                    # Store uncertainty bands for no-one-halo case (already computed dl_2h and dl_shot)
-                    uncertainty_bands = {
-                        'two_halo': (dl_2h_lower, dl_2h_upper),
-                        'shot_noise': (dl_shot_lower, dl_shot_upper),
-                        'total': (dl_total_lower, dl_total_upper)
-                    }
-                
-                else:
-                    # One-halo term is enabled - build 5-column template matrix
-                    templates_matrix = np.zeros((len(ell_model), 5))
-                    
-                    # Column 0: 2-halo
-                    if model.use_powerlaw_2h:
-                        templates_matrix[:, 0] = model.powerlaw_2h_component(ell_model, amplitude=1.0, index=model.alpha_2h_fixed)
-                    else:
-                        # Check if using linear 2h templates
-                        if model.use_linear_2h and z_bin_index is not None and z_bin_index in model.dl_2h_lin_per_zbin:
-                            # Get linear template for this z-bin (already in D_ell units)
-                            ell_lin, dl_2h_lin = model.dl_2h_lin_per_zbin[z_bin_index]
-                            templates_matrix[:, 0] = np.interp(ell_model, ell_lin, dl_2h_lin)
-                        else:
-                            pf = ell_model * (ell_model + 1) / (2 * np.pi)
-                            templates_matrix[:, 0] = pf * np.interp(ell_model, model.lb, model.cl_2h_pred)
-                    
-                    # Columns 1-3: 1-halo partial derivatives
-                    # For A_1h (column 1): just the shape function
-                    templates_matrix[:, 1] = model.lognormal_component(ell_model, amplitude=1.0, mu=params[2], sigma=params[3])
-                    
-                    if use_fixed_mu_sigma:
-                        # 3-parameter case: cov_matrix is 3x3 for [A_2h, A_1h, A_shot]
-                        # Columns 2 and 3 (mu_1h, sigma_1h): zero since they're fixed
-                        templates_matrix[:, 2] = 0.0
-                        templates_matrix[:, 3] = 0.0
-                        
-                        # Column 4: shot noise
-                        templates_matrix[:, 4] = model.shot_noise_component(ell_model, amplitude=1.0)
-                        
-                        # Build expanded 5x5 covariance with zeros for fixed parameters
-                        cov_matrix_expanded = np.zeros((5, 5))
-                        # Map 3-parameter cov to 5-parameter: [A_2h, A_1h, A_shot] -> [A_2h, A_1h, 0, 0, A_shot]
-                        cov_matrix_expanded[0, 0] = cov_matrix[0, 0]  # A_2h variance
-                        cov_matrix_expanded[0, 1] = cov_matrix_expanded[1, 0] = cov_matrix[0, 1]  # A_2h-A_1h
-                        cov_matrix_expanded[1, 1] = cov_matrix[1, 1]  # A_1h variance
-                        # Rows/cols 2, 3 (mu_1h, sigma_1h) stay zero
-                        cov_matrix_expanded[0, 4] = cov_matrix_expanded[4, 0] = cov_matrix[0, 2]  # A_2h-A_shot
-                        cov_matrix_expanded[1, 4] = cov_matrix_expanded[4, 1] = cov_matrix[1, 2]  # A_1h-A_shot
-                        cov_matrix_expanded[4, 4] = cov_matrix[2, 2]  # A_shot variance
-                        
-                        total_var = np.sum((templates_matrix @ cov_matrix_expanded) * templates_matrix, axis=1)
-                    elif use_fixed_ln_ell_peak:
-                        # 4-parameter case: cov_matrix is 4x4 for [A_2h, A_1h, sigma, A_shot]
-                        # Column 2 (mu_1h): zero since it's fixed
-                        templates_matrix[:, 2] = 0.0
-                        
-                        # Column 3: sigma_1h partial derivative
-                        delta_sigma = 0.01 * params[3] if params[3] != 0 else 0.01
-                        templates_matrix[:, 3] = (model.lognormal_component(ell_model, params[1], params[2], params[3] + delta_sigma) - 
-                                                    model.lognormal_component(ell_model, params[1], params[2], params[3])) / delta_sigma
-                    
-                        # Column 4: shot noise
-                        templates_matrix[:, 4] = model.shot_noise_component(ell_model, amplitude=1.0)
-                        
-                        # Build expanded 5x5 covariance with zeros for fixed parameter
-                        cov_matrix_expanded = np.zeros((5, 5))
-                        # Map 4-parameter cov to 5-parameter: [A_2h, A_1h, sigma, A_shot] -> [A_2h, A_1h, 0, sigma, A_shot]
-                        cov_matrix_expanded[0, 0] = cov_matrix[0, 0]  # A_2h variance
-                        cov_matrix_expanded[0, 1] = cov_matrix_expanded[1, 0] = cov_matrix[0, 1]  # A_2h-A_1h
-                        cov_matrix_expanded[1, 1] = cov_matrix[1, 1]  # A_1h variance
-                        # Row/col 2 (mu_1h) stays zero
-                        cov_matrix_expanded[0, 3] = cov_matrix_expanded[3, 0] = cov_matrix[0, 2]  # A_2h-sigma
-                        cov_matrix_expanded[1, 3] = cov_matrix_expanded[3, 1] = cov_matrix[1, 2]  # A_1h-sigma
-                        cov_matrix_expanded[3, 3] = cov_matrix[2, 2]  # sigma variance
-                        cov_matrix_expanded[0, 4] = cov_matrix_expanded[4, 0] = cov_matrix[0, 3]  # A_2h-A_shot
-                        cov_matrix_expanded[1, 4] = cov_matrix_expanded[4, 1] = cov_matrix[1, 3]  # A_1h-A_shot
-                        cov_matrix_expanded[3, 4] = cov_matrix_expanded[4, 3] = cov_matrix[2, 3]  # sigma-A_shot
-                        cov_matrix_expanded[4, 4] = cov_matrix[3, 3]  # A_shot variance
-                        
-                        total_var = np.sum((templates_matrix @ cov_matrix_expanded) * templates_matrix, axis=1)
-                    else:
-                        # 5-parameter case: normal calculation
-                        # For mu_1h and sigma_1h: numerical derivatives (small perturbation)
-                        delta_mu = 0.01 * params[2] if params[2] != 0 else 0.01
-                        delta_sigma = 0.01 * params[3] if params[3] != 0 else 0.01
-                        
-                        templates_matrix[:, 2] = (model.lognormal_component(ell_model, params[1], params[2] + delta_mu, params[3]) - 
-                                                    model.lognormal_component(ell_model, params[1], params[2], params[3])) / delta_mu
-                        templates_matrix[:, 3] = (model.lognormal_component(ell_model, params[1], params[2], params[3] + delta_sigma) - 
-                                                    model.lognormal_component(ell_model, params[1], params[2], params[3])) / delta_sigma
-                    
-                        # Column 4: shot noise
-                        templates_matrix[:, 4] = model.shot_noise_component(ell_model, amplitude=1.0)
-
-                        # Uncertainty at each ℓ: σ²(ℓ) = T(ℓ)^T * Cov * T(ℓ)
-                        # With astrometric damping enabled, covariance may include an extra
-                        # sigma_damp parameter (6x6), while templates_matrix remains 5 columns.
-                        # Use the core covariance block for [A_2h, A_1h, mu_1h, sigma_1h, A_shot].
-                        if use_damping and cov_matrix.shape[0] >= 6:
-                            cov_core = cov_matrix[:5, :5]
-                        else:
-                            cov_core = cov_matrix
-                        total_var = np.sum((templates_matrix @ cov_core) * templates_matrix, axis=1)
-                    
-                    total_std = np.sqrt(np.maximum(0, total_var))
-                    
-                    # If damping is enabled, apply it to the total uncertainty bounds
-                    # Note: components['total'] is already damped, so we need to apply damping to the undamped bounds
-                    if use_damping:
-                        # Get undamped total from components
-                        dl_total_undamped = components.get('total_undamped')
-                        if dl_total_undamped is None:
-                            # If not available, reconstruct it
-                            dl_total_undamped = components['two_halo'] + components['one_halo'] + components['shot_noise']
-                        
-                        # Apply damping to the uncertainty bounds
-                        sigma_damp = params[5]
-                        damping_factor = model.astrometry_damping_component(ell_model, sigma_damp)
-                        
-                        dl_total_upper = (dl_total_undamped + total_std) * damping_factor
-                        dl_total_lower = np.maximum(0, (dl_total_undamped - total_std) * damping_factor)
-                    else:
-                        dl_total_upper = components['total'] + total_std
-                        dl_total_lower = np.maximum(0, components['total'] - total_std)
-                    
-                    # Store uncertainty bands for one-halo enabled case
-                    uncertainty_bands = {
-                        'two_halo': (dl_2h_lower, dl_2h_upper),
-                        'one_halo': (dl_1h_lower, dl_1h_upper),
-                        'shot_noise': (dl_shot_lower, dl_shot_upper),
-                        'total': (dl_total_lower, dl_total_upper)
-                    }
-                    
-            else:
-                # Fallback: simple addition (not ideal but better than nothing)
-                if not model.use_one_halo:
-                    # No one-halo term case
-                    if use_damping:
-                        sigma_damp = params[2]
-                        damping_factor = model.astrometry_damping_component(ell_model, sigma_damp)
-                        dl_total_upper = (dl_2h_upper + dl_shot_upper) * damping_factor
-                        dl_total_lower = (dl_2h_lower + dl_shot_lower) * damping_factor
-                    else:
-                        dl_total_upper = dl_2h_upper + dl_shot_upper
-                        dl_total_lower = dl_2h_lower + dl_shot_lower
-                elif use_damping:
-                    # One-halo enabled with damping
-                    sigma_damp = params[5]
+                    sigma_damp = plot_cfg.params[2]  # Third parameter is damping when no one-halo
                     damping_factor = model.astrometry_damping_component(ell_model, sigma_damp)
-                    dl_total_upper = (dl_2h_upper + dl_1h_upper + dl_shot_upper) * damping_factor
-                    dl_total_lower = (dl_2h_lower + dl_1h_lower + dl_shot_lower) * damping_factor
+                    
+                    dl_total_upper = (dl_total_undamped + total_std) * damping_factor
+                    dl_total_lower = np.maximum(0, (dl_total_undamped - total_std) * damping_factor)
                 else:
-                    # One-halo enabled without damping
-                    dl_total_upper = dl_2h_upper + dl_1h_upper + dl_shot_upper
-                    dl_total_lower = dl_2h_lower + dl_1h_lower + dl_shot_lower
+                    dl_total_upper = components['total'] + total_std
+                    dl_total_lower = np.maximum(0, components['total'] - total_std)
                 
+                # Store uncertainty bands for no-one-halo case (already computed dl_2h and dl_shot)
                 uncertainty_bands = {
                     'two_halo': (dl_2h_lower, dl_2h_upper),
                     'shot_noise': (dl_shot_lower, dl_shot_upper),
                     'total': (dl_total_lower, dl_total_upper)
                 }
-                if model.use_one_halo:
-                    uncertainty_bands['one_halo'] = (dl_1h_lower, dl_1h_upper)
+            
+            else:
+                # One-halo term is enabled - build 5-column template matrix
+                templates_matrix = np.zeros((len(ell_model), 5))
+                
+                # Column 0: 2-halo
+                if model.use_powerlaw_2h:
+                    templates_matrix[:, 0] = model.powerlaw_2h_component(ell_model, amplitude=1.0, index=model.alpha_2h_fixed)
+                else:
+                    # Check if using linear 2h templates
+                    if model.use_linear_2h and z_bin_index is not None and z_bin_index in model.dl_2h_lin_per_zbin:
+                        # Get linear template for this z-bin (already in D_ell units)
+                        ell_lin, dl_2h_lin = model.dl_2h_lin_per_zbin[z_bin_index]
+                        templates_matrix[:, 0] = np.interp(ell_model, ell_lin, dl_2h_lin)
+                    else:
+                        pf = ell_model * (ell_model + 1) / (2 * np.pi)
+                        templates_matrix[:, 0] = pf * np.interp(ell_model, model.lb, model.cl_2h_pred)
+                
+                # Columns 1-3: 1-halo partial derivatives
+                # For A_1h (column 1): just the shape function
+                templates_matrix[:, 1] = model.lognormal_component(ell_model, amplitude=1.0, mu=plot_cfg.params[2], sigma=plot_cfg.params[3])
+                
+                if use_fixed_mu_sigma:
+                    # 3-parameter case: cov_matrix is 3x3 for [A_2h, A_1h, A_shot]
+                    # Columns 2 and 3 (mu_1h, sigma_1h): zero since they're fixed
+                    templates_matrix[:, 2] = 0.0
+                    templates_matrix[:, 3] = 0.0
+                    
+                    # Column 4: shot noise
+                    templates_matrix[:, 4] = model.shot_noise_component(ell_model, amplitude=1.0)
+                    
+                    # Build expanded 5x5 covariance with zeros for fixed parameters
+                    cov_matrix_expanded = np.zeros((5, 5))
+                    # Map 3-parameter cov to 5-parameter: [A_2h, A_1h, A_shot] -> [A_2h, A_1h, 0, 0, A_shot]
+                    cov_matrix_expanded[0, 0] = plot_cfg.cov_matrix[0, 0]  # A_2h variance
+                    cov_matrix_expanded[0, 1] = cov_matrix_expanded[1, 0] = plot_cfg.cov_matrix[0, 1]  # A_2h-A_1h
+                    cov_matrix_expanded[1, 1] = plot_cfg.cov_matrix[1, 1]  # A_1h variance
+                    # Rows/cols 2, 3 (mu_1h, sigma_1h) stay zero
+                    cov_matrix_expanded[0, 4] = cov_matrix_expanded[4, 0] = plot_cfg.cov_matrix[0, 2]  # A_2h-A_shot
+                    cov_matrix_expanded[1, 4] = cov_matrix_expanded[4, 1] = plot_cfg.cov_matrix[1, 2]  # A_1h-A_shot
+                    cov_matrix_expanded[4, 4] = plot_cfg.cov_matrix[2, 2]  # A_shot variance
+                    
+                    total_var = np.sum((templates_matrix @ cov_matrix_expanded) * templates_matrix, axis=1)
+                else:
+                    # 5-parameter case: normal calculation
+                    # For mu_1h and sigma_1h: numerical derivatives (small perturbation)
+                    delta_mu = 0.01 * plot_cfg.params[2] if plot_cfg.params[2] != 0 else 0.01
+                    delta_sigma = 0.01 * plot_cfg.params[3] if plot_cfg.params[3] != 0 else 0.01
+                    
+                    templates_matrix[:, 2] = (model.lognormal_component(ell_model, plot_cfg.params[1], plot_cfg.params[2] + delta_mu, plot_cfg.params[3]) - 
+                                                model.lognormal_component(ell_model, plot_cfg.params[1], plot_cfg.params[2], plot_cfg.params[3])) / delta_mu
+                    templates_matrix[:, 3] = (model.lognormal_component(ell_model, plot_cfg.params[1], plot_cfg.params[2], plot_cfg.params[3] + delta_sigma) - 
+                                                model.lognormal_component(ell_model, plot_cfg.params[1], plot_cfg.params[2], plot_cfg.params[3])) / delta_sigma
+                
+                    # Column 4: shot noise
+                    templates_matrix[:, 4] = model.shot_noise_component(ell_model, amplitude=1.0)
+
+                    # Uncertainty at each ℓ: σ²(ℓ) = T(ℓ)^T * Cov * T(ℓ)
+                    # With astrometric damping enabled, covariance may include an extra
+                    # sigma_damp parameter (6x6), while templates_matrix remains 5 columns.
+                    # Use the core covariance block for [A_2h, A_1h, mu_1h, sigma_1h, A_shot].
+                    if plot_cfg.use_damping and plot_cfg.cov_matrix.shape[0] >= 6:
+                        cov_core = plot_cfg.cov_matrix[:5, :5]
+                    else:
+                        cov_core = plot_cfg.cov_matrix
+                    total_var = np.sum((templates_matrix @ cov_core) * templates_matrix, axis=1)
+                
+                total_std = np.sqrt(np.maximum(0, total_var))
+                
+                # If damping is enabled, apply it to the total uncertainty bounds
+                # Note: components['total'] is already damped, so we need to apply damping to the undamped bounds
+                if plot_cfg.use_damping:
+                    # Get undamped total from components
+                    dl_total_undamped = components.get('total_undamped')
+                    if dl_total_undamped is None:
+                        # If not available, reconstruct it
+                        dl_total_undamped = components['two_halo'] + components['one_halo'] + components['shot_noise']
+                    
+                    # Apply damping to the uncertainty bounds
+                    sigma_damp = plot_cfg.params[5]
+                    damping_factor = model.astrometry_damping_component(ell_model, sigma_damp)
+                    
+                    dl_total_upper = (dl_total_undamped + total_std) * damping_factor
+                    dl_total_lower = np.maximum(0, (dl_total_undamped - total_std) * damping_factor)
+                else:
+                    dl_total_upper = components['total'] + total_std
+                    dl_total_lower = np.maximum(0, components['total'] - total_std)
+                
+                # Store uncertainty bands for one-halo enabled case
+                uncertainty_bands = {
+                    'two_halo': (dl_2h_lower, dl_2h_upper),
+                    'one_halo': (dl_1h_lower, dl_1h_upper),
+                    'shot_noise': (dl_shot_lower, dl_shot_upper),
+                    'total': (dl_total_lower, dl_total_upper)
+                }
         else:
             uncertainty_bands = None
             
@@ -3478,35 +2149,13 @@ def plot_fit_fixed_1h_templates(model, lb_data, dl_data, dl_err, fit_result,
             ax.fill_between(ell_model, uncertainty_bands['two_halo'][0], uncertainty_bands['two_halo'][1],
                             color='blue', alpha=0.15, zorder=1)
         
-        if is_ihl_fit:
-            # IHL template case: show the single IHL template contribution
-            ax.plot(ell_model, components['one_halo'], 'g-',
-                    linewidth=1.5, label='IHL template', alpha=0.7)
-            if uncertainty_bands is not None and 'one_halo' in uncertainty_bands:
-                ax.fill_between(ell_model, uncertainty_bands['one_halo'][0], uncertainty_bands['one_halo'][1],
-                                color='green', alpha=0.15, zorder=1)
-        elif use_single_slope is not None:
-            # Single parametric 1-halo template
-            ax.plot(ell_model, components['one_halo'], 'g-',
-                    linewidth=1.5, label=f'1h (slope={use_single_slope})', alpha=0.7)
-            if uncertainty_bands is not None and 'one_halo' in uncertainty_bands:
-                ax.fill_between(ell_model, uncertainty_bands['one_halo'][0], uncertainty_bands['one_halo'][1],
-                                color='green', alpha=0.15, zorder=1)
-        elif not is_ihl_fit and use_single_slope is None and 'one_halo' in components:
+        if 'one_halo' in components:
             # Pure parametric MCMC case (log-normal 1-halo) - works with or without damping
             ax.plot(ell_model, components['one_halo'], 'g-',
                     linewidth=1.5, label='1-halo', alpha=0.7)
             if uncertainty_bands is not None and 'one_halo' in uncertainty_bands:
                 ax.fill_between(ell_model, uncertainty_bands['one_halo'][0], uncertainty_bands['one_halo'][1],
                                 color='green', alpha=0.15, zorder=1)
-        elif 'one_halo_08' in components:
-            # Multiple parametric 1-halo templates
-            ax.plot(ell_model, components['one_halo_08'], 'g--',
-                    linewidth=1.5, label='1h (slope=0.8)', alpha=0.6)
-            ax.plot(ell_model, components['one_halo_10'], 'g-',
-                    linewidth=1.5, label='1h (slope=1.0)', alpha=0.7)
-            ax.plot(ell_model, components['one_halo_12'], 'g:',
-                    linewidth=1.5, label='1h (slope=1.2)', alpha=0.6)
         
         # Shot noise component
         ax.plot(ell_model, components['shot_noise'], 'm--',
@@ -3532,90 +2181,31 @@ def plot_fit_fixed_1h_templates(model, lb_data, dl_data, dl_err, fit_result,
         ax.set_ylim(ylim)
     
     # Add fit statistics
-    chi2_eval_max = fit_result.get('chi2_eval_max', model.chi2_eval_max)
+
     chisq_text = f"χ²/dof = {fit_result['chisq']:.1f}/{fit_result['ndof']} = {fit_result['reduced_chisq']:.2f}"
-    if chi2_eval_max is not None:
-        chisq_text += f" $(\ell<{int(chi2_eval_max)})$"
-    
-    # Add amplitudes
-    if is_ihl_fit:
-        # IHL template case: show template amplitudes with standard naming
-        param_names = fit_result['param_names']
-        amp_parts = []
-        for i, name in enumerate(param_names):
-            # Convert parameter names to standard LaTeX notation
-            if name == '2h':
-                latex_name = "$A_{2h}$"
-            elif name.startswith('slope_'):
-                # Convert slope_X.X to A_1h
-                latex_name = "$A_{1h}$"
-            elif name == 'shot':
-                latex_name = "$A_{shot}$"
-            else:
-                # Fallback for other names
-                latex_name = f"$A_{{{name}}}$"
-            amp_parts.append(f"{latex_name}={params[i]:.3g}")
-        amps_text = ", ".join(amp_parts)
-    elif use_single_slope is not None:
-        A_2h, A_1h, A_shot = params[0], params[1], params[2]
-        amps_text = f"$A_{{2h}}$={A_2h:.3g}, $A_{{1h}}$={A_1h:.3g}, $A_{{shot}}$={A_shot:.3g}"
-    elif len(params) == 5:
-        # Pure parametric MCMC case: show only A_2h and A_1h with uncertainties if available
-        A_2h, A_1h = params[0], params[1]
-        cov_matrix = fit_result.get('cov_matrix', None)
-        if cov_matrix is not None:
-            # Get uncertainties from covariance matrix diagonal
-            param_stds = np.sqrt(np.diag(cov_matrix))
-            A_2h_err, A_1h_err = param_stds[0], param_stds[1]
-            amps_text = f"$A_{{2h}}$={A_2h:.3g}±{A_2h_err:.3g}, $A_{{1h}}$={A_1h:.3g}±{A_1h_err:.3g}"
-        else:
-            amps_text = f"$A_{{2h}}$={A_2h:.3g}, $A_{{1h}}$={A_1h:.3g}"
-    else:
-        A_2h, A_1h_08, A_1h_10, A_1h_12 = params[0], params[1], params[2], params[3]
-        amps_text = f"$A_{{2h}}$={A_2h:.3g}, $A_{{1h}}$(0.8/1.0/1.2)={A_1h_08:.3g}/{A_1h_10:.3g}/{A_1h_12:.3g}"
-        
+    if plot_cfg.chi2_eval_max is not None:
+        chisq_text += f" $(304<\\ell<{int(plot_cfg.chi2_eval_max)})$"
+            
     # Add chi2/dof and ell range in top left corner
     chi2_reduced = fit_result['reduced_chisq']
     chi2_value = fit_result['chisq']
     ndof = fit_result['ndof']
-    top_left_text = f"$\\chi^2 / N_{{dof}} = {chi2_value:.1f}/{ndof} = {chi2_reduced:.2f}$\n$\\ell < {lMax_fit}$"
+    print('ndof:', ndof)
+    top_left_text = f"$\\chi^2 / N_{{dof}} = {chi2_value:.1f}/{ndof} = {chi2_reduced:.2f}$\n$304 < \\ell < {lMax_fit}$"
     ax.text(textxpos, textypos, top_left_text, fontsize=text_fs,
              bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
     
     # Bottom panel: per-bandpower chi residuals
     # Generate model at data points for chi residuals
-    if is_ihl_fit:
-        # IHL template case: use the model_wrapper from fit results
-        model_data = fit_result['model_wrapper'](lb_data)
-    elif use_single_slope is not None:
-        # Single slope case: manually compute model at data points
-        ln_ell_peak, sigma = interpolate_1h_params(z_value, use_single_slope, one_halo_params_dict, sigma_fixed=sigma_fixed)
-        
-        # 2-halo at data points
-        if model.use_powerlaw_2h:
-            dl_2h_data = model.powerlaw_2h_component(lb_data, params[0], model.alpha_2h_fixed)
-        else:
-            pf_data = lb_data * (lb_data + 1) / (2 * np.pi)
-            dl_2h_data = params[0] * pf_data * np.interp(lb_data, model.lb, model.cl_2h_pred)
-        
-        # 1-halo at data points
-        dl_1h_data = model.lognormal_component(lb_data, params[1], ln_ell_peak, sigma)
-        
-        # Shot noise at data points
-        dl_shot_data = model.shot_noise_component(lb_data, params[2])
-        
-        model_data = dl_2h_data + dl_1h_data + dl_shot_data
-    elif len(params) == 5 or use_damping:
+
+    if len(plot_cfg.params) == 5 or plot_cfg.use_damping:
         # Pure parametric MCMC case
-        if use_damping:
+        if plot_cfg.use_damping:
             # With damping: params = [A_2h, A_1h, mu_1h, sigma_1h, A_shot, sigma_damp]
-            model_data = model.model_dl(lb_data, *params[:5], sigma_damp=params[5])
+            model_data = model.model_dl(lb_data, *plot_cfg.params[:5], sigma_damp=plot_cfg.params[5], z_bin_index=z_bin_index)
         else:
             # Without damping: params = [A_2h, A_1h, mu_1h, sigma_1h, A_shot]
-            model_data = model.model_dl(lb_data, *params[:5])
-    else:
-        # Multiple slopes case: use existing method
-        model_data = model.model_dl_fixed_1h_templates(lb_data, *params, z_value, one_halo_params_dict)
+            model_data = model.model_dl(lb_data, *plot_cfg.params[:5], z_bin_index=z_bin_index)
 
     chi_vals = (dl_data - model_data) / dl_err if dl_err is not None else (dl_data - model_data)
     
@@ -4597,27 +3187,43 @@ def combine_auto_cross_A2h_samples(gal_auto_results, gal_cross_results,
     return combined_results
 
 
-def _compute_linear_2h_templates_per_zbin(zbinedges, lmax_fit, verbose=True):
+def _compute_linear_2h_templates_per_zbin(zbinedges, lmax_fit, verbose=True, cache_dir='data'):
     """
     Pre-compute linear matter power spectrum angular power (C_ell^lin) for each redshift bin.
     
-    Uses CAMBPowerSpectra and Limber projection from compute_matter_cell_predictions.py
+    Caches individual z-bin templates over a fixed wide range (100 < ell < 1.2e5) to avoid
+    redundant Limber projection computation. Templates are then interpolated to the requested
+    lmax_fit if needed. Uses fiducial LCDM cosmology with Limber projection from 
+    compute_matter_cell_predictions.py
     
     Parameters
     ----------
     zbinedges : array_like
         Redshift bin edges
     lmax_fit : float
-        Maximum multipole for fitting (defines ell range to compute)
+        Maximum multipole for fitting. If lmax_fit < 1.2e5, templates are interpolated.
+        If lmax_fit > 1.2e5, a warning is issued and clamping is used.
     verbose : bool, optional
         Print progress information
+    cache_dir : str, optional
+        Directory to cache per-zbin templates. Default 'data'.
+        Cache files are named: linear_2h_zbin_{zidx}.npz (independent of lmax_fit)
     
     Returns
     -------
     dict
         Dictionary with keys 0, 1, 2, ... for each z-bin index
-        Each value is a tuple (ell_array, dl_array)
+        Each value is a tuple (ell_array, dl_array) covering 100 < ell <= lmax_fit
+    
+    Notes
+    -----
+    All templates are computed once over the range 100 < ell < 1.2e5 and cached.
+    Different lmax_fit values use interpolation from the cached template, which is
+    nearly instant. This avoids redundant expensive Limber projections.
     """
+    from pathlib import Path
+    from scipy.interpolate import interp1d
+    
     try:
         from compute_matter_cell_predictions import CAMBPowerSpectra, limber_project_with_power
     except ImportError:
@@ -4625,6 +3231,10 @@ def _compute_linear_2h_templates_per_zbin(zbinedges, lmax_fit, verbose=True):
         import sys
         sys.path.insert(0, str(Path('.').resolve()))
         from compute_matter_cell_predictions import CAMBPowerSpectra, limber_project_with_power
+    
+    # Ensure cache directory exists
+    cache_path = Path(cache_dir)
+    cache_path.mkdir(parents=True, exist_ok=True)
     
     # Fiducial LCDM cosmology
     cosmo_params = {
@@ -4635,6 +3245,9 @@ def _compute_linear_2h_templates_per_zbin(zbinedges, lmax_fit, verbose=True):
         'As': 2.1e-9,
     }
     
+    # Fixed cache range (once per z-bin, regardless of lmax_fit)
+    CACHE_LMAX = 1.2e5
+    
     # Initialize CAMB power spectrum object
     if verbose:
         print("\n" + "="*70)
@@ -4642,42 +3255,101 @@ def _compute_linear_2h_templates_per_zbin(zbinedges, lmax_fit, verbose=True):
         print("="*70)
         print(f"Cosmology: H0={cosmo_params['H0']}, ombh2={cosmo_params['ombh2']}, omch2={cosmo_params['omch2']}")
         print(f"Redshift bins: {zbinedges}")
-        print(f"lMax_fit: {lmax_fit}")
-    
-    camb_ps = CAMBPowerSpectra(cosmo_params, k_min=1e-4, k_max=1e3, nk=512)
+        print(f"Requested lMax_fit: {lmax_fit}")
+        print(f"Cache range: 100 < ell <= {CACHE_LMAX:.0e}")
+        print(f"Cache directory: {cache_path.resolve()}")
     
     # Compute linear 2H template for each z-bin
     dl_2h_lin_per_zbin = {}
+    camb_ps = None  # Lazy-initialize only if we need to compute
     
     for zidx in range(len(zbinedges) - 1):
         z_min = zbinedges[zidx]
         z_max = zbinedges[zidx + 1]
         z_cen = 0.5 * (z_min + z_max)
         
+        # Check for cached template (independent of lmax_fit)
+        cache_file = cache_path / f"linear_2h_zbin_{zidx}.npz"
+        
+        if cache_file.exists():
+            if verbose:
+                print(f"\nZ-bin {zidx}: z=[{z_min:.2f}, {z_max:.2f}] (z_cen={z_cen:.2f})")
+                print(f"  ✓ Loaded from cache: {cache_file.name}")
+            
+            # Load cached template
+            cached = np.load(cache_file, allow_pickle=True)
+            ell_values_full = cached['ell_values']
+            dl_lin_full = cached['dl_lin']
+            
+        else:
+            # Need to compute - initialize CAMB only on first compute
+            if camb_ps is None:
+                camb_ps = CAMBPowerSpectra(cosmo_params, k_min=1e-4, k_max=1e3, nk=512)
+            
+            if verbose:
+                print(f"\nZ-bin {zidx}: z=[{z_min:.2f}, {z_max:.2f}] (z_cen={z_cen:.2f})")
+            
+            # Limber projection for this z-bin (full range)
+            # Note: limber_project_with_power returns linearly-spaced ell values
+            ell_values_linear, cl_lin = limber_project_with_power(
+                camb_ps,
+                z_min, z_max,
+                power_type='linear',
+                ell_min=100,
+                ell_max=CACHE_LMAX,
+                n_ell_bin=100,
+                nbin=50  # Redshift integration bins
+            )
+            
+            # Convert linear output to D_ell
+            pf = ell_values_linear * (ell_values_linear + 1) / (2 * np.pi)
+            dl_lin_linear = pf * cl_lin
+            dl_lin_linear /= np.max(dl_lin_linear) # normalize to peak D_ell units
+            
+            # Rebin to logarithmic spacing for cache (finely sampled)
+            # Use ~100 bins per log decade for smooth interpolation
+            n_logbins = int(100 * np.log10(CACHE_LMAX / 100.0))
+            ell_values_full = np.logspace(np.log10(100), np.log10(CACHE_LMAX), n_logbins)
+            
+            # Interpolate linear output onto log-spaced grid
+            interp_func_linear = interp1d(ell_values_linear, dl_lin_linear, kind='cubic',
+                                          bounds_error=False, fill_value='extrapolate')
+            dl_lin_full = interp_func_linear(ell_values_full)
+            
+            # Save to cache with logarithmically-spaced ell values
+            np.savez(cache_file, ell_values=ell_values_full, dl_lin=dl_lin_full)
+            
+            if verbose:
+                print(f"  Computed C_ell^lin for {len(ell_values_full)} multipoles")
+                print(f"  ✓ Cached to: {cache_file.name}")
+        
+        # Now interpolate to requested lmax_fit if needed
+        # Use logarithmic spacing for smooth coverage across ell range
+        if lmax_fit > CACHE_LMAX:
+            if verbose:
+                print(f"  ⚠ Requested lMax_fit ({lmax_fit:.0e}) > cache range ({CACHE_LMAX:.0e})")
+                print(f"    Using clamping (no extrapolation)")
+            # Use edge value for ell > CACHE_LMAX; log-space up to CACHE_LMAX
+            n_logbins = int(100 * np.log10(CACHE_LMAX / 100.0))
+            ell_fit = np.logspace(np.log10(100), np.log10(min(lmax_fit, CACHE_LMAX)), n_logbins)
+        else:
+            n_logbins = int(100 * np.log10(lmax_fit / 100.0))
+            ell_fit = np.logspace(np.log10(100), np.log10(lmax_fit), n_logbins)
+        
+        # Interpolate from cached full-range template
+        interp_func = interp1d(ell_values_full, dl_lin_full, kind='cubic', 
+                               bounds_error=False, fill_value='extrapolate')
+        dl_lin_interp = interp_func(ell_fit)
+        
+        # Clamp at ell boundaries (no extrapolation)
+        dl_lin_interp = np.clip(dl_lin_interp, 
+                               np.min(dl_lin_full), np.max(dl_lin_full))
+        
+        dl_2h_lin_per_zbin[zidx] = (ell_fit, dl_lin_interp)
+        
         if verbose:
-            print(f"\nZ-bin {zidx}: z=[{z_min:.2f}, {z_max:.2f}] (z_cen={z_cen:.2f})")
-        
-        # Limber projection for this z-bin
-        ell_values, cl_lin = limber_project_with_power(
-            camb_ps,
-            z_min, z_max,
-            power_type='linear',
-            ell_min=100,
-            ell_max=lmax_fit,
-            n_ell_bin=50,
-            nbin=20  # Redshift integration bins
-        )
-        
-        # Convert to D_ell
-        pf = ell_values * (ell_values + 1) / (2 * np.pi)
-        dl_lin = pf * cl_lin
-        
-        dl_2h_lin_per_zbin[zidx] = (ell_values, dl_lin)
-        
-        if verbose:
-            print(f"  Computed C_ell^lin for {len(ell_values)} multipoles")
-            print(f"  ell range: {ell_values[0]:.1f} - {ell_values[-1]:.1f}")
-            print(f"  D_ell^lin range: {np.min(dl_lin):.2e} - {np.max(dl_lin):.2e}")
+            print(f"  ✓ Interpolated to fit range: {ell_fit[0]:.1f} - {ell_fit[-1]:.1f}")
+            print(f"  D_ell^lin range: {np.min(dl_lin_interp):.2e} - {np.max(dl_lin_interp):.2e}")
     
     if verbose:
         print("\n" + "="*70 + "\n")
@@ -4689,10 +3361,8 @@ def run_gal_cross_fits(inst_list=[1, 2], ifield_list=[4,5,6,7,8], maskstr='JHlt1
                        startidx=2, endidx=-1, zbinedges=[0.0, 0.2, 0.4, 0.6,  0.8,  1.0], lams=[1.1, 1.8], alpha_from_mock=0.0,
                        chi2_eval_max=10000., lMax_fit=80000, fitstr='IHLtemp',
                        figbasedir='figures/ciber_cl_fits_011526/', save_figs=True, save_results=False, file_fpath=None,
-                       use_ihl_templates=True, use_one_halo=True, use_two_halo=True,
-                       mu_1h_prior=None, sigma_1h_prior=None, ln_ell_peak_relation=None,
-                       ihl_1h_params_path='ihl_1h_params.npz', use_ihl_1h_params=True, fix_ihl_1h_shape=False,
-                       mu_1h_fixed_override=None, sigma_1h_fixed_override=None, ihl_1h_template=None,
+                       use_one_halo=True, use_two_halo=True, ihl_1h_params_path='ihl_1h_params_corrected.npz', use_ihl_1h_params=True, fix_ihl_1h_shape=False,
+                       mu_1h_fixed_override=None, sigma_1h_fixed_override=None,
                        nwalkers=32, nsteps=4000, nburn=1000, prior_bounds=None, chi2_lim=[-20, 5],
                        use_astrometry_damping=False, initial_guess=None, headstr = 'hsc_ilt24.0', uniform_weight_ell=None,
                        A_2h_fixed_arr=None, use_linear_2h=False, sigma_damp_fixed=None):
@@ -4733,16 +3403,8 @@ def run_gal_cross_fits(inst_list=[1, 2], ifield_list=[4,5,6,7,8], maskstr='JHlt1
         Whether to save fit results
     file_fpath : str, optional
         File path for saved results
-    use_ihl_templates : bool, optional
-        If True, use IHL templates. If False, use phenomenological log-normal model.
     use_one_halo : bool, optional
         If True (default), include one-halo term in model. If False, fit only 2h + shot + damping.
-    mu_1h_prior : tuple, optional
-        (mean, std) for Gaussian prior on mu_1h parameter (log-normal).
-        If None and use_ihl_1h_params=True, will be set automatically from IHL-derived parameters.
-    sigma_1h_prior : tuple, optional
-        (mean, std) for Gaussian prior on sigma_1h parameter.
-        If None and use_ihl_1h_params=True, will be set automatically from IHL-derived parameters.
     ihl_1h_params_path : str, optional
         Path to IHL one-halo parameters file (default: 'ihl_1h_params.npz').
         Used to load IHL-derived 1h parameters for better priors and initialization.
@@ -4782,44 +3444,19 @@ def run_gal_cross_fits(inst_list=[1, 2], ifield_list=[4,5,6,7,8], maskstr='JHlt1
                 print("\n" + "="*70)
                 print("Using IHL-derived one-halo parameters")
                 print("="*70)
-                
-                # If priors not explicitly set and we're not using IHL templates,
-                # set them based on IHL-derived parameters
-                if not use_ihl_templates and not fix_ihl_1h_shape and mu_1h_prior is None and sigma_1h_prior is None:
-                    # Use the linear relations to set priors at midpoint redshift
-                    z_mid = np.mean(zbinedges)
-                    slope = ihl_1h_params['slopes'][0]
-                    
-                    ln_rel = ihl_1h_params['ln_ell_peak_vs_z'].get(slope)
-                    sigma_rel = ihl_1h_params['sigma_vs_z'].get(slope)
-                    
-                    if ln_rel is not None and sigma_rel is not None:
-                        # Calculate expected values at mid-redshift
-                        mu_1h_expected = ln_rel['intercept'] + ln_rel['slope'] * z_mid
-                        sigma_1h_expected = sigma_rel['intercept'] + sigma_rel['slope'] * z_mid
-                        
-                        # Set priors with reasonable widths (±30% of value for mu, ±50% for sigma)
-                        mu_1h_prior = (mu_1h_expected, 0.3)
-                        sigma_1h_prior = (sigma_1h_expected, 0.2)
-                        
-                        print(f"\nAutomatically set priors from IHL parameters (at z={z_mid:.2f}):")
-                        print(f"  mu_1h_prior = ({mu_1h_prior[0]:.3f}, {mu_1h_prior[1]:.3f})")
-                        print(f"  sigma_1h_prior = ({sigma_1h_prior[0]:.3f}, {sigma_1h_prior[1]:.3f})")
                         
             except Exception as e:
                 print(f"\nWarning: Could not load IHL 1h parameters from {ihl_1h_params_path}: {e}")
                 print("Continuing with default behavior...")
                 ihl_1h_params = None
         else:
-            if use_ihl_1h_params:
-                print(f"\nNote: IHL 1h params file not found at {ihl_1h_params_path}")
-                print("To create this file, run:")
-                print("  from ciber.theory.cross_ps_parametric_model import fit_and_decompose_ihl_templates, save_ihl_1h_params")
-                print("  results = fit_and_decompose_ihl_templates('ihl_templates/', zbinedges=[...], slopes=[1.0])")
-                print(f"  save_ihl_1h_params(results, '{ihl_1h_params_path}', zbinedges=[...], slopes=[1.0])")
-                print("\nContinuing with default parameters...")
-                use_ihl_1h_params = False
-
+            print(f"\nNote: IHL 1h params file not found at {ihl_1h_params_path}")
+            print("To create this file, run:")
+            print("  from ciber.theory.cross_ps_parametric_model import fit_and_decompose_ihl_templates, save_ihl_1h_params")
+            print("  results = fit_and_decompose_ihl_templates('ihl_templates/', zbinedges=[...], slopes=[1.0])")
+            print(f"  save_ihl_1h_params(results, '{ihl_1h_params_path}', zbinedges=[...], slopes=[1.0])")
+            return None
+        
     # Update fitstr with new flags
     fitstr_updated = fitstr
     if use_linear_2h:
@@ -4832,6 +3469,25 @@ def run_gal_cross_fits(inst_list=[1, 2], ifield_list=[4,5,6,7,8], maskstr='JHlt1
     if use_linear_2h:
         dl_2h_lin_per_zbin = _compute_linear_2h_templates_per_zbin(zbinedges, lMax_fit, verbose=True)
     
+    for zidx in range(len(zbinedges) - 1):
+        result = dl_2h_lin_per_zbin.get(zidx, None)
+        
+        if result is not None:
+            ell_values, dl_lin = result
+
+            import matplotlib.pyplot as plt
+            plt.figure(figsize=(6, 5))
+            plt.plot(ell_values, dl_lin, label=f'zbin {zidx}' if dl_lin is not None else None)
+            plt.xlabel('Multipole moment l')
+            plt.ylabel('$D_{\\ell}$ (2h linear)', fontsize=14)
+            plt.yscale('log')
+            plt.xscale('log')
+            plt.xlabel('Multipole $\\ell$', fontsize=14)
+            plt.title(f'Linear 2H Template for zbin {zidx}')
+            plt.legend()
+            plt.savefig(f'linear_2h_template_zbin_{zidx}.png', bbox_inches='tight')
+            plt.close()
+
     # Ensure sigma_damp_fixed is a dict if provided
     if sigma_damp_fixed is None:
         sigma_damp_fixed = {}
@@ -4853,7 +3509,8 @@ def run_gal_cross_fits(inst_list=[1, 2], ifield_list=[4,5,6,7,8], maskstr='JHlt1
     elif cat=='HSC':
         catname = 'HSC'
         # headstr = 'hsc_ilt24.0'
-
+        
+        maskstr = None
         res_ps = collect_ciber_gal_vs_redshift(catname, subtract_randoms=True, \
                                     inst_list=inst_list, zbinedges=zbinedges, \
                                     maskstr=maskstr, subtract_sn=False,
@@ -4874,23 +3531,6 @@ def run_gal_cross_fits(inst_list=[1, 2], ifield_list=[4,5,6,7,8], maskstr='JHlt1
     for zidx in range(len(zbinedges) - 1):
     
         zcen = 0.5 * (zbinedges[zidx] + zbinedges[zidx + 1])
-
-        # Load IHL templates if using template-based fitting
-        if use_ihl_templates:
-            # Use provided template override if available (e.g., cached effective 1h template)
-            if ihl_1h_template is not None:
-                templates = {'effective_1h': ihl_1h_template}
-            else:
-                try:
-                    templates, _, _ = load_ihl_template_for_zbin(
-                        'ihl_templates/', zbinedges, zidx, slopes=[1.0]
-                    )
-                except Exception as e:
-                    print(f"Could not load IHL templates for z-bin {zidx}: {e}")
-                    print("Skipping this redshift bin...")
-                    continue
-        else:
-            templates = None
 
         for idx, inst in enumerate(inst_list):
             
@@ -4926,9 +3566,6 @@ def run_gal_cross_fits(inst_list=[1, 2], ifield_list=[4,5,6,7,8], maskstr='JHlt1
                 use_powerlaw_2h=not use_linear_2h,
                 alpha_2h_fixed=alpha_from_mock,
                 chi2_eval_max=chi2_eval_max,
-                mu_1h_prior=mu_1h_prior,
-                sigma_1h_prior=sigma_1h_prior,
-                ln_ell_peak_relation=ln_ell_peak_relation,
                 mu_1h_fixed=mu_1h_fixed,
                 sigma_1h_fixed=sigma_1h_fixed,
                 use_astrometry_damping=use_astrometry_damping,
@@ -4948,42 +3585,24 @@ def run_gal_cross_fits(inst_list=[1, 2], ifield_list=[4,5,6,7,8], maskstr='JHlt1
             title = f'CIBER {lams[idx]} $\\mu$m $\\times$ {cat}'
             title += f', {zbinedges[zidx]}<z<{zbinedges[zidx+1]}'
 
-            # Choose fitting method based on use_ihl_templates
-            if use_ihl_templates:
-                # IHL template-based fitting
-                fit_result_mcmc = model.fit_model_with_ihl_templates(
-                    lb[startidx:endidx], 
-                    dl_data[startidx:endidx], 
-                    templates,
-                    dl_err=dlerr_data[startidx:endidx],
-                    fit_range=[300, lMax_fit],
-                    chi2_eval_max=lMax_fit,
-                    method='mcmc',
-                    nwalkers=nwalkers,
-                    nsteps=nsteps,
-                    nburn=nburn,
-                    progress=True,
-                    verbose=True, 
-                )
-            else:
-                # Phenomenological log-normal fitting
-                fit_result_mcmc = model.fit_model_mcmc(
-                    lb[startidx:endidx], 
-                    dl_data[startidx:endidx], 
-                    dl_err=dlerr_data[startidx:endidx],
-                    fit_range=[300, lMax_fit],
-                    chi2_eval_max=lMax_fit,
-                    nwalkers=nwalkers,
-                    nsteps=nsteps,
-                    nburn=nburn,
-                    progress=True,
-                    verbose=True,
-                    prior_bounds=prior_bounds,
-                    z_value=zcen,
-                    initial_guess=initial_guess,
-                    z_bin_index=zidx,
-                    inst=inst
-                )
+            # Phenomenological log-normal fitting
+            fit_result_mcmc = model.fit_model_mcmc(
+                lb[startidx:endidx], 
+                dl_data[startidx:endidx], 
+                dl_err=dlerr_data[startidx:endidx],
+                fit_range=[300, lMax_fit],
+                chi2_eval_max=lMax_fit,
+                nwalkers=nwalkers,
+                nsteps=nsteps,
+                nburn=nburn,
+                progress=True,
+                verbose=True,
+                prior_bounds=prior_bounds,
+                z_value=zcen,
+                initial_guess=initial_guess,
+                z_bin_index=zidx,
+                inst=inst
+            )
 
             # Corner plot
             fig = CrossPowerSpectrumModel.plot_mcmc_corner(
@@ -5024,6 +3643,7 @@ def run_gal_cross_fits(inst_list=[1, 2], ifield_list=[4,5,6,7,8], maskstr='JHlt1
             fit_result_mcmc['lb_fit'] = lb[startidx:endidx]
             fit_result_mcmc['data_dl'] = dl_data[startidx:endidx]
             fit_result_mcmc['data_dlerr'] = dlerr_data[startidx:endidx]
+            fit_result_mcmc['use_linear_2h'] = use_linear_2h
 
             all_fit_results_mcmc[key] = {
                 'fit_result': fit_result_mcmc,
@@ -5341,8 +3961,6 @@ def run_gal_cross_fits_per_field(inst_list=[1, 2], ifield_list=[4,5,6,7,8], mask
                                  alpha_from_mock=0.0, chi2_eval_max=10000., lMax_fit=80000, 
                                  fitstr='IHLtemp', figbasedir='figures/ciber_cl_fits_011526/', 
                                  save_figs=False, save_results=False, file_fpath=None, 
-                                 use_ihl_templates=True, 
-                                 mu_1h_prior=None, sigma_1h_prior=None, ln_ell_peak_relation=None,
                                  ihl_1h_params_path='ihl_1h_params.npz', use_ihl_1h_params=True, 
                                  fix_ihl_1h_shape=True, nwalkers=32, nsteps=4000, nburn=1000, 
                                  prior_bounds=None, chi2_lim=[-20, 5],
@@ -5386,12 +4004,11 @@ def run_gal_cross_fits_per_field(inst_list=[1, 2], ifield_list=[4,5,6,7,8], mask
         - 'zcen': central redshift of bin
     """
     from ciber.plotting.gal_plotting_fns import load_ciber_gal_ps, estimate_cross_uncertainties
-    from ciber.core.powerspec_utils import compute_field_averaged_power_spectrum
     
     if save_results and file_fpath is None:
         file_fpath = 'ciber_cl_fits_'+cat+'_coarsez_'+fitstr+'_perfield.npz'
     
-    # Try to load IHL one-halo parameters if enabled (EXACT COPY FROM run_gal_cross_fits)
+    # Try to load IHL one-halo parameters if enabled
     ihl_1h_params = None
     if use_ihl_1h_params:
         import os
@@ -5404,41 +4021,19 @@ def run_gal_cross_fits_per_field(inst_list=[1, 2], ifield_list=[4,5,6,7,8], mask
                 
                 # If priors not explicitly set and we're not using IHL templates,
                 # set them based on IHL-derived parameters
-                if not use_ihl_templates and not fix_ihl_1h_shape and mu_1h_prior is None and sigma_1h_prior is None:
-                    # Use the linear relations to set priors at midpoint redshift
-                    z_mid = np.mean(zbinedges)
-                    slope = ihl_1h_params['slopes'][0]
-                    
-                    ln_rel = ihl_1h_params['ln_ell_peak_vs_z'].get(slope)
-                    sigma_rel = ihl_1h_params['sigma_vs_z'].get(slope)
-                    
-                    if ln_rel is not None and sigma_rel is not None:
-                        # Calculate expected values at mid-redshift
-                        mu_1h_expected = ln_rel['intercept'] + ln_rel['slope'] * z_mid
-                        sigma_1h_expected = sigma_rel['intercept'] + sigma_rel['slope'] * z_mid
-                        
-                        # Set priors with reasonable widths (±30% of value for mu, ±50% for sigma)
-                        mu_1h_prior = (mu_1h_expected, 0.3)
-                        sigma_1h_prior = (sigma_1h_expected, 0.2)
-                        
-                        print(f"\nAutomatically set priors from IHL parameters (at z={z_mid:.2f}):")
-                        print(f"  mu_1h_prior = ({mu_1h_prior[0]:.3f}, {mu_1h_prior[1]:.3f})")
-                        print(f"  sigma_1h_prior = ({sigma_1h_prior[0]:.3f}, {sigma_1h_prior[1]:.3f})")
                         
             except Exception as e:
                 print(f"\nWarning: Could not load IHL 1h parameters from {ihl_1h_params_path}: {e}")
                 print("Continuing with default behavior...")
                 ihl_1h_params = None
         else:
-            if use_ihl_1h_params:
-                print(f"\nNote: IHL 1h params file not found at {ihl_1h_params_path}")
-                print("To create this file, run:")
-                print("  from ciber.theory.cross_ps_parametric_model import fit_and_decompose_ihl_templates, save_ihl_1h_params")
-                print("  results = fit_and_decompose_ihl_templates('ihl_templates/', zbinedges=[...], slopes=[1.0])")
-                print(f"  save_ihl_1h_params(results, '{ihl_1h_params_path}', zbinedges=[...], slopes=[1.0])")
-                print("\nContinuing with default parameters...")
-                use_ihl_1h_params = False
-
+            print(f"\nNote: IHL 1h params file not found at {ihl_1h_params_path}")
+            print("To create this file, run:")
+            print("  from ciber.theory.cross_ps_parametric_model import fit_and_decompose_ihl_templates, save_ihl_1h_params")
+            print("  results = fit_and_decompose_ihl_templates('ihl_templates/', zbinedges=[...], slopes=[1.0])")
+            print(f"  save_ihl_1h_params(results, '{ihl_1h_params_path}', zbinedges=[...], slopes=[1.0])")
+            return None
+        
     # Set catalog name
     if cat == 'DESILS':
         catname = 'LS'
@@ -5460,17 +4055,7 @@ def run_gal_cross_fits_per_field(inst_list=[1, 2], ifield_list=[4,5,6,7,8], mask
         zcen = 0.5 * (zbinedges[zidx] + zbinedges[zidx + 1])
         
         # Load IHL templates if using template-based fitting
-        if use_ihl_templates:
-            try:
-                templates, _, _ = load_ihl_template_for_zbin(
-                    'ihl_templates/', zbinedges, zidx, slopes=[1.0]
-                )
-            except Exception as e:
-                print(f"Could not load IHL templates for z-bin {zidx}: {e}")
-                print("Skipping this redshift bin...")
-                continue
-        else:
-            templates = None
+        templates = None
         
         # Load per-field data for this redshift bin
         z0, z1 = zbinedges[zidx], zbinedges[zidx+1]
@@ -5570,9 +4155,6 @@ def run_gal_cross_fits_per_field(inst_list=[1, 2], ifield_list=[4,5,6,7,8], mask
                 use_powerlaw_2h=True,
                 alpha_2h_fixed=alpha_from_mock,
                 chi2_eval_max=chi2_eval_max,
-                mu_1h_prior=mu_1h_prior,
-                sigma_1h_prior=sigma_1h_prior,
-                ln_ell_peak_relation=ln_ell_peak_relation,
                 mu_1h_fixed=mu_1h_fixed,
                 sigma_1h_fixed=sigma_1h_fixed,
                 use_astrometry_damping=use_astrometry_damping
@@ -5604,40 +4186,22 @@ def run_gal_cross_fits_per_field(inst_list=[1, 2], ifield_list=[4,5,6,7,8], mask
                     print(f"Fitting: Inst {inst}, z-bin {zidx}, Field {ifield}")
                     print(f"{'='*60}")
                 
-                # Choose fitting method based on use_ihl_templates (EXACT COPY FROM run_gal_cross_fits)
-                if use_ihl_templates:
-                    # IHL template-based fitting
-                    fit_result_mcmc = model.fit_model_with_ihl_templates(
-                        lb[startidx:endidx], 
-                        dl_data[startidx:endidx], 
-                        templates,
-                        dl_err=dlerr_data[startidx:endidx],
-                        fit_range=[300, lMax_fit],
-                        chi2_eval_max=lMax_fit,
-                        method='mcmc',
-                        nwalkers=nwalkers,
-                        nsteps=nsteps,
-                        nburn=nburn,
-                        progress=False if not verbose else True,
-                        verbose=verbose
-                    )
-                else:
-                    # Phenomenological log-normal fitting
-                    fit_result_mcmc = model.fit_model_mcmc(
-                        lb[startidx:endidx], 
-                        dl_data[startidx:endidx], 
-                        dl_err=dlerr_data[startidx:endidx],
-                        fit_range=[300, lMax_fit],
-                        chi2_eval_max=lMax_fit,
-                        nwalkers=nwalkers,
-                        nsteps=nsteps,
-                        nburn=nburn,
-                        progress=False if not verbose else True,
-                        verbose=verbose,
-                        prior_bounds=prior_bounds,
-                        z_value=zcen,
-                        initial_guess=initial_guess
-                    )
+                # Phenomenological log-normal fitting
+                fit_result_mcmc = model.fit_model_mcmc(
+                    lb[startidx:endidx], 
+                    dl_data[startidx:endidx], 
+                    dl_err=dlerr_data[startidx:endidx],
+                    fit_range=[300, lMax_fit],
+                    chi2_eval_max=lMax_fit,
+                    nwalkers=nwalkers,
+                    nsteps=nsteps,
+                    nburn=nburn,
+                    progress=False if not verbose else True,
+                    verbose=verbose,
+                    prior_bounds=prior_bounds,
+                    z_value=zcen,
+                    initial_guess=initial_guess
+                )
                 
                 # Optional: Create corner plot
                 if save_figs:

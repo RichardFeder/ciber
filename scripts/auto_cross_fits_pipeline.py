@@ -122,42 +122,71 @@ def _cross_fpath(datadir: str, cat: str, headstr: Optional[str], fitstr: str, lM
     return Path(datadir) / f"{cat}_coarsez{tag}{mask_tag}_cross_cl_fits_{fitstr}_lMax={lMax}.npz"
 
 
-def _load_cross_results_merged_jh14(datadir: str, cat: str, headstr: Optional[str], fitstr: str, lMax: int) -> Optional[dict]:
+def _load_cross_results_merged_jh14(datadir: str, cat: str, headstr: Optional[str], fitstr: str, lMax: int, maskstr: Optional[str] = None) -> Optional[dict]:
     """Load cross-fit results, merging JHlt14 z<0.2 with fiducial z>0.2.
+    
+    For DESILS: always uses JHlt14 for z<0.2, and the specified maskstr for z>0.2.
+    For other catalogs: returns fiducial results as-is.
+    
+    Args:
+        maskstr: Mask string to include in the fiducial filename (e.g., 'JHlt16')
     
     Returns merged results dict, or None if files don't exist.
     """
-    fpath_fid = _cross_fpath(datadir, cat, headstr, fitstr, lMax)
-    if not fpath_fid.exists():
-        return None
-    
-    res_fid = load_fit_results_npz(str(fpath_fid))
-    
-    # Try to load JHlt14 for z<0.2
-    fpath_jh14 = _cross_fpath(datadir, cat, headstr, fitstr, lMax, maskstr='JHlt14')
-    if not fpath_jh14.exists():
-        # No JHlt14, return fiducial as-is
-        return res_fid
-    
-    res_jh14 = load_fit_results_npz(str(fpath_jh14))
-    
-    # Merge: replace z-bin 0 (z<0.2) with JHlt14
-    merged = {}
-    for key in res_fid.keys():
-        val_fid = res_fid[key]
+    # For DESILS: ensure z<0.2 is always JHlt14
+    if cat == "DESILS":
+        # Load JHlt14 for z<0.2
+        fpath_jh14 = _cross_fpath(datadir, cat, headstr, fitstr, lMax, maskstr='JHlt14')
+        if not fpath_jh14.exists():
+            # Fallback: try to load with specified maskstr if JHlt14 doesn't exist
+            fpath_fid = _cross_fpath(datadir, cat, headstr, fitstr, lMax, maskstr=maskstr)
+            if not fpath_fid.exists():
+                return None
+            return load_fit_results_npz(str(fpath_fid))
         
-        # Arrays to merge (z-dimension is axis 1)
-        if key in ['params', 'params_err', 'params_16', 'params_84', 'params_95',
-                   'chisq', 'reduced_chisq', 'ndof', 'samples', 'samples_fitted']:
-            merged[key] = np.array(val_fid, copy=True, dtype=object) if isinstance(val_fid, np.ndarray) and val_fid.dtype == object else np.array(val_fid, copy=True)
+        res_jh14 = load_fit_results_npz(str(fpath_jh14))
+        
+        # If maskstr is already JHlt14, just return JHlt14 results
+        if maskstr == 'JHlt14' or maskstr is None:
+            return res_jh14
+        
+        # Load the specified maskstr (e.g., JHlt16) for z>0.2
+        fpath_fid = _cross_fpath(datadir, cat, headstr, fitstr, lMax, maskstr=maskstr)
+        if not fpath_fid.exists():
+            # No fiducial, return JHlt14 as-is
+            return res_jh14
+        
+        res_fid = load_fit_results_npz(str(fpath_fid))
+        
+        # Merge: z<0.2 from JHlt14, z>0.2 from fiducial (maskstr)
+        merged = {}
+        # Get the number of z-bins from the fiducial results (has all z-bins)
+        # JHlt14 only has 1 z-bin, so we can't use its shape
+        n_zbins = res_fid.get('zbinedges').shape[0] - 1 if 'zbinedges' in res_fid else (res_fid['params'].shape[1] if 'params' in res_fid and res_fid['params'].ndim > 1 else 1)
+        
+        for key in res_jh14.keys():
             val_jh14 = res_jh14[key]
-            # Copy z<0.2 bin from JHlt14 (z-bin 0)
-            merged[key][:, 0] = val_jh14[:, 0]
-        else:
-            # Metadata unchanged
-            merged[key] = val_fid
-    
-    return merged
+            
+            # Arrays to merge (z-dimension is axis 1)
+            if key in ['params', 'params_err', 'params_16', 'params_84', 'params_95',
+                       'chisq', 'reduced_chisq', 'ndof', 'samples', 'samples_fitted']:
+                # Start with fiducial results (has all z-bins) and replace z<0.2 with JHlt14
+                val_fid = res_fid[key]
+                merged[key] = np.array(val_fid, copy=True, dtype=object) if isinstance(val_fid, np.ndarray) and val_fid.dtype == object else np.array(val_fid, copy=True)
+                # Replace z<0.2 (zidx=0) with JHlt14
+                merged[key][:, 0] = val_jh14[:, 0] if val_jh14.ndim > 1 else val_jh14
+            else:
+                # Metadata unchanged (take from fiducial which has correct zbinedges)
+                merged[key] = res_fid.get(key, val_jh14)
+        
+        return merged
+    else:
+        # For non-DESILS catalogs: return fiducial as-is
+        fpath_fid = _cross_fpath(datadir, cat, headstr, fitstr, lMax, maskstr=maskstr)
+        if not fpath_fid.exists():
+            return None
+        
+        return load_fit_results_npz(str(fpath_fid))
 
 
 def _ifield_list(cat: str, args: argparse.Namespace) -> List[int]:
@@ -583,7 +612,6 @@ def _run_cross_fits(args: argparse.Namespace) -> None:
                 file_fpath=fpath.name,
                 zbinedges=zbinedges_use,
                 lMax_fit=lMax,
-                use_ihl_templates=False,
                 use_ihl_1h_params=True,
                 fix_ihl_1h_shape=True,
                 ihl_1h_params_path=args.ihl_params,
@@ -657,11 +685,14 @@ def _plot_cross(args: argparse.Namespace) -> None:
         headstr = args.headstr if cat == "HSC" else None
         all_res = []
         for lMax in args.lmax:
-            fpath = _cross_fpath(args.datadir_cross, cat, headstr, args.fitstr_cross, lMax)
-            if not fpath.exists():
+            results = _load_cross_results_merged_jh14(
+                args.datadir_cross, cat, headstr, args.fitstr_cross, lMax, maskstr=args.maskstr
+            )
+            if results is None:
+                fpath = _cross_fpath(args.datadir_cross, cat, headstr, args.fitstr_cross, lMax, maskstr=args.maskstr)
                 print(f"[plot_cross] missing {fpath}, skipping lMax={lMax} for {cat}")
                 continue
-            all_res.append((lMax, load_fit_results_npz(str(fpath))))
+            all_res.append((lMax, results))
 
         if not all_res:
             print(f"[plot_cross] no results found for {cat}, skipping")
@@ -697,7 +728,7 @@ def _plot_components(args: argparse.Namespace) -> None:
 
     for cat in args.cat:
         headstr = args.headstr if cat == "HSC" else None
-        fpath = _cross_fpath(args.datadir_cross, cat, headstr, args.fitstr_cross, args.lmax_components)
+        fpath = _cross_fpath(args.datadir_cross, cat, headstr, args.fitstr_cross, args.lmax_components, maskstr=args.maskstr)
         if not fpath.exists():
             print(f"[plot_components] missing {fpath}, skipping {cat}")
             continue
@@ -778,9 +809,9 @@ def _plot_fit_spectra(args: argparse.Namespace) -> None:
     for cat in args.cat:
         headstr = args.headstr if cat == "HSC" else None
         for lMax in args.lmax:
-            results = _load_cross_results_merged_jh14(args.datadir_cross, cat, headstr, args.fitstr_cross, lMax)
+            results = _load_cross_results_merged_jh14(args.datadir_cross, cat, headstr, args.fitstr_cross, lMax, maskstr=args.maskstr)
             if results is None:
-                fpath = _cross_fpath(args.datadir_cross, cat, headstr, args.fitstr_cross, lMax)
+                fpath = _cross_fpath(args.datadir_cross, cat, headstr, args.fitstr_cross, lMax, maskstr=args.maskstr)
                 print(f"[plot_fit_spectra] missing {fpath}, skipping {cat} lMax={lMax}")
                 continue
 
@@ -801,9 +832,9 @@ def _plot_fit_spectra(args: argparse.Namespace) -> None:
                 # Replace z<0.2 bin (zidx=0) with JHlt14 data to match the fit
                 res_jh14 = collect_ciber_gal_vs_redshift(
                     catname, subtract_randoms=True, inst_list=inst_list,
-                    zbinedges=[zbinedges[0], zbinedges[1]], maskstr='JHlt14',
+                    zbinedges=[zbinedges[0], zbinedges[1]], maskstr='JHlt14_wFFerr',
                     subtract_sn=False, tl_pix_correct=True,
-                    ifield_list=ifield_list, with_ff_err=True,
+                    ifield_list=ifield_list,
                 )
                 full_cl_cross = res_ps['full_cl_cross'].copy()
                 full_clerr_cross = res_ps['full_clerr_cross'].copy()
@@ -840,9 +871,12 @@ def _plot_fit_spectra(args: argparse.Namespace) -> None:
 
                     params     = results["params"][inst_idx, zidx, :]
                     params_err = results["params_err"][inst_idx, zidx, :]
-                    n_params   = int(np.sum(~np.isnan(params)))
-                    params     = params[:n_params]
-                    params_err = params_err[:n_params]
+                    n_params_stored = int(np.sum(~np.isnan(params)))
+                    params     = params[:n_params_stored]
+                    params_err = params_err[:n_params_stored]
+
+                    # Get ndof from saved results (already correctly calculated in fit_model_mcmc)
+                    ndof_correct = int(results["ndof"][inst_idx, zidx]) if results.get("ndof") is not None else len(lb_fit) - n_params_stored
 
                     # Detect damping from param count: parametric with damping has 6 params
                     # [A_2h, A_1h, mu_1h, sigma_1h, A_shot, sigma_damp]
@@ -855,12 +889,13 @@ def _plot_fit_spectra(args: argparse.Namespace) -> None:
                     # Reconstruct fit_result. Always force ihl_templates=None so
                     # plot_fit_fixed_1h_templates takes the parametric branch, which
                     # handles both 5-param (no damping) and 6-param (with damping) cases.
+                    samples_bin = results.get("samples", np.empty((0,)))[inst_idx, zidx]
                     fit_result = {
                         "params":                params,
                         "params_err":            params_err,
                         "chisq":                 float(results["chisq"][inst_idx, zidx]),
                         "reduced_chisq":         float(results["reduced_chisq"][inst_idx, zidx]),
-                        "ndof":                  len(lb_fit) - n_params,
+                        "ndof":                  ndof_correct,
                         "z_value":               zcen,
                         "use_single_slope":      None,
                         "one_halo_params_dict":  None,
@@ -868,26 +903,37 @@ def _plot_fit_spectra(args: argparse.Namespace) -> None:
                         "use_astrometry_damping": use_damping,
                         "ihl_templates":         None,
                         "template_names":        None,
+                        "samples":               samples_bin if samples_bin is not None and len(np.asarray(samples_bin).shape) > 0 else None,
                     }
 
                     # Extract model configuration from results
                     use_powerlaw_2h = results.get("use_powerlaw_2h", True)
                     alpha_2h_fixed = results.get("alpha_2h_fixed", -1.5)
+                    use_linear_2h = results.get("use_linear_2h", False)
+                    
+                    # Regenerate linear 2H templates if needed (with high ell_max for full plotting range)
+                    dl_2h_lin_per_zbin = {}
+                    if use_linear_2h:
+                        from ciber.theory.cross_ps_parametric_model import _compute_linear_2h_templates_per_zbin
+                        zbinedges = results.get("zbinedges", np.array([0.0, 0.2, 0.4, 0.6, 0.8, 1.0]))
+                        dl_2h_lin_per_zbin = _compute_linear_2h_templates_per_zbin(zbinedges, 1e5, verbose=False)
 
                     model = CrossPowerSpectrumModel(
                         lb=lb_fit, use_powerlaw_2h=use_powerlaw_2h,
                         alpha_2h_fixed=alpha_2h_fixed,
                         use_astrometry_damping=use_damping,
+                        use_linear_2h=use_linear_2h,
+                        dl_2h_lin_per_zbin=dl_2h_lin_per_zbin,
                     )
 
                     title = (f"CIBER {lams[inst]} μm × {cat}, "
-                             f"z∈[{zlo:.1f},{zhi:.1f}], ℓ_max={lMax}")
+                             f"{zlo:.1f}<z<{zhi:.1f}, \ell_{max}={lMax}")
 
                     fig, axes = plot_fit_fixed_1h_templates(
                         model, lb_fit, data_dl, data_dlerr, fit_result,
                         figsize=(6, 6), title=title, title_fs=13,
                         ylim=[1e-3, 5e2], lMax_fit=lMax,
-                        chi2_lim=[-5, 5],
+                        chi2_lim=[-5, 5], z_bin_index=zidx,
                     )
                     ax = axes[0] if hasattr(axes, '__len__') else axes
 
@@ -915,7 +961,7 @@ def _plot_spectra_summary(args: argparse.Namespace) -> None:
     Each top panel shows data + model + components. Bottom panels show
     (data - model) / error. A single shared legend sits above top panels in five columns.
     """
-    from ciber.theory.cross_ps_parametric_model import plot_fit_fixed_1h_templates
+    # from ciber.theory.cross_ps_parametric_model import plot_fit_fixed_1h_templates
     from ciber.cross_correlation.galaxy_cross import collect_ciber_gal_vs_redshift
 
     figdir = Path(args.figdir) / args.fitstr_cross / "spectra"
@@ -923,9 +969,9 @@ def _plot_spectra_summary(args: argparse.Namespace) -> None:
     for cat in args.cat:
         headstr = args.headstr if cat == "HSC" else None
         for lMax in args.lmax:
-            results = _load_cross_results_merged_jh14(args.datadir_cross, cat, headstr, args.fitstr_cross, lMax)
+            results = _load_cross_results_merged_jh14(args.datadir_cross, cat, headstr, args.fitstr_cross, lMax, maskstr=args.maskstr)
             if results is None:
-                fpath = _cross_fpath(args.datadir_cross, cat, headstr, args.fitstr_cross, lMax)
+                fpath = _cross_fpath(args.datadir_cross, cat, headstr, args.fitstr_cross, lMax, maskstr=args.maskstr)
                 print(f"[plot_spectra_summary] missing {fpath}, skipping")
                 continue
             zbinedges = results["zbinedges"]
@@ -942,9 +988,9 @@ def _plot_spectra_summary(args: argparse.Namespace) -> None:
                 # Replace z<0.2 bin (zidx=0) with JHlt14 data to match the fit
                 res_jh14 = collect_ciber_gal_vs_redshift(
                     "LS", subtract_randoms=True, inst_list=inst_list,
-                    zbinedges=[zbinedges[0], zbinedges[1]], maskstr='JHlt14',
+                    zbinedges=[zbinedges[0], zbinedges[1]], maskstr='JHlt14_wFFerr',
                     subtract_sn=False, tl_pix_correct=True,
-                    ifield_list=args.ifield_ls, with_ff_err=True,
+                    ifield_list=args.ifield_ls,
                 )
                 full_cl_cross = res_ps['full_cl_cross'].copy()
                 full_clerr_cross = res_ps['full_clerr_cross'].copy()
@@ -967,6 +1013,15 @@ def _plot_spectra_summary(args: argparse.Namespace) -> None:
 
             use_powerlaw_2h = results.get("use_powerlaw_2h", True)
             alpha_2h_fixed = results.get("alpha_2h_fixed", 0.0)
+            use_linear_2h = results.get("use_linear_2h", False)
+            
+            # Regenerate linear 2H templates if needed (with high ell_max for full plotting range)
+            dl_2h_lin_per_zbin = {}
+            if use_linear_2h:
+                from ciber.theory.cross_ps_parametric_model import _compute_linear_2h_templates_per_zbin
+                zbinedges = results.get("zbinedges", np.array([0.0, 0.2, 0.4, 0.6, 0.8, 1.0]))
+                dl_2h_lin_per_zbin = _compute_linear_2h_templates_per_zbin(zbinedges, 1.2e5, verbose=False)
+            
             pnf_arr = results.get("param_names_fitted", None)
 
             for inst_idx, inst in enumerate(inst_list):
@@ -1025,10 +1080,14 @@ def _plot_spectra_summary(args: argparse.Namespace) -> None:
                     params     = results["params"][inst_idx, zidx, :]
                     params_16  = results.get("params_16",  results["params"] - results["params_err"])[inst_idx, zidx, :]
                     params_84  = results.get("params_84",  results["params"] + results["params_err"])[inst_idx, zidx, :]
-                    n_params   = int(np.sum(~np.isnan(params)))
-                    params     = params[:n_params]
-                    params_16  = params_16[:n_params]
-                    params_84  = params_84[:n_params]
+                    samples_bin = results.get("samples", np.empty((0,)))[inst_idx, zidx]
+                    n_params_stored = int(np.sum(~np.isnan(params)))
+                    params     = params[:n_params_stored]
+                    params_16  = params_16[:n_params_stored]
+                    params_84  = params_84[:n_params_stored]
+
+                    # Get ndof from saved results (already correctly calculated in fit_model_mcmc)
+                    ndof_correct = int(results["ndof"][inst_idx, zidx]) if results.get("ndof") is not None else len(lb_fit) - n_params_stored
 
                     pnf_bin = pnf_arr[inst_idx, zidx] if pnf_arr is not None else None
                     use_damping = (pnf_bin is not None and
@@ -1038,34 +1097,89 @@ def _plot_spectra_summary(args: argparse.Namespace) -> None:
                         lb=lb_fit, use_powerlaw_2h=use_powerlaw_2h,
                         alpha_2h_fixed=alpha_2h_fixed,
                         use_astrometry_damping=use_damping,
+                        use_linear_2h=use_linear_2h,
+                        dl_2h_lin_per_zbin=dl_2h_lin_per_zbin,
                     )
 
                     # Top panel: spectra
                     ax_spec.errorbar(lb_fit, data_dl, yerr=data_dlerr, fmt='o',
-                                     color='k', markersize=3, capsize=2, alpha=0.8, label='Data', zorder=5)
+                                     color='k', markersize=3, capsize=2, alpha=0.6, label='Data', zorder=5)
 
-                    ell_m = np.logspace(np.log10(lb_fit.min()), np.log10(lb_fit.max()), 200)
+                    ell_m = np.logspace(np.log10(100), np.log10(1.2e5), 500)
                     sd_med = params[5] if use_damping else None
-                    sd_lo  = params_16[5] if use_damping else None
-                    sd_hi  = params_84[5] if use_damping else None
+                    comps     = model.model_components(ell_m, *params[:5],    sigma_damp=sd_med, z_bin_index=zidx)
 
-                    comps     = model.model_components(ell_m, *params[:5],    sigma_damp=sd_med)
-                    comps_lo  = model.model_components(ell_m, *params_16[:5], sigma_damp=sd_lo)
-                    comps_hi  = model.model_components(ell_m, *params_84[:5], sigma_damp=sd_hi)
+                    # Match plot_fit_spectra uncertainty behavior: use posterior samples first.
+                    bands = None
+                    if samples_bin is not None:
+                        s = np.asarray(samples_bin, dtype=float)
+                        if s.ndim == 2 and s.shape[0] > 1:
+                            nfull = 6 if use_damping else 5
+                            if s.shape[1] == nfull:
+                                sfull = s
+                            else:
+                                sfull = np.tile(np.asarray(params[:nfull], dtype=float), (s.shape[0], 1))
+                                if use_damping and s.shape[1] >= 3:
+                                    sfull[:, 0] = s[:, 0]
+                                    sfull[:, 1] = s[:, 1]
+                                    sfull[:, 4] = s[:, 2]
+                                    if s.shape[1] >= 4:
+                                        sfull[:, 5] = s[:, 3]
+                                elif (not use_damping) and s.shape[1] >= 3:
+                                    sfull[:, 0] = s[:, 0]
+                                    sfull[:, 1] = s[:, 1]
+                                    sfull[:, 4] = s[:, 2]
+
+                            c2h = np.zeros((sfull.shape[0], ell_m.size))
+                            c1h = np.zeros((sfull.shape[0], ell_m.size))
+                            csh = np.zeros((sfull.shape[0], ell_m.size))
+                            ctot = np.zeros((sfull.shape[0], ell_m.size))
+                            for ii in range(sfull.shape[0]):
+                                sd_i = sfull[ii, 5] if use_damping else None
+                                cc = model.model_components(
+                                    ell_m,
+                                    sfull[ii, 0], sfull[ii, 1], sfull[ii, 2], sfull[ii, 3], sfull[ii, 4],
+                                    sigma_damp=sd_i,
+                                    z_bin_index=zidx,
+                                )
+                                c2h[ii] = cc['two_halo']
+                                c1h[ii] = cc['one_halo']
+                                csh[ii] = cc['shot_noise']
+                                ctot[ii] = cc['total']
+
+                            bands = {
+                                'two_halo': (np.percentile(c2h, 16, axis=0), np.percentile(c2h, 84, axis=0)),
+                                'one_halo': (np.percentile(c1h, 16, axis=0), np.percentile(c1h, 84, axis=0)),
+                                'shot_noise': (np.percentile(csh, 16, axis=0), np.percentile(csh, 84, axis=0)),
+                                'total': (np.percentile(ctot, 16, axis=0), np.percentile(ctot, 84, axis=0)),
+                            }
+
+                    # Fallback for older files without chain samples.
+                    if bands is None:
+                        sd_lo  = params_16[5] if use_damping else None
+                        sd_hi  = params_84[5] if use_damping else None
+                        comps_lo  = model.model_components(ell_m, *params_16[:5], sigma_damp=sd_lo, z_bin_index=zidx)
+                        comps_hi  = model.model_components(ell_m, *params_84[:5], sigma_damp=sd_hi, z_bin_index=zidx)
+                        bands = {
+                            'total': (comps_lo['total'], comps_hi['total']),
+                            'two_halo': (comps_lo['two_halo'], comps_hi['two_halo']),
+                            'one_halo': (comps_lo['one_halo'], comps_hi['one_halo']),
+                            'shot_noise': (comps_lo['shot_noise'], comps_hi['shot_noise']),
+                        }
 
                     ax_spec.plot(ell_m, comps['total'], 'r-', lw=2, label='Total')
-                    ax_spec.fill_between(ell_m, comps_lo['total'], comps_hi['total'],
+                    ax_spec.fill_between(ell_m, bands['total'][0], bands['total'][1],
                                          color='red', alpha=0.15)
                     ax_spec.plot(ell_m, comps['two_halo'], 'b-', lw=1.2, alpha=0.7, label='2-halo')
-                    ax_spec.fill_between(ell_m, comps_lo['two_halo'], comps_hi['two_halo'],
+                    ax_spec.fill_between(ell_m, bands['two_halo'][0], bands['two_halo'][1],
                                          color='blue', alpha=0.12)
                     ax_spec.plot(ell_m, comps['one_halo'], 'g-', lw=1.2, alpha=0.7, label='1-halo')
-                    ax_spec.fill_between(ell_m, comps_lo['one_halo'], comps_hi['one_halo'],
+                    ax_spec.fill_between(ell_m, bands['one_halo'][0], bands['one_halo'][1],
                                          color='green', alpha=0.12)
                     
                     
-                    ax_spec.plot(ell_m, comps['shot_noise'], color='grey', linestyle='--', lw=1.2, alpha=0.7, label='Shot noise')
-                    ax_spec.fill_between(ell_m, comps_lo['shot_noise'], comps_hi['shot_noise'],
+                    ax_spec.plot(ell_m, comps['shot_noise'], color='grey', linestyle='solid', lw=1.2, alpha=0.7, label='Shot noise')
+                    ax_spec.fill_between(ell_m, bands['shot_noise'][0], bands['shot_noise'][1],
                                          color='grey', alpha=0.12)
 
 
@@ -1095,15 +1209,21 @@ def _plot_spectra_summary(args: argparse.Namespace) -> None:
                     ax_spec.set_xticklabels([])
 
                     # Panel label in upper-left
-                    chi2_str = f"χ²/dof={results['reduced_chisq'][inst_idx, zidx]:.2f}"
-                    # ax_spec.text(0.04, 0.97, f"z∈[{zlo:.1f},{zhi:.1f}]\n{chi2_str}",
-                                #  transform=ax_spec.transAxes, fontsize=9, va='top', ha='left')
+                    # Display chi2/dof with bandpower count and parameter count
+                    # n_bandpowers = len(lb_fit)
+                    # n_floated = int(n_params_fit) if n_params_fit is not None and not np.isnan(n_params_fit) else n_params_stored
+                    
+                    reduced_chi2_val = float(results['reduced_chisq'][inst_idx, zidx]) if results.get('reduced_chisq') is not None else np.nan
+                    # chi2_str = f"χ²/dof={reduced_chi2_val:.2f})"
+                    chi2_str = '$\\chi^2/{\\rm dof}=$'+f"{results['chisq'][inst_idx, zidx]:.1f}/{int(results['ndof'][inst_idx, zidx])}" + f" ({reduced_chi2_val:.2f})"
+                    # ax_spec.text(0.04, 0.97, f"{zlo:.1f}<z<{zhi:.1f}\n{chi2_str}",
+                                # transform=ax_spec.transAxes, fontsize=9, va='top', ha='left')
                     
                     if cat=='DESILS':
                         catstr = 'DESI-LS'
                     else:
                         catstr = cat
-                    plotstr = 'CIBER '+str(lams[inst])+' $\\mu$m $\\times$ '+catstr+'\nz∈['+str(zlo)+','+str(zhi)+']\n'+chi2_str
+                    plotstr = 'CIBER '+str(lams[inst])+' $\\mu$m $\\times$ '+catstr+'\n'+f"{zlo:.1f}<z<{zhi:.1f}\n"+chi2_str
                     # f"CIBER z∈[{zlo:.1f},{zhi:.1f}]\n{chi2_str}"
                     ax_spec.text(0.04, 0.97, plotstr,
                                  transform=ax_spec.transAxes, fontsize=9, va='top', ha='left')
@@ -1119,7 +1239,7 @@ def _plot_spectra_summary(args: argparse.Namespace) -> None:
                     ax_spec.tick_params(axis='x', labelbottom=False)
 
                     # Bottom panel: residuals
-                    model_at_data = model.model_components(lb_fit, *params[:5], sigma_damp=sd_med)['total']
+                    model_at_data = model.model_components(lb_fit, *params[:5], sigma_damp=sd_med, z_bin_index=zidx)['total']
                     residuals = (data_dl - model_at_data) / data_dlerr
                     ax_res.plot(lb_fit, residuals, 'o', color='k', markersize=3, zorder=5)
                     ax_res.axhline(0, color='r', linestyle='-', lw=1.5, alpha=0.7)
@@ -1133,6 +1253,7 @@ def _plot_spectra_summary(args: argparse.Namespace) -> None:
                     ax_res.set_ylim([-5, 5])
                     ax_res.grid(True, alpha=0.3, which='major')
                     ax_res.axvspan(lMax, lb_fit.max() * 1.2, color='lightgray', alpha=0.3, zorder=0)
+                    ax_res.set_xscale('log')
 
                     if zidx == 0:
                         # ax_res.set_ylabel(r'(Data - Model) / $\sigma$', fontsize=10)
@@ -1157,6 +1278,74 @@ def _plot_spectra_summary(args: argparse.Namespace) -> None:
                 _savefig(fig, stem, args.fig_fmt)
                 plt.close(fig)
 
+                # Generate second figure: data/model ratio vs ell for all z-bins in one panel
+                fig, ax = plt.subplots(figsize=(6, 5))
+                
+                if inst==1:
+                    colors = plt.cm.Blues(np.linspace(0.3, 1, n_zbins))
+                else:
+                    colors = plt.cm.Reds(np.linspace(0.3, 1, n_zbins))
+                
+                for zidx in range(n_zbins):
+                    zlo, zhi = zbinedges[zidx], zbinedges[zidx + 1]
+                    zcen = 0.5 * (zlo + zhi)
+                    
+                    data_dl    = (pf_data * full_cl_cross[inst_idx, zidx])[startidx:endidx]
+                    data_dlerr = (pf_data * full_clerr_cross[inst_idx, zidx])[startidx:endidx]
+                    
+                    params     = results["params"][inst_idx, zidx, :]
+                    n_params_stored = int(np.sum(~np.isnan(params)))
+                    params     = params[:n_params_stored]
+                    
+                    pnf_bin = pnf_arr[inst_idx, zidx] if pnf_arr is not None else None
+                    use_damping = (pnf_bin is not None and
+                                   any("damp" in str(p).lower() for p in pnf_bin))
+                    
+                    model = CrossPowerSpectrumModel(
+                        lb=lb_fit, use_powerlaw_2h=use_powerlaw_2h,
+                        alpha_2h_fixed=alpha_2h_fixed,
+                        use_astrometry_damping=use_damping,
+                        use_linear_2h=use_linear_2h,
+                        dl_2h_lin_per_zbin=dl_2h_lin_per_zbin,
+                    )
+                    
+                    # Evaluate model at data ell values
+                    model_dl = model.model_components(lb_fit, *params[:5],
+                                                      sigma_damp=params[5] if use_damping else None,
+                                                      z_bin_index=zidx)['total']
+                    
+                    # Compute ratio
+                    ratio = data_dl / model_dl
+                    ratio_err = data_dlerr / model_dl  # Normalized uncertainty
+                    
+                    ax.errorbar(lb_fit, ratio, yerr=ratio_err, fmt='o', 
+                               color=colors[zidx], markersize=4, capsize=2, 
+                               alpha=0.7, label=f'z∈[{zlo:.1f},{zhi:.1f}]')
+                
+                ax.axhline(1.0, color='k', linestyle='--', linewidth=1.5, alpha=0.5)
+                ax.set_xscale('log')
+                ax.set_xlabel(r'$\ell$', fontsize=14)
+                ax.set_ylabel('Data / Model', fontsize=14)
+                ax.set_xlim([lb_fit.min() * 0.8, lb_fit.max() * 1.2])
+                ax.set_ylim([0.1, 3])
+                ax.set_yscale('log')
+                ax.grid(True, alpha=0.3, which='major')
+                ax.axvspan(lMax, lb_fit.max() * 1.2, color='lightgray', alpha=0.3, zorder=0)
+                ax.legend(fontsize=12, loc=2)
+                ax.tick_params(labelsize=14)
+                
+                if cat == 'DESILS':
+                    catstr = 'DESI-LS'
+                else:
+                    catstr = cat
+                title = f'CIBER {lams[inst]} μm × {catstr}, ℓ_max={lMax}'
+                ax.set_title(title, fontsize=14)
+                
+                plt.tight_layout()
+                stem = figdir / f"{cat}_TM{inst}_lMax={lMax}_ratio"
+                _savefig(fig, stem, args.fig_fmt)
+                plt.close(fig)
+
 
 def _plot_corner(args: argparse.Namespace) -> None:
     """Plot corner plots of MCMC posteriors for each redshift bin and instrument."""
@@ -1165,12 +1354,14 @@ def _plot_corner(args: argparse.Namespace) -> None:
     for cat in args.cat:
         headstr = args.headstr if cat == "HSC" else None
         for lMax in args.lmax:
-            fpath = _cross_fpath(args.datadir_cross, cat, headstr, args.fitstr_cross, lMax)
-            if not fpath.exists():
+            results = _load_cross_results_merged_jh14(
+                args.datadir_cross, cat, headstr, args.fitstr_cross, lMax, maskstr=args.maskstr
+            )
+            if results is None:
+                fpath = _cross_fpath(args.datadir_cross, cat, headstr, args.fitstr_cross, lMax, maskstr=args.maskstr)
                 print(f"[plot_corner] missing {fpath}, skipping {cat} lMax={lMax}")
                 continue
 
-            results = load_fit_results_npz(str(fpath))
             zbinedges = results["zbinedges"]
             inst_list = list(results["inst_list"])
             param_names = results["param_names"]
@@ -1225,9 +1416,9 @@ def _plot_compare_cats(args: argparse.Namespace) -> None:
     cat_results = {}
     for cat in args.cat:
         headstr = args.headstr if cat == "HSC" else None
-        results = _load_cross_results_merged_jh14(args.datadir_cross, cat, headstr, args.fitstr_cross, lMax)
+        results = _load_cross_results_merged_jh14(args.datadir_cross, cat, headstr, args.fitstr_cross, lMax, maskstr=args.maskstr)
         if results is None:
-            fpath = _cross_fpath(args.datadir_cross, cat, headstr, args.fitstr_cross, lMax)
+            fpath = _cross_fpath(args.datadir_cross, cat, headstr, args.fitstr_cross, lMax, maskstr=args.maskstr)
             print(f"[plot_compare_cats] missing {fpath}, skipping {cat}")
             continue
         cat_results[cat] = results
@@ -2166,11 +2357,24 @@ def _plot_d_ell_1h_evolution(args: argparse.Namespace) -> None:
             idx_A2h, idx_A1h, idx_mu, idx_sig = 0, 1, 2, 3
 
             # Build model instance on dense ell_grid
+            use_powerlaw_2h = res.get("use_powerlaw_2h", True)
+            alpha_2h_fixed = res.get("alpha_2h_fixed", -0.0)
+            use_linear_2h = res.get("use_linear_2h", False)
+            
+            # Regenerate linear 2H templates if needed (with high ell_max for full plotting range)
+            dl_2h_lin_per_zbin = {}
+            if use_linear_2h:
+                from ciber.theory.cross_ps_parametric_model import _compute_linear_2h_templates_per_zbin
+                zbinedges = res.get("zbinedges", np.array([0.0, 0.2, 0.4, 0.6, 0.8, 1.0]))
+                dl_2h_lin_per_zbin = _compute_linear_2h_templates_per_zbin(zbinedges, 1e5, verbose=False)
+            
             model = CrossPowerSpectrumModel(
                 lb=ell_grid,
-                use_powerlaw_2h=True,
-                alpha_2h_fixed=-0.0,
+                use_powerlaw_2h=use_powerlaw_2h,
+                alpha_2h_fixed=alpha_2h_fixed,
                 use_astrometry_damping=False,
+                use_linear_2h=use_linear_2h,
+                dl_2h_lin_per_zbin=dl_2h_lin_per_zbin,
             )
 
             A_1h_lo_arr = res.get("params_16")
@@ -3446,12 +3650,14 @@ def _plot_corr_a1h_a2h(args: argparse.Namespace) -> None:
 
     for cat in args.cat:
         headstr = args.headstr if cat == "HSC" else None
-        fpath = _cross_fpath(args.datadir_cross, cat, headstr, args.fitstr_cross, lMax)
-        if not fpath.exists():
+        results = _load_cross_results_merged_jh14(
+            args.datadir_cross, cat, headstr, args.fitstr_cross, lMax, maskstr=args.maskstr
+        )
+        if results is None:
+            fpath = _cross_fpath(args.datadir_cross, cat, headstr, args.fitstr_cross, lMax, maskstr=args.maskstr)
             print(f"[plot_corr_a1h_a2h] missing {fpath}, skipping {cat}")
             continue
 
-        results = load_fit_results_npz(str(fpath))
         zbinedges = results["zbinedges"]
         n_zbins = len(zbinedges) - 1
         inst_list = list(results["inst_list"])
@@ -3544,11 +3750,14 @@ def _plot_sigma_damp(args: argparse.Namespace) -> None:
         headstr = args.headstr if cat == "HSC" else None
         cat_results[cat] = {}
         for lMax in args.lmax:
-            fpath = _cross_fpath(args.datadir_cross, cat, headstr, args.fitstr_cross, lMax)
-            if not fpath.exists():
+            results = _load_cross_results_merged_jh14(
+                args.datadir_cross, cat, headstr, args.fitstr_cross, lMax, maskstr=args.maskstr
+            )
+            if results is None:
+                fpath = _cross_fpath(args.datadir_cross, cat, headstr, args.fitstr_cross, lMax, maskstr=args.maskstr)
                 print(f"[plot_sigma_damp] missing {fpath}, skipping {cat} lMax={lMax}")
                 continue
-            cat_results[cat][lMax] = load_fit_results_npz(str(fpath))
+            cat_results[cat][lMax] = results
 
     if not cat_results or not any(cat_results.values()):
         print("[plot_sigma_damp] no results found for any catalog, skipping")
@@ -3737,9 +3946,9 @@ def _plot_redshift_panels_2x2(args: argparse.Namespace) -> None:
     results = {}
     for cat in ["DESILS", "HSC"]:
         headstr = args.headstr if cat == "HSC" else None
-        cat_results = _load_cross_results_merged_jh14(args.datadir_cross, cat, headstr, args.fitstr_cross, lMax)
+        cat_results = _load_cross_results_merged_jh14(args.datadir_cross, cat, headstr, args.fitstr_cross, lMax, maskstr=args.maskstr)
         if cat_results is None:
-            fpath = _cross_fpath(args.datadir_cross, cat, headstr, args.fitstr_cross, lMax)
+            fpath = _cross_fpath(args.datadir_cross, cat, headstr, args.fitstr_cross, lMax, maskstr=args.maskstr)
             print(f"[plot_redshift_panels_2x2] missing {fpath}, skipping {cat}")
             continue
         results[cat] = cat_results
@@ -3885,9 +4094,13 @@ def _plot_2x2_spectrum_panel(ax, results, inst_idx, z_idx, lMax, colors, lams,
     # Strip NaN-padded params (same as _plot_fit_spectra)
     params     = results['params'][inst_idx, z_idx, :]
     params_err = results['params_err'][inst_idx, z_idx, :]
-    n_params   = int(np.sum(~np.isnan(params)))
-    params     = params[:n_params]
-    params_err = params_err[:n_params]
+    samples_bin = results.get('samples', np.empty((0,)))[inst_idx, z_idx]
+    n_params_stored = int(np.sum(~np.isnan(params)))
+    params     = params[:n_params_stored]
+    params_err = params_err[:n_params_stored]
+
+    # Get ndof from saved results (already correctly calculated in fit_model_mcmc)
+    ndof_correct = int(results["ndof"][inst_idx, z_idx]) if results.get("ndof") is not None else len(lb_fit) - n_params_stored
 
     # Detect damping from fitted param names if available
     pnf         = results.get('param_names_fitted', None)
@@ -3897,40 +4110,99 @@ def _plot_2x2_spectrum_panel(ax, results, inst_idx, z_idx, lMax, colors, lams,
 
     use_powerlaw_2h = bool(results.get('use_powerlaw_2h', True))
     alpha_2h_fixed  = float(results.get('alpha_2h_fixed', -1.5))
+    use_linear_2h = bool(results.get('use_linear_2h', False))
+    
+    # Regenerate linear 2H templates if needed (with high ell_max for full plotting range)
+    dl_2h_lin_per_zbin = {}
+    if use_linear_2h:
+        from ciber.theory.cross_ps_parametric_model import _compute_linear_2h_templates_per_zbin
+        zbinedges = results.get("zbinedges", np.array([0.0, 0.2, 0.4, 0.6, 0.8, 1.0]))
+        dl_2h_lin_per_zbin = _compute_linear_2h_templates_per_zbin(zbinedges, 1.2e5, verbose=False)
 
     model = CrossPowerSpectrumModel(
         lb=lb_fit,
         use_powerlaw_2h=use_powerlaw_2h,
         alpha_2h_fixed=alpha_2h_fixed,
         use_astrometry_damping=use_damping,
+        use_linear_2h=use_linear_2h,
+        dl_2h_lin_per_zbin=dl_2h_lin_per_zbin,
     )
 
     # Smooth ell grid matching plot_fit_fixed_1h_templates
     ell_m = np.logspace(0.2 * np.log10(lb_fit.min()),
-                        2.0 * np.log10(lb_fit.max()), 200)
+                        5.0 * np.log10(lb_fit.max()), 200)
 
     # ------------------------------------------------------------------ #
     # Build components
     # ------------------------------------------------------------------ #
     if use_damping:
         # params = [A_2h, A_1h, mu_1h, sigma_1h, A_shot, sigma_damp]
-        components = model.model_components(ell_m, *params[:5], sigma_damp=params[5])
+        components = model.model_components(ell_m, *params[:5], sigma_damp=params[5], z_bin_index=z_idx)
     else:
         # params = [A_2h, A_1h, mu_1h, sigma_1h, A_shot]
-        components = model.model_components(ell_m, *params[:5])
+        components = model.model_components(ell_m, *params[:5], z_bin_index=z_idx)
 
     # ------------------------------------------------------------------ #
-    # Uncertainty bands via params_err only (matching _plot_fit_spectra,
-    # which never populates cov_matrix in fit_result)
+    # Uncertainty bands: sample-driven percentiles first, params_err fallback.
     # ------------------------------------------------------------------ #
     uncertainty_bands = None
 
-    if params_err is not None and not np.any(np.isnan(params_err)):
+    if samples_bin is not None:
+        s = np.asarray(samples_bin, dtype=float)
+        if s.ndim == 2 and s.shape[0] > 1:
+            nfull = 6 if use_damping else 5
+            if s.shape[1] == nfull:
+                sfull = s
+            else:
+                sfull = np.tile(np.asarray(params[:nfull], dtype=float), (s.shape[0], 1))
+                if use_damping and s.shape[1] >= 3:
+                    sfull[:, 0] = s[:, 0]
+                    sfull[:, 1] = s[:, 1]
+                    sfull[:, 4] = s[:, 2]
+                    if s.shape[1] >= 4:
+                        sfull[:, 5] = s[:, 3]
+                elif (not use_damping) and s.shape[1] >= 3:
+                    sfull[:, 0] = s[:, 0]
+                    sfull[:, 1] = s[:, 1]
+                    sfull[:, 4] = s[:, 2]
+
+            c2h = np.zeros((sfull.shape[0], ell_m.size))
+            c1h = np.zeros((sfull.shape[0], ell_m.size))
+            csh = np.zeros((sfull.shape[0], ell_m.size))
+            ctot = np.zeros((sfull.shape[0], ell_m.size))
+            for ii in range(sfull.shape[0]):
+                sd_i = sfull[ii, 5] if use_damping else None
+                cc = model.model_components(
+                    ell_m,
+                    sfull[ii, 0], sfull[ii, 1], sfull[ii, 2], sfull[ii, 3], sfull[ii, 4],
+                    sigma_damp=sd_i,
+                    z_bin_index=z_idx,
+                )
+                c2h[ii] = cc['two_halo']
+                c1h[ii] = cc['one_halo']
+                csh[ii] = cc['shot_noise']
+                ctot[ii] = cc['total']
+
+            uncertainty_bands = {
+                'two_halo':   (np.percentile(c2h, 16, axis=0), np.percentile(c2h, 84, axis=0)),
+                'one_halo':   (np.percentile(c1h, 16, axis=0), np.percentile(c1h, 84, axis=0)),
+                'shot_noise': (np.percentile(csh, 16, axis=0), np.percentile(csh, 84, axis=0)),
+                'total':      (np.percentile(ctot, 16, axis=0), np.percentile(ctot, 84, axis=0)),
+            }
+
+    if uncertainty_bands is None and params_err is not None and not np.any(np.isnan(params_err)):
 
         # 2-halo bounds
         if model.use_powerlaw_2h:
             dl_2h_upper = model.powerlaw_2h_component(ell_m, params[0] + params_err[0], model.alpha_2h_fixed)
             dl_2h_lower = model.powerlaw_2h_component(ell_m, max(0, params[0] - params_err[0]), model.alpha_2h_fixed)
+        elif model.use_linear_2h and z_idx in model.dl_2h_lin_per_zbin:
+            # Use linear 2H template for uncertainty bounds
+            ell_lin, dl_lin = model.dl_2h_lin_per_zbin[z_idx]
+            dl_lin_upper = np.interp(ell_m, ell_lin, dl_lin, left=0.0, right=0.0)
+            dl_lin_lower = np.interp(ell_m, ell_lin, dl_lin, left=0.0, right=0.0)
+            dl_2h_upper = (params[0] + params_err[0]) * dl_lin_upper
+            dl_2h_lower = max(0, params[0] - params_err[0]) * dl_lin_lower
         else:
             pf = ell_m * (ell_m + 1) / (2 * np.pi)
             dl_2h_upper = (params[0] + params_err[0]) * pf * np.interp(ell_m, model.lb, model.cl_2h_pred)
@@ -3977,7 +4249,7 @@ def _plot_2x2_spectrum_panel(ax, results, inst_idx, z_idx, lMax, colors, lams,
     ax.loglog(ell_m, components['total'],      color=colors['total'],      lw=2.0)
     ax.loglog(ell_m, components['two_halo'],   color=colors['two_halo'],   lw=1.2, alpha=0.7)
     ax.loglog(ell_m, components['one_halo'],   color=colors['one_halo'],   lw=1.2, alpha=0.7)
-    ax.loglog(ell_m, components['shot_noise'], color=colors['shot_noise'], lw=1.2, alpha=0.7, linestyle='--')
+    ax.loglog(ell_m, components['shot_noise'], color=colors['shot_noise'], lw=1.2, alpha=0.7, linestyle='solid')
 
     if uncertainty_bands is not None:
         ax.fill_between(ell_m,
@@ -4020,10 +4292,14 @@ def _plot_2x2_spectrum_panel(ax, results, inst_idx, z_idx, lMax, colors, lams,
     # Shade region excluded from fit
     ax.axvspan(lMax, lb_fit.max() * 1.2, color='lightgray', alpha=0.3, zorder=0)
 
-    # Panel label with chi2
-    chi2_str = f"χ²/dof = {chi2_reduced:.2f}" if chi2_reduced is not None else ""
+    # Panel label with chi2, bandpower count, and parameter count
+    n_bandpowers = len(lb_fit)
+    # n_floated = int(n_params_fit) if n_params_fit is not None and not np.isnan(n_params_fit) else n_params_stored
+    chi2_str = f"χ²/dof = {chi2_reduced:.2f}/{ndof_correct}" if chi2_reduced is not None else ""
     ax.text(0.04, 0.97, f"{title}\n{chi2_str}",
             transform=ax.transAxes, fontsize=10, va='top', ha='left')
+    
+
 
 def _chi2_comparison_with_without_1h(args: argparse.Namespace) -> None:
     """Compare chi2 (both total and reduced) from fits with 1h vs without 1h component.
@@ -4160,10 +4436,10 @@ def _chi2_comparison_with_without_1h(args: argparse.Namespace) -> None:
 
         # Add text box with summary info
         summary_text = f"""
-ℓ_max = {lMax}
-With 1h: 3 params (A₂ₕ, A₁ₕ, Ashot) + damping
-No 1h: 2 params (A₂ₕ, Ashot) + damping
-Positive Δχ² → 1h helps fit
+            ℓ_max = {lMax}
+            With 1h: 3 params (A₂ₕ, A₁ₕ, Ashot) + damping
+            No 1h: 2 params (A₂ₕ, Ashot) + damping
+            Positive Δχ² → 1h helps fit
         """
         fig.text(0.5, 0.02, summary_text, ha='center', fontsize=10,
                 bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.8))
@@ -4556,11 +4832,11 @@ def _make_chi2_latex_table(args: argparse.Namespace) -> None:
                 (fitstr_fixA2h_quad, results_fixA2h_quad),
             ]:
                 # Use merged JHlt14 z<0.2 results for DESILS; falls back to fiducial if no JHlt14 file
-                res = _load_cross_results_merged_jh14(args.datadir_cross, cat, headstr, fitstr_variant, lMax)
+                res = _load_cross_results_merged_jh14(args.datadir_cross, cat, headstr, fitstr_variant, lMax, maskstr=args.maskstr if fitstr_variant == args.fitstr_cross else None)
                 if res is not None:
                     store[cat][lMax] = res
                 else:
-                    fpath = _cross_fpath(args.datadir_cross, cat, headstr, fitstr_variant, lMax)
+                    fpath = _cross_fpath(args.datadir_cross, cat, headstr, fitstr_variant, lMax, maskstr=args.maskstr if fitstr_variant == args.fitstr_cross else None)
                     print(f"[make_chi2_table] not found: {fpath.name}")
 
     BOLD_THRESH = 4.0
