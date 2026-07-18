@@ -66,13 +66,16 @@ from ciber.plotting.gal_plotting_fns import (
     plot_amplitude_comparison,
     plot_chi2_comparison,
     plot_cross_fit_components_from_file,
+    plot_amplitude_chi2_by_instrument,
 )
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-_CAT_CMAP = {"HSC": "Oranges", "DESILS": "Blues"}
+_CAT_CMAP = {"HSC": "RdPu", "DESILS": "Greens"}
+
+
 _LMAX_COLORS = ["C0", "C1", "C2", "C3", "C4", "C5", "C6", "C7"]
 
 
@@ -122,7 +125,13 @@ def _cross_fpath(datadir: str, cat: str, headstr: Optional[str], fitstr: str, lM
     return Path(datadir) / f"{cat}_coarsez{tag}{mask_tag}_cross_cl_fits_{fitstr}_lMax={lMax}.npz"
 
 
-def _load_cross_results_merged_jh14(datadir: str, cat: str, headstr: Optional[str], fitstr: str, lMax: int, maskstr: Optional[str] = None) -> Optional[dict]:
+def _load_cross_results_merged_jh14(datadir: str, 
+                                    cat: str, 
+                                    headstr: Optional[str],
+                                    fitstr: str, 
+                                    lMax: int, 
+                                    lMax_list: Optional[List[int]] = None,
+                                    maskstr: Optional[str] = None) -> Optional[dict]:
     """Load cross-fit results, merging JHlt14 z<0.2 with fiducial z>0.2.
     
     For DESILS: always uses JHlt14 for z<0.2, and the specified maskstr for z>0.2.
@@ -1103,7 +1112,7 @@ def _plot_spectra_summary(args: argparse.Namespace) -> None:
 
                     # Top panel: spectra
                     ax_spec.errorbar(lb_fit, data_dl, yerr=data_dlerr, fmt='o',
-                                     color='k', markersize=3, capsize=2, alpha=0.6, label='Data', zorder=5)
+                                     color='k', markersize=3, capsize=2, alpha=0.6, label='Data', zorder=7)
 
                     ell_m = np.logspace(np.log10(100), np.log10(1.2e5), 500)
                     sd_med = params[5] if use_damping else None
@@ -1167,18 +1176,18 @@ def _plot_spectra_summary(args: argparse.Namespace) -> None:
                             'shot_noise': (comps_lo['shot_noise'], comps_hi['shot_noise']),
                         }
 
-                    ax_spec.plot(ell_m, comps['total'], 'r-', lw=2, label='Total')
+                    ax_spec.plot(ell_m, comps['total'], 'r-', lw=2, label='Best-fit model', zorder=7)
                     ax_spec.fill_between(ell_m, bands['total'][0], bands['total'][1],
                                          color='red', alpha=0.15)
-                    ax_spec.plot(ell_m, comps['two_halo'], 'b-', lw=1.2, alpha=0.7, label='2-halo')
+                    ax_spec.plot(ell_m, comps['two_halo'], 'b', linestyle='dashdot', lw=1.2, alpha=0.7, label='Two-halo', zorder=6)
                     ax_spec.fill_between(ell_m, bands['two_halo'][0], bands['two_halo'][1],
                                          color='blue', alpha=0.12)
-                    ax_spec.plot(ell_m, comps['one_halo'], 'g-', lw=1.2, alpha=0.7, label='1-halo')
+                    ax_spec.plot(ell_m, comps['one_halo'], 'g-', lw=1.2, alpha=0.7, label='One-halo', zorder=6)
                     ax_spec.fill_between(ell_m, bands['one_halo'][0], bands['one_halo'][1],
                                          color='green', alpha=0.12)
                     
                     
-                    ax_spec.plot(ell_m, comps['shot_noise'], color='grey', linestyle='solid', lw=1.2, alpha=0.7, label='Shot noise')
+                    ax_spec.plot(ell_m, comps['shot_noise'], color='grey', linestyle='dashed', lw=1.2, alpha=0.7, label='Poisson level')
                     ax_spec.fill_between(ell_m, bands['shot_noise'][0], bands['shot_noise'][1],
                                          color='grey', alpha=0.12)
 
@@ -1195,8 +1204,8 @@ def _plot_spectra_summary(args: argparse.Namespace) -> None:
                                 b_g = 1.0 + 0.84 * zcen
                             ell_igl = np.geomspace(lb_fit.min() * 0.8, lb_fit.max() * 1.2, 300)
                             _, dl_igl = smooth_mock_cross_with_bias(pred_fpath, zcen, b_g, ell_eval=ell_igl)
-                            ax_spec.plot(ell_igl, dl_igl, color='magenta', linestyle='dotted', lw=2.5,
-                                         label='IGL prediction', alpha=0.9, zorder=4)
+                            ax_spec.plot(ell_igl, dl_igl, color='k', linestyle='solid', lw=2.5,
+                                         label='IGL prediction', alpha=0.5, zorder=6)
                         except Exception as e:
                             print(f'[plot_spectra_summary] IGL overlay failed z=[{zlo},{zhi}]: {e}')
 
@@ -1230,7 +1239,7 @@ def _plot_spectra_summary(args: argparse.Namespace) -> None:
 
 
                     if zidx == 0:
-                        ax_spec.set_ylabel(r'$D_\ell$ [nW m$^{-2}$ sr$^{-1}$]', fontsize=12)
+                        ax_spec.set_ylabel(r'$D_\ell^{\rm Ig}$ [nW m$^{-2}$ sr$^{-1}$]', fontsize=12)
                         ax_spec.tick_params(axis='y', labelleft=True)
                     else:
                         ax_spec.tick_params(axis='y', labelleft=False)
@@ -1244,8 +1253,8 @@ def _plot_spectra_summary(args: argparse.Namespace) -> None:
                     ax_res.plot(lb_fit, residuals, 'o', color='k', markersize=3, zorder=5)
                     ax_res.axhline(0, color='r', linestyle='-', lw=1.5, alpha=0.7)
 
-                    ax_res.axhspan(-1, 1, color='green', alpha=0.1)
-                    ax_res.axhspan(-3, 3, color='yellow', alpha=0.1)
+                    ax_res.axhspan(-1, 1, color='grey', alpha=0.3)
+                    ax_res.axhspan(-2.5, 2.5, color='grey', alpha=0.1)
                     
 
                     ax_res.set_xscale('log')
@@ -1330,7 +1339,7 @@ def _plot_spectra_summary(args: argparse.Namespace) -> None:
                 ax.set_ylim([0.1, 3])
                 ax.set_yscale('log')
                 ax.grid(True, alpha=0.3, which='major')
-                ax.axvspan(lMax, lb_fit.max() * 1.2, color='lightgray', alpha=0.3, zorder=0)
+                ax.axvspan(lMax*0.9, lb_fit.max() * 1.2, color='lightgray', alpha=0.3, zorder=0)
                 ax.legend(fontsize=12, loc=2)
                 ax.tick_params(labelsize=14)
                 
@@ -1532,10 +1541,16 @@ def _plot_a1h_vs_redshift_three_row(args: argparse.Namespace) -> None:
     fitstr_biLinear = args.fitstr_cross + "_fixA2h_IGL_biLinear"
     fitstr_biQuad   = args.fitstr_cross + "_fixA2h_IGL_biQuadratic"
 
+    # variant_defs = [
+    #     ("full",     args.fitstr_cross),
+    #     ("fixA2h",   fitstr_fixA2h),
+    #     ("biLinear", fitstr_biLinear),
+    #     ("biQuad",   fitstr_biQuad),
+    # ]
+
     variant_defs = [
         ("full",     args.fitstr_cross),
         ("fixA2h",   fitstr_fixA2h),
-        ("biLinear", fitstr_biLinear),
         ("biQuad",   fitstr_biQuad),
     ]
 
@@ -1549,9 +1564,14 @@ def _plot_a1h_vs_redshift_three_row(args: argparse.Namespace) -> None:
             ("HSC", args.headstr, rf"HSC (${mag_str}$)"),
         ]
     else:
+        # row_defs = [
+        #     ("DESILS", None, r"DESI-LS ($z_{\rm AB} < 22$)"),
+        #     ("HSC", "hsc_ilt22.0", r"HSC ($18<i_{\rm AB} < 22$)"),
+        #     ("HSC", "hsc_ilt25.0", r"HSC ($18<i_{\rm AB} < 25$)"),
+        # ]
         row_defs = [
             ("DESILS", None, r"DESI-LS ($z_{\rm AB} < 22$)"),
-            ("HSC", "hsc_ilt22.0", r"HSC ($18<i_{\rm AB} < 22$)"),
+            # ("HSC", "hsc_zlt22.0", r"HSC ($z_{\rm AB} < 22$)"),
             ("HSC", "hsc_ilt25.0", r"HSC ($18<i_{\rm AB} < 25$)"),
         ]
 
@@ -1563,7 +1583,7 @@ def _plot_a1h_vs_redshift_three_row(args: argparse.Namespace) -> None:
         results_all[key] = {var_key: {} for var_key, _ in variant_defs}
         for var_key, fitstr_name in variant_defs:
             # Load fiducial (z>0.2 bins)
-            fpath = _cross_fpath(args.datadir_cross, cat, headstr, fitstr_name, lMax)
+            fpath = _cross_fpath(args.datadir_cross, cat, headstr, fitstr_name, lMax, maskstr=args.maskstr)
             if fpath.exists():
                 res = load_fit_results_npz(str(fpath))
                 inst_list = list(res["inst_list"])
@@ -1606,17 +1626,20 @@ def _plot_a1h_vs_redshift_three_row(args: argparse.Namespace) -> None:
     # Create grid: n_rows × 2 cols (TM1, TM2), where n_rows = unique row indices
     n_rows = len(row_defs)
     figsize_height = 1. + 2.0 * n_rows
-    fig, axes = plt.subplots(n_rows, 2, figsize=(7, figsize_height), sharex=True, sharey=True)
+    # fig, axes = plt.subplots(n_rows, 2, figsize=(7, figsize_height), sharex=True, sharey=True)
+
+    fig, axes = plt.subplots(2, 1, figsize=(7, 6), sharex=True, sharey=True)
+
     # Ensure axes is always 2D
     if n_rows == 1:
         axes = axes.reshape(1, -1)
     
     # Variant-specific labels and markers
     var_labels = {
-        "full":     "Full model (Float $A_{2h}$, $A_{1h}$)",
-        "fixA2h":   r"Fix $A_{2h}$; $b_I=1$",
-        "biLinear": r"Fix $A_{2h}$; $b_I=1+0.6z$",
-        "biQuad":   r"Fix $A_{2h}$; $b_I=(1+z)^2$",
+        "full":     "Full model (Float $A_{\\rm 2h}$, $A_{\\rm 1h}$)",
+        "fixA2h":   r"Fix $A_{\rm 2h}$; $b_I=1$",
+        "biLinear": r"Fix $A_{\rm 2h}$; $b_I=1+0.6z$",
+        "biQuad":   r"Fix $A_{\rm 2h}$; $b_I=(1+z)^2$",
     }
     var_markers = {
         "full":     "o",
@@ -1627,23 +1650,23 @@ def _plot_a1h_vs_redshift_three_row(args: argparse.Namespace) -> None:
 
     # Tracer-specific color palettes (darker to brighter for each variant)
     tracer_color_palettes = {
-        ("DESILS", None): {  # Blues
-            "full":     "#0c5aa0",  # dark blue
-            "fixA2h":   "#1f77b4",  # medium blue (C0)
-            "biLinear": "#5fa9d6",  # light blue
-            "biQuad":   "#aec7e8",  # very light blue
+        ("DESILS", None): {  # Greens
+            "full":     "#0c5a0c",  # dark green
+            "fixA2h":   "#1f771f",  # medium green (C0)
+            "biLinear": "#5fad5f",  # light green
+            "biQuad":   "#aecdac",  # very light green
         },
-        ("HSC", "hsc_ilt22.0"): {  # Bright gold palette
+        ("HSC", "hsc_zlt22.0"): {  # Bright gold palette
             "full":     "#d4a425",  # dark gold
             "fixA2h":   "#e6ba2c",  # medium gold
             "biLinear": "#f5d54a",  # bright gold
             "biQuad":   "#fde999",  # very bright gold
         },
-        ("HSC", "hsc_ilt25.0"): {  # Orange palette
-            "full":     "#c85a17",  # dark orange
-            "fixA2h":   "#d97b2c",  # medium orange
-            "biLinear": "#e99d4a",  # lighter orange
-            "biQuad":   "#f5b868",  # very light orange
+        ("HSC", "hsc_ilt25.0"): {  # Pink/Purple
+            "full":     "#7a0177",  # dark purple-magenta
+            "fixA2h":   "#ae017e",  # strong magenta
+            "biLinear": "#dd3497",  # pink-magenta
+            "biQuad":   "#f768a1",  # light pink
         },
     }
 
@@ -1653,9 +1676,13 @@ def _plot_a1h_vs_redshift_three_row(args: argparse.Namespace) -> None:
     x_offset_scale = 0.04
 
     for panel_idx, (row_idx, inst, cat, headstr, row_label) in enumerate(panel_info):
-        col = (inst - 1)  # TM1 -> col 0, TM2 -> col 1
-        ax = axes[row_idx, col]
+        # col = (inst - 1)  # TM1 -> col 0, TM2 -> col 1
+        col = 0
+        
 
+        # ax = axes[inst-1, 0]
+
+        ax = axes[inst-1]
         # Get reference result for zbinedges (from fiducial, which has all z-bins)
         key = (cat, headstr)
         res_full_fiducial = results_all[key]["full"].get('fiducial', {}).get(inst)
@@ -1672,9 +1699,9 @@ def _plot_a1h_vs_redshift_three_row(args: argparse.Namespace) -> None:
             ax.axvspan(z0, z1, color=shade, alpha=0.22, zorder=0)
 
         # Add grey overlay shading for HSC z<0.2 bin to indicate omitted measurements
-        if cat == "HSC":
-            z0_omit, z1_omit = zbinedges[0], zbinedges[1]
-            ax.axvspan(z0_omit, z1_omit, color="#a9a9a9", alpha=0.25, zorder=1, linewidth=2, edgecolor="grey")
+        # if cat == "HSC":
+        #     z0_omit, z1_omit = zbinedges[0], zbinedges[1]
+        #     ax.axvspan(z0_omit, z1_omit, color="#a9a9a9", alpha=0.25, zorder=1, linewidth=2, edgecolor="grey")
 
         # Plot each variant with horizontal offset
         for var_idx, (var_key, _) in enumerate(variant_defs):
@@ -1749,7 +1776,23 @@ def _plot_a1h_vs_redshift_three_row(args: argparse.Namespace) -> None:
             is_det = ~is_ul
 
             # Apply horizontal offset to distinguish variants
-            x_offset = (var_idx - (len(variant_defs) - 1) / 2.0) * x_offset_scale
+            # x_offset = (var_idx - (len(variant_defs) - 1) / 2.0) * x_offset_scale
+            # z_offset = z_centers + x_offset
+
+
+            at_idx = None
+            for idx, (row_cat, row_headstr, _) in enumerate(row_defs):
+                if row_cat == cat and row_headstr == headstr:
+                    cat_idx = idx
+                    break
+            
+            # Catalog-level offset: spread catalogs left/right within bin
+            # Variant-level offset: spread variants within catalog group
+            n_cats = len(row_defs)
+            cat_offset_scale = x_offset_scale * 2  # Slightly larger than variant scale
+            cat_offset = (cat_idx - (n_cats - 1) / 2.0) * cat_offset_scale
+            var_offset = (var_idx - (len(variant_defs) - 1) / 2.0) * (x_offset_scale * 0.6)  # Smaller variant spacing
+            x_offset = cat_offset + var_offset
             z_offset = z_centers + x_offset
 
             # Look up color from tracer-specific palette
@@ -1757,13 +1800,16 @@ def _plot_a1h_vs_redshift_three_row(args: argparse.Namespace) -> None:
             marker = var_markers[var_key]
             label = var_labels[var_key]
 
+            markersize = 6
+
+
             # Plot detections
             if np.any(is_det):
                 ax.errorbar(z_offset[is_det], A_1h[is_det],
                            yerr=np.array([yerr[0][is_det], yerr[1][is_det]]),
                            marker=marker, color=color,
                            label=label, linestyle='None',
-                           markersize=5, capsize=3, linewidth=1.5, alpha=1.0)
+                           markersize=markersize, capsize=3, linewidth=1.5, alpha=1.0)
                 label = None
 
             # Plot upper limits
@@ -1771,7 +1817,7 @@ def _plot_a1h_vs_redshift_three_row(args: argparse.Namespace) -> None:
                 ul_vals = A_1h_95_vals[is_ul]
                 xs_ul = z_offset[is_ul]
                 ax.plot(xs_ul, ul_vals, marker="v", color=color,
-                       label=label, markersize=5, alpha=1.0, linestyle='none')
+                       label=label, markersize=markersize, alpha=1.0, linestyle='none')
                 for x, y_top in zip(xs_ul, ul_vals):
                     ax.annotate('', xy=(x, 0.0), xytext=(x, y_top),
                                arrowprops=dict(arrowstyle='-|>', color=color,
@@ -1779,24 +1825,36 @@ def _plot_a1h_vs_redshift_three_row(args: argparse.Namespace) -> None:
 
         # Panel title: row label + band info
         title_text = f"CIBER {lams.get(inst, '?')} μm × {row_label}"
-        ax.text(0.02, 0.95, title_text, transform=ax.transAxes,
-                fontsize=11, verticalalignment='top', bbox=dict(boxstyle='round', facecolor='white', alpha=0.8, edgecolor='none'))
+
+        if row_idx == 0:
+            textypos = 0.97
+            mode = 'fixA2h'
+        else:
+            textypos = 0.87
+            mode = 'biQuad'
+        color = tracer_color_palettes[key].get(mode, "#666666")
+        ax.text(0.02, textypos, title_text, transform=ax.transAxes,
+                fontsize=14, color=color, verticalalignment='top')
         ax.tick_params(labelsize=12)
 
         ax.grid(True, alpha=0.3)
         ax.set_xlim(zbinedges[0], zbinedges[-1])
-        ax.set_ylim(0, 1.0)
+        ax.set_ylim(0, 0.9)
 
     # Add shared legend above top row
-    handles, labels = axes[0, 0].get_legend_handles_labels()
-    fig.legend(handles, labels, loc='upper center', bbox_to_anchor=(0.54, 1.08),
-               ncol=2, fontsize=14, frameon=True)
+    # handles, labels = axes[0, 0].get_legend_handles_labels()
+
+    handles, labels = axes[0].get_legend_handles_labels()
+
+    fig.legend(handles, labels, loc='upper center', bbox_to_anchor=(0.54, 1.15),
+               ncol=2, fontsize=13, frameon=True)
 
     # Set axis labels on outer edges
     for row in range(n_rows):
-        axes[row, 0].set_ylabel(r"$A_{1h}^{\rm Ig}$", fontsize=15)
-    for col in range(2):
-        axes[n_rows - 1, col].set_xlabel("Redshift (z)", fontsize=15)
+        axes[row].set_ylabel(r"$A_{\rm 1h}^{\rm Ig}$ [nW m$^{-2}$ sr$^{-1}$]", fontsize=15)
+
+    # for col in range(2):
+    axes[-1].set_xlabel("Redshift (z)", fontsize=15)
 
     fig.subplots_adjust(left=0.11, right=0.98, top=0.96, bottom=0.08, hspace=0.1, wspace=0.09)
 
@@ -1839,7 +1897,7 @@ def _plot_a1h_vs_redshift_alternate_layout(args: argparse.Namespace) -> None:
     # Tracer configs: (catalog, headstr, label)
     tracer_defs = [
         ("DESILS", None, r"DESI-LS ($z_{\rm AB} < 22$)"),
-        ("HSC", "hsc_ilt22.0", r"HSC ($18<i_{\rm AB}<22$)"),
+        # ("HSC", "hsc_zlt22.0", r"HSC ($z_{\rm AB}<22$)"),
         ("HSC", "hsc_ilt25.0", r"HSC ($18<i_{\rm AB}<25$)"),
     ]
 
@@ -1923,7 +1981,7 @@ def _plot_a1h_vs_redshift_alternate_layout(args: argparse.Namespace) -> None:
         # Plot each tracer with its own color scheme
         for tracer_idx, (cat, headstr, tracer_label) in enumerate(tracer_defs):
             key = (cat, headstr)
-            tracer_key_short = "DESILS" if cat == "DESILS" else ("HSC_22" if headstr == "hsc_ilt22.0" else "HSC_25")
+            tracer_key_short = "DESILS" if cat == "DESILS" else ("HSC_22" if headstr == "hsc_zlt22.0" else "HSC_25")
             colors_for_tracer = tracer_colors[tracer_key_short]
             
             # Plot each variant with different marker and color
@@ -3272,7 +3330,7 @@ def _plot_a2h_vs_redshift(args: argparse.Namespace) -> None:
     results_full = {}
     for cat in args.cat:
         headstr = args.headstr if cat == "HSC" else None
-        fpath = _cross_fpath(args.datadir_cross, cat, headstr, args.fitstr_cross, lMax)
+        fpath = _cross_fpath(args.datadir_cross, cat, headstr, args.fitstr_cross, lMax, maskstr=args.maskstr)
         if fpath.exists():
             results_full[cat] = load_fit_results_npz(str(fpath))
         else:
@@ -3294,17 +3352,20 @@ def _plot_a2h_vs_redshift(args: argparse.Namespace) -> None:
     n_panels = len(panel_info)
     n_cols = 2
     n_rows = (n_panels + n_cols - 1) // n_cols
-    fig, axes = plt.subplots(n_rows, n_cols, figsize=(7, 6), sharex=True, sharey=True)
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(8, 6), sharex=True, sharey=True)
     if n_panels == 1:
         axes = np.array([[axes]])
     elif n_rows == 1 or n_cols == 1:
         axes = axes.reshape(n_rows, n_cols)
 
+
+    plot_alpha = 0.8
+    linewidth = 2.0
     # Styling for model predictions
     model_styles = {
-        "constant": dict(color="C2", linestyle="-", label=r"IGL prediction ($b_I=1$)"),
-        "linear":   dict(color="C3", linestyle="--", label=r"IGL prediction ($b_I=1+0.6z$)"),
-        "quadratic": dict(color="C4", linestyle=":", label=r"IGL prediction ($b_I=(1+z)^2$)"),
+        "constant": dict(color="k", linestyle="-", label=r"IGL prediction; $b_I=1$"),
+        "linear":   dict(color="k", linestyle="--", label=r"IGL prediction; $b_I=1+0.6z$"),
+        "quadratic": dict(color="k", linestyle=":", label=r"IGL prediction; $b_I=(1+z)^2$"),
     }
 
     cat_display = {"DESILS": "DESI-LS", "HSC": "HSC"}
@@ -3388,10 +3449,18 @@ def _plot_a2h_vs_redshift(args: argparse.Namespace) -> None:
         is_det = ~is_ul
 
         # Plot detections (black)
+
+
+        if cat=='HSC':
+            color_plot = "#E45DA8"
+        else:
+            color_plot = 'C2'
+
+
         if np.any(is_det):
             ax.errorbar(z_centers[is_det], A_2h[is_det],
                        yerr=np.array([yerr[0][is_det], yerr[1][is_det]]),
-                       marker="o", color="black", linestyle='None',
+                       marker="o", color=color_plot, linestyle='None',
                        markersize=5, capsize=3, label="Data" if panel_idx == 0 else None)
 
 
@@ -3402,12 +3471,12 @@ def _plot_a2h_vs_redshift(args: argparse.Namespace) -> None:
             ul_vals = A_2h_95[inst_idx, :, 0][is_ul] if A_2h_95 is not None else A_2h[is_ul] + 2 * yerr[1][is_ul]
             xs_ul = z_centers[is_ul]
             # Plot horizontal bar at top of each UL (wider capsize)
-            ax.plot(xs_ul, ul_vals, marker='_', color="black", markersize=16,
+            ax.plot(xs_ul, ul_vals, marker='_', color=color_plot, markersize=12,
                    markeredgewidth=2, linestyle='none', alpha=0.85, label='CIBER (this work)' if panel_idx == 0 else None)
             # Draw arrow from UL position down to 10^-2
             for x, y_top in zip(xs_ul, ul_vals):
                 ax.annotate('', xy=(x, ymin), xytext=(x, y_top),
-                           arrowprops=dict(arrowstyle='-|>', color="black", alpha=0.85, lw=2.0, mutation_scale=15))
+                           arrowprops=dict(arrowstyle='-|>', color=color_plot, alpha=0.85, lw=2.5, mutation_scale=15))
 
         # Overlay model predictions
         for bi_idx, bi_model in enumerate(("constant", "linear", "quadratic")):
@@ -3417,12 +3486,12 @@ def _plot_a2h_vs_redshift(args: argparse.Namespace) -> None:
             preds = pred_arr[inst_idx, :]
             st = model_styles[bi_model]
             ax.plot(z_centers, preds, color=st["color"], linestyle=st["linestyle"],
-                   linewidth=2.0, marker='.', label=st["label"] if panel_idx == 0 else None, zorder=5, markersize=10)
+                   linewidth=2.0, alpha=plot_alpha, marker='.', label=st["label"] if panel_idx == 0 else None, markersize=10)
 
         # Panel title in top-left corner
         title_text = 'CIBER '+str(lams.get(inst, '?'))+' $\\mu$m $\\times$ '+cat_display.get(cat, cat)
         ax.text(0.02, 0.95, title_text, transform=ax.transAxes,
-                fontsize=15, verticalalignment='top')
+                fontsize=15, verticalalignment='top', color=color_plot)
 
         ax.grid(True, alpha=0.3)
         ax.set_xlim(zbinedges[0], zbinedges[-1])
@@ -3436,7 +3505,7 @@ def _plot_a2h_vs_redshift(args: argparse.Namespace) -> None:
 
     # Add shared legend above top row
     handles, labels = axes[0, 0].get_legend_handles_labels()
-    fig.legend(handles, labels, loc='upper center', bbox_to_anchor=(0.5, 1.08),
+    fig.legend(handles, labels, loc='upper center', bbox_to_anchor=(0.55, 1.1),
                ncol=2, fontsize=16, frameon=True)
 
     # Set axis labels on outer edges
@@ -3677,15 +3746,20 @@ def _plot_corr_a1h_a2h(args: argparse.Namespace) -> None:
                 else:
                     a2h_samples = samples[:, 0]
                     a1h_samples = samples[:, 1]
+                    shot_samples = samples[:, 2]
                     corr_matrix = np.corrcoef(a2h_samples, a1h_samples)
                     corr = corr_matrix[0, 1]
+
+                    corr_matrix_shot_1h = np.corrcoef(a1h_samples, shot_samples)
+                    corr_shot_1h = corr_matrix_shot_1h[0, 1]
 
                 all_data.append({
                     'cat': cat,
                     'inst': inst,
                     'z_lo': zlo,
                     'z_hi': zhi,
-                    'corr': corr
+                    'corr': corr, 
+                    'corr_shot_1h': corr_shot_1h,
                 })
 
     if not all_data:
@@ -3693,42 +3767,128 @@ def _plot_corr_a1h_a2h(args: argparse.Namespace) -> None:
         return
 
     # Create plot
-    fig, ax = plt.subplots(figsize=(4, 3))
+    fig, ax = plt.subplots(figsize=(4, 5), nrows=2, sharex=True)
 
     colors = {'HSC': {'TM1': 'C0', 'TM2': 'C1'}, 'DESILS': {'TM1': 'C2', 'TM2': 'C3'}}
     linestyles = {'HSC': '-', 'DESILS': '--'}
 
-    for cat in args.cat:
+    hsc_color = "#E45DA8"
+    colors = ['C2', hsc_color]
+
+    cat_labels = ['DESI-LS', 'HSC']
+
+    for c, cat in enumerate(args.cat):
         if cat not in [d['cat'] for d in all_data]:
             continue
         for inst in [1, 2]:
             # Extract z-midpoints and correlations for this cat/inst combination
             z_mids = []
             corrs = []
+            corrs_shot_1h = []
             for row in all_data:
                 if row['cat'] == cat and row['inst'] == inst:
                     z_mids.append(0.5 * (row['z_lo'] + row['z_hi']))
                     corrs.append(row['corr'])
+                    corrs_shot_1h.append(row['corr_shot_1h'])
 
             if corrs:
                 label = f"{cat} TM{inst}"
-                ax.plot(z_mids, corrs, 'o', color=colors[cat][f'TM{inst}'],
-                        linestyle=linestyles[cat], linewidth=2, markersize=6, label=label)
-                ax.plot(z_mids, corrs, color=colors[cat][f'TM{inst}'],
-                        linestyle=linestyles[cat], linewidth=2)
+                label =  f"$\\rho(A_{{2h}}, A_{{1h}})$; " +cat_labels[c]
+                ax[inst-1].plot(z_mids, corrs, 'o', color=colors[c],
+                        linestyle='solid', linewidth=2, markersize=6, label=label)
 
-    ax.axhline(0, color='gray', linestyle=':', linewidth=1, alpha=0.5)
-    ax.set_xlabel('Redshift (bin center)', fontsize=10)
-    ax.set_ylabel(r'$r(A_{2h}, A_{1h})$', fontsize=10)
-    ax.set_title(f'{args.fitstr_cross}: Correlation Coefficient', fontsize=11)
-    ax.grid(True, alpha=0.3, which='major')
-    ax.legend(loc='best', fontsize=9)
-    ax.set_ylim([-1.0, 1.0])
-    ax.set_xlim([0.0, 1.0])
+                if c==1:
+                    shot1hlab = '$\\rho(A_{1h}, A_{shot})$'
+                else:
+                    shot1hlab = None
+                
+                ax[inst-1].plot(z_mids, corrs_shot_1h, color=colors[c],
+                        linestyle='dashed', linewidth=2, label=shot1hlab)
 
-    fig.tight_layout()
+    # for inst in [1, 2]:
+        # ax[inst-1].set_title(f'TM{inst}', fontsize=12)
+
+    lams_ciber = [1.1, 1.8]
+    for inst in [1, 2]:
+        ax[inst-1].axhline(0, color='gray', linestyle=':', linewidth=1.5, alpha=0.7)
+
+        if inst==2:
+            ax[inst-1].set_xlabel('redshift', fontsize=12)
+        ax[inst-1].set_ylabel(r'Correlation coeff. $\rho$', fontsize=11)
+        ax[inst-1].grid(True, alpha=0.3, which='major')
+
+        if inst==1:
+            ax[inst-1].legend(loc='upper center', ncol=2, fontsize=11, bbox_to_anchor=[0.45, 1.4])
+        ax[inst-1].set_ylim([-1.0, 0.5])
+        ax[inst-1].set_xlim([0.0, 1.0])
+        ax[inst-1].text(0.05, 0.25, f'CIBER {lams_ciber[inst-1]} μm', fontsize=14)
+
+    # fig.tight_layout()
     _savefig(fig, figdir / f"corr_a1h_a2h_{args.fitstr_cross}_lMax={lMax}", args.fig_fmt)
     plt.close(fig)
+
+
+def _plot_parameter_consistency_vs_lmax(args: argparse.Namespace) -> None:
+    """3×2 panel figure showing A_2h, A_1h, and reduced χ² consistency across lMax values.
+
+    Rows: A_2h (top), A_1h (middle), reduced χ² (bottom)
+    Columns: TM1 (1.1 μm), TM2 (1.8 μm)
+    
+    Each lMax appears as a separate trace (color) with small x-offsets to avoid overlap.
+    Shows parameter consistency and goodness-of-fit across different multipole cuts.
+    """
+    figdir = Path(args.figdir) / args.fitstr_cross
+    figdir.mkdir(parents=True, exist_ok=True)
+
+    # Collect results for all lMax values across catalogs
+    all_configs = []
+
+
+    for cat in args.cat:
+        all_configs = []
+
+        for lMax in args.lmax:
+            headstr = args.headstr if cat == "HSC" else None
+            results = _load_cross_results_merged_jh14(
+                args.datadir_cross, cat, headstr, args.fitstr_cross, lMax, maskstr=args.maskstr
+            )
+            if results is None:
+                fpath = _cross_fpath(args.datadir_cross, cat, headstr, args.fitstr_cross, lMax, maskstr=args.maskstr)
+                print(f"[plot_parameter_consistency_vs_lmax] missing {fpath}")
+                continue
+            all_configs.append({
+                'results': results,
+                'inst': None,  # Both instruments
+                'label': f"{cat} ℓ_max={lMax}",
+                'cat_name': cat,
+                'lMax': lMax,
+            })
+
+        if not all_configs:
+            print("[plot_parameter_consistency_vs_lmax] no results found, skipping")
+            return
+
+
+        if cat=='DESILS':
+            cmap_name = 'Greens'
+        
+        elif cat=='HSC':
+            cmap_name = 'RdPu'
+
+        # Generate figure
+        stem = figdir / f"parameter_consistency_vs_lmax_{args.fitstr_cross}_{cat}"
+        plot_amplitude_chi2_by_instrument(
+            all_configs,
+            inst_list=(1, 2),
+            figsize=(8.5, 7),
+            save_path=str(stem.with_suffix(f'.{args.fig_fmt}')),
+            legend_ncol=2,
+            bbox_to_anchor=(0.5, 1.12),
+            use_cmap=True,
+            cmap_name=cmap_name,
+            x_offset_scale=0.03,
+        )
+        print(f"[plot_parameter_consistency_vs_lmax] generated {stem.with_suffix(f'.{args.fig_fmt}')}")
 
 
 def _plot_sigma_damp(args: argparse.Namespace) -> None:
@@ -4025,7 +4185,7 @@ def _plot_redshift_panels_2x2(args: argparse.Namespace) -> None:
             if bias_cache is not None else None
         b_g_hsc = 1.0 + 0.84 * z_center if bias_cache is not None else None
 
-        fig, axes = plt.subplots(2, 2, figsize=(6, 6), sharex=True, sharey=True)
+        fig, axes = plt.subplots(2, 2, figsize=(8, 6), sharex=True, sharey=True)
 
         for row, (cat_results, cat_pred_by_inst, b_g) in enumerate([
             (desils_results, ls_pred_fpaths_by_inst,  b_g_ls),
@@ -4045,29 +4205,30 @@ def _plot_redshift_panels_2x2(args: argparse.Namespace) -> None:
 
         # Add shared legend above all panels
         handles = [
-            plt.Line2D([0], [0], color=colors['data'], marker='o', markersize=3, linestyle='none', label='Data ('+str(z_low)+'$ < z_{\\rm phot} < $'+str(z_high)+')'),
-            plt.Line2D([0], [0], color=colors['total'], linewidth=2, label='Total'),
-            plt.Line2D([0], [0], color=colors['two_halo'], linewidth=1.5, alpha=0.7, label='2-halo'),
-            plt.Line2D([0], [0], color=colors['one_halo'], linewidth=1.2, alpha=0.7, label='1-halo'),
-            plt.Line2D([0], [0], color=colors['shot_noise'], linewidth=1.2, linestyle='--', alpha=0.7, label='Shot noise'),
+            plt.errorbar([0], [0], yerr=[0.], color=colors['data'], marker='o', capsize=2.5, markersize=3, linestyle='none', label='Data ('+str(z_low)+'$ < z_{\\rm phot} < $'+str(z_high)+')'),
+            plt.Line2D([0], [0], linewidth=2.0, linestyle='solid', color='k', alpha=0.6, label='IGL prediction'),
+            plt.Line2D([0], [0], color=colors['total'], linewidth=2, label='Best-fit model'),
+            plt.Line2D([0], [0], color=colors['two_halo'], linestyle='dashdot', linewidth=1.5, alpha=0.7, label='Two-halo'),
+            plt.Line2D([0], [0], color=colors['one_halo'], linewidth=1.2, alpha=0.7, label='One-halo'),
+            plt.Line2D([0], [0], color=colors['shot_noise'], linewidth=1.2, linestyle='dashed', alpha=0.7, label='Poisson level'),
         ]
-        if bias_cache is not None:
-            handles.append(
-                plt.Line2D([0], [0], color=colors['igl'], linewidth=2.5, linestyle=':', alpha=0.9, label='IGL prediction')
-            )
+        # if bias_cache is not None:
+        #     handles.append(
+        #         plt.Line2D([0], [0], linewidth=2.0, linestyle='solid', color='k', alpha=0.6, label='IGL prediction')
+        #     )
         fig.legend(
             handles=handles,
             loc='upper center',
-            bbox_to_anchor=(0.5, 0.98),
+            bbox_to_anchor=(0.5, 1.02),
             ncol=3,
-            fontsize=10,
+            fontsize=12,
         )
         
         # Common axis labels
         axes[1, 0].set_xlabel(r"$\ell$", fontsize=14)
         axes[1, 1].set_xlabel(r"$\ell$", fontsize=14)
-        axes[0, 0].set_ylabel(r"$D_\ell$ [nW m$^{-2}$ sr$^{-1}$]", fontsize=14)
-        axes[1, 0].set_ylabel(r"$D_\ell$ [nW m$^{-2}$ sr$^{-1}$]", fontsize=14)
+        axes[0, 0].set_ylabel(r"$D_\ell^{\rm Ig}$ [nW m$^{-2}$ sr$^{-1}$]", fontsize=14)
+        axes[1, 0].set_ylabel(r"$D_\ell^{\rm Ig}$ [nW m$^{-2}$ sr$^{-1}$]", fontsize=14)
         
         # fig.suptitle(f"Tomographic bin: {z_low} < z < {z_high}", fontsize=14, y=1.05)
         plt.subplots_adjust(wspace=0.05, hspace=0.05)
@@ -4129,8 +4290,7 @@ def _plot_2x2_spectrum_panel(ax, results, inst_idx, z_idx, lMax, colors, lams,
     )
 
     # Smooth ell grid matching plot_fit_fixed_1h_templates
-    ell_m = np.logspace(0.2 * np.log10(lb_fit.min()),
-                        5.0 * np.log10(lb_fit.max()), 200)
+    ell_m = np.logspace(2, 5.5, 200)
 
     # ------------------------------------------------------------------ #
     # Build components
@@ -4199,8 +4359,8 @@ def _plot_2x2_spectrum_panel(ax, results, inst_idx, z_idx, lMax, colors, lams,
         elif model.use_linear_2h and z_idx in model.dl_2h_lin_per_zbin:
             # Use linear 2H template for uncertainty bounds
             ell_lin, dl_lin = model.dl_2h_lin_per_zbin[z_idx]
-            dl_lin_upper = np.interp(ell_m, ell_lin, dl_lin, left=0.0, right=0.0)
-            dl_lin_lower = np.interp(ell_m, ell_lin, dl_lin, left=0.0, right=0.0)
+            dl_lin_upper = np.interp(ell_m, ell_lin, dl_lin)
+            dl_lin_lower = np.interp(ell_m, ell_lin, dl_lin)
             dl_2h_upper = (params[0] + params_err[0]) * dl_lin_upper
             dl_2h_lower = max(0, params[0] - params_err[0]) * dl_lin_lower
         else:
@@ -4241,15 +4401,15 @@ def _plot_2x2_spectrum_panel(ax, results, inst_idx, z_idx, lMax, colors, lams,
     # ------------------------------------------------------------------ #
     ax.errorbar(lb_fit, data_dl, yerr=data_dlerr, fmt='o',
                 color=colors['data'], markersize=3, capsize=1.5,
-                elinewidth=1.0, alpha=0.8, zorder=5)
+                elinewidth=1.0, alpha=0.8, zorder=7)
 
     # ------------------------------------------------------------------ #
     # Plot model components + uncertainty bands
     # ------------------------------------------------------------------ #
-    ax.loglog(ell_m, components['total'],      color=colors['total'],      lw=2.0)
-    ax.loglog(ell_m, components['two_halo'],   color=colors['two_halo'],   lw=1.2, alpha=0.7)
-    ax.loglog(ell_m, components['one_halo'],   color=colors['one_halo'],   lw=1.2, alpha=0.7)
-    ax.loglog(ell_m, components['shot_noise'], color=colors['shot_noise'], lw=1.2, alpha=0.7, linestyle='solid')
+    ax.loglog(ell_m, components['total'],      color=colors['total'],      lw=2.0, zorder=6)
+    ax.loglog(ell_m, components['two_halo'],   color=colors['two_halo'],   lw=1.2, alpha=0.7, linestyle='dashdot', zorder=6)
+    ax.loglog(ell_m, components['one_halo'],   color=colors['one_halo'],   lw=1.2, alpha=0.7, zorder=6)
+    ax.loglog(ell_m, components['shot_noise'], color=colors['shot_noise'], lw=1.2, alpha=0.7, linestyle='dashed', zorder=6)
 
     if uncertainty_bands is not None:
         ax.fill_between(ell_m,
@@ -4273,8 +4433,8 @@ def _plot_2x2_spectrum_panel(ax, results, inst_idx, z_idx, lMax, colors, lams,
             from ciber.plotting.gal_plotting_fns import smooth_mock_cross_with_bias
             ell_igl = np.geomspace(lb_fit.min() * 0.8, lb_fit.max() * 1.2, 300)
             _, dl_igl = smooth_mock_cross_with_bias(igl_pred_fpath, 0.0, b_g, ell_eval=ell_igl)
-            ax.plot(ell_igl, dl_igl, color=colors.get('igl', 'darkorange'),
-                    linewidth=2.5, linestyle=':', alpha=0.9, zorder=4)
+            ax.plot(ell_igl, dl_igl, color='k',
+                    linewidth=2.5, linestyle='solid', alpha=0.5, zorder=5)
         except Exception as e:
             print(f"[_plot_2x2_spectrum_panel] IGL overlay failed: {e}")
 
@@ -4290,14 +4450,14 @@ def _plot_2x2_spectrum_panel(ax, results, inst_idx, z_idx, lMax, colors, lams,
     ax.tick_params(axis='both', which='major', labelsize=9)
 
     # Shade region excluded from fit
-    ax.axvspan(lMax, lb_fit.max() * 1.2, color='lightgray', alpha=0.3, zorder=0)
+    ax.axvspan(lMax-2000, lb_fit.max() * 1.2, color='lightgray', alpha=0.3, zorder=0)
 
     # Panel label with chi2, bandpower count, and parameter count
     n_bandpowers = len(lb_fit)
     # n_floated = int(n_params_fit) if n_params_fit is not None and not np.isnan(n_params_fit) else n_params_stored
-    chi2_str = f"χ²/dof = {chi2_reduced:.2f}/{ndof_correct}" if chi2_reduced is not None else ""
+    chi2_str = f"$\chi^2$/dof = {chi2_reduced*ndof_correct:.1f}/{ndof_correct} ({chi2_reduced:.2f})"
     ax.text(0.04, 0.97, f"{title}\n{chi2_str}",
-            transform=ax.transAxes, fontsize=10, va='top', ha='left')
+            transform=ax.transAxes, fontsize=12, va='top', ha='left')
     
 
 
@@ -5588,7 +5748,7 @@ def parse_args() -> argparse.Namespace:
                  "plot_corner", "plot_corr_a1h_a2h", "plot_sigma_damp", "plot_chi2_1h",
                  "plot_chi2_2h", "plot_redshift_panels_2x2", "plot_a1h_vs_redshift",
                  "plot_a1h_vs_redshift_three_row", "plot_a1h_vs_redshift_alternate_layout", "plot_a1h_vs_redshift_mag_comparison",
-                 "plot_a1h_band_ratio_vs_redshift",
+                 "plot_a1h_band_ratio_vs_redshift", "plot_parameter_consistency_vs_lmax",
                  "plot_a2h_vs_redshift", "plot_di_dz_upper_limits", "plot_d_ell_1h_evolution",
                  "plot_r1h_ratio", "plot_ihl_and_dell_combined",
                  "make_chi2_table", "make_amplitude_table", 
@@ -5695,7 +5855,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--lmax-components",
         type=int,
-        default=50000,
+        default=30000,
         help="Fixed lMax used for plot_components",
     )
     parser.add_argument(
@@ -5733,7 +5893,7 @@ _ALL_MODES = ["run_auto", "run_cross", "plot_auto", "plot_cross", "plot_componen
               "plot_corr_a1h_a2h", "plot_sigma_damp", "plot_chi2_1h", "plot_chi2_2h",
               "plot_redshift_panels_2x2", "plot_a1h_vs_redshift", "plot_a1h_vs_redshift_three_row",
               "plot_a1h_vs_redshift_alternate_layout", "plot_a1h_vs_redshift_mag_comparison", "plot_a1h_band_ratio_vs_redshift",
-              "plot_d_ell_1h_evolution",
+              "plot_d_ell_1h_evolution", "plot_parameter_consistency_vs_lmax",
               "plot_r1h_ratio", "plot_ihl_and_dell_combined",
               "make_chi2_table", "make_amplitude_table", "param_priors_table"]
 
@@ -5771,6 +5931,8 @@ def main() -> None:
         _plot_corr_a1h_a2h(args)
     if "plot_sigma_damp" in modes:
         _plot_sigma_damp(args)
+    if "plot_parameter_consistency_vs_lmax" in modes:
+        _plot_parameter_consistency_vs_lmax(args)
     if "plot_chi2_1h" in modes:
         _chi2_comparison_with_without_1h(args)
     if "plot_chi2_2h" in modes:

@@ -5,6 +5,7 @@ import numpy as np
 import sys
 import os
 import config
+from pathlib import Path
 
 # Get the parent directory
 # parent_dir = os.path.abspath(os.path.join(os.getcwd(), ".."))
@@ -12,6 +13,7 @@ import config
 # sys.path.append(parent_dir)
 from ciber.core.powerspec_pipeline import *
 from ciber.io.ciber_data_utils import *
+from ciber.cross_correlation.nl_corrections import NonlinearCorrectionFactor
 
 
 def forecast_vs_nbar(ciber_inst, ifield, nbar_fid=2e4, Adeg=20., mask_frac=0.7, \
@@ -34,8 +36,10 @@ def forecast_vs_nbar(ciber_inst, ifield, nbar_fid=2e4, Adeg=20., mask_frac=0.7, 
 
         all_dcl_bp.append(dcl_bandpowers)
 
+    # Retrieve IGL curve for plotting
+    igl_curve = clf.get_igl_curve()
 
-    return clf, lb, all_dcl_bp, dcl_terms_bp, terms_fid, xerr, nbar_list
+    return clf, lb, all_dcl_bp, dcl_terms_bp, terms_fid, xerr, nbar_list, igl_curve
     
 
 class ciber_cl_forecast():
@@ -66,6 +70,10 @@ class ciber_cl_forecast():
         self.noisemodl_datestr = noisemodl_datestr
 
         self.mask_frac = mask_frac
+        
+        # Non-linear correction factor
+        self.nl_correction = None
+        self.nl_ratio = None
         
         print('fsky = ', self.fsky)
 
@@ -131,16 +139,65 @@ class ciber_cl_forecast():
         plt.grid(alpha=0.3)
         plt.show()  
         return fig  
+    
+    def load_nl_corrections(self, cache_path=None):
+        """
+        Load non-linear correction factors.
         
-    def load_clg(self, ciber_inst, catname='WISE', addstr='unWISE_neo8', plot=False, basepath=None):
+        Computes P_nl / P_lin ratio from precomputed CAMB power spectra
+        and interpolates to the forecast multipole range.
         
-        # load autos from unWISE
+        Parameters
+        ----------
+        cache_path : str or Path, optional
+            Path to matter_cell_predictions_cache.npz. If None, searches default location.
+        """
+        try:
+            self.nl_correction = NonlinearCorrectionFactor(cache_path=cache_path)
+            self.nl_ratio = self.nl_correction.get_ratio(self.lrange)
+            print(f"Loaded NL corrections: ratio ranges from {self.nl_ratio.min():.2f}× to {self.nl_ratio.max():.2f}×")
+        except Exception as e:
+            print(f"Warning: Failed to load NL corrections: {e}")
+            self.nl_correction = None
+            self.nl_ratio = None
         
-        cgps_file = load_ciber_gal_ps(ciber_inst, catname, addstr=addstr, basepath=basepath)
+    def load_clg(self, ciber_inst, catname='LS', addstr='0.0_z_1.0_wrandsub_JHlt16_wFFerr', plot=False, basepath=None):
+        
+        # Load galaxy clustering from omnibus mock predictions (DESI-LS z<1 or fallback)
+        # If catname='LS' (default), tries LS z<1 first, falls back to HSC z<1
+        # Otherwise falls back to traditional load_ciber_gal_ps
+        
+        if catname == 'LS':
+            # Try to load from omnibus mock predictions directory
+            jmock_basedir = basepath if basepath is not None else 'data/jordan_mocks/v3_boxed_outputs/tiles_10p0deg/'
+            pred_file = os.path.join(jmock_basedir, f'mock_ps_pred/TM{ciber_inst}/field_average/pred_cls_TM{ciber_inst}_{addstr}.npz')
+            
+            # If exact file doesn't exist, try HSC z<1 as fallback
+            if not os.path.exists(pred_file):
+                pred_file_hsc = os.path.join(jmock_basedir, f'mock_ps_pred/TM{ciber_inst}/field_average/pred_cls_TM{ciber_inst}_hsc_i_lt_25.0_zmax=1.0.npz')
+                if os.path.exists(pred_file_hsc):
+                    print(f"LS z<1 file not found; using HSC i<25 z<1 fallback")
+                    pred_file = pred_file_hsc
+                else:
+                    raise FileNotFoundError(f"LS z<1 predictions not found at {pred_file} and HSC fallback not found at {pred_file_hsc}")
+            
+            pred_data = np.load(pred_file, allow_pickle=True)
+            lb = np.asarray(pred_data['lb'], dtype=float)
+            gal_auto = np.asarray(pred_data['gal_auto'], dtype=float)
+            cross = np.asarray(pred_data['cross'], dtype=float)
+            intensity_auto_full = np.asarray(pred_data['intensity_auto_full'], dtype=float)
+            
+            # Store cross and IGL for use in forecast
+            self.clx = cross
+            self.clIg = intensity_auto_full
+            
+        else:
+            # Fall back to traditional load for other catalogs
+            cgps_file = load_ciber_gal_ps(ciber_inst, catname, addstr=addstr, basepath=basepath)
+            lb, all_cl_gal, all_clerr_gal, ifield_list_use = [cgps_file[key] for key in ['lb', 'all_cl_gal', 'all_clerr_gal', 'ifield_list_use']]  
+            gal_auto = np.mean(all_cl_gal, axis=0)
 
-        lb, all_cl_gal, all_clerr_gal, ifield_list_use = [cgps_file[key] for key in ['lb', 'all_cl_gal', 'all_clerr_gal', 'ifield_list_use']]  
-
-        clg = np.mean(all_cl_gal, axis=0) # used for sample variance estimate
+        clg = gal_auto  # used for sample variance estimate
                 
         # separate shot noise from clustering
         
@@ -155,6 +212,11 @@ class ciber_cl_forecast():
 
         self.clg_clus = clg_interp(self.lrange)
         self.clg_sn = clg_sn
+        
+        # Store IGL interpolated on lrange if available
+        if hasattr(self, 'clIg'):
+            igl_interp = interp1d(lb, self.clIg, kind='linear', bounds_error=False, fill_value='extrapolate')
+            self.clIg_interp = igl_interp(self.lrange)
 
         if plot:
         
@@ -241,6 +303,15 @@ class ciber_cl_forecast():
         
         self.clI_auto = ciber_auto(self.lrange)
 
+    def get_igl_curve(self):
+        """
+        Retrieve the fiducial IGL (intensity_auto_full) curve.
+        Returns the interpolated IGL on the forecast lrange.
+        """
+        if hasattr(self, 'clIg_interp'):
+            return self.clIg_interp
+        else:
+            return None
 
     def perl_to_bandpowers(self, dcl, lEdges=None):
 

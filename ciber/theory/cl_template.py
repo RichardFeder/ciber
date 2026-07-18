@@ -291,7 +291,8 @@ def fit_and_decompose_ihl_templates(template_dir, zbinedges=None, slopes=None,
                                     fit_ell_range=None, plot=True,
                                     figsize=(14, 10), save_path=None,
                                     p0=None, bounds=None, method='leastsq',
-                                    verbose=True, ylim=[1e-4, 1e3], ell_scale=1.0):
+                                    verbose=True, ylim=[1e-4, 1e3], ell_scale=1.0,
+                                    use_linear_2h=False, lmax_fit=50000):
     """
     Load IHL templates and fit them to decompose into two-halo, one-halo, and shot noise contributions.
     
@@ -340,12 +341,20 @@ def fit_and_decompose_ihl_templates(template_dir, zbinedges=None, slopes=None,
     ell_scale : float, optional
         Scaling factor to apply to ell values from templates (e.g., 1/π to correct
         labeling). Default 1.0 (no scaling).
+    use_linear_2h : bool, optional
+        If True, generate linear matter power spectrum C_ell^lin templates per redshift bin
+        instead of loading IHL templates from files. Uses Limber projection with CAMB.
+        When True, template_dir and template_names are ignored, zbinedges must be provided.
+        Default False (load templates from files).
+    lmax_fit : float, optional
+        Maximum multipole for template generation when use_linear_2h=True.
+        Also defines the fit range if fit_ell_range is None. Default 50000.
 
     Returns
     -------
     results : dict
         Dictionary containing:
-        - 'templates': dict of loaded templates (keys: template names)
+        - 'templates': dict of loaded/generated templates (keys: template names)
         - 'fits': dict of fit results for each template with:
             * 'params': [A_2h, A_1h, mu_1h, sigma_1h, A_shot]
             * 'params_err': parameter uncertainties
@@ -355,17 +364,54 @@ def fit_and_decompose_ihl_templates(template_dir, zbinedges=None, slopes=None,
             * 'ell_eval': multipoles where components are evaluated
         - 'summary': DataFrame with fit parameters for all templates
     
+    Notes
+    -----
+    When use_linear_2h=True:
+    - Pre-computes linear 2h templates using the same machinery as 
+      _compute_linear_2h_templates_per_zbin() from cross_ps_parametric_model.py
+    - For each z-bin, fits only mu_1h and sigma_1h (one-halo shape) to the linear template
+    - Saves the resulting 1h parameters for use in galaxy cross-spectrum fits
+    
     """
     import pandas as pd
+    import sys
+    from pathlib import Path
     
-    # Load templates
+    # Pre-compute linear 2h templates if requested (these will be used during fitting)
+    dl_2h_lin_per_zbin = {}
+    if use_linear_2h:
+        if zbinedges is None:
+            raise ValueError("zbinedges must be provided when use_linear_2h=True")
+        
+        if verbose:
+            print("="*70)
+            print("PRE-COMPUTING LINEAR 2H TEMPLATES FOR FITTING")
+            print("="*70)
+        
+        # Import the linear 2h template generator
+        try:
+            from ciber.theory.cross_ps_parametric_model import _compute_linear_2h_templates_per_zbin
+        except ImportError:
+            sys.path.insert(0, str(Path('.').resolve()))
+            from ciber.theory.cross_ps_parametric_model import _compute_linear_2h_templates_per_zbin
+        
+        # Compute linear 2h templates for each z-bin
+        dl_2h_lin_per_zbin = _compute_linear_2h_templates_per_zbin(zbinedges, lmax_fit, verbose=verbose)
+    
+    # Load IHL templates from files (always, regardless of use_linear_2h)
     if verbose:
-        print("="*70)
-        print("Loading IHL Templates")
-        print("="*70)
+        if use_linear_2h:
+            print("="*70)
+            print("Loading IHL Templates (will fit with linear 2h baseline)")
+            print("="*70)
+        else:
+            print("="*70)
+            print("Loading IHL Templates")
+            print("="*70)
     
     templates = load_ihl_templates(template_dir, template_names=template_names,
                                    zbinedges=zbinedges, slopes=slopes)
+
 
     if len(templates) == 0:
         raise ValueError("No templates loaded. Check template_dir and file naming.")
@@ -392,13 +438,36 @@ def fit_and_decompose_ihl_templates(template_dir, zbinedges=None, slopes=None,
 
         ell_template = template['ell']
         dl_template = template['dl']
+        
+        # Extract z-bin index from template dict (added by load_ihl_templates when using zbinedges)
+        zidx = template.get('zbin_index', None)
+        
+        if verbose and use_linear_2h:
+            print(f"    zbin_index from template dict: {zidx}")
+        
+        # If zbin_index not available, try to extract from zbinedges info in template
+        if zidx is None and 'zbinedges' in template and template['zbinedges'] is not None:
+            z_low, z_high = template['zbinedges']
+            if zbinedges is not None:
+                # Find matching z-bin index
+                for idx in range(len(zbinedges) - 1):
+                    if (np.isclose(zbinedges[idx], z_low) and np.isclose(zbinedges[idx+1], z_high)):
+                        zidx = idx
+                        if verbose and use_linear_2h:
+                            print(f"    Matched zbinedges: found zidx={zidx} for z=[{z_low}, {z_high}]")
+                        break
+        
+        if use_linear_2h and zidx is None:
+            raise ValueError(f"Could not extract z-bin index from template '{template_name}'")
 
         # Create model instance
         from ciber.theory.cross_ps_parametric_model import CrossPowerSpectrumModel
         model = CrossPowerSpectrumModel(
             lb=ell_template,
-            use_powerlaw_2h=use_powerlaw_2h,
-            alpha_2h_fixed=alpha_2h_fixed
+            use_powerlaw_2h=use_powerlaw_2h and not use_linear_2h,  # Disable powerlaw if using linear 2h
+            alpha_2h_fixed=alpha_2h_fixed,
+            use_linear_2h=use_linear_2h,
+            dl_2h_lin_per_zbin=dl_2h_lin_per_zbin
         )
         
         # Set initial parameters if not provided
@@ -445,6 +514,7 @@ def fit_and_decompose_ihl_templates(template_dir, zbinedges=None, slopes=None,
                 bounds=bounds_fit,
                 method=method,
                 fit_range=fit_ell_range,
+                z_bin_index=zidx,  # Pass z-bin index for linear 2h lookup
                 verbose=verbose
             )
             
@@ -455,7 +525,7 @@ def fit_and_decompose_ihl_templates(template_dir, zbinedges=None, slopes=None,
             # Evaluate model components on fine ell grid for plotting
             ell_eval = np.logspace(np.log10(ell_template.min()), 
                                    np.log10(ell_template.max()), 200)
-            components = model.model_components(ell_eval, *params)
+            components = model.model_components(ell_eval, *params, z_bin_index=zidx)
             
             # Store results
             fits[template_name] = {
@@ -733,6 +803,8 @@ def save_ihl_1h_params(results, save_path, zbinedges=None, slopes=None):
     z_centers = []
     mu_1h_by_slope = {slope: [] for slope in slopes}
     sigma_1h_by_slope = {slope: [] for slope in slopes}
+    a1h_by_slope = {slope: [] for slope in slopes}
+    a1h_err_by_slope = {slope: [] for slope in slopes}
     
     for zidx in range(len(zbinedges) - 1):
         z_low = zbinedges[zidx]
@@ -761,11 +833,16 @@ def save_ihl_1h_params(results, save_path, zbinedges=None, slopes=None):
                 continue
             
             params = fit['params']
+            params_err = fit.get('params_err', np.zeros_like(params))
+            a_1h = params[1]   # one-halo amplitude
+            a_1h_err = params_err[1]
             mu_1h = params[2]  # ln(ell_peak)
             sigma_1h = params[3]  # log-width
             
             # Store parameters
             params_dict[(zidx, slope)] = {
+                'A_1h': a_1h,
+                'A_1h_err': a_1h_err,
                 'mu_1h': mu_1h,
                 'sigma_1h': sigma_1h,
                 'ell_peak': np.exp(mu_1h),
@@ -774,6 +851,8 @@ def save_ihl_1h_params(results, save_path, zbinedges=None, slopes=None):
                 'z_center': z_center
             }
             
+            a1h_by_slope[slope].append(a_1h)
+            a1h_err_by_slope[slope].append(a_1h_err)
             mu_1h_by_slope[slope].append(mu_1h)
             sigma_1h_by_slope[slope].append(sigma_1h)
     
@@ -820,7 +899,9 @@ def save_ihl_1h_params(results, save_path, zbinedges=None, slopes=None):
         'sigma_vs_z': sigma_relations,
         'z_centers': z_centers_array,
         'mu_1h_by_slope': mu_1h_by_slope,
-        'sigma_1h_by_slope': sigma_1h_by_slope
+        'sigma_1h_by_slope': sigma_1h_by_slope,
+        'a1h_by_slope': a1h_by_slope,
+        'a1h_err_by_slope': a1h_err_by_slope
     }
     
     # Save to file
@@ -831,6 +912,8 @@ def save_ihl_1h_params(results, save_path, zbinedges=None, slopes=None):
              ln_ell_peak_vs_z=ln_ell_peak_relations,
              sigma_vs_z=sigma_relations,
              z_centers=z_centers_array,
+             a1h_by_slope=a1h_by_slope,
+             a1h_err_by_slope=a1h_err_by_slope,
              allow_pickle=True)
     
     print(f"\n✓ Saved one-halo parameters to: {save_path}")

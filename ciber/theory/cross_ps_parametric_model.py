@@ -1337,7 +1337,7 @@ class CrossPowerSpectrumModel:
         }
     
     @staticmethod
-    def plot_mcmc_corner(fit_result, labels=None, title=None, save_path=None, figsize=(5,5)):
+    def plot_mcmc_corner(fit_result, labels=None, title=None, save_path=None, figsize=(5,5), fix_bias=False):
         """
         Plot corner plot of MCMC posterior distributions.
         Handles both IHL template fits and parametric log-normal fits.
@@ -1380,6 +1380,12 @@ class CrossPowerSpectrumModel:
                 (i for i, p in enumerate(param_names_fitted) if 'shot' in str(p).lower()),
                 None
             )
+            print('shot idx here is ', shot_idx)
+
+            if fix_bias and shot_idx is not None:
+                shot_idx -= 1
+
+                
             if shot_idx is not None:
                 samples[:, shot_idx] = samples[:, shot_idx] * 1e7
                 labels[shot_idx] = labels[shot_idx].replace('shot}$', 'shot} \\times 10^7$')
@@ -2890,11 +2896,14 @@ def run_gal_auto_fits_two_stage(inst_list=[1, 2], cat='DESILS',
             title = f'Galaxy Auto {cat} {lams[idx]} $\\mu$m'
             title += f', {zbinedges[zidx]:.1f}<z<{zbinedges[zidx+1]:.1f}'
             
+
+
             # Stage 1 plots
             fig1 = CrossPowerSpectrumModel.plot_mcmc_corner(
                 fit_result_stage1,
                 title=title + ' (Stage 1)', 
-                figsize=(5, 5)
+                figsize=(5, 5),
+                
             )
             
             fig1_ps, ax1 = plot_fit_fixed_1h_templates(
@@ -3475,18 +3484,18 @@ def run_gal_cross_fits(inst_list=[1, 2], ifield_list=[4,5,6,7,8], maskstr='JHlt1
         if result is not None:
             ell_values, dl_lin = result
 
-            import matplotlib.pyplot as plt
-            plt.figure(figsize=(6, 5))
-            plt.plot(ell_values, dl_lin, label=f'zbin {zidx}' if dl_lin is not None else None)
-            plt.xlabel('Multipole moment l')
-            plt.ylabel('$D_{\\ell}$ (2h linear)', fontsize=14)
-            plt.yscale('log')
-            plt.xscale('log')
-            plt.xlabel('Multipole $\\ell$', fontsize=14)
-            plt.title(f'Linear 2H Template for zbin {zidx}')
-            plt.legend()
-            plt.savefig(f'linear_2h_template_zbin_{zidx}.png', bbox_inches='tight')
-            plt.close()
+            # import matplotlib.pyplot as plt
+            # plt.figure(figsize=(6, 5))
+            # plt.plot(ell_values, dl_lin, label=f'zbin {zidx}' if dl_lin is not None else None)
+            # plt.xlabel('Multipole moment l')
+            # plt.ylabel('$D_{\\ell}$ (2h linear)', fontsize=14)
+            # plt.yscale('log')
+            # plt.xscale('log')
+            # plt.xlabel('Multipole $\\ell$', fontsize=14)
+            # plt.title(f'Linear 2H Template for zbin {zidx}')
+            # plt.legend()
+            # plt.savefig(f'linear_2h_template_zbin_{zidx}.png', bbox_inches='tight')
+            # plt.close()
 
     # Ensure sigma_damp_fixed is a dict if provided
     if sigma_damp_fixed is None:
@@ -3554,10 +3563,11 @@ def run_gal_cross_fits(inst_list=[1, 2], ifield_list=[4,5,6,7,8], maskstr='JHlt1
             
             # Create model instance
             a2h_fixed_val = None
+            fix_bias=False
             if A_2h_fixed_arr is not None:
                 a2h_fixed_val = float(A_2h_fixed_arr[idx, zidx])
                 print(f"[run_gal_cross_fits] Fixing A_2h = {a2h_fixed_val:.4f} (IGL prediction, inst={inst}, zidx={zidx})")
-            
+                fix_bias=True
             # Get fixed sigma_damp for this instrument if provided
             sigma_damp_for_inst = sigma_damp_fixed.get(inst, None)
             
@@ -3608,7 +3618,9 @@ def run_gal_cross_fits(inst_list=[1, 2], ifield_list=[4,5,6,7,8], maskstr='JHlt1
             fig = CrossPowerSpectrumModel.plot_mcmc_corner(
                 fit_result_mcmc,
                 title=title, 
-                figsize=(5, 5)
+                figsize=(5, 5),
+                fix_bias=fix_bias,
+
             )
             plt.show()
 

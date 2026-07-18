@@ -317,7 +317,23 @@ def catalog_to_sb_map(x, y, mag_AB, ciber_inst, ifield=8, imdim=1024):
     return srcmap_full
         
     
+def load_mags_mh_nsats_redshift_jmock(pop, galstr, jmock_dir):
+    zstr_dict = dict({1:'0.900_1.200_um', 2:'1.350_2.100_um'})
+
+    gal_flux_TM1 = fits.open(os.path.join(jmock_dir, 'cat_'+zstr_dict[1]+'_pop_'+str(pop)+'.fits'))[1].data[galstr]
+    gal_mag_AB_TM1 = 23.9-2.5*np.log10(gal_flux_TM1)
+
+    gal_flux_TM2 = fits.open(os.path.join(jmock_dir, 'cat_'+zstr_dict[2]+'_pop_'+str(pop)+'.fits'))[1].data[galstr]
+    gal_mag_AB_TM2 = 23.9-2.5*np.log10(gal_flux_TM2)
+
+    gal_redshifts = fits.open(os.path.join(jmock_dir, 'cat_z_pop_'+str(pop)+'.fits'))[1].data['z']
     
+    gal_nsats = fits.open(os.path.join(jmock_dir, 'cat_nsats_pop_'+str(pop)+'.fits'))[1].data[galstr]
+
+    gal_mh = fits.open(os.path.join(jmock_dir, 'cat_Mh_pop_'+str(pop)+'.fits'))[1].data[galstr]
+
+    return gal_mag_AB_TM1, gal_mag_AB_TM2, gal_redshifts, gal_nsats, gal_mh
+
 def load_ra_dec_mags_redshift_jmock(ciber_inst, pop, galstr, jmock_dir):
     
 

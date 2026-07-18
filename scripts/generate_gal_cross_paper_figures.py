@@ -39,6 +39,8 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 
+from ciber.theory.ihl_1h_template_cache import create_and_cache_effective_1h_template, load_effective_1h_for_fitting
+
 # -----------------------------
 # Dataclasses and timing helpers
 # -----------------------------
@@ -276,6 +278,80 @@ def _load_indiv_pair(
     return rec
 
 
+def write_summary(summary):
+    lines = [
+    "CIBER z<1 auto prediction summary",
+    "===============================",
+    f"created_utc: {summary['created_utc']}",
+    f"fit_tag: {summary['fit_tag']}",
+    f"fit_mode: {summary['fit_mode']}",
+    f"zbinedges: {summary['zbinedges']}",
+    "",
+    "Inputs:",
+    f"  cross_fit_lmax: {summary['inputs']['cross_fit_lmax']}",
+    f"  auto_fit_lmax: {summary['inputs']['auto_fit_lmax']}",
+    f"  scale_ell_min/max: {summary['inputs']['scale_ell_min']} / {summary['inputs']['scale_ell_max']}",
+    f"  auto_fit_ell_min/max: {summary['inputs']['auto_fit_ell_min']} / {summary['inputs']['auto_fit_ell_max']}",
+    f"  shot_ell_min/max: {summary['inputs']['shot_ell_min']} / {summary['inputs']['shot_ell_max']}",
+    f"  gal_auto_denominator_mode: {summary['inputs']['gal_auto_denominator_mode']}",
+    f"  ratio_scaling_mode: {summary['inputs']['ratio_scaling_mode']}",
+    f"  cli_args: {summary['inputs']['cli_args']}",
+    "",
+    "Fields:",
+    f"  desils_ifield_list: {summary['fields']['desils_ifield_list']}",
+    f"  hsc_ifield_list: {summary['fields']['hsc_ifield_list']}",
+    "",
+    "Fit files:",
+    f"  cross_fit_file_ls: {summary['fit_files']['cross_fit_file_ls']}",
+    f"  cross_fit_file_hsc: {summary['fit_files']['cross_fit_file_hsc']}",
+    f"  gal_auto_fit_file_ls: {summary['fit_files']['gal_auto_fit_file_ls']}",
+    f"  gal_auto_fit_file_hsc: {summary['fit_files']['gal_auto_fit_file_hsc']}",
+    "",
+    "Source paths:",
+    f"  desils_ciber_gal_ps: {summary['source_paths']['desils_ciber_gal_ps']}",
+    f"  hsc_ciber_gal_ps: {summary['source_paths']['hsc_ciber_gal_ps']}",
+    "",
+    "Bandpowers:",
+    f"  lb_edges: {summary['bandpowers']['lb_edges']}",
+    f"  lb_cross: {summary['bandpowers']['lb_cross']}",
+    "",
+    "One-halo template:",
+    f"  mode: {summary['one_halo_template']['mode']}",
+    f"  source: {summary['one_halo_template']['source']}",
+    f"  mu_1h: {summary['one_halo_template']['mu_1h']}",
+    f"  sigma_1h: {summary['one_halo_template']['sigma_1h']}",
+    f"  n_used: {summary['one_halo_template']['n_used']}",
+    f"  template_dir: {summary['one_halo_template']['template_dir']}",
+    "",
+    "Large-field LS auto:",
+    f"  used: {summary['large_field_ls_auto']['used']}",
+    f"  basepath: {summary['large_field_ls_auto']['basepath']}",
+    f"  suffix: {summary['large_field_ls_auto']['suffix']}",
+    f"  weight_mode: {summary['large_field_ls_auto']['weight_mode']}",
+    f"  lb_large: {summary['large_field_ls_auto']['lb_large']}",
+    f"  file_paths: {summary['large_field_ls_auto']['file_paths']}",
+    "",
+    "Outputs:",
+    f"  prediction_file: {summary['outputs']['prediction_file']}",
+    f"  zslice_file: {summary['outputs']['zslice_file']}",
+    "",
+    "Per-z contributions:",
+    f"  enabled: {summary['per_z_contributions']['enabled']}",
+    f"  n_zbin: {summary['per_z_contributions']['n_zbin']}",
+    f"  note: {summary['per_z_contributions']['note']}",
+    "",
+    "Per-field DESI-LS:",
+    f"  enabled: {summary['per_field_desils']['enabled']}",
+    f"  ifields: {summary['per_field_desils']['ifields']}",
+    f"  output_dir: {summary['per_field_desils']['output_dir']}",
+    "",
+    "Per-field HSC:",
+    f"  enabled: {summary['per_field_hsc']['enabled']}",
+    f"  ifields: {summary['per_field_hsc']['ifields']}",
+    f"  output_dir: {summary['per_field_hsc']['output_dir']}",
+    ""]
+    return lines
+
 def _sum_pred_records(records: Sequence[Dict[str, np.ndarray]]) -> Optional[Dict[str, np.ndarray]]:
     if not records:
         return None
@@ -456,6 +532,8 @@ def _ensure_single_realization_pred_cls(
     plotting functions, while keeping model curves derived from saved mock data.
     """
     zbinedges = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
+    # zbinedges_coarse = [0.0, 0.5, 1.0, 2.0]
+
     samples = {
         "sdss_z_lt_22.0_CIBERfidmask": {
             "coarse_head": "sdss_z_lt_22.0_CIBERfidmask",
@@ -715,6 +793,9 @@ def run_omnibus(args: argparse.Namespace) -> List[GeneratedFigure]:
         "ifield_use": args.omnibus_tl_ifield,
         "tl_pix_template": args.omnibus_tl_pix_template,
         "ls_gal_auto_large_fpath": args.ls_gal_auto_large,
+        "nl_corrections": args.nl_corrections,
+        "pred_model_mode": args.omnibus_pred_model_mode,
+        "show_linear_pred": args.omnibus_show_linear_pred,
     }
 
     if args.pred_source == "current":
@@ -829,14 +910,18 @@ def run_forecast(args: argparse.Namespace) -> List[GeneratedFigure]:
         if key not in dat:
             raise KeyError(f"Missing key '{key}' in {inpath}")
 
+    # Extract IGL curve if available
+    igl_curve = dat.get("intensity_auto_full", None)
+
     fig = plot_clIG_forecast(
         lb=dat["lb"],
         lrange=dat["lrange"],
         dcl_terms_bp=dat["dcl_terms_bp"],
         dcl_vs_nbar=dat["dcl_vs_nbar"],
         xerr=dat["xerr"],
+        igl_curve=igl_curve,
     )
-    return [GeneratedFigure("forecast", fig, "plot_clIG_forecast")]
+    return [GeneratedFigure("forecast", fig, "plot_clIG_forecast_LS_z1")]
 
 
 def _load_rl_vs_z_inputs(inpath: Path) -> Tuple[Dict[str, Any], Any]:
@@ -1156,7 +1241,6 @@ def run_gaia_auto(args: argparse.Namespace) -> List[GeneratedFigure]:
 
 
 def run_gaia_cross(args: argparse.Namespace) -> List[GeneratedFigure]:
-    import matplotlib.pyplot as plt
 
     fns = _import_plotting_functions()
     plot_fieldav_ciber_gal_ps = fns["plot_fieldav_ciber_gal_ps"]
@@ -1232,9 +1316,6 @@ def run_gaia_cross(args: argparse.Namespace) -> List[GeneratedFigure]:
 
         # Store damping values with color info for bottom-right annotation
         damping_values.append((sigma_damp_med, lam_str, color))
-
-    # Add data label - plot invisible line for legend
-    # ax.plot([], [], 'k-', linewidth=1.5, label="Data (1.1 $\\mu$m)")
 
     # Create legend
     ax.legend(loc=2, bbox_to_anchor=[-0.2, 1.15], fontsize=11, ncol=3)
@@ -1373,6 +1454,7 @@ def run_cross_redshift(args: argparse.Namespace) -> List[GeneratedFigure]:
 
 def _zlt1_coarse_bins() -> List[float]:
     return [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
+    # return [0.0, 0.5, 1.0, 2.0]
 
 
 def _extract_measured_ciber_auto_dl(
@@ -1489,6 +1571,18 @@ def _column_percentile(values: np.ndarray, q: float) -> np.ndarray:
         if np.any(m):
             out[j] = float(np.percentile(col[m], q))
     return out
+
+
+def _interp_hold_edges(lb_src: np.ndarray, y_src: np.ndarray, lb_tgt: np.ndarray) -> np.ndarray:
+    """Interpolate in linear space and hold the edge values outside the source range."""
+    lb_src = np.asarray(lb_src, dtype=float)
+    y_src = np.asarray(y_src, dtype=float)
+    lb_tgt = np.asarray(lb_tgt, dtype=float)
+    m = np.isfinite(lb_src) & np.isfinite(y_src)
+    if np.sum(m) < 2:
+        return np.full(lb_tgt.shape, np.nan, dtype=float)
+    src = np.interp(lb_tgt, lb_src[m], y_src[m], left=y_src[m][0], right=y_src[m][-1])
+    return np.asarray(src, dtype=float)
 
 
 def _estimate_ciber_shot_noise_dl(
@@ -1700,8 +1794,11 @@ def _predict_auto_2h1h_from_cross_and_shot_subtracted_auto(
     gal_auto_samples: Optional[np.ndarray] = None,
     nsamp: int = 2000,
     seed: int = 123,
+    auto_model_lb: Optional[np.ndarray] = None,
+    return_draws: bool = False,
 ) -> Dict[str, np.ndarray]:
     from ciber.theory.cross_ps_parametric_model import CrossPowerSpectrumModel
+    from ciber.processing.numerical import interp_pred
 
     lb_eval = np.asarray(lb_eval, dtype=float)
     cross_params = np.asarray(cross_params, dtype=float)
@@ -1755,7 +1852,6 @@ def _predict_auto_2h1h_from_cross_and_shot_subtracted_auto(
         lb_eval,
         use_powerlaw_2h=True,
         alpha_2h_fixed=0.0,
-        use_lorentzian_1h=False,
         use_astrometry_damping=(cross_params.size >= 6),
         use_one_halo=True,
     )
@@ -1776,8 +1872,8 @@ def _predict_auto_2h1h_from_cross_and_shot_subtracted_auto(
     denom_draws = np.full((ns, nlb), np.nan, dtype=float)
     denom_med = np.full(nlb, np.nan, dtype=float)
     denom_err = np.full(nlb, np.nan, dtype=float)
-    dl_auto_2h_draws = np.full((ns, nlb), np.nan, dtype=float)
-    dl_auto_1h_draws = np.full((ns, nlb), np.nan, dtype=float)
+    dl_auto_2h_draws = None
+    dl_auto_1h_draws = None
 
     if gal_auto_denominator_mode == "shot-subtracted-data":
         gal_sub = _estimate_auto_2h_from_shot_subtracted_cl(
@@ -1814,21 +1910,39 @@ def _predict_auto_2h1h_from_cross_and_shot_subtracted_auto(
                 if idx < auto_draws.shape[1]:
                     auto_draws[:, idx] = np.clip(auto_draws[:, idx], 0.0, None)
 
+        auto_lb = lb_eval if auto_model_lb is None else np.asarray(auto_model_lb, dtype=float)
+        auto_nlb = auto_lb.size
+        dl_auto_2h_native = np.full((ns, auto_nlb), np.nan, dtype=float)
+        dl_auto_1h_native = np.full((ns, auto_nlb), np.nan, dtype=float)
+        denom_native = np.full((ns, auto_nlb), np.nan, dtype=float)
+
         auto_model = CrossPowerSpectrumModel(
-            lb_eval,
+            auto_lb,
             use_powerlaw_2h=True,
             alpha_2h_fixed=0.0,
-            use_lorentzian_1h=False,
             use_astrometry_damping=False,
             use_one_halo=True,
         )
         for i in range(ns):
-            comp_auto = auto_model.model_components(lb_eval, *np.asarray(auto_draws[i][:5], dtype=float))
+            comp_auto = auto_model.model_components(auto_lb, *np.asarray(auto_draws[i][:5], dtype=float))
             d2a = np.asarray(comp_auto["two_halo"], dtype=float)
             d1a = np.asarray(comp_auto["one_halo"], dtype=float)
-            dl_auto_2h_draws[i] = d2a
-            dl_auto_1h_draws[i] = d1a
-            denom_draws[i] = d2a + d1a
+            dl_auto_2h_native[i] = d2a
+            dl_auto_1h_native[i] = d1a
+            denom_native[i] = d2a + d1a
+
+        if auto_model_lb is not None:
+            dl_auto_2h_draws = np.full((ns, nlb), np.nan, dtype=float)
+            dl_auto_1h_draws = np.full((ns, nlb), np.nan, dtype=float)
+            denom_draws = np.full((ns, nlb), np.nan, dtype=float)
+            for i in range(ns):
+                dl_auto_2h_draws[i] = _interp_hold_edges(auto_lb, dl_auto_2h_native[i], lb_eval)
+                dl_auto_1h_draws[i] = _interp_hold_edges(auto_lb, dl_auto_1h_native[i], lb_eval)
+                denom_draws[i] = _interp_hold_edges(auto_lb, denom_native[i], lb_eval)
+        else:
+            dl_auto_2h_draws = dl_auto_2h_native
+            dl_auto_1h_draws = dl_auto_1h_native
+            denom_draws = denom_native
 
         denom_med = _column_percentile(denom_draws, 50.0)
         denom_p16 = _column_percentile(denom_draws, 16.0)
@@ -1932,6 +2046,228 @@ def _predict_auto_2h1h_from_cross_and_shot_subtracted_auto(
         "used_posterior_samples": np.array(bool(use_posterior_samples)),
         "gal_auto_denominator_mode": np.array(gal_auto_denominator_mode),
         "ratio_scaling_mode": np.array(ratio_scaling_mode),
+        "dl_pred_2h1h_draws": dl_pred_draws if return_draws else None,
+    }
+
+
+def _fit_or_load_intensity_weighted_models(
+    fluxweight_recon_results: Dict[str, Any],
+    inst_list: Sequence[int],
+    fit_tag: str,
+    reuse_fit_cache: bool,
+    cross_lmax: float,
+    auto_lmax: float,
+    auto_fit_ell_min: float,
+    startidx: int,
+    endidx: int,
+    nwalkers: int,
+    nsteps: int,
+    nburn: int,
+    cross_prior_bounds: np.ndarray,
+    auto_prior_bounds: np.ndarray,
+    fixed_mu_1h: Optional[float] = None,
+    fixed_sigma_1h: Optional[float] = None,
+    scaled_cross_err_dict: Optional[Dict[int, np.ndarray]] = None,
+) -> Dict[str, Any]:
+    from ciber.io.ciber_data_utils import save_fit_results_npz
+    from ciber.theory.cross_ps_parametric_model import CrossPowerSpectrumModel, load_fit_results_npz
+
+    def _collapse_mean_and_err(y: Optional[np.ndarray], yerr: Optional[np.ndarray]) -> Tuple[np.ndarray, np.ndarray]:
+        y_arr = np.asarray(y, dtype=float) if y is not None else np.array([], dtype=float)
+        if y_arr.ndim == 2:
+            y_mean = np.nanmean(y_arr, axis=0)
+        else:
+            y_mean = np.asarray(y_arr, dtype=float)
+
+        if yerr is not None:
+            yerr_arr = np.asarray(yerr, dtype=float)
+            if yerr_arr.ndim == 2:
+                yerr_use = np.sqrt(np.nansum(yerr_arr ** 2, axis=0)) / max(yerr_arr.shape[0], 1)
+            else:
+                yerr_use = yerr_arr
+        else:
+            if y_arr.ndim == 2 and y_arr.shape[0] > 1:
+                yerr_use = np.nanstd(y_arr, axis=0) / np.sqrt(float(y_arr.shape[0]))
+            else:
+                yerr_use = np.full(y_mean.shape, np.nan, dtype=float)
+
+        return np.asarray(y_mean, dtype=float), np.asarray(yerr_use, dtype=float)
+
+    all_results = fluxweight_recon_results.get("all_results", {})
+    meta = fluxweight_recon_results.get("metadata", {})
+    zmin = float(meta.get("zmin", 0.0))
+    zmax = float(meta.get("zmax", 1.0))
+    zbinedges = [zmin, zmax]
+
+    cross_file = f"ciber_cl_fits_HSCintensity_coarsez_{fit_tag}.npz"
+    auto_file = f"gal_auto_fits_HSCintensity_coarsez_{fit_tag}.npz"
+    cross_path = REPO_ROOT / "data" / "cross_cl_fits" / cross_file
+    auto_path = REPO_ROOT / "data" / "gal_auto_fits" / auto_file
+
+    if reuse_fit_cache and cross_path.exists() and auto_path.exists():
+        return {
+            "cross_fit": load_fit_results_npz(str(cross_path)),
+            "auto_fit": load_fit_results_npz(str(auto_path)),
+            "cross_path": cross_path,
+            "auto_path": auto_path,
+            "from_cache": True,
+        }
+
+    cross_fit_dict: Dict[str, Any] = {}
+    auto_fit_dict: Dict[str, Any] = {}
+    zcen = 0.5 * (zmin + zmax)
+
+    cross_bounds = np.asarray(cross_prior_bounds, dtype=float)
+    auto_bounds = np.asarray(auto_prior_bounds, dtype=float)
+    cross_nparam_fit = int(cross_bounds.shape[1])
+    auto_nparam_fit = int(auto_bounds.shape[1])
+
+    mu_fixed = float(fixed_mu_1h) if fixed_mu_1h is not None else 8.0
+    sigma_fixed = float(fixed_sigma_1h) if fixed_sigma_1h is not None else 0.7
+
+    use_fixed_shape_cross = cross_nparam_fit in {2, 3, 4}
+    use_fixed_shape_auto = auto_nparam_fit in {2, 3, 4}
+    use_damping_cross = cross_nparam_fit in {3, 4, 6}
+    use_damping_auto = auto_nparam_fit in {3, 4, 6}
+
+    for inst in inst_list:
+        res = all_results.get(int(inst))
+        if res is None:
+            continue
+
+        lb = np.asarray(res.get("lb"), dtype=float)
+        if lb.size < 5:
+            continue
+        pf = lb * (lb + 1.0) / (2.0 * np.pi)
+
+        cl_cross, cl_cross_err = _collapse_mean_and_err(
+            res.get("cl_intensity_cross"),
+            res.get("clerr_intensity_cross"),
+        )
+        cl_auto, cl_auto_err = _collapse_mean_and_err(
+            res.get("cl_intensity_auto"),
+            res.get("clerr_intensity_auto"),
+        )
+
+        if cl_cross.size != lb.size or cl_auto.size != lb.size:
+            continue
+
+        dl_cross = pf * cl_cross
+        dl_cross_err = np.abs(pf * cl_cross_err)
+        dl_auto = pf * cl_auto
+        dl_auto_err = np.abs(pf * cl_auto_err)
+
+        fit_slice = slice(int(startidx), None if int(endidx) == -1 else int(endidx))
+        lb_fit = lb[fit_slice]
+        dl_cross_fit = dl_cross[fit_slice]
+        # Use scaled cross errors from galaxy cross if provided, otherwise use intensity cross errors
+        if scaled_cross_err_dict is not None and int(inst) in scaled_cross_err_dict:
+            dl_cross_err_fit = scaled_cross_err_dict[int(inst)][fit_slice]
+            print(f"[Intensity fit] TM{inst}: using scaled galaxy cross uncertainties")
+        else:
+            dl_cross_err_fit = dl_cross_err[fit_slice]
+            print(f"[Intensity fit] TM{inst}: using intensity cross uncertainties")
+        dl_auto_fit = dl_auto[fit_slice]
+        dl_auto_err_fit = dl_auto_err[fit_slice]
+
+        dl_cross_err_fit = np.where(np.isfinite(dl_cross_err_fit) & (dl_cross_err_fit > 0.0), dl_cross_err_fit, np.nan)
+        dl_auto_err_fit = np.where(np.isfinite(dl_auto_err_fit) & (dl_auto_err_fit > 0.0), dl_auto_err_fit, np.nan)
+        if np.any(~np.isfinite(dl_cross_err_fit)):
+            med = np.nanmedian(dl_cross_err_fit[np.isfinite(dl_cross_err_fit)])
+            dl_cross_err_fit = np.where(np.isfinite(dl_cross_err_fit), dl_cross_err_fit, med if np.isfinite(med) else 1.0)
+        if np.any(~np.isfinite(dl_auto_err_fit)):
+            med = np.nanmedian(dl_auto_err_fit[np.isfinite(dl_auto_err_fit)])
+            dl_auto_err_fit = np.where(np.isfinite(dl_auto_err_fit), dl_auto_err_fit, med if np.isfinite(med) else 1.0)
+
+        cross_model = CrossPowerSpectrumModel(
+            lb,
+            use_powerlaw_2h=True,
+            alpha_2h_fixed=0.0,
+            mu_1h_fixed=mu_fixed if use_fixed_shape_cross else None,
+            sigma_1h_fixed=sigma_fixed if use_fixed_shape_cross else None,
+            use_astrometry_damping=use_damping_cross,
+            use_one_halo=True,
+        )
+
+        # higher bounds for intensity auto than default
+        bounds = (
+            [0., 0., np.log(500), 0.1, 0.],  # Lower: peak > 500, log-width > 0.1
+            [np.inf, np.inf, np.log(30000), 1.5, np.inf]  # Upper: peak < 30000, log-width < 1.5
+        )
+
+        cross_fit = cross_model.fit_model_mcmc(
+            lb_fit,
+            dl_cross_fit,
+            dl_err=dl_cross_err_fit,
+            fit_range=[300.0, float(cross_lmax)],
+            chi2_eval_max=float(cross_lmax),
+            nwalkers=int(nwalkers),
+            nsteps=int(nsteps),
+            nburn=int(nburn),
+            progress=True,
+            verbose=True,
+            prior_bounds=cross_bounds,
+            z_value=zcen,
+            z_bin_index=0,
+            inst=int(inst),
+        )
+        cross_fit["lb_fit"] = lb_fit
+        cross_fit["data_dl"] = dl_cross_fit
+        cross_fit["data_dlerr"] = dl_cross_err_fit
+        cross_fit_dict[f"inst{int(inst)}_zbin0"] = {
+            "fit_result": cross_fit,
+            "inst": int(inst),
+            "zidx": 0,
+            "zcen": zcen,
+        }
+
+        auto_model = CrossPowerSpectrumModel(
+            lb,
+            use_powerlaw_2h=True,
+            alpha_2h_fixed=0.0,
+            mu_1h_fixed=mu_fixed if use_fixed_shape_auto else None,
+            sigma_1h_fixed=sigma_fixed if use_fixed_shape_auto else None,
+            use_astrometry_damping=use_damping_auto,
+            use_one_halo=True,
+        )
+        auto_fit = auto_model.fit_model_mcmc(
+            lb_fit,
+            dl_auto_fit,
+            dl_err=dl_auto_err_fit,
+            fit_range=[float(auto_fit_ell_min), float(auto_lmax)],
+            chi2_eval_max=float(auto_lmax),
+            nwalkers=int(nwalkers),
+            nsteps=int(nsteps),
+            nburn=int(nburn),
+            progress=True,
+            verbose=True,
+            prior_bounds=auto_bounds,
+            z_value=zcen,
+            z_bin_index=0,
+            inst=int(inst),
+        )
+        auto_fit["lb_fit"] = lb_fit
+        auto_fit["data_dl"] = dl_auto_fit
+        auto_fit["data_dlerr"] = dl_auto_err_fit
+        auto_fit_dict[f"inst{int(inst)}_zbin0"] = {
+            "fit_result": auto_fit,
+            "inst": int(inst),
+            "zidx": 0,
+            "zcen": zcen,
+        }
+
+    if not cross_fit_dict or not auto_fit_dict:
+        raise RuntimeError("No intensity-weighted spectra available to fit.")
+
+    save_fit_results_npz(cross_fit_dict, zbinedges, list(inst_list), str(cross_path), dataset_name="HSC_INTENSITY_CROSS")
+    save_fit_results_npz(auto_fit_dict, zbinedges, list(inst_list), str(auto_path), dataset_name="HSC_INTENSITY_AUTO")
+
+    return {
+        "cross_fit": load_fit_results_npz(str(cross_path)),
+        "auto_fit": load_fit_results_npz(str(auto_path)),
+        "cross_path": cross_path,
+        "auto_path": auto_path,
+        "from_cache": False,
     }
 
 
@@ -1948,6 +2284,8 @@ def _make_zlt1_fit_diagnostics_figure(
     hsc_auto_fit: Dict[str, Any],
     startidx: int,
     endidx: int,
+    res_ls_auto_override: Optional[Dict[str, Any]] = None,
+    res_hsc_auto_override: Optional[Dict[str, Any]] = None,
 ) -> Any:
     from ciber.theory.cross_ps_parametric_model import CrossPowerSpectrumModel
     from matplotlib import pyplot as plt
@@ -1973,25 +2311,31 @@ def _make_zlt1_fit_diagnostics_figure(
                 lb,
                 use_powerlaw_2h=True,
                 alpha_2h_fixed=0.0,
-                use_lorentzian_1h=False,
                 use_astrometry_damping=True,
                 use_one_halo=True,
             )
             comp = model.model_components(lb, *np.asarray(params, dtype=float))
         else:
-            data = pf * np.asarray(res["full_cl_gal"][0, 0], dtype=float)[startidx:endidx]
-            derr = pf * np.asarray(res["full_clerr_gal"][0, 0], dtype=float)[startidx:endidx]
+            res_auto = res
+            if res is res_ls and res_ls_auto_override is not None:
+                res_auto = res_ls_auto_override
+            elif res is res_hsc and res_hsc_auto_override is not None:
+                res_auto = res_hsc_auto_override
+
+            lb_auto = np.asarray(res_auto["lb"], dtype=float)[startidx:endidx]
+            pf_auto = lb_auto * (lb_auto + 1.0) / (2.0 * np.pi)
+            data = pf_auto * np.asarray(res_auto["full_cl_gal"][0, 0], dtype=float)[startidx:endidx]
+            derr = pf_auto * np.asarray(res_auto["full_clerr_gal"][0, 0], dtype=float)[startidx:endidx]
             model = CrossPowerSpectrumModel(
-                lb,
+                lb_auto,
                 use_powerlaw_2h=True,
                 alpha_2h_fixed=0.0,
-                use_lorentzian_1h=False,
                 mu_1h_fixed=8.0,
                 sigma_1h_fixed=0.7,
                 use_astrometry_damping=False,
                 use_one_halo=True,
             )
-            comp = model.model_components(lb, *np.asarray(params, dtype=float)[:5])
+            comp = model.model_components(lb_auto, *np.asarray(params, dtype=float)[:5])
 
         good = np.isfinite(lb) & np.isfinite(data) & np.isfinite(derr)
         good &= lb > 0
@@ -2027,6 +2371,624 @@ def _make_zlt1_fit_diagnostics_figure(
 
     fig.tight_layout()
     return fig
+
+
+def _make_intensity_fit_diagnostics_figure(
+    intensity_cross_fit: Dict[str, Any],
+    intensity_auto_fit: Dict[str, Any],
+    fluxweight_recon_results: Dict[str, Any],
+    inst_list: Sequence[int],
+    startidx: int,
+    endidx: int,
+) -> Any:
+    """Create fit diagnostics figure for intensity-weighted cross and auto fits.
+
+    Displays measured data, model fit, and component breakdown for each instrument.
+    """
+    from ciber.theory.cross_ps_parametric_model import CrossPowerSpectrumModel
+    from matplotlib import pyplot as plt
+
+    fig, axes = plt.subplots(1, 2, figsize=(11.0, 4.5), sharex=False, sharey=False)
+    
+    all_results = fluxweight_recon_results.get("all_results", {})
+    
+    for ax_idx, inst in enumerate(inst_list):
+        if inst not in all_results:
+            axes[ax_idx].text(0.5, 0.5, f"No data for TM{inst}", ha="center", va="center", transform=axes[ax_idx].transAxes)
+            continue
+        
+        inst_res = all_results[inst]
+        lb = np.asarray(inst_res["lb"], dtype=float)[startidx:endidx]
+        pf = lb * (lb + 1.0) / (2.0 * np.pi)
+        
+        # Cross fit data and model
+        cl_int_cross = np.asarray(inst_res.get("cl_intensity_cross", np.full(lb.shape, np.nan)), dtype=float)
+        cl_int_cross_err = np.asarray(inst_res.get("clerr_intensity_cross", np.full(lb.shape, np.nan)), dtype=float)
+        if cl_int_cross.ndim == 2:
+            cl_int_cross = np.nanmean(cl_int_cross, axis=0)
+        if cl_int_cross_err.ndim == 2:
+            cl_int_cross_err = np.sqrt(np.nansum(cl_int_cross_err ** 2, axis=0))
+        
+        cl_int_cross = cl_int_cross[startidx:endidx]
+        cl_int_cross_err = cl_int_cross_err[startidx:endidx]
+        dl_int_cross = pf * cl_int_cross
+        dl_int_cross_err = pf * cl_int_cross_err
+        
+        # Get fit parameters and model
+        cross_params = np.asarray(intensity_cross_fit["params"][ax_idx, 0], dtype=float)
+        
+        model = CrossPowerSpectrumModel(
+            lb,
+            use_powerlaw_2h=True,
+            alpha_2h_fixed=0.0,
+            use_astrometry_damping=(cross_params.size >= 6),
+            use_one_halo=True,
+        )
+        comp = model.model_components(lb, *cross_params)
+        
+        dl_model_2h1h = np.asarray(comp["total"], dtype=float)
+        dl_model_2h = np.asarray(comp["two_halo"], dtype=float)
+        dl_model_1h = np.asarray(comp["one_halo"], dtype=float)
+        dl_model_shot = np.asarray(comp["shot_noise"], dtype=float)
+        
+        # Plot on the axis
+        good = np.isfinite(lb) & np.isfinite(dl_int_cross) & np.isfinite(dl_int_cross_err)
+        good &= lb > 0
+        good &= dl_int_cross > 0
+        
+        if not np.any(good):
+            axes[ax_idx].text(0.5, 0.5, f"No valid points for TM{inst}", ha="center", va="center", transform=axes[ax_idx].transAxes)
+            continue
+        
+        lbp = lb[good]
+        dlp = dl_int_cross[good]
+        dlerr = dl_int_cross_err[good]
+        
+        axes[ax_idx].errorbar(lbp, dlp, yerr=dlerr, fmt="o", color="k", markersize=2.8, capsize=1.8, alpha=0.85, label="data")
+        axes[ax_idx].plot(lbp, dl_model_2h1h[good], color="C3", linewidth=1.7, label="2h+1h")
+        axes[ax_idx].plot(lbp, dl_model_2h[good], color="C0", linewidth=1.2, label="2h")
+        axes[ax_idx].plot(lbp, dl_model_1h[good], color="C2", linewidth=1.2, label="1h")
+        axes[ax_idx].plot(lbp, dl_model_shot[good], color="C4", linewidth=1.2, linestyle="--", label="shot")
+        
+        chisq = float(np.asarray(intensity_cross_fit.get("chisq", [np.nan]))[ax_idx, 0] if intensity_cross_fit.get("chisq") is not None else np.nan)
+        rchi2 = float(np.asarray(intensity_cross_fit.get("reduced_chisq", [np.nan]))[ax_idx, 0] if intensity_cross_fit.get("reduced_chisq") is not None else np.nan)
+        ndof = chisq / rchi2 if np.isfinite(rchi2) and rchi2 > 0 else np.nan
+        
+        axes[ax_idx].set_xscale("log")
+        axes[ax_idx].set_yscale("log")
+        axes[ax_idx].set_title(f"Intensity-weighted cross TM{inst}", fontsize=11)
+        axes[ax_idx].grid(alpha=0.25)
+        if np.isfinite(chisq) and np.isfinite(ndof):
+            axes[ax_idx].text(0.05, 0.07, f"$\\chi^2/N_{{dof}}={chisq:.1f}/{ndof:.0f}={rchi2:.2f}$", transform=axes[ax_idx].transAxes, fontsize=9)
+        axes[ax_idx].set_xlabel("$\\ell$")
+        axes[ax_idx].set_ylabel("$D_\\ell$")
+        axes[ax_idx].legend(loc="upper left", fontsize=9, frameon=False)
+    
+    fig.tight_layout()
+    return fig
+
+
+def _collapse_field_spectrum_and_error(
+    cl_arr: Optional[np.ndarray],
+    clerr_arr: Optional[np.ndarray],
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Return 1D field-averaged spectrum and uncertainty arrays."""
+    if cl_arr is None:
+        return np.array([], dtype=float), np.array([], dtype=float)
+
+    cl = np.asarray(cl_arr, dtype=float)
+    if cl.ndim == 2:
+        cl_1d = np.nanmean(cl, axis=0)
+    else:
+        cl_1d = cl
+
+    if clerr_arr is None:
+        clerr_1d = np.full(cl_1d.shape, np.nan, dtype=float)
+    else:
+        clerr = np.asarray(clerr_arr, dtype=float)
+        if clerr.ndim == 2:
+            # Field-averaged uncertainty from independent per-field errors.
+            nfield = max(clerr.shape[0], 1)
+            clerr_1d = np.sqrt(np.nansum(clerr ** 2, axis=0)) / nfield
+        else:
+            clerr_1d = clerr
+
+    return np.asarray(cl_1d, dtype=float), np.asarray(clerr_1d, dtype=float)
+
+
+def _compute_r_ell_with_err(
+    cl_cross: np.ndarray,
+    cl_cross_err: np.ndarray,
+    cl_auto_tracer: np.ndarray,
+    cl_auto_tracer_err: np.ndarray,
+    cl_auto_ciber: np.ndarray,
+    cl_auto_ciber_err: np.ndarray,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Compute r_ell and propagated uncertainty from cross/auto spectra."""
+    cl_cross = np.asarray(cl_cross, dtype=float)
+    cl_cross_err = np.asarray(cl_cross_err, dtype=float)
+    cl_auto_tracer = np.asarray(cl_auto_tracer, dtype=float)
+    cl_auto_tracer_err = np.asarray(cl_auto_tracer_err, dtype=float)
+    cl_auto_ciber = np.asarray(cl_auto_ciber, dtype=float)
+    cl_auto_ciber_err = np.asarray(cl_auto_ciber_err, dtype=float)
+
+    denom = np.sqrt(np.abs(cl_auto_tracer * cl_auto_ciber))
+    r_ell = np.full(cl_cross.shape, np.nan, dtype=float)
+    ok = np.isfinite(cl_cross) & np.isfinite(denom) & (denom > 0.0)
+    r_ell[ok] = cl_cross[ok] / denom[ok]
+
+    r_err = np.full(cl_cross.shape, np.nan, dtype=float)
+    eps = 1.0e-30
+    ok_err = (
+        ok
+        & np.isfinite(cl_cross_err)
+        & np.isfinite(cl_auto_tracer_err)
+        & np.isfinite(cl_auto_ciber_err)
+        & (np.abs(cl_cross) > eps)
+        & (np.abs(cl_auto_tracer) > eps)
+        & (np.abs(cl_auto_ciber) > eps)
+    )
+    if np.any(ok_err):
+        frac_cross = cl_cross_err[ok_err] / np.abs(cl_cross[ok_err])
+        frac_auto_tracer = cl_auto_tracer_err[ok_err] / np.abs(cl_auto_tracer[ok_err])
+        frac_auto_ciber = cl_auto_ciber_err[ok_err] / np.abs(cl_auto_ciber[ok_err])
+        frac_tot = np.sqrt(frac_cross ** 2 + 0.25 * frac_auto_tracer ** 2 + 0.25 * frac_auto_ciber ** 2)
+        r_err[ok_err] = np.abs(r_ell[ok_err]) * frac_tot
+
+    return r_ell, r_err
+
+
+def _plot_intensity_spectrum_comparison(
+    fluxweight_recon_results: Dict[str, Any],
+    cat_label: str,
+    inst_list: Sequence[int],
+    startidx: int,
+    endidx: int,
+    xlim: Tuple[float, float] = (275.0, 1.0e5),
+    ylim: Tuple[float, float] = (1.0e-2, 1.0e4),
+) -> Any:
+    """Plot intensity auto, intensity cross, and F25b auto with uncertainties."""
+    from matplotlib import pyplot as plt
+
+    all_results = fluxweight_recon_results.get("all_results", {})
+    fig, axes = plt.subplots(1, len(inst_list), figsize=(9, 4), sharex=True, sharey=True)
+    if len(inst_list) == 1:
+        axes = [axes]
+
+    lams_ciber = [1.1, 1.8]
+
+    for ax_idx, inst in enumerate(inst_list):
+        ax = axes[ax_idx]
+        inst_res = all_results.get(inst)
+        if inst_res is None:
+            ax.text(0.5, 0.5, f"No data for TM{inst}", ha="center", va="center", transform=ax.transAxes)
+            continue
+
+        lb_full = np.asarray(inst_res.get("lb", []), dtype=float)
+        if lb_full.size == 0:
+            ax.text(0.5, 0.5, f"No ell bins for TM{inst}", ha="center", va="center", transform=ax.transAxes)
+            continue
+
+        lb = lb_full[startidx:endidx]
+        pf = lb * (lb + 1.0) / (2.0 * np.pi)
+
+        cl_int_auto, clerr_int_auto = _collapse_field_spectrum_and_error(
+            inst_res.get("cl_intensity_auto"),
+            inst_res.get("clerr_intensity_auto"),
+        )
+        cl_int_cross, clerr_int_cross = _collapse_field_spectrum_and_error(
+            inst_res.get("cl_intensity_cross"),
+            inst_res.get("clerr_intensity_cross"),
+        )
+
+        print(f"[Intensity comparison] TM{inst}: {cl_int_auto.size} auto points, {cl_int_cross.size} cross points, {lb.size} ell bins")
+
+        cl_f25b = np.asarray(inst_res.get("cl_ciber_auto_f25b", np.full(lb_full.shape, np.nan)), dtype=float)
+        clerr_f25b = np.asarray(inst_res.get("clerr_ciber_auto_f25b", np.full(lb_full.shape, np.nan)), dtype=float)
+
+        cl_int_auto = cl_int_auto[startidx:endidx]
+        clerr_int_auto = clerr_int_auto[startidx:endidx]
+        cl_int_cross = cl_int_cross[startidx:endidx]
+        clerr_int_cross = clerr_int_cross[startidx:endidx]
+        cl_f25b = cl_f25b[startidx:endidx]
+        clerr_f25b = clerr_f25b[startidx:endidx]
+
+        dl_int_auto = pf * cl_int_auto
+        dl_int_auto_err = pf * clerr_int_auto
+        dl_int_cross = pf * cl_int_cross
+        dl_int_cross_err = pf * clerr_int_cross
+        dl_f25b = pf * cl_f25b
+        dl_f25b_err = pf * clerr_f25b
+
+        valid_f25b = np.isfinite(lb) & np.isfinite(dl_f25b) & np.isfinite(dl_f25b_err) & (lb > 0.0) & (dl_f25b > 0.0)
+        valid_auto = np.isfinite(lb) & np.isfinite(dl_int_auto) & np.isfinite(dl_int_auto_err) & (lb > 0.0) & (dl_int_auto > 0.0)
+        valid_cross = np.isfinite(lb) & np.isfinite(dl_int_cross) & np.isfinite(dl_int_cross_err) & (lb > 0.0) & (dl_int_cross > 0.0)
+
+        print('dl_f25b', dl_f25b[valid_f25b])
+        print('dl_int_auto', dl_int_auto[valid_auto])
+        print('dl_int_cross', dl_int_cross[valid_cross])
+        ax.errorbar(
+            lb[valid_f25b],
+            dl_f25b[valid_f25b],
+            yerr=dl_f25b_err[valid_f25b],
+            fmt="o",
+            color="k",
+            markersize=3.0,
+            capsize=2.2,
+            label="CIBER auto (F25b)",
+            zorder=20,
+        )
+        ax.errorbar(
+            lb[valid_auto],
+            dl_int_auto[valid_auto],
+            yerr=dl_int_auto_err[valid_auto],
+            fmt="s",
+            color="C1",
+            markersize=3.0,
+            capsize=2.0,
+            label="$C_{\\ell}^{\\hat{I}_{\\rm gal} \\hat{I}_{\\rm gal}}$",
+            zorder=19,
+        )
+        ax.errorbar(
+            lb[valid_cross],
+            dl_int_cross[valid_cross],
+            yerr=dl_int_cross_err[valid_cross],
+            fmt="^",
+            color="C2",
+            markersize=3.0,
+            capsize=2.0,
+            label="$C_{\\ell}^{\\hat{I}_{\\rm gal} I_{\\rm CIBER}}$",
+            zorder=18,
+        )
+
+        ax.set_xscale("log")
+        ax.set_yscale("log")
+        ax.set_xlim(xlim)
+        ax.set_ylim(ylim)
+        ax.grid(alpha=0.3)
+        ax.set_xlabel("$\\ell$", fontsize=14)
+        ax.text(300, 3e3, f"CIBER {lams_ciber[inst-1]} $\\mu$m $\\times$ {cat_label}", fontsize=14)
+
+    axes[0].set_ylabel("$D_\\ell$ [nW$^2$ m$^{-4}$ sr$^{-2}$]", fontsize=14)
+    handles, labels = axes[0].get_legend_handles_labels()
+    if handles:
+        fig.legend(handles, labels, loc="upper center", bbox_to_anchor=(0.5, 1.05), ncol=3, fontsize=14)
+    # fig.tight_layout()
+    return fig
+
+
+def _plot_intensity_rell_comparison(
+    fluxweight_recon_results: Dict[str, Any],
+    catalog_res: Dict[str, Any],
+    cat_label: str,
+    inst_list: Sequence[int],
+    startidx: int,
+    endidx: int,
+    xlim: Tuple[float, float] = (275.0, 1.0e5),
+) -> Any:
+    """Plot r_ell comparison: intensity-weighted cross vs galaxy cross."""
+    from matplotlib import pyplot as plt
+
+    all_results = fluxweight_recon_results.get("all_results", {})
+    fig, axes = plt.subplots(1, len(inst_list), figsize=(10.5, 4.2), sharex=True, sharey=True)
+    if len(inst_list) == 1:
+        axes = [axes]
+
+    lb_catalog = np.asarray(catalog_res.get("lb", []), dtype=float)
+    clerr_cross_all = np.asarray(catalog_res.get("full_clerr_cross"), dtype=float)
+    cl_gal_all = np.asarray(catalog_res.get("full_cl_gal"), dtype=float)
+    clerr_gal_all = np.asarray(catalog_res.get("full_clerr_gal"), dtype=float)
+
+    for ax_idx, inst in enumerate(inst_list):
+        ax = axes[ax_idx]
+        inst_res = all_results.get(inst)
+        if inst_res is None:
+            ax.text(0.5, 0.5, f"No data for TM{inst}", ha="center", va="center", transform=ax.transAxes)
+            continue
+
+        lb_full = np.asarray(inst_res.get("lb", []), dtype=float)
+        if lb_full.size == 0:
+            ax.text(0.5, 0.5, f"No ell bins for TM{inst}", ha="center", va="center", transform=ax.transAxes)
+            continue
+        lb = lb_full[startidx:endidx]
+
+        cl_int_cross, clerr_int_cross = _collapse_field_spectrum_and_error(
+            inst_res.get("cl_intensity_cross"),
+            inst_res.get("clerr_intensity_cross"),
+        )
+        cl_int_auto, clerr_int_auto = _collapse_field_spectrum_and_error(
+            inst_res.get("cl_intensity_auto"),
+            inst_res.get("clerr_intensity_auto"),
+        )
+
+        cl_f25b = np.asarray(inst_res.get("cl_ciber_auto_f25b", np.full(lb_full.shape, np.nan)), dtype=float)
+        clerr_f25b = np.asarray(inst_res.get("clerr_ciber_auto_f25b", np.full(lb_full.shape, np.nan)), dtype=float)
+
+        cl_int_cross = cl_int_cross[startidx:endidx]
+        clerr_int_cross = clerr_int_cross[startidx:endidx]
+        cl_int_auto = cl_int_auto[startidx:endidx]
+        clerr_int_auto = clerr_int_auto[startidx:endidx]
+        cl_f25b = cl_f25b[startidx:endidx]
+        clerr_f25b = clerr_f25b[startidx:endidx]
+
+        r_int, r_int_err = _compute_r_ell_with_err(
+            cl_int_cross,
+            clerr_int_cross,
+            cl_int_auto,
+            clerr_int_auto,
+            cl_f25b,
+            clerr_f25b,
+        )
+
+        inst_idx = int(inst) - 1
+        if inst_idx < 0 or inst_idx >= clerr_cross_all.shape[0]:
+            ax.text(0.5, 0.5, f"Missing galaxy spectra for TM{inst}", ha="center", va="center", transform=ax.transAxes)
+            continue
+
+        cl_gal_cross_err = np.asarray(clerr_cross_all[inst_idx, 0], dtype=float)
+        if cl_gal_cross_err.ndim == 2:
+            cl_gal_cross_err = np.sqrt(np.nansum(cl_gal_cross_err ** 2, axis=0)) / max(cl_gal_cross_err.shape[0], 1)
+
+        cl_gal_auto = np.asarray(cl_gal_all[0, 0], dtype=float)
+        cl_gal_auto_err = np.asarray(clerr_gal_all[0, 0], dtype=float)
+
+        cl_gal_cross = np.asarray(inst_res.get("cl_gal_cross", np.full(lb_full.shape, np.nan)), dtype=float)
+        if cl_gal_cross.ndim == 2:
+            cl_gal_cross = np.nanmean(cl_gal_cross, axis=0)
+
+        cl_gal_auto = _interp_hold_edges(lb_catalog, cl_gal_auto, lb_full)
+        cl_gal_auto_err = _interp_hold_edges(lb_catalog, cl_gal_auto_err, lb_full)
+        cl_gal_cross_err = _interp_hold_edges(lb_catalog, cl_gal_cross_err, lb_full)
+
+        cl_gal_cross = cl_gal_cross[startidx:endidx]
+        cl_gal_cross_err = cl_gal_cross_err[startidx:endidx]
+        cl_gal_auto = cl_gal_auto[startidx:endidx]
+        cl_gal_auto_err = cl_gal_auto_err[startidx:endidx]
+
+        r_gal, r_gal_err = _compute_r_ell_with_err(
+            cl_gal_cross,
+            cl_gal_cross_err,
+            cl_gal_auto,
+            cl_gal_auto_err,
+            cl_f25b,
+            clerr_f25b,
+        )
+
+        vint = np.isfinite(lb) & np.isfinite(r_int) & np.isfinite(r_int_err)
+        vgal = np.isfinite(lb) & np.isfinite(r_gal) & np.isfinite(r_gal_err)
+
+        ax.errorbar(
+            lb[vint],
+            r_int[vint],
+            yerr=r_int_err[vint],
+            fmt="o-",
+            color="C1",
+            linewidth=1.5,
+            markersize=3.2,
+            capsize=2.0,
+            label="Intensity-weighted cross",
+        )
+        ax.errorbar(
+            lb[vgal],
+            r_gal[vgal],
+            yerr=r_gal_err[vgal],
+            fmt="s-",
+            color="C0",
+            linewidth=1.5,
+            markersize=3.0,
+            capsize=2.0,
+            label="Galaxy cross",
+        )
+
+        ax.set_xscale("log")
+        ax.set_xlim(xlim)
+        ax.set_ylim(-0.05, 1.05)
+        ax.grid(alpha=0.3)
+        ax.set_xlabel("$\\ell$")
+        ax.set_title(f"{cat_label} TM{inst}", fontsize=11)
+
+    axes[0].set_ylabel("$r_\\ell$")
+    handles, labels = axes[0].get_legend_handles_labels()
+    if handles:
+        fig.legend(handles, labels, loc="upper center", bbox_to_anchor=(0.5, 1.02), ncol=2, fontsize=9, frameon=False)
+    fig.tight_layout()
+    return fig
+
+
+def _make_intensity_auto_fit_diagnostics_figure(
+    intensity_auto_fit: Dict[str, Any],
+    fluxweight_recon_results: Dict[str, Any],
+    inst_list: Sequence[int],
+    startidx: int,
+    endidx: int,
+) -> Any:
+    """Create diagnostics figure for intensity auto fits with input uncertainties."""
+    from ciber.theory.cross_ps_parametric_model import CrossPowerSpectrumModel
+    from matplotlib import pyplot as plt
+
+    fig, axes = plt.subplots(1, len(inst_list), figsize=(11.0, 4.5), sharex=False, sharey=False)
+    if len(inst_list) == 1:
+        axes = [axes]
+
+    all_results = fluxweight_recon_results.get("all_results", {})
+
+    for ax_idx, inst in enumerate(inst_list):
+        ax = axes[ax_idx]
+        inst_res = all_results.get(inst)
+        if inst_res is None:
+            ax.text(0.5, 0.5, f"No data for TM{inst}", ha="center", va="center", transform=ax.transAxes)
+            continue
+
+        lb_full = np.asarray(inst_res.get("lb", []), dtype=float)
+        if lb_full.size == 0:
+            ax.text(0.5, 0.5, f"No ell bins for TM{inst}", ha="center", va="center", transform=ax.transAxes)
+            continue
+
+        lb = lb_full[startidx:endidx]
+        pf = lb * (lb + 1.0) / (2.0 * np.pi)
+
+        cl_int_auto, clerr_int_auto = _collapse_field_spectrum_and_error(
+            inst_res.get("cl_intensity_auto"),
+            inst_res.get("clerr_intensity_auto"),
+        )
+        cl_int_auto = cl_int_auto[startidx:endidx]
+        clerr_int_auto = clerr_int_auto[startidx:endidx]
+        dl_int_auto = pf * cl_int_auto
+        dl_int_auto_err = pf * clerr_int_auto
+
+        auto_params = np.asarray(intensity_auto_fit["params"][ax_idx, 0], dtype=float)
+        use_damping = auto_params.size >= 6
+
+        from ciber.theory.cross_ps_parametric_model import _compute_linear_2h_templates_per_zbin
+        zbinedges = results.get("zbinedges", np.array([0.0, 0.2, 0.4, 0.6, 0.8, 1.0]))
+        dl_2h_lin_per_zbin = _compute_linear_2h_templates_per_zbin(zbinedges, 1e5, verbose=False)
+
+        model = CrossPowerSpectrumModel(
+            lb,
+            # use_powerlaw_2h=True,
+            # alpha_2h_fixed=0.0,
+            use_linear_2h=True,
+            dl_2h_lin_per_zbin=dl_2h_lin_per_zbin,
+            use_astrometry_damping=use_damping,
+            use_one_halo=True,
+        )
+        comp = model.model_components(lb, *auto_params)
+
+        dl_model_total = np.asarray(comp["total"], dtype=float)
+        dl_model_2h = np.asarray(comp["two_halo"], dtype=float)
+        dl_model_1h = np.asarray(comp["one_halo"], dtype=float)
+        dl_model_shot = np.asarray(comp["shot_noise"], dtype=float)
+
+        good = np.isfinite(lb) & np.isfinite(dl_int_auto) & np.isfinite(dl_int_auto_err)
+        good &= lb > 0.0
+        good &= dl_int_auto > 0.0
+        if not np.any(good):
+            ax.text(0.5, 0.5, f"No valid points for TM{inst}", ha="center", va="center", transform=ax.transAxes)
+            continue
+
+        lbp = lb[good]
+        dlp = dl_int_auto[good]
+        dlerr = dl_int_auto_err[good]
+
+        ax.errorbar(lbp, dlp, yerr=dlerr, fmt="o", color="k", markersize=2.8, capsize=1.8, alpha=0.85, label="data")
+        ax.plot(lbp, dl_model_total[good], color="C3", linewidth=1.7, label="2h+1h+shot")
+        ax.plot(lbp, dl_model_2h[good], color="C0", linewidth=1.2, label="2h")
+        ax.plot(lbp, dl_model_1h[good], color="C2", linewidth=1.2, label="1h")
+        ax.plot(lbp, dl_model_shot[good], color="C4", linewidth=1.2, linestyle="--", label="shot")
+
+        chisq = float(np.asarray(intensity_auto_fit.get("chisq", [np.nan]))[ax_idx, 0] if intensity_auto_fit.get("chisq") is not None else np.nan)
+        rchi2 = float(np.asarray(intensity_auto_fit.get("reduced_chisq", [np.nan]))[ax_idx, 0] if intensity_auto_fit.get("reduced_chisq") is not None else np.nan)
+        ndof = chisq / rchi2 if np.isfinite(rchi2) and rchi2 > 0 else np.nan
+
+        ax.set_xscale("log")
+        ax.set_yscale("log")
+        ax.set_title(f"Intensity auto TM{inst}", fontsize=11)
+        ax.grid(alpha=0.25)
+        if np.isfinite(chisq) and np.isfinite(ndof):
+            ax.text(0.05, 0.07, f"$\\chi^2/N_{{dof}}={chisq:.1f}/{ndof:.0f}={rchi2:.2f}$", transform=ax.transAxes, fontsize=9)
+        ax.set_xlabel("$\\ell$")
+        ax.set_ylabel("$D_\\ell$")
+        ax.legend(loc="upper left", fontsize=9, frameon=False)
+
+    fig.tight_layout()
+    return fig
+
+
+def _derive_fixed_one_halo_from_effective_template(
+    template_dir: str = "data/ihl_templates",
+    zbinedges: Optional[Sequence[float]] = None,
+    slopes: Optional[Sequence[float]] = None,
+) -> Tuple[float, float, int]:
+    """Derive one-halo (mu_1h, sigma_1h) from effective template computation.
+
+    Uses compute_effective_1h_template.py to sum unnormalized 1h components
+    across all redshift bins, then extracts the median mu and sigma parameters.
+
+    Parameters
+    ----------
+    template_dir : str
+        Path to IHL template directory
+    zbinedges : sequence of float, optional
+        Redshift bin edges. Defaults to [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
+    slopes : sequence of float, optional
+        Slope values to use. Defaults to [1.0]
+
+    Returns
+    -------
+    mu_1h : float
+        Median mu_1h parameter across redshift bins
+    sigma_1h : float
+        Median sigma_1h parameter across redshift bins
+    n_used : int
+        Number of bins used in computation
+    """
+    try:
+        # Import compute_effective_1h_template from scripts
+        import sys
+        from pathlib import Path
+        scripts_dir = Path(__file__).parent
+        sys.path.insert(0, str(scripts_dir))
+        from compute_effective_1h_template import compute_effective_1h_template
+    except ImportError as e:
+        raise ValueError(
+            f"Failed to import compute_effective_1h_template.py: {e}. "
+            "Ensure it is in the scripts/ directory."
+        )
+
+    if zbinedges is None:
+        zbinedges = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
+    if slopes is None:
+        slopes = [1.0]
+
+    template_dir_path = Path(template_dir).expanduser()
+    if not template_dir_path.exists():
+        raise ValueError(f"Template directory not found: {template_dir_path}")
+
+    # load_effective_1h_for_fitting
+    print(f"[Effective 1h template] Computing from {template_dir_path}...")
+    try:
+
+        zbinedges_for_effective = np.array([0.0, 0.2, 0.4, 0.6, 0.8, 1.0])
+
+        effective_1h, individual_1h, fit_results = create_and_cache_effective_1h_template(template_dir=str(template_dir_path), 
+                                                                                          zbinedges=zbinedges_for_effective, slopes=[1.0], 
+                                                                                          plot=False, 
+                                                                                            ell_scale=0.31)
+
+        # effective_1h, individual_1h, fit_results = compute_effective_1h_template(
+        #     template_dir=str(template_dir_path),
+        #     zbinedges=zbinedges,
+        #     slopes=slopes,
+        #     plot=False,
+        # )
+    except Exception as e:
+        raise ValueError(f"Failed to compute effective 1h template: {e}")
+
+    # Extract median mu_1h and sigma_1h across all redshift bins
+    mu_vals = []
+    sigma_vals = []
+
+    for slope in slopes:
+        if slope not in individual_1h:
+            continue
+        for zidx, z_info in individual_1h[slope].items():
+            if "mu_1h" in z_info and "sigma_1h" in z_info:
+                mu_vals.append(float(z_info["mu_1h"]))
+                sigma_vals.append(float(z_info["sigma_1h"]))
+
+    if len(mu_vals) == 0:
+        raise ValueError("No valid mu_1h/sigma_1h values extracted from effective template")
+
+    mu_fixed = float(np.median(mu_vals))
+    sigma_fixed = float(np.median(sigma_vals))
+    n_used = len(mu_vals)
+
+    print(
+        f"[Effective 1h template] Derived from {n_used} z-bin fits: "
+        f"mu_1h={mu_fixed:.4f}, sigma_1h={sigma_fixed:.4f}"
+    )
+
+    return mu_fixed, sigma_fixed, n_used
 
 
 def _derive_fixed_one_halo_from_slice_fits(
@@ -2116,6 +3078,121 @@ def _derive_fixed_one_halo_from_slice_fits(
     return mu_fixed, sigma_fixed, int(use.shape[0])
 
 
+def _load_ls_large_auto_bins(
+    basepath: str,
+    zbinedges: Sequence[float],
+    inst_list: Sequence[int],
+    suffix: str,
+    weight_mode: str = "invvar",
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Load LS large-field auto spectra and field-average per z bin.
+
+    Returns
+    -------
+    lb : np.ndarray
+    cl_bins : np.ndarray
+        Shape (n_inst, n_zbin, n_lb).
+    err_bins : np.ndarray
+        Shape (n_inst, n_zbin, n_lb).
+    """
+    from ciber.core.powerspec_utils import compute_field_averaged_power_spectrum
+
+    basepath = str(Path(basepath).expanduser())
+    zbinedges = list(zbinedges)
+    n_zbin = len(zbinedges) - 1
+    inst_list = list(inst_list)
+
+    lb_ref = None
+    cl_bins = None
+    err_bins = None
+    file_paths = None
+
+    for inst_idx, inst in enumerate(inst_list):
+        for zidx in range(n_zbin):
+            zlo = zbinedges[zidx]
+            zhi = zbinedges[zidx + 1]
+            fname = (
+                f"gal_auto_LS_TM{inst}_{zlo:.1f}_z_{zhi:.1f}_{suffix}.npz"
+            )
+            fpath = Path(basepath) / f"TM{inst}" / "gal_density" / "LS" / fname
+            if not fpath.exists() and inst == 2:
+                fpath_tm1 = Path(basepath) / "TM1" / "gal_density" / "LS" / fname.replace("TM2", "TM1")
+                if fpath_tm1.exists():
+                    print(f"[ls-large-auto] TM2 file missing, using TM1: {fpath_tm1.name}")
+                    fpath = fpath_tm1
+                else:
+                    raise FileNotFoundError(f"Missing LS large-field auto file: {fpath}")
+            elif not fpath.exists():
+                raise FileNotFoundError(f"Missing LS large-field auto file: {fpath}")
+
+            dat = np.load(str(fpath), allow_pickle=True)
+            lb = np.asarray(dat["lb"], dtype=float)
+            all_cl = np.asarray(dat["all_cl_gal"], dtype=float)
+            all_err = np.asarray(dat["all_clerr_gal"], dtype=float)
+
+            cl_avg, cl_err, _, _ = compute_field_averaged_power_spectrum(
+                all_cl,
+                per_field_dcls=all_err,
+                weight_mode=weight_mode,
+            )
+
+            if lb_ref is None:
+                lb_ref = lb
+                cl_bins = np.zeros((len(inst_list), n_zbin, lb.size), dtype=float)
+                err_bins = np.zeros((len(inst_list), n_zbin, lb.size), dtype=float)
+                file_paths = np.empty((len(inst_list), n_zbin), dtype=object)
+            elif lb_ref.size != lb.size or not np.allclose(lb_ref, lb):
+                raise ValueError(
+                    "Large-field auto bins have inconsistent lb arrays; "
+                    "please ensure matching binning across z bins."
+                )
+
+            cl_bins[inst_idx, zidx] = cl_avg
+            err_bins[inst_idx, zidx] = cl_err
+            file_paths[inst_idx, zidx] = str(fpath)
+
+    if lb_ref is None or cl_bins is None or err_bins is None or file_paths is None:
+        raise ValueError("No large-field auto spectra loaded.")
+
+    return lb_ref, cl_bins, err_bins, file_paths
+
+
+def _load_ls_large_auto_bulk(
+    basepath: str,
+    inst: int,
+    suffix: str,
+    weight_mode: str = "invvar",
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, str]:
+    """Load LS large-field auto spectrum for 0<z<1 as a single bulk bin."""
+    from ciber.core.powerspec_utils import compute_field_averaged_power_spectrum
+
+    basepath = str(Path(basepath).expanduser())
+    fname = f"gal_auto_LS_TM{inst}_0.0_z_1.0_{suffix}.npz"
+    fpath = Path(basepath) / f"TM{inst}" / "gal_density" / "LS" / fname
+    if not fpath.exists() and inst == 2:
+        fpath_tm1 = Path(basepath) / "TM1" / "gal_density" / "LS" / fname.replace("TM2", "TM1")
+        if fpath_tm1.exists():
+            print(f"[ls-large-auto] TM2 bulk file missing, using TM1: {fpath_tm1.name}")
+            fpath = fpath_tm1
+        else:
+            raise FileNotFoundError(f"Missing LS large-field bulk auto file: {fpath}")
+    elif not fpath.exists():
+        raise FileNotFoundError(f"Missing LS large-field bulk auto file: {fpath}")
+
+    dat = np.load(str(fpath), allow_pickle=True)
+    lb = np.asarray(dat["lb"], dtype=float)
+    all_cl = np.asarray(dat["all_cl_gal"], dtype=float)
+    all_err = np.asarray(dat["all_clerr_gal"], dtype=float)
+
+    cl_avg, cl_err, _, _ = compute_field_averaged_power_spectrum(
+        all_cl,
+        per_field_dcls=all_err,
+        weight_mode=weight_mode,
+    )
+
+    return lb, cl_avg, cl_err, str(fpath)
+
+
 def _plot_zlt1_auto_prediction_comparison(
     lb: np.ndarray,
     dl_meas: np.ndarray,
@@ -2130,7 +3207,17 @@ def _plot_zlt1_auto_prediction_comparison(
     dgl_dl_err: Optional[np.ndarray] = None,
     shot_dl: Optional[np.ndarray] = None,
     mock_igl_dl: Optional[np.ndarray] = None,
-    figsize: Tuple[float, float] = (7.0, 3.5),
+    lb_pred_intensity: Optional[np.ndarray] = None,
+    dl_pred_intensity_hsc: Optional[np.ndarray] = None,
+    dl_pred_intensity_hsc_err: Optional[np.ndarray] = None,
+    dl_pred_intensity_hsc_p16: Optional[np.ndarray] = None,
+    dl_pred_intensity_hsc_p84: Optional[np.ndarray] = None,
+    dl_pred_intensity_ls: Optional[np.ndarray] = None,
+    dl_pred_intensity_ls_err: Optional[np.ndarray] = None,
+    dl_pred_intensity_ls_p16: Optional[np.ndarray] = None,
+    dl_pred_intensity_ls_p84: Optional[np.ndarray] = None,
+    show_intensity_only: bool = False,
+    figsize: Tuple[float, float] = (7.5, 3.5),
     xlim: Tuple[float, float] = (275.0, 1.0e5),
     ylim: Tuple[float, float] = (1e-2, 1e4),
 ) -> Any:
@@ -2177,7 +3264,18 @@ def _plot_zlt1_auto_prediction_comparison(
     x_line = np.logspace(np.log10(float(xlim[0])), np.log10(float(xlim[1])), 256)
     titles = ["CIBER 1.1 $\\mu$m", "CIBER 1.8 $\\mu$m"]
 
+
     for idx in range(2):
+
+        cl_meas = dl_meas[idx] / (lb * (lb + 1.0) / (2.0 * np.pi))
+
+        print('cl_meas[-5:-1]', cl_meas[-5:-1])
+        shot_level = np.mean(cl_meas[-5:-1])
+        print('shot level:', shot_level)
+        shot_dl = shot_level * (lb * (lb + 1.0) / (2.0 * np.pi)) if np.isfinite(shot_level) and shot_level > 0 else None
+
+        print('shot dl:', shot_dl)
+
         ax[idx].errorbar(
             lb,
             dl_meas[idx],
@@ -2186,68 +3284,122 @@ def _plot_zlt1_auto_prediction_comparison(
             color="k",
             markersize=3,
             capsize=2.5,
-            label="CIBER auto (Feder+25b)",
+            label="CIBER auto spectrum (F25b)",
             zorder=20,
         )
-        ax[idx].plot(
-            lb,
-            dl_pred_ls[idx],
-            color="C0",
-            linestyle="solid",
-            linewidth=2.0,
-            label="Reconstructed auto (DESI-LS, $z<1$)",
-        )
-        ax[idx].plot(
-            lb,
-            dl_pred_hsc[idx],
-            color="C1",
-            linestyle="solid",
-            linewidth=2.0,
-            label="Reconstructed auto (HSC, $z<1$)",
-        )
 
-        if dl_pred_ls_2h is not None:
+        extend_lb = np.concatenate(([lb[0] * 0.75], lb, [lb[-1] * 1.25]))
+        
+
+        if not show_intensity_only:
             ax[idx].plot(
-                lb,
-                dl_pred_ls_2h[idx],
+                extend_lb,
+                _extend_series_loglog(lb, dl_pred_ls[idx], extend_lb),
                 color="C0",
-                linestyle="--",
-                linewidth=1.4,
-                alpha=0.9,
-                label="DESI-LS 2h model",
+                linestyle=":",
+                linewidth=2.0,
+                label="Reconstructed IGL (DESI-LS, $z<1$)",
             )
-        if dl_pred_hsc_2h is not None:
             ax[idx].plot(
-                lb,
-                dl_pred_hsc_2h[idx],
+                extend_lb,
+                _extend_series_loglog(lb, dl_pred_hsc[idx], extend_lb),
                 color="C1",
-                linestyle="--",
-                linewidth=1.4,
-                alpha=0.9,
-                label="HSC 2h model",
+                linestyle=":",
+                linewidth=2.0,
+                label="Reconstructed IGL (HSC, $z<1$)",
             )
 
-        if np.any(np.isfinite(dl_pred_ls_err[idx])):
-            ax[idx].fill_between(
-                lb,
-                np.clip(dl_pred_ls[idx] - dl_pred_ls_err[idx], 1e-12, None),
-                dl_pred_ls[idx] + dl_pred_ls_err[idx],
-                color="C0",
-                alpha=0.15,
-            )
-        if np.any(np.isfinite(dl_pred_hsc_err[idx])):
-            ax[idx].fill_between(
-                lb,
-                np.clip(dl_pred_hsc[idx] - dl_pred_hsc_err[idx], 1e-12, None),
-                dl_pred_hsc[idx] + dl_pred_hsc_err[idx],
-                color="C1",
-                alpha=0.15,
-            )
+
+        # Plot intensity-weighted predictions for both catalogs
+        if dl_pred_intensity_hsc is not None or dl_pred_intensity_ls is not None:
+
+            if shot_dl is not None and np.any(np.isfinite(shot_dl)):
+                shot_curve = _extend_series_loglog(lb, np.asarray(shot_dl, dtype=float), lb_pred_intensity)
+            else:
+                shot_curve = 0.0
+
+            y = np.asarray(dgl_dl[idx], dtype=float)
+            dy = np.asarray(dgl_dl_err[idx], dtype=float) if dgl_dl_err is not None else None
+            dgl_dl_plot = _extend_series_loglog(lb, y, lb_pred_intensity)
+            dgl_dl_plot_err = _extend_series_loglog(lb, dy, lb_pred_intensity) if dy is not None else None
+
+            isl_shots = [2.5e-6, 4e-7]
+            dl_isl = lb_pred_intensity * (lb_pred_intensity+1) * isl_shots[idx] / (2*np.pi)
+
+            # Plot HSC intensity if available
+            if dl_pred_intensity_hsc is not None:
+                if (dl_pred_intensity_hsc_p16 is not None and dl_pred_intensity_hsc_p84 is not None and
+                    np.any(np.isfinite(dl_pred_intensity_hsc_p16[idx])) and np.any(np.isfinite(dl_pred_intensity_hsc_p84[idx]))):
+				    
+                    hsc_color = "#E45DA8"
+
+                    ax[idx].fill_between(
+                        lb_pred_intensity,
+                        np.clip(dl_pred_intensity_hsc_p16[idx], 1e-12, None)+shot_curve+dgl_dl_plot - dgl_dl_plot_err,
+                        np.clip(dl_pred_intensity_hsc_p84[idx], 1e-12, None)+shot_curve+dgl_dl_plot + dgl_dl_plot_err,
+                        alpha=0.25,
+                        color=hsc_color,
+                        label="",
+                    )
+                    ax[idx].plot(
+                        lb_pred_intensity,
+                        dl_pred_intensity_hsc[idx]+shot_curve+dgl_dl_plot,
+                        color=hsc_color,
+                        linewidth=2.0,
+                        label="Reconstructed IGL + ISL + DGL; HSC ($z<1$)",
+                        zorder=19,
+                    )
+                else:
+                    ax[idx].errorbar(
+                        lb_pred_intensity,
+                        dl_pred_intensity_hsc[idx]+shot_curve+dgl_dl_plot,
+                        yerr=dl_pred_intensity_hsc_err[idx] if dl_pred_intensity_hsc_err is not None else None,
+                        fmt="o",
+                        color=hsc_color,
+                        markersize=3,
+                        capsize=2.5,
+                        label="Reconstructed IGL + ISL + DGL; HSC ($z<1$)",
+                        zorder=20,
+                    )
+            
+            # Plot LS intensity if available
+            if dl_pred_intensity_ls is not None:
+                if (dl_pred_intensity_ls_p16 is not None and dl_pred_intensity_ls_p84 is not None and
+                    np.any(np.isfinite(dl_pred_intensity_ls_p16[idx])) and np.any(np.isfinite(dl_pred_intensity_ls_p84[idx]))):
+                    ls_color = 'C2'
+                    ax[idx].fill_between(
+                        lb_pred_intensity,
+                        np.clip(dl_pred_intensity_ls_p16[idx], 1e-12, None)+shot_curve+dgl_dl_plot - dgl_dl_plot_err,
+                        np.clip(dl_pred_intensity_ls_p84[idx], 1e-12, None)+shot_curve+dgl_dl_plot + dgl_dl_plot_err,
+                        alpha=0.25,
+                        color=ls_color,
+                        label="",
+                    )
+                    ax[idx].plot(
+                        lb_pred_intensity,
+                        dl_pred_intensity_ls[idx]+shot_curve+dgl_dl_plot,
+                        color=ls_color,
+                        linewidth=2.0,
+                        label="Reconstructed IGL + ISL + DGL; DESI-LS ($z<1$)",
+                        zorder=19,
+                    )
+                else:
+                    ax[idx].errorbar(
+                        lb_pred_intensity,
+                        dl_pred_intensity_ls[idx]+shot_curve+dgl_dl_plot,
+                        yerr=dl_pred_intensity_ls_err[idx] if dl_pred_intensity_ls_err is not None else None,
+                        fmt="s",
+                        color=ls_color,
+                        markersize=3,
+                        capsize=2.5,
+                        label="Reconstructed IGL + ISL + DGL; DESI-LS ($z<1$)",
+                        zorder=20,
+                    )
 
         if dgl_dl is not None and np.any(np.isfinite(dgl_dl[idx])):
             y = np.asarray(dgl_dl[idx], dtype=float)
             y_ext = _extend_series_loglog(lb, y, x_line)
-            ax[idx].plot(x_line, y_ext, color="k", linewidth=1.4, linestyle="-", label="DGL (Feder+25b)")
+            ax[idx].plot(x_line, y_ext, color="k", linewidth=1.4, linestyle="-", label="Diffuse Galactic light (F25b)")
             if dgl_dl_err is not None and np.any(np.isfinite(dgl_dl_err[idx])):
                 dy = np.asarray(dgl_dl_err[idx], dtype=float)
                 y_lo_ext = _extend_series_loglog(lb, np.clip(y - dy, 1e-12, None), x_line)
@@ -2260,26 +3412,80 @@ def _plot_zlt1_auto_prediction_comparison(
                     alpha=0.12,
                 )
 
-        if shot_dl is not None and np.any(np.isfinite(shot_dl[idx])):
-            shot_curve = _extend_series_loglog(lb, np.asarray(shot_dl[idx], dtype=float), x_line)
-            ax[idx].plot(
-                x_line,
-                shot_curve,
-                color="0.45",
-                linewidth=1.4,
-                linestyle="--",
-                label="Best-fit Poisson level",
-            )
+        if shot_dl is not None and np.any(np.isfinite(shot_dl)):
+            shot_curve = _extend_series_loglog(lb, np.asarray(shot_dl, dtype=float), x_line)
+
+            # ax[idx].plot(
+            #     x_line,
+            #     shot_curve,
+            #     color="0.45",
+            #     linewidth=1,
+            #     label="Poisson level",
+            # )
+
+        # if not show_intensity_only:
+        #     dl_total_ls = dgl_dl[idx] + (shot_dl if shot_dl is not None else 0.0) + dl_pred_ls[idx]
+        #     dl_total_ls_err = np.sqrt(
+        #         (dgl_dl_err[idx] if dgl_dl_err is not None and np.any(np.isfinite(dgl_dl_err[idx])) else 0.0) ** 2
+        #         + (dl_pred_ls_err[idx] if dl_pred_ls_err is not None and np.any(np.isfinite(dl_pred_ls_err[idx])) else 0.0) ** 2
+        #     )
+        #     dl_total_ls_ext = _extend_series_loglog(lb, dl_total_ls, x_line)
+        #     dl_total_ls_err_ext = _extend_series_loglog(lb, dl_total_ls_err, x_line)
+        #     ax[idx].plot(x_line, dl_total_ls_ext, color="C0", linestyle="solid", linewidth=2.0, label="Recon. IGL (DESI-LS) + ISL + DGL")
+        #     ax[idx].fill_between(
+        #         x_line,
+        #         np.clip(dl_total_ls_ext - dl_total_ls_err_ext, 1e-12, None),
+        #         dl_total_ls_ext + dl_total_ls_err_ext,
+        #         color="C0",
+        #         alpha=0.15,
+        #     )
+
+        #     dl_total_hsc = dgl_dl[idx] + (shot_dl if shot_dl is not None else 0.0) + dl_pred_hsc[idx]
+        #     dl_total_hsc_err = np.sqrt(
+        #         (dgl_dl_err[idx] if dgl_dl_err is not None and np.any(np.isfinite(dgl_dl_err[idx])) else 0.0) ** 2
+        #         + (dl_pred_hsc_err[idx] if dl_pred_hsc_err is not None and np.any(np.isfinite(dl_pred_hsc_err[idx])) else 0.0) ** 2
+        #     )
+        #     dl_total_hsc_ext = _extend_series_loglog(lb, dl_total_hsc, x_line)
+        #     dl_total_hsc_err_ext = _extend_series_loglog(lb, dl_total_hsc_err, x_line)
+        #     ax[idx].plot(x_line, dl_total_hsc_ext, color="C1", linestyle="solid", linewidth=2.0, label="Recon. IGL (HSC) + ISL + DGL")
+        #     ax[idx].fill_between(
+        #         x_line,
+        #         np.clip(dl_total_hsc_ext - dl_total_hsc_err_ext, 1e-12, None),
+        #         dl_total_hsc_ext + dl_total_hsc_err_ext,
+        #         color="C1",
+        #         alpha=0.15,
+        #     )
 
         if mock_igl_dl is not None and np.any(np.isfinite(mock_igl_dl[idx])):
             mock_curve = _extend_series_loglog(lb, np.asarray(mock_igl_dl[idx], dtype=float), x_line)
+            
+            pf_line = x_line * (x_line + 1) / (2 * np.pi)
+
+            shot_dgl_diff = ((shot_curve-mock_curve)/pf_line)[-1]
+
+            shot_add_dl = shot_dgl_diff * pf_line
+
+            # print('shot add dl:', shot_add_dl)
+            # print('dgl_dl[idx]:', dgl_dl[idx])
+            mock_curve_with_dgl_stars = mock_curve + (y_ext if dgl_dl is not None and np.any(np.isfinite(dgl_dl[idx])) else 0.0) + shot_add_dl
+
             ax[idx].plot(
                 x_line,
                 mock_curve,
-                color="C3",
-                linewidth=1.5,
-                linestyle=":",
-                label="Mock IGL ($z<1$)",
+                color='k',
+                linestyle='dotted',
+                linewidth=2.5,
+                label="Integrated galaxy light ($z<1$)",
+            )
+
+            ax[idx].plot(
+                x_line,
+                mock_curve_with_dgl_stars,
+                color='k',
+                linestyle='solid',
+                linewidth=3,
+                alpha=0.5,
+                label="IGL ($z<1$) + ISL + DGL",
             )
 
         ax[idx].text(
@@ -2298,17 +3504,17 @@ def _plot_zlt1_auto_prediction_comparison(
         ax[idx].set_xlabel("$\\ell$", fontsize=12)
         ax[idx].grid(alpha=0.3)
 
-    ax[0].set_ylabel("$D_\\ell^{II}$ [nW$^2$ m$^{-4}$ sr$^{-2}$]", fontsize=12)
+    ax[0].set_ylabel("$D_\\ell^{\\rm II}$ [nW$^2$ m$^{-4}$ sr$^{-2}$]", fontsize=12)
     handles, labels = ax[0].get_legend_handles_labels()
     if handles:
         handle_by_label = {lab: h for h, lab in zip(handles, labels)}
         target_order = [
-            "CIBER auto (Feder+25b)",
-            "DGL (Feder+25b)",
-            "Best-fit Poisson level",
-            "Mock IGL ($z<1$)",
-            "Reconstructed auto (DESI-LS, $z<1$)",
-            "Reconstructed auto (HSC, $z<1$)",
+            "CIBER auto spectrum (F25b)",
+            "Diffuse Galactic light (F25b)",
+            "Integrated galaxy light ($z<1$)",
+            "IGL ($z<1$) + ISL + DGL",
+            "Reconstructed IGL + ISL + DGL; DESI-LS ($z<1$)",
+            "Reconstructed IGL + ISL + DGL; HSC ($z<1$)",
         ]
         ordered_labels = [lab for lab in target_order if lab in handle_by_label]
         ordered_handles = [handle_by_label[lab] for lab in ordered_labels]
@@ -2316,13 +3522,216 @@ def _plot_zlt1_auto_prediction_comparison(
             ordered_handles,
             ordered_labels,
             loc="upper left",
-            bbox_to_anchor=(0.15, 1.1),
+            bbox_to_anchor=(0.05, 1.05),
             ncol=2,
-            fontsize=9,
+            fontsize=10,
             frameon=False,
         )
     plt.subplots_adjust(wspace=0.05, top=0.82)
     return fig
+
+
+def _plot_zlt1_zslice_components(
+    lb: np.ndarray,
+    zbinedges: Sequence[float],
+    dl_pred_z: np.ndarray,
+    dl_pred_p16_z: np.ndarray,
+    dl_pred_p84_z: np.ndarray,
+    dl_total: np.ndarray,
+    dl_total_err: np.ndarray,
+    tracer_label: str,
+    figsize: Tuple[float, float] = (10.5, 4.0),
+    xlim: Tuple[float, float] = (275.0, 1.0e5),
+    ylim: Tuple[float, float] = (1e-2, 1e4),
+) -> Any:
+    from matplotlib import pyplot as plt
+
+    lb = np.asarray(lb, dtype=float)
+    dl_pred_z = np.asarray(dl_pred_z, dtype=float)
+    dl_pred_p16_z = np.asarray(dl_pred_p16_z, dtype=float)
+    dl_pred_p84_z = np.asarray(dl_pred_p84_z, dtype=float)
+    dl_total = np.asarray(dl_total, dtype=float)
+    dl_total_err = np.asarray(dl_total_err, dtype=float)
+    n_zbin = len(zbinedges) - 1
+
+    fig, ax = plt.subplots(1, 2, figsize=figsize, sharex=True, sharey=True)
+    colors = plt.cm.viridis(np.linspace(0.15, 0.9, n_zbin))
+    titles = ["CIBER 1.1 $\\mu$m", "CIBER 1.8 $\\mu$m"]
+
+    for inst_idx in range(2):
+        for zidx in range(n_zbin):
+            label = f"{zbinedges[zidx]:.1f} < z < {zbinedges[zidx+1]:.1f}" if inst_idx == 0 else None
+            y = dl_pred_z[inst_idx, zidx]
+            ylo = dl_pred_p16_z[inst_idx, zidx]
+            yhi = dl_pred_p84_z[inst_idx, zidx]
+            m = np.isfinite(lb) & np.isfinite(y) & (lb > 0) & (y > 0)
+            if np.any(m):
+                ax[inst_idx].plot(lb[m], y[m], color=colors[zidx], linewidth=1.4, label=label)
+                ax[inst_idx].fill_between(
+                    lb[m],
+                    np.clip(ylo[m], 1e-12, None),
+                    np.clip(yhi[m], 1e-12, None),
+                    color=colors[zidx],
+                    alpha=0.18,
+                )
+
+        total_lo = np.clip(dl_total[inst_idx] - dl_total_err[inst_idx], 1e-12, None)
+        total_hi = dl_total[inst_idx] + dl_total_err[inst_idx]
+        ax[inst_idx].plot(lb, dl_total[inst_idx], color="k", linewidth=2.1, label="Total")
+        ax[inst_idx].fill_between(lb, total_lo, total_hi, color="k", alpha=0.12)
+
+        ax[inst_idx].set_xscale("log")
+        ax[inst_idx].set_yscale("log")
+        ax[inst_idx].set_xlim(xlim)
+        ax[inst_idx].set_ylim(ylim)
+        ax[inst_idx].grid(alpha=0.3)
+        ax[inst_idx].set_title(titles[inst_idx], fontsize=11)
+        ax[inst_idx].set_xlabel("$\\ell$")
+
+    ax[0].set_ylabel("$D_\\ell^{II}$ [nW$^2$ m$^{-4}$ sr$^{-2}$]")
+    handles, labels = ax[0].get_legend_handles_labels()
+    if handles:
+        fig.legend(handles, labels, loc="upper center", ncol=min(4, n_zbin + 1), fontsize=9, frameon=False)
+        fig.subplots_adjust(top=0.82)
+
+    fig.suptitle(f"z<1 {tracer_label} slice reconstruction (2h+1h), posterior bands", fontsize=12)
+    fig.tight_layout(rect=[0, 0, 1, 0.88])
+    return fig
+
+
+def _plot_ls_perfield_zslice_panels(
+    lb_pred: np.ndarray,
+    lb_gal: np.ndarray,
+    zbinedges: Sequence[float],
+    dl_pred_z: np.ndarray,
+    dl_pred_p16_z: np.ndarray,
+    dl_pred_p84_z: np.ndarray,
+    dl_gal_z: np.ndarray,
+    dl_gal_err_z: np.ndarray,
+    field_label: str,
+    figsize: Tuple[float, float] = (10.8, 6.8),
+    xlim: Tuple[float, float] = (275.0, 1.0e5),
+    ylim: Tuple[float, float] = (1e-2, 1e4),
+) -> Any:
+    from matplotlib import pyplot as plt
+
+    lb_pred = np.asarray(lb_pred, dtype=float)
+    lb_gal = np.asarray(lb_gal, dtype=float)
+    dl_pred_z = np.asarray(dl_pred_z, dtype=float)
+    dl_pred_p16_z = np.asarray(dl_pred_p16_z, dtype=float)
+    dl_pred_p84_z = np.asarray(dl_pred_p84_z, dtype=float)
+    dl_gal_z = np.asarray(dl_gal_z, dtype=float)
+    dl_gal_err_z = np.asarray(dl_gal_err_z, dtype=float)
+    n_zbin = len(zbinedges) - 1
+
+    ncols = 2
+    nrows = int(np.ceil(n_zbin / ncols))
+    fig, axes = plt.subplots(nrows, ncols, figsize=figsize, sharex=True, sharey=True)
+    axes = np.atleast_1d(axes).ravel()
+
+    inst_colors = ["C0", "C1"]
+    inst_labels = ["TM1", "TM2"]
+
+    for zidx in range(n_zbin):
+        ax = axes[zidx]
+        for inst_idx in range(2):
+            y = dl_pred_z[inst_idx, zidx]
+            ylo = dl_pred_p16_z[inst_idx, zidx]
+            yhi = dl_pred_p84_z[inst_idx, zidx]
+            m = np.isfinite(lb_pred) & np.isfinite(y) & (lb_pred > 0) & (y > 0)
+            if np.any(m):
+                ax.plot(lb_pred[m], y[m], color=inst_colors[inst_idx], linewidth=1.6, label=f"Reconstruction {inst_labels[inst_idx]}")
+                ax.fill_between(lb_pred[m], np.clip(ylo[m], 1e-12, None), np.clip(yhi[m], 1e-12, None), color=inst_colors[inst_idx], alpha=0.18)
+
+            yg = dl_gal_z[inst_idx, zidx]
+            yge = dl_gal_err_z[inst_idx, zidx]
+            mg = np.isfinite(lb_gal) & np.isfinite(yg) & np.isfinite(yge) & (lb_gal > 0) & (yg > 0)
+            if np.any(mg):
+                ax.errorbar(
+                    lb_gal[mg],
+                    yg[mg],
+                    yerr=yge[mg],
+                    fmt="o",
+                    markersize=2.8,
+                    capsize=2.0,
+                    color=inst_colors[inst_idx],
+                    alpha=0.6,
+                    label=f"Galaxy auto {inst_labels[inst_idx]}",
+                )
+
+        ax.set_title(f"{zbinedges[zidx]:.1f} < z < {zbinedges[zidx+1]:.1f}", fontsize=10)
+        ax.set_xscale("log")
+        ax.set_yscale("log")
+        ax.set_xlim(xlim)
+        ax.set_ylim(ylim)
+        ax.grid(alpha=0.3)
+
+    for ax in axes[n_zbin:]:
+        ax.axis("off")
+
+    axes[0].set_ylabel("$D_\\ell$")
+    for ax in axes[-ncols:]:
+        ax.set_xlabel("$\\ell$")
+
+    handles, labels = axes[0].get_legend_handles_labels()
+    if handles:
+        handle_by_label = {lab: h for h, lab in zip(handles, labels)}
+        ordered_labels = [lab for lab in ["Reconstruction TM1", "Reconstruction TM2", "Galaxy auto TM1", "Galaxy auto TM2"] if lab in handle_by_label]
+        ordered_handles = [handle_by_label[lab] for lab in ordered_labels]
+        fig.legend(ordered_handles, ordered_labels, loc="upper center", ncol=2, fontsize=9, frameon=False)
+
+    fig.suptitle(f"DESI-LS per-field reconstruction vs autos ({field_label})", fontsize=12)
+    fig.tight_layout(rect=[0, 0, 1, 0.90])
+    return fig
+
+
+def _load_intensity_prediction_from_cross_npz(
+    source_path: str,
+    lb_target: np.ndarray,
+    gal_cl_cross: np.ndarray,
+    gal_cl_cross_err: np.ndarray,
+    gal_cl_auto: np.ndarray,
+    gal_cl_auto_err: np.ndarray,
+    inst: int,
+) -> Optional[Tuple[np.ndarray, np.ndarray]]:
+    """Load intensity cross/auto from cross NPZ and return D_ell prediction + uncertainty.
+
+    Uses galaxy fractional errors to assign intensity cross/auto uncertainties,
+    then propagates to the reconstructed CIBER auto prediction.
+    """
+    if source_path is None:
+        return None
+
+    print('SOURCE PATH is ', source_path)
+    p = Path(str(source_path))
+    if not p.exists():
+        return None
+
+    dat = np.load(str(p), allow_pickle=True)
+    # if "all_cl_intensity_cross" not in dat.files or "all_cl_intensity_auto" not in dat.files:
+    #     return None
+
+    lb_src = np.asarray(dat["lb"], dtype=float)
+    cl_int_cross = np.nanmean(np.asarray(dat[f"TM{inst}_cl_intensity_cross"], dtype=float), axis=0)
+    cl_int_auto = np.nanmean(np.asarray(dat[f"TM{inst}_cl_intensity_auto"], dtype=float), axis=0)
+
+    with np.errstate(divide="ignore", invalid="ignore"):
+        frac_cross = np.where(np.abs(gal_cl_cross) > 0.0, np.abs(gal_cl_cross_err / gal_cl_cross), np.nan)
+        frac_auto = np.where(np.abs(gal_cl_auto) > 0.0, np.abs(gal_cl_auto_err / gal_cl_auto), np.nan)
+        cl_int_cross_err = np.abs(cl_int_cross) * frac_cross
+        cl_int_auto_err = np.abs(cl_int_auto) * frac_auto
+
+        pred_cl = np.where(cl_int_auto > 0.0, (cl_int_cross ** 2) / cl_int_auto, np.nan)
+        rel_pred = np.sqrt(
+            np.where(np.abs(cl_int_cross) > 0.0, (2.0 * cl_int_cross_err / cl_int_cross) ** 2, np.nan)
+            + np.where(np.abs(cl_int_auto) > 0.0, (cl_int_auto_err / cl_int_auto) ** 2, np.nan)
+        )
+        pred_cl_err = np.abs(pred_cl) * rel_pred
+
+    pred_cl_interp = _interp_hold_edges(lb_src, pred_cl, lb_target)
+    pred_cl_err_interp = _interp_hold_edges(lb_src, pred_cl_err, lb_target)
+    pf = lb_target * (lb_target + 1.0) / (2.0 * np.pi)
+    return pf * pred_cl_interp, pf * pred_cl_err_interp
 
 
 def run_zlt1_auto_prediction(args: argparse.Namespace) -> List[GeneratedFigure]:
@@ -2342,9 +3751,15 @@ def run_zlt1_auto_prediction(args: argparse.Namespace) -> List[GeneratedFigure]:
         run_gal_cross_fits,
     )
 
+    result_root = REPO_ROOT / "figures" / "generated_gal_cross_10deg" / f"zlt1_intermediate_{args.fit_tag}"
+    result_root.mkdir(parents=True, exist_ok=True)
+    args.outdir = str(result_root)
+
     if args.fit_mode == "bulk":
         # Match omnibus-style bulk measurements: one z<1 bin.
+        # zbinedges = [0.0, 1.0]
         zbinedges = [0.0, 1.0]
+
     else:
         zbinedges = _zlt1_coarse_bins()
     inst_list = [1, 2]
@@ -2356,30 +3771,51 @@ def run_zlt1_auto_prediction(args: argparse.Namespace) -> List[GeneratedFigure]:
     auto_use_damping = False
 
     fit_tag = args.fit_tag
+    # Allow cross fits to be loaded/run from a different fit-family/tag if requested.
+    cross_fit_tag = args.cross_fit_family if getattr(args, "cross_fit_family", None) else fit_tag
     nwalkers_fit = max(int(args.fit_nwalkers), 20)
     ihl_1h_params_path = Path(args.ihl_1h_params_path).expanduser()
-    if not ihl_1h_params_path.is_absolute():
-        ihl_1h_params_path = REPO_ROOT / ihl_1h_params_path
+
+    print('ihl_1h_params_path:', ihl_1h_params_path)
+    # if not ihl_1h_params_path.is_absolute():
+    #     ihl_1h_params_path = REPO_ROOT / ihl_1h_params_path
     has_ihl_1h_params = ihl_1h_params_path.exists()
 
     fixed_mu_1h: Optional[float] = None
     fixed_sigma_1h: Optional[float] = None
-    if args.one_halo_template_mode != "legacy":
-        if not args.slice_template_fit_files:
-            raise ValueError(
-                "one-halo-template-mode requires --slice-template-fit-files when mode is not legacy"
+    template_source = "legacy"
+    template_n_used: Optional[int] = None
+    if args.fit_mode == "coarsez":
+        # For coarse-z fits, rely on per-bin values from ihl_1h_params_corrected.
+        # if has_ihl_1h_params:
+        template_source = "ihl_1h_params_corrected"
+
+    elif args.one_halo_template_mode != "legacy":
+        # For bulk z<1, always compute effective template from IHL decomposition.
+        if args.slice_template_fit_files:
+            print(
+                "Note: --slice-template-fit-files ignored for bulk z<1; "
+                "using effective-template from compute_effective_1h_template."
             )
-        slice_files = [str(Path(p).expanduser()) for p in args.slice_template_fit_files]
-        fixed_mu_1h, fixed_sigma_1h, n_used = _derive_fixed_one_halo_from_slice_fits(
-            slice_files,
-            mode=args.one_halo_template_mode,
-            effective_z=float(args.one_halo_effective_z),
-        )
-        print(
-            "Derived fixed one-halo template from slice fits: "
-            f"mode={args.one_halo_template_mode}, mu_1h={fixed_mu_1h:.4f}, "
-            f"sigma_1h={fixed_sigma_1h:.4f}, n_used={n_used}"
-        )
+        try:
+            print('trying derive 1h template from effective template...')
+            fixed_mu_1h, fixed_sigma_1h, n_used = _derive_fixed_one_halo_from_effective_template(
+                template_dir="data/ihl_templates",
+                zbinedges=zbinedges,
+            )
+            template_source = "effective-template"
+            template_n_used = int(n_used)
+            print(
+                "Derived fixed one-halo template from effective computation: "
+                f"mu_1h={fixed_mu_1h:.4f}, sigma_1h={fixed_sigma_1h:.4f}, n_used={n_used}"
+            )
+        except Exception as e:
+            print(f"Warning: failed to compute effective 1h template: {e}")
+            print("Falling back to free one-halo shape with priors")
+            fixed_mu_1h = None
+            fixed_sigma_1h = None
+            template_source = "free-1h"
+            template_n_used = None
 
     # For cross fits, fixed 1h shape requires IHL parameter file.
     # Fall back to free 1h shape if file is absent, with corresponding priors/starts.
@@ -2437,10 +3873,53 @@ def run_zlt1_auto_prediction(args: argparse.Namespace) -> List[GeneratedFigure]:
             f"Requested --fit-nwalkers={args.fit_nwalkers} is too small for 5-parameter MCMC; "
             f"using {nwalkers_fit}."
         )
-    ls_cross_file = f"ciber_cl_fits_DESILS_coarsez_{fit_tag}.npz"
-    hsc_cross_file = f"ciber_cl_fits_HSC_coarsez_{fit_tag}.npz"
+    ls_cross_file = f"ciber_cl_fits_DESILS_coarsez_{cross_fit_tag}.npz"
+    hsc_cross_file = f"ciber_cl_fits_HSC_coarsez_{cross_fit_tag}.npz"
     ls_auto_file = f"gal_auto_fits_DESILS_coarsez_{fit_tag}.npz"
     hsc_auto_file = f"gal_auto_fits_HSC_coarsez_{fit_tag}.npz"
+
+    ls_large_auto = None
+    ls_large_auto_fit = None
+    if args.ls_gal_auto_large_basepath:
+        print("Loading LS large-field auto spectra for fits/predictions...")
+        if args.fit_mode == "bulk":
+            lb_bulk, cl_bulk, err_bulk, fpath = _load_ls_large_auto_bulk(
+                basepath=args.ls_gal_auto_large_basepath,
+                inst=1,
+                suffix=args.ls_gal_auto_large_suffix,
+                weight_mode=args.ls_gal_auto_large_weight,
+            )
+            lb_large = lb_bulk
+            cl_bins = np.asarray(cl_bulk, dtype=float)[None, None, :]
+            err_bins = np.asarray(err_bulk, dtype=float)[None, None, :]
+            file_paths = np.asarray([[str(fpath)]], dtype=object)
+        else:
+            lb_large, cl_bins, err_bins, file_paths = _load_ls_large_auto_bins(
+                basepath=args.ls_gal_auto_large_basepath,
+                zbinedges=_zlt1_coarse_bins(),
+                inst_list=inst_list,
+                suffix=args.ls_gal_auto_large_suffix,
+                weight_mode=args.ls_gal_auto_large_weight,
+            )
+
+        ls_large_auto = {
+            "lb": np.asarray(lb_large, dtype=float),
+            "cl_bins": np.asarray(cl_bins, dtype=float),
+            "err_bins": np.asarray(err_bins, dtype=float),
+            "file_paths": np.asarray(file_paths, dtype=object),
+        }
+        if args.fit_mode == "bulk":
+            ls_large_auto_fit = {
+                "lb": lb_large,
+                "full_cl_gal": cl_bins,
+                "full_clerr_gal": err_bins,
+            }
+        else:
+            ls_large_auto_fit = {
+                "lb": lb_large,
+                "full_cl_gal": cl_bins,
+                "full_clerr_gal": err_bins,
+            }
 
     save_intermediate = not args.no_save_intermediate_fits
     base_intermediate_dir = REPO_ROOT / "figures" / "generated_gal_cross_10deg" / f"zlt1_intermediate_{fit_tag}"
@@ -2451,110 +3930,125 @@ def run_zlt1_auto_prediction(args: argparse.Namespace) -> List[GeneratedFigure]:
     for d in [cross_fig_dir_ls, cross_fig_dir_hsc, auto_fig_dir_ls, auto_fig_dir_hsc]:
         d.mkdir(parents=True, exist_ok=True)
 
-    print("Running z<1 cross-spectrum fits (DESI-LS, HSC)...")
-    run_gal_cross_fits(
-        inst_list=inst_list,
-        ifield_list=ifield_list,
-        cat="DESILS",
-        zbinedges=zbinedges,
-        maskstr="JHlt16_wFFerr",
-        chi2_eval_max=cross_lmax,
-        lMax_fit=cross_lmax,
-        use_ihl_templates=False,
-        fix_ihl_1h_shape=cross_fix_ihl_1h_shape,
-        use_ihl_1h_params=True,
-        ihl_1h_params_path=str(ihl_1h_params_path),
-        save_figs=save_intermediate,
-        figbasedir=str(cross_fig_dir_ls) + os.sep,
-        save_results=True,
-        file_fpath=ls_cross_file,
-        fitstr=fit_tag,
-        prior_bounds=cross_prior_bounds,
-        initial_guess=cross_initial_guess,
-        chi2_lim=[-6, 6],
-        use_astrometry_damping=cross_use_damping,
-        mu_1h_fixed_override=fixed_mu_1h,
-        sigma_1h_fixed_override=fixed_sigma_1h,
-        nwalkers=nwalkers_fit,
-        nsteps=args.fit_nsteps,
-        nburn=args.fit_nburn,
-    )
-    run_gal_cross_fits(
-        inst_list=inst_list,
-        ifield_list=ifield_list_hsc,
-        cat="HSC",
-        zbinedges=zbinedges,
-        maskstr=None,
-        headstr=args.hsc_headstr,
-        chi2_eval_max=cross_lmax,
-        lMax_fit=cross_lmax,
-        use_ihl_templates=False,
-        fix_ihl_1h_shape=cross_fix_ihl_1h_shape,
-        use_ihl_1h_params=True,
-        ihl_1h_params_path=str(ihl_1h_params_path),
-        save_figs=save_intermediate,
-        figbasedir=str(cross_fig_dir_hsc) + os.sep,
-        save_results=True,
-        file_fpath=hsc_cross_file,
-        fitstr=fit_tag,
-        prior_bounds=cross_prior_bounds,
-        initial_guess=cross_initial_guess,
-        chi2_lim=[-6, 6],
-        use_astrometry_damping=cross_use_damping,
-        mu_1h_fixed_override=fixed_mu_1h,
-        sigma_1h_fixed_override=fixed_sigma_1h,
-        nwalkers=nwalkers_fit,
-        nsteps=args.fit_nsteps,
-        nburn=args.fit_nburn,
-    )
+    reuse_fit_cache = bool(getattr(args, "reuse_fit_cache", False))
+    ls_cross_path = REPO_ROOT / "data" / "cross_cl_fits" / ls_cross_file
+    hsc_cross_path = REPO_ROOT / "data" / "cross_cl_fits" / hsc_cross_file
+    ls_auto_path = REPO_ROOT / "data" / "gal_auto_fits" / ls_auto_file
+    hsc_auto_path = REPO_ROOT / "data" / "gal_auto_fits" / hsc_auto_file
 
-    print("Running z<1 galaxy-auto fits (DESI-LS, HSC)...")
-    run_gal_auto_fits(
-        inst_list=[1],
-        cat="DESILS",
-        zbinedges=zbinedges,
-        headstr=None,
-        ifield_list=ifield_list,
-        chi2_eval_max=auto_lmax,
-        lMax_fit=auto_lmax,
-        ihl_1h_params_path=str(ihl_1h_params_path),
-        save_figs=save_intermediate,
-        figbasedir=str(auto_fig_dir_ls) + os.sep,
-        save_results=True,
-        file_fpath=ls_auto_file,
-        fitstr=fit_tag,
-        prior_bounds=auto_prior_bounds,
-        chi2_lim=[-6, 6],
-        use_astrometry_damping=auto_use_damping,
-        mu_1h_fixed_override=fixed_mu_1h,
-        sigma_1h_fixed_override=fixed_sigma_1h,
-        nwalkers=nwalkers_fit,
-        nsteps=args.fit_nsteps,
-        nburn=args.fit_nburn,
-    )
-    run_gal_auto_fits(
-        inst_list=[1],
-        cat="HSC",
-        zbinedges=zbinedges,
-        headstr=args.hsc_headstr,
-        ifield_list=ifield_list_hsc,
-        chi2_eval_max=auto_lmax,
-        lMax_fit=auto_lmax,
-        ihl_1h_params_path=str(ihl_1h_params_path),
-        save_figs=save_intermediate,
-        figbasedir=str(auto_fig_dir_hsc) + os.sep,
-        save_results=True,
-        file_fpath=hsc_auto_file,
-        fitstr=fit_tag,
-        prior_bounds=auto_prior_bounds,
-        chi2_lim=[-6, 6],
-        use_astrometry_damping=auto_use_damping,
-        mu_1h_fixed_override=fixed_mu_1h,
-        sigma_1h_fixed_override=fixed_sigma_1h,
-        nwalkers=nwalkers_fit,
-        nsteps=args.fit_nsteps,
-        nburn=args.fit_nburn,
-    )
+    if reuse_fit_cache:
+        missing_cached = [str(p) for p in [ls_cross_path, hsc_cross_path, ls_auto_path, hsc_auto_path] if not p.exists()]
+        if missing_cached:
+            raise FileNotFoundError(
+                "--reuse-fit-cache was requested but cached fit files are missing:\n" + "\n".join(missing_cached)
+            )
+        print("Reusing cached z<1 cross/auto fit NPZ files; skipping MCMC fits.")
+    else:
+        print("Running z<1 cross-spectrum fits (DESI-LS, HSC)...")
+        run_gal_cross_fits(
+            inst_list=inst_list,
+            ifield_list=ifield_list,
+            cat="DESILS",
+            zbinedges=zbinedges,
+            maskstr="JHlt16",
+            chi2_eval_max=cross_lmax,
+            lMax_fit=cross_lmax,
+            fix_ihl_1h_shape=cross_fix_ihl_1h_shape,
+            use_ihl_1h_params=True,
+            ihl_1h_params_path=str(ihl_1h_params_path),
+            save_figs=save_intermediate,
+            figbasedir=str(cross_fig_dir_ls) + os.sep,
+            save_results=True,
+            file_fpath=ls_cross_file,
+            fitstr=cross_fit_tag,
+            prior_bounds=cross_prior_bounds,
+            initial_guess=cross_initial_guess,
+            chi2_lim=[-6, 6],
+            use_astrometry_damping=cross_use_damping,
+            mu_1h_fixed_override=fixed_mu_1h,
+            sigma_1h_fixed_override=fixed_sigma_1h,
+            nwalkers=nwalkers_fit,
+            nsteps=args.fit_nsteps,
+            nburn=args.fit_nburn,
+        )
+        run_gal_cross_fits(
+            inst_list=inst_list,
+            ifield_list=ifield_list_hsc,
+            cat="HSC",
+            zbinedges=zbinedges,
+            maskstr='JHlt16',
+            headstr=args.hsc_headstr,
+            chi2_eval_max=cross_lmax,
+            lMax_fit=cross_lmax,
+            fix_ihl_1h_shape=cross_fix_ihl_1h_shape,
+            use_ihl_1h_params=True,
+            ihl_1h_params_path=str(ihl_1h_params_path),
+            save_figs=save_intermediate,
+            figbasedir=str(cross_fig_dir_hsc) + os.sep,
+            save_results=True,
+            file_fpath=hsc_cross_file,
+            fitstr=cross_fit_tag,
+            prior_bounds=cross_prior_bounds,
+            initial_guess=cross_initial_guess,
+            chi2_lim=[-6, 6],
+            use_astrometry_damping=cross_use_damping,
+            mu_1h_fixed_override=fixed_mu_1h,
+            sigma_1h_fixed_override=fixed_sigma_1h,
+            nwalkers=nwalkers_fit,
+            nsteps=args.fit_nsteps,
+            nburn=args.fit_nburn,
+        )
+
+        print("Running z<1 galaxy-auto fits (DESI-LS, HSC)...")
+        print('ls auto file:', ls_auto_file)
+        print('hsc auto file:', hsc_auto_file)
+        run_gal_auto_fits(
+            inst_list=[1],
+            cat="DESILS",
+            zbinedges=zbinedges,
+            headstr=None,
+            ifield_list=ifield_list,
+            chi2_eval_max=auto_lmax,
+            lMax_fit=auto_lmax,
+            ihl_1h_params_path=str(ihl_1h_params_path),
+            save_figs=save_intermediate,
+            figbasedir=str(auto_fig_dir_ls) + os.sep,
+            save_results=True,
+            file_fpath=ls_auto_file,
+            fitstr=fit_tag,
+            prior_bounds=auto_prior_bounds,
+            chi2_lim=[-6, 6],
+            use_astrometry_damping=auto_use_damping,
+            mu_1h_fixed_override=fixed_mu_1h,
+            sigma_1h_fixed_override=fixed_sigma_1h,
+            nwalkers=nwalkers_fit,
+            nsteps=args.fit_nsteps,
+            nburn=args.fit_nburn,
+            gal_ps_dict=ls_large_auto_fit,
+        )
+        run_gal_auto_fits(
+            inst_list=[1],
+            cat="HSC",
+            zbinedges=zbinedges,
+            headstr=args.hsc_headstr,
+            ifield_list=ifield_list_hsc,
+            chi2_eval_max=auto_lmax,
+            lMax_fit=auto_lmax,
+            ihl_1h_params_path=str(ihl_1h_params_path),
+            save_figs=save_intermediate,
+            figbasedir=str(auto_fig_dir_hsc) + os.sep,
+            save_results=True,
+            file_fpath=hsc_auto_file,
+            fitstr=fit_tag,
+            prior_bounds=auto_prior_bounds,
+            chi2_lim=[-6, 6],
+            use_astrometry_damping=auto_use_damping,
+            mu_1h_fixed_override=fixed_mu_1h,
+            sigma_1h_fixed_override=fixed_sigma_1h,
+            nwalkers=nwalkers_fit,
+            nsteps=args.fit_nsteps,
+            nburn=args.fit_nburn,
+        )
 
     print("Collecting spectra and computing CIBER auto predictions from z<1 tracers...")
     res_ls = collect_ciber_gal_vs_redshift(
@@ -2563,7 +4057,6 @@ def run_zlt1_auto_prediction(args: argparse.Namespace) -> List[GeneratedFigure]:
         inst_list=inst_list,
         zbinedges=zbinedges,
         maskstr="JHlt16_wFFerr",
-        subtract_sn=False,
         tl_pix_correct=True,
         ifield_list=ifield_list,
     )
@@ -2573,12 +4066,187 @@ def run_zlt1_auto_prediction(args: argparse.Namespace) -> List[GeneratedFigure]:
         inst_list=inst_list,
         zbinedges=zbinedges,
         maskstr=None,
-        subtract_sn=False,
         tl_pix_correct=True,
         ifield_list=ifield_list_hsc,
         with_ff_err=True,
         headstr=args.hsc_headstr,
     )
+
+
+    if args.intensity_field_weight_mode == 'per-field':
+        print('GRABBING PER FIELD WEIGHTS FROM LS CROSS FITS')
+        per_field_weights_ls = res_ls["full_perf_weights"]
+        print('per_field_weights_ls:', per_field_weights_ls.shape)
+    else:
+        per_field_weights_ls = None
+
+    # Check whether intensity fields are present in the same HSC cross-product NPZ files.
+
+    from ciber.theory.intensity_reconstruction_diagnostics import compute_intensity_recon_ciber_prediction
+    
+    # Load intensity reconstruction results for both catalogs
+    fluxweight_recon_results_hsc = compute_intensity_recon_ciber_prediction(
+        inst_list=[1,2],
+        ifield_list=ifield_list_hsc,
+        catname="HSC",
+        gal_addstr=args.hsc_intensity_addstr,
+        intensity_addstr=None,
+        hsc_mag_column='i_cmodel_mag',
+        zmin=zbinedges[0],
+        zmax=zbinedges[-1],
+        verbose=True, 
+        per_field_weights=None)
+    # print('HSC fluxweight recon results ', fluxweight_recon_results_hsc)
+    
+    fluxweight_recon_results_ls = compute_intensity_recon_ciber_prediction(
+        inst_list=[1,2],
+        ifield_list=ifield_list,
+        catname="LS",
+        gal_addstr=args.ls_intensity_addstr,
+        intensity_addstr=None,
+        hsc_mag_column='DESI_LS',
+        zmin=zbinedges[0],
+        zmax=zbinedges[-1],
+        verbose=True, 
+        per_field_weights=per_field_weights_ls)
+    # print('LS fluxweight recon results ', fluxweight_recon_results_ls)
+
+    intensity_fit_bundle_hsc: Optional[Dict[str, Any]] = None
+    intensity_fit_bundle_ls: Optional[Dict[str, Any]] = None
+    if args.include_intensity_weighted:
+        print("Preparing intensity-weighted smooth model fits (cross + auto)...")
+        
+        # Extract and scale galaxy cross uncertainties for intensity fitting
+        # Scale by mean ratio of intensity_auto / galaxy_auto on ell < 3000
+        scaled_cross_err_dict_hsc: Dict[int, np.ndarray] = {}
+        if res_hsc is not None:
+            lb_hsc = np.asarray(res_hsc.get("lb"), dtype=float)
+            full_clerr_cross = np.asarray(res_hsc.get("full_clerr_cross"), dtype=float)
+            full_cl_gal_auto = np.asarray(res_hsc.get("full_cl_gal"), dtype=float)
+            if full_clerr_cross.ndim == 3:  # shape: (n_inst, n_zbins, n_ell)
+                # For single z-bin, take first z-bin
+                for inst_idx, inst in enumerate(inst_list):
+                    if inst_idx < full_clerr_cross.shape[0]:
+                        clerr = np.asarray(full_clerr_cross[inst_idx, 0], dtype=float)
+                        if clerr.size == lb_hsc.size:
+                            # Compute scaling ratio from intensity auto / galaxy auto on ell < 3000
+                            scale_factor = 1.0
+                            if fluxweight_recon_results_hsc is not None:
+                                inst_res = fluxweight_recon_results_hsc.get("all_results", {}).get(int(inst))
+                                if inst_res is not None:
+                                    cl_int_auto = np.asarray(inst_res.get("cl_intensity_auto"), dtype=float)
+                                    if full_cl_gal_auto.ndim >= 2 and inst_idx < full_cl_gal_auto.shape[0]:
+                                        cl_gal_auto = np.asarray(full_cl_gal_auto[inst_idx, 0], dtype=float)
+                                        mask_scale = lb_hsc < 3000.0
+                                        if np.any(mask_scale) and np.any(np.isfinite(cl_int_auto[mask_scale])) and np.any(np.isfinite(cl_gal_auto[mask_scale])):
+                                            ratio = cl_int_auto[mask_scale] / np.maximum(cl_gal_auto[mask_scale], 1e-20)
+                                            scale_factor = np.nanmedian(ratio[np.isfinite(ratio)])
+                                            if not np.isfinite(scale_factor):
+                                                scale_factor = 1.0
+                            
+                            pf = lb_hsc * (lb_hsc + 1.0) / (2.0 * np.pi)
+                            dl_err = pf * np.abs(clerr)
+                            scaled_cross_err_dict_hsc[int(inst)] = np.sqrt(2)*np.sqrt(scale_factor) * dl_err
+                            print(f"  TM{inst}: scaled HSC galaxy cross errors by mean intensity_auto/galaxy_auto ratio = {scale_factor:.4f} (ell < 3000)")
+        
+        scaled_cross_err_dict_ls: Dict[int, np.ndarray] = {}
+        if res_ls is not None:
+            lb_ls = np.asarray(res_ls.get("lb"), dtype=float)
+            full_clerr_cross_ls = np.asarray(res_ls.get("full_clerr_cross"), dtype=float)
+            full_cl_gal_auto_ls = np.asarray(res_ls.get("full_cl_gal"), dtype=float)
+            if full_clerr_cross_ls.ndim == 3:  # shape: (n_inst, n_zbins, n_ell)
+                # For single z-bin, take first z-bin
+                for inst_idx, inst in enumerate(inst_list):
+                    if inst_idx < full_clerr_cross_ls.shape[0]:
+                        clerr = np.asarray(full_clerr_cross_ls[inst_idx, 0], dtype=float)
+                        if clerr.size == lb_ls.size:
+                            # Compute scaling ratio from intensity auto / galaxy auto on ell < 3000
+                            scale_factor = 1.0
+                            if fluxweight_recon_results_ls is not None:
+                                inst_res = fluxweight_recon_results_ls.get("all_results", {}).get(int(inst))
+                                if inst_res is not None:
+                                    cl_int_auto = np.asarray(inst_res.get("cl_intensity_auto"), dtype=float)
+                                    if full_cl_gal_auto_ls.ndim >= 2 and inst_idx < full_cl_gal_auto_ls.shape[0]:
+                                        cl_gal_auto = np.asarray(full_cl_gal_auto_ls[inst_idx, 0], dtype=float)
+                                        mask_scale = lb_ls < 3000.0
+                                        if np.any(mask_scale) and np.any(np.isfinite(cl_int_auto[mask_scale])) and np.any(np.isfinite(cl_gal_auto[mask_scale])):
+                                            ratio = cl_int_auto[mask_scale] / np.maximum(cl_gal_auto[mask_scale], 1e-20)
+                                            scale_factor = np.nanmedian(ratio[np.isfinite(ratio)])
+                                            if not np.isfinite(scale_factor):
+                                                scale_factor = 1.0
+                            
+                            pf = lb_ls * (lb_ls + 1.0) / (2.0 * np.pi)
+                            dl_err = pf * np.abs(clerr)
+                            scaled_cross_err_dict_ls[int(inst)] = np.sqrt(scale_factor) * dl_err
+                            print(f"  TM{inst}: scaled LS galaxy cross errors by mean intensity_auto/galaxy_auto ratio = {scale_factor:.4f} (ell < 3000)")
+        
+        # Fit HSC intensity results
+        if fluxweight_recon_results_hsc.get("all_results"):
+            intensity_fit_bundle_hsc = _fit_or_load_intensity_weighted_models(
+                fluxweight_recon_results=fluxweight_recon_results_hsc,
+                inst_list=inst_list,
+                fit_tag=str(fit_tag) + "_hsc_intensity",
+                reuse_fit_cache=reuse_fit_cache,
+                cross_lmax=float(cross_lmax),
+                auto_lmax=float(auto_lmax),
+                auto_fit_ell_min=float(args.auto_fit_ell_min),
+                startidx=int(args.startidx),
+                endidx=int(args.endidx),
+                nwalkers=int(nwalkers_fit),
+                nsteps=int(args.fit_nsteps),
+                nburn=int(args.fit_nburn),
+                cross_prior_bounds=np.asarray(cross_prior_bounds, dtype=float),
+                auto_prior_bounds=np.asarray(auto_prior_bounds, dtype=float),
+                fixed_mu_1h=fixed_mu_1h,
+                fixed_sigma_1h=fixed_sigma_1h,
+                scaled_cross_err_dict=scaled_cross_err_dict_hsc,
+            )
+            print(
+                "HSC intensity fits ready: "
+                f"cross={intensity_fit_bundle_hsc['cross_path']} auto={intensity_fit_bundle_hsc['auto_path']} "
+                f"cache={intensity_fit_bundle_hsc['from_cache']}"
+            )
+        
+        # Fit LS intensity results
+        if fluxweight_recon_results_ls.get("all_results"):
+            intensity_fit_bundle_ls = _fit_or_load_intensity_weighted_models(
+                fluxweight_recon_results=fluxweight_recon_results_ls,
+                inst_list=inst_list,
+                fit_tag=str(fit_tag) + "_ls_intensity",
+                reuse_fit_cache=reuse_fit_cache,
+                cross_lmax=float(cross_lmax),
+                auto_lmax=float(auto_lmax),
+                auto_fit_ell_min=float(args.auto_fit_ell_min),
+                startidx=int(args.startidx),
+                endidx=int(args.endidx),
+                nwalkers=int(nwalkers_fit),
+                nsteps=int(args.fit_nsteps),
+                nburn=int(args.fit_nburn),
+                cross_prior_bounds=np.asarray(cross_prior_bounds, dtype=float),
+                auto_prior_bounds=np.asarray(auto_prior_bounds, dtype=float),
+                fixed_mu_1h=fixed_mu_1h,
+                fixed_sigma_1h=fixed_sigma_1h,
+                scaled_cross_err_dict=scaled_cross_err_dict_ls,
+            )
+            print(
+                "LS intensity fits ready: "
+                f"cross={intensity_fit_bundle_ls['cross_path']} auto={intensity_fit_bundle_ls['auto_path']} "
+                f"cache={intensity_fit_bundle_ls['from_cache']}"
+            )
+
+    if ls_large_auto is not None:
+        lb_target = np.asarray(res_ls["lb"], dtype=float)
+        lb_large = np.asarray(ls_large_auto["lb"], dtype=float)
+        print(
+            "Using LS large-field auto spectra for galaxy-auto denominator: "
+            f"lb_large=[{lb_large[0]:.1f},{lb_large[-1]:.1f}] n={lb_large.size}, "
+            f"lb_target=[{lb_target[0]:.1f},{lb_target[-1]:.1f}] n={lb_target.size}"
+        )
+        try:
+            flat_paths = [str(x) for x in np.ravel(ls_large_auto["file_paths"]) if x is not None]
+            print(f"[ls-large-auto] files: {flat_paths}")
+        except Exception:
+            pass
 
     ell_scaling = (args.scale_ell_min, args.scale_ell_max)
     fit_range = (args.auto_fit_ell_min, args.auto_fit_ell_max)
@@ -2591,6 +4259,21 @@ def run_zlt1_auto_prediction(args: argparse.Namespace) -> List[GeneratedFigure]:
     dl_pred_hsc = []
     dl_pred_hsc_err = []
     dl_pred_hsc_2h = []
+
+    dl_pred_ls_z = []
+    dl_pred_ls_err_z = []
+    dl_pred_ls_2h_z = []
+    dl_pred_ls_p16_z = []
+    dl_pred_ls_p84_z = []
+    dl_pred_hsc_z = []
+    dl_pred_hsc_err_z = []
+    dl_pred_hsc_2h_z = []
+    dl_pred_hsc_p16_z = []
+    dl_pred_hsc_p84_z = []
+    s2h1h_ls_z = []
+    s2h1h_ls_z_err = []
+    s2h1h_hsc_z = []
+    s2h1h_hsc_z_err = []
 
     lb_common: Optional[np.ndarray] = None
 
@@ -2607,6 +4290,8 @@ def run_zlt1_auto_prediction(args: argparse.Namespace) -> List[GeneratedFigure]:
     params_ls_auto_err = np.asarray(ls_auto_res["params_err"], dtype=float)
     params_hsc_auto = np.asarray(hsc_auto_res["params"], dtype=float)
     params_hsc_auto_err = np.asarray(hsc_auto_res["params_err"], dtype=float)
+    n_zbin = len(zbinedges) - 1
+    per_z_enabled = n_zbin > 1
     ls_auto_samples = _extract_fit_samples_cell(ls_auto_res, 0, 0)
     hsc_auto_samples = _extract_fit_samples_cell(hsc_auto_res, 0, 0)
 
@@ -2625,61 +4310,227 @@ def run_zlt1_auto_prediction(args: argparse.Namespace) -> List[GeneratedFigure]:
         if lb_common is None:
             lb_common = lb_meas
 
-        ls_cross_samples = _extract_fit_samples_cell(ls_cross_res, inst_idx, 0)
-        hsc_cross_samples = _extract_fit_samples_cell(hsc_cross_res, inst_idx, 0)
-
-        ls_comp = _predict_auto_2h1h_from_cross_and_shot_subtracted_auto(
-            lb_meas,
-            params_ls_cross[inst_idx, 0],
-            params_ls_cross_err[inst_idx, 0],
-            ls_cross_samples,
-            np.asarray(res_ls["lb"], dtype=float),
-            np.asarray(res_ls["full_cl_gal"][0, 0], dtype=float),
-            np.asarray(res_ls["full_clerr_gal"][0, 0], dtype=float),
-            ell_range_for_scaling=ell_scaling,
-            shot_ell_min=float(args.shot_ell_min),
-            shot_ell_max=float(args.shot_ell_max),
-            gal_auto_denominator_mode=str(args.gal_auto_denominator_mode),
-            ratio_scaling_mode=str(args.ratio_scaling_mode),
-            gal_auto_params=params_ls_auto[0, 0],
-            gal_auto_params_err=params_ls_auto_err[0, 0],
-            gal_auto_samples=ls_auto_samples,
-            nsamp=int(args.pred_nsamp),
-            seed=123 + inst_idx,
-        )
-        hsc_comp = _predict_auto_2h1h_from_cross_and_shot_subtracted_auto(
-            lb_meas,
-            params_hsc_cross[inst_idx, 0],
-            params_hsc_cross_err[inst_idx, 0],
-            hsc_cross_samples,
-            np.asarray(res_hsc["lb"], dtype=float),
-            np.asarray(res_hsc["full_cl_gal"][0, 0], dtype=float),
-            np.asarray(res_hsc["full_clerr_gal"][0, 0], dtype=float),
-            ell_range_for_scaling=ell_scaling,
-            shot_ell_min=float(args.shot_ell_min),
-            shot_ell_max=float(args.shot_ell_max),
-            gal_auto_denominator_mode=str(args.gal_auto_denominator_mode),
-            ratio_scaling_mode=str(args.ratio_scaling_mode),
-            gal_auto_params=params_hsc_auto[0, 0],
-            gal_auto_params_err=params_hsc_auto_err[0, 0],
-            gal_auto_samples=hsc_auto_samples,
-            nsamp=int(args.pred_nsamp),
-            seed=223 + inst_idx,
-        )
-
-        print(
-            f"[2h+1h scaling] TM{inst_idx+1} DESI-LS s={float(ls_comp['s2h1h']):.3e} +/- {float(ls_comp['s2h1h_err']):.3e}; "
-            f"HSC s={float(hsc_comp['s2h1h']):.3e} +/- {float(hsc_comp['s2h1h_err']):.3e}"
-        )
-
         dl_meas.append(dl_m)
         dl_meas_err.append(dl_merr)
-        dl_pred_ls.append(ls_comp["dl_pred_2h1h"])
-        dl_pred_ls_err.append(ls_comp["dl_pred_2h1h_err"])
-        dl_pred_ls_2h.append(ls_comp["dl_cross_2h1h_med"])
-        dl_pred_hsc.append(hsc_comp["dl_pred_2h1h"])
-        dl_pred_hsc_err.append(hsc_comp["dl_pred_2h1h_err"])
-        dl_pred_hsc_2h.append(hsc_comp["dl_cross_2h1h_med"])
+
+        if per_z_enabled:
+            ls_z = np.full((n_zbin, lb_meas.size), np.nan, dtype=float)
+            ls_z_err = np.full((n_zbin, lb_meas.size), np.nan, dtype=float)
+            ls_z_2h = np.full((n_zbin, lb_meas.size), np.nan, dtype=float)
+            ls_z_p16 = np.full((n_zbin, lb_meas.size), np.nan, dtype=float)
+            ls_z_p84 = np.full((n_zbin, lb_meas.size), np.nan, dtype=float)
+            hsc_z = np.full((n_zbin, lb_meas.size), np.nan, dtype=float)
+            hsc_z_err = np.full((n_zbin, lb_meas.size), np.nan, dtype=float)
+            hsc_z_2h = np.full((n_zbin, lb_meas.size), np.nan, dtype=float)
+            hsc_z_p16 = np.full((n_zbin, lb_meas.size), np.nan, dtype=float)
+            hsc_z_p84 = np.full((n_zbin, lb_meas.size), np.nan, dtype=float)
+            ls_s = np.full(n_zbin, np.nan, dtype=float)
+            ls_s_err = np.full(n_zbin, np.nan, dtype=float)
+            hsc_s = np.full(n_zbin, np.nan, dtype=float)
+            hsc_s_err = np.full(n_zbin, np.nan, dtype=float)
+            ls_draws_list = []
+            hsc_draws_list = []
+
+            for zidx in range(n_zbin):
+                ls_cross_samples = _extract_fit_samples_cell(ls_cross_res, inst_idx, zidx)
+                hsc_cross_samples = _extract_fit_samples_cell(hsc_cross_res, inst_idx, zidx)
+                ls_auto_samples = _extract_fit_samples_cell(ls_auto_res, 0, zidx)
+                hsc_auto_samples = _extract_fit_samples_cell(hsc_auto_res, 0, zidx)
+
+                if ls_large_auto is not None:
+                    if args.fit_mode == "bulk":
+                        ls_gal_cl = np.nansum(ls_large_auto["cl_bins"], axis=1)[0]
+                        ls_gal_err = np.sqrt(np.nansum(ls_large_auto["err_bins"] ** 2, axis=1))[0]
+                    else:
+                        ls_gal_cl = ls_large_auto["cl_bins"][0, zidx]
+                        ls_gal_err = ls_large_auto["err_bins"][0, zidx]
+                    ls_gal_lb = np.asarray(ls_large_auto["lb"], dtype=float)
+                    ls_auto_model_lb = ls_gal_lb
+                else:
+                    ls_gal_lb = np.asarray(res_ls["lb"], dtype=float)
+                    ls_gal_cl = np.asarray(res_ls["full_cl_gal"][0, zidx], dtype=float)
+                    ls_gal_err = np.asarray(res_ls["full_clerr_gal"][0, zidx], dtype=float)
+                    ls_auto_model_lb = None
+
+                ls_comp = _predict_auto_2h1h_from_cross_and_shot_subtracted_auto(
+                    lb_meas,
+                    params_ls_cross[inst_idx, zidx],
+                    params_ls_cross_err[inst_idx, zidx],
+                    ls_cross_samples,
+                    ls_gal_lb,
+                    ls_gal_cl,
+                    ls_gal_err,
+                    ell_range_for_scaling=ell_scaling,
+                    shot_ell_min=float(args.shot_ell_min),
+                    shot_ell_max=float(args.shot_ell_max),
+                    gal_auto_denominator_mode=str(args.gal_auto_denominator_mode),
+                    ratio_scaling_mode=str(args.ratio_scaling_mode),
+                    gal_auto_params=params_ls_auto[0, zidx],
+                    gal_auto_params_err=params_ls_auto_err[0, zidx],
+                    gal_auto_samples=ls_auto_samples,
+                    nsamp=int(args.pred_nsamp),
+                    seed=1000 + 100 * zidx + inst_idx,
+                    auto_model_lb=ls_auto_model_lb,
+                    return_draws=True,
+                )
+                hsc_comp = _predict_auto_2h1h_from_cross_and_shot_subtracted_auto(
+                    lb_meas,
+                    params_hsc_cross[inst_idx, zidx],
+                    params_hsc_cross_err[inst_idx, zidx],
+                    hsc_cross_samples,
+                    np.asarray(res_hsc["lb"], dtype=float),
+                    np.asarray(res_hsc["full_cl_gal"][0, zidx], dtype=float),
+                    np.asarray(res_hsc["full_clerr_gal"][0, zidx], dtype=float),
+                    ell_range_for_scaling=ell_scaling,
+                    shot_ell_min=float(args.shot_ell_min),
+                    shot_ell_max=float(args.shot_ell_max),
+                    gal_auto_denominator_mode=str(args.gal_auto_denominator_mode),
+                    ratio_scaling_mode=str(args.ratio_scaling_mode),
+                    gal_auto_params=params_hsc_auto[0, zidx],
+                    gal_auto_params_err=params_hsc_auto_err[0, zidx],
+                    gal_auto_samples=hsc_auto_samples,
+                    nsamp=int(args.pred_nsamp),
+                    seed=2000 + 100 * zidx + inst_idx,
+                    return_draws=True,
+                )
+
+                ls_z[zidx] = ls_comp["dl_pred_2h1h"]
+                ls_z_err[zidx] = ls_comp["dl_pred_2h1h_err"]
+                ls_z_2h[zidx] = ls_comp["dl_cross_2h1h_med"]
+                ls_z_p16[zidx] = ls_comp["dl_pred_2h1h_p16"]
+                ls_z_p84[zidx] = ls_comp["dl_pred_2h1h_p84"]
+                ls_s[zidx] = float(ls_comp["s2h1h"])
+                ls_s_err[zidx] = float(ls_comp["s2h1h_err"])
+                if ls_comp.get("dl_pred_2h1h_draws") is not None:
+                    ls_draws_list.append(ls_comp["dl_pred_2h1h_draws"])
+
+                hsc_z[zidx] = hsc_comp["dl_pred_2h1h"]
+                hsc_z_err[zidx] = hsc_comp["dl_pred_2h1h_err"]
+                hsc_z_2h[zidx] = hsc_comp["dl_cross_2h1h_med"]
+                hsc_z_p16[zidx] = hsc_comp["dl_pred_2h1h_p16"]
+                hsc_z_p84[zidx] = hsc_comp["dl_pred_2h1h_p84"]
+                hsc_s[zidx] = float(hsc_comp["s2h1h"])
+                hsc_s_err[zidx] = float(hsc_comp["s2h1h_err"])
+                if hsc_comp.get("dl_pred_2h1h_draws") is not None:
+                    hsc_draws_list.append(hsc_comp["dl_pred_2h1h_draws"])
+
+                print(
+                    f"[2h+1h scaling] TM{inst_idx+1} zbin={zidx} DESI-LS s={ls_s[zidx]:.3e} +/- {ls_s_err[zidx]:.3e}; "
+                    f"HSC s={hsc_s[zidx]:.3e} +/- {hsc_s_err[zidx]:.3e}"
+                )
+
+            ls_total = np.nansum(ls_z, axis=0)
+            ls_total_err = np.sqrt(np.nansum(ls_z_err ** 2, axis=0))
+            hsc_total = np.nansum(hsc_z, axis=0)
+            hsc_total_err = np.sqrt(np.nansum(hsc_z_err ** 2, axis=0))
+
+            if ls_draws_list:
+                ns_common = min(draws.shape[0] for draws in ls_draws_list)
+                ls_stack = np.stack([draws[:ns_common] for draws in ls_draws_list], axis=0)
+                ls_total_draws = np.nansum(ls_stack, axis=0)
+                ls_total = np.percentile(ls_total_draws, 50.0, axis=0)
+                ls_total_err = 0.5 * (
+                    np.percentile(ls_total_draws, 84.0, axis=0)
+                    - np.percentile(ls_total_draws, 16.0, axis=0)
+                )
+
+            if hsc_draws_list:
+                ns_common = min(draws.shape[0] for draws in hsc_draws_list)
+                hsc_stack = np.stack([draws[:ns_common] for draws in hsc_draws_list], axis=0)
+                hsc_total_draws = np.nansum(hsc_stack, axis=0)
+                hsc_total = np.percentile(hsc_total_draws, 50.0, axis=0)
+                hsc_total_err = 0.5 * (
+                    np.percentile(hsc_total_draws, 84.0, axis=0)
+                    - np.percentile(hsc_total_draws, 16.0, axis=0)
+                )
+
+            dl_pred_ls.append(ls_total)
+            dl_pred_ls_err.append(ls_total_err)
+            dl_pred_ls_2h.append(np.nansum(ls_z_2h, axis=0))
+            dl_pred_hsc.append(hsc_total)
+            dl_pred_hsc_err.append(hsc_total_err)
+            dl_pred_hsc_2h.append(np.nansum(hsc_z_2h, axis=0))
+
+            dl_pred_ls_z.append(ls_z)
+            dl_pred_ls_err_z.append(ls_z_err)
+            dl_pred_ls_2h_z.append(ls_z_2h)
+            dl_pred_ls_p16_z.append(ls_z_p16)
+            dl_pred_ls_p84_z.append(ls_z_p84)
+            dl_pred_hsc_z.append(hsc_z)
+            dl_pred_hsc_err_z.append(hsc_z_err)
+            dl_pred_hsc_2h_z.append(hsc_z_2h)
+            dl_pred_hsc_p16_z.append(hsc_z_p16)
+            dl_pred_hsc_p84_z.append(hsc_z_p84)
+            s2h1h_ls_z.append(ls_s)
+            s2h1h_ls_z_err.append(ls_s_err)
+            s2h1h_hsc_z.append(hsc_s)
+            s2h1h_hsc_z_err.append(hsc_s_err)
+        else:
+            ls_cross_samples = _extract_fit_samples_cell(ls_cross_res, inst_idx, 0)
+            hsc_cross_samples = _extract_fit_samples_cell(hsc_cross_res, inst_idx, 0)
+
+            if ls_large_auto is not None:
+                ls_gal_cl = np.nansum(ls_large_auto["cl_bins"], axis=1)[0]
+                ls_gal_err = np.sqrt(np.nansum(ls_large_auto["err_bins"] ** 2, axis=1))[0]
+                ls_gal_lb = np.asarray(ls_large_auto["lb"], dtype=float)
+                ls_auto_model_lb = ls_gal_lb
+            else:
+                ls_gal_lb = np.asarray(res_ls["lb"], dtype=float)
+                ls_gal_cl = np.asarray(res_ls["full_cl_gal"][0, 0], dtype=float)
+                ls_gal_err = np.asarray(res_ls["full_clerr_gal"][0, 0], dtype=float)
+                ls_auto_model_lb = None
+
+            ls_comp = _predict_auto_2h1h_from_cross_and_shot_subtracted_auto(
+                lb_meas,
+                params_ls_cross[inst_idx, 0],
+                params_ls_cross_err[inst_idx, 0],
+                ls_cross_samples,
+                ls_gal_lb,
+                ls_gal_cl,
+                ls_gal_err,
+                ell_range_for_scaling=ell_scaling,
+                shot_ell_min=float(args.shot_ell_min),
+                shot_ell_max=float(args.shot_ell_max),
+                gal_auto_denominator_mode=str(args.gal_auto_denominator_mode),
+                ratio_scaling_mode=str(args.ratio_scaling_mode),
+                gal_auto_params=params_ls_auto[0, 0],
+                gal_auto_params_err=params_ls_auto_err[0, 0],
+                gal_auto_samples=ls_auto_samples,
+                nsamp=int(args.pred_nsamp),
+                seed=123 + inst_idx,
+                auto_model_lb=ls_auto_model_lb,
+            )
+            hsc_comp = _predict_auto_2h1h_from_cross_and_shot_subtracted_auto(
+                lb_meas,
+                params_hsc_cross[inst_idx, 0],
+                params_hsc_cross_err[inst_idx, 0],
+                hsc_cross_samples,
+                np.asarray(res_hsc["lb"], dtype=float),
+                np.asarray(res_hsc["full_cl_gal"][0, 0], dtype=float),
+                np.asarray(res_hsc["full_clerr_gal"][0, 0], dtype=float),
+                ell_range_for_scaling=ell_scaling,
+                shot_ell_min=float(args.shot_ell_min),
+                shot_ell_max=float(args.shot_ell_max),
+                gal_auto_denominator_mode=str(args.gal_auto_denominator_mode),
+                ratio_scaling_mode=str(args.ratio_scaling_mode),
+                gal_auto_params=params_hsc_auto[0, 0],
+                gal_auto_params_err=params_hsc_auto_err[0, 0],
+                gal_auto_samples=hsc_auto_samples,
+                nsamp=int(args.pred_nsamp),
+                seed=223 + inst_idx,
+            )
+
+            print(
+                f"[2h+1h scaling] TM{inst_idx+1} DESI-LS s={float(ls_comp['s2h1h']):.3e} +/- {float(ls_comp['s2h1h_err']):.3e}; "
+                f"HSC s={float(hsc_comp['s2h1h']):.3e} +/- {float(hsc_comp['s2h1h_err']):.3e}"
+            )
+
+            dl_pred_ls.append(ls_comp["dl_pred_2h1h"])
+            dl_pred_ls_err.append(ls_comp["dl_pred_2h1h_err"])
+            dl_pred_ls_2h.append(ls_comp["dl_cross_2h1h_med"])
+            dl_pred_hsc.append(hsc_comp["dl_pred_2h1h"])
+            dl_pred_hsc_err.append(hsc_comp["dl_pred_2h1h_err"])
+            dl_pred_hsc_2h.append(hsc_comp["dl_cross_2h1h_med"])
 
     dl_meas_arr = np.asarray(dl_meas)
     dl_meas_err_arr = np.asarray(dl_meas_err)
@@ -2689,6 +4540,44 @@ def run_zlt1_auto_prediction(args: argparse.Namespace) -> List[GeneratedFigure]:
     dl_pred_hsc_arr = np.asarray(dl_pred_hsc)
     dl_pred_hsc_err_arr = np.asarray(dl_pred_hsc_err)
     dl_pred_hsc_2h_arr = np.asarray(dl_pred_hsc_2h)
+
+    dl_pred_ls_z_arr = None
+    dl_pred_ls_err_z_arr = None
+    dl_pred_ls_2h_z_arr = None
+    dl_pred_ls_p16_z_arr = None
+    dl_pred_ls_p84_z_arr = None
+    dl_pred_hsc_z_arr = None
+    dl_pred_hsc_err_z_arr = None
+    dl_pred_hsc_2h_z_arr = None
+    dl_pred_hsc_p16_z_arr = None
+    dl_pred_hsc_p84_z_arr = None
+    s2h1h_ls_z_arr = None
+    s2h1h_ls_z_err_arr = None
+    s2h1h_hsc_z_arr = None
+    s2h1h_hsc_z_err_arr = None
+    if per_z_enabled:
+        dl_pred_ls_z_arr = np.asarray(dl_pred_ls_z)
+        dl_pred_ls_err_z_arr = np.asarray(dl_pred_ls_err_z)
+        dl_pred_ls_2h_z_arr = np.asarray(dl_pred_ls_2h_z)
+        dl_pred_ls_p16_z_arr = np.asarray(dl_pred_ls_p16_z)
+        dl_pred_ls_p84_z_arr = np.asarray(dl_pred_ls_p84_z)
+        dl_pred_hsc_z_arr = np.asarray(dl_pred_hsc_z)
+        dl_pred_hsc_err_z_arr = np.asarray(dl_pred_hsc_err_z)
+        dl_pred_hsc_2h_z_arr = np.asarray(dl_pred_hsc_2h_z)
+        dl_pred_hsc_p16_z_arr = np.asarray(dl_pred_hsc_p16_z)
+        dl_pred_hsc_p84_z_arr = np.asarray(dl_pred_hsc_p84_z)
+        s2h1h_ls_z_arr = np.asarray(s2h1h_ls_z)
+        s2h1h_ls_z_err_arr = np.asarray(s2h1h_ls_z_err)
+        s2h1h_hsc_z_arr = np.asarray(s2h1h_hsc_z)
+        s2h1h_hsc_z_err_arr = np.asarray(s2h1h_hsc_z_err)
+
+    res_ls_auto_override = None
+    if ls_large_auto_fit is not None:
+        res_ls_auto_override = {
+            "lb": np.asarray(ls_large_auto_fit["lb"], dtype=float),
+            "full_cl_gal": np.asarray(ls_large_auto_fit["full_cl_gal"], dtype=float),
+            "full_clerr_gal": np.asarray(ls_large_auto_fit["full_clerr_gal"], dtype=float),
+        }
 
     fig_fit_diag = _make_zlt1_fit_diagnostics_figure(
         res_ls,
@@ -2703,7 +4592,115 @@ def run_zlt1_auto_prediction(args: argparse.Namespace) -> List[GeneratedFigure]:
         hsc_auto_res,
         args.startidx,
         args.endidx,
+        res_ls_auto_override=res_ls_auto_override,
     )
+
+    # Create intensity fit diagnostics figure if intensity-weighted fitting was done
+    fig_intensity_fit_diag_hsc = None
+    fig_intensity_fit_diag_ls = None
+    fig_intensity_auto_fit_diag_hsc = None
+    fig_intensity_auto_fit_diag_ls = None
+    fig_intensity_spectra_hsc = None
+    fig_intensity_spectra_ls = None
+    fig_intensity_rell_hsc = None
+    fig_intensity_rell_ls = None
+    if args.include_intensity_weighted:
+        # try:
+        fig_intensity_spectra_hsc = _plot_intensity_spectrum_comparison(
+            fluxweight_recon_results=fluxweight_recon_results_hsc,
+            cat_label="HSC",
+            inst_list=inst_list,
+            startidx=args.startidx,
+            endidx=args.endidx,
+        )
+
+        # try:
+        fig_intensity_spectra_ls = _plot_intensity_spectrum_comparison(
+            fluxweight_recon_results=fluxweight_recon_results_ls,
+            cat_label="DESI-LS",
+            inst_list=inst_list,
+            startidx=args.startidx,
+            endidx=args.endidx,
+        )
+        # except Exception as exc:
+        #     print(f"Warning: failed to create LS intensity spectrum comparison figure: {exc}")
+
+        try:
+            fig_intensity_rell_hsc = _plot_intensity_rell_comparison(
+                fluxweight_recon_results=fluxweight_recon_results_hsc,
+                catalog_res=res_hsc,
+                cat_label="HSC",
+                inst_list=inst_list,
+                startidx=args.startidx,
+                endidx=args.endidx,
+            )
+        except Exception as exc:
+            print(f"Warning: failed to create HSC r_ell comparison figure: {exc}")
+
+        try:
+            fig_intensity_rell_ls = _plot_intensity_rell_comparison(
+                fluxweight_recon_results=fluxweight_recon_results_ls,
+                catalog_res=res_ls,
+                cat_label="DESI-LS",
+                inst_list=inst_list,
+                startidx=args.startidx,
+                endidx=args.endidx,
+            )
+        except Exception as exc:
+            print(f"Warning: failed to create LS r_ell comparison figure: {exc}")
+
+        # Try to create diagnostics for HSC if that bundle exists
+        if intensity_fit_bundle_hsc is not None:
+            int_cross_fit_hsc = intensity_fit_bundle_hsc.get("cross_fit")
+            int_auto_fit_hsc = intensity_fit_bundle_hsc.get("auto_fit")
+            if int_cross_fit_hsc is not None and int_auto_fit_hsc is not None:
+                try:
+                    fig_intensity_fit_diag_hsc = _make_intensity_fit_diagnostics_figure(
+                        int_cross_fit_hsc,
+                        int_auto_fit_hsc,
+                        fluxweight_recon_results_hsc,
+                        inst_list,
+                        args.startidx,
+                        args.endidx,
+                    )
+                except Exception as exc:
+                    print(f"Warning: failed to create HSC intensity fit diagnostics figure: {exc}")
+                try:
+                    fig_intensity_auto_fit_diag_hsc = _make_intensity_auto_fit_diagnostics_figure(
+                        int_auto_fit_hsc,
+                        fluxweight_recon_results_hsc,
+                        inst_list,
+                        args.startidx,
+                        args.endidx,
+                    )
+                except Exception as exc:
+                    print(f"Warning: failed to create HSC intensity auto-fit diagnostics figure: {exc}")
+
+        if intensity_fit_bundle_ls is not None:
+            int_cross_fit_ls = intensity_fit_bundle_ls.get("cross_fit")
+            int_auto_fit_ls = intensity_fit_bundle_ls.get("auto_fit")
+            if int_cross_fit_ls is not None and int_auto_fit_ls is not None:
+                try:
+                    fig_intensity_fit_diag_ls = _make_intensity_fit_diagnostics_figure(
+                        int_cross_fit_ls,
+                        int_auto_fit_ls,
+                        fluxweight_recon_results_ls,
+                        inst_list,
+                        args.startidx,
+                        args.endidx,
+                    )
+                except Exception as exc:
+                    print(f"Warning: failed to create LS intensity fit diagnostics figure: {exc}")
+                try:
+                    fig_intensity_auto_fit_diag_ls = _make_intensity_auto_fit_diagnostics_figure(
+                        int_auto_fit_ls,
+                        fluxweight_recon_results_ls,
+                        inst_list,
+                        args.startidx,
+                        args.endidx,
+                    )
+                except Exception as exc:
+                    print(f"Warning: failed to create LS intensity auto-fit diagnostics figure: {exc}")
 
     pred_outdir = REPO_ROOT / "data" / "ciber_auto_predictions"
     pred_outdir.mkdir(parents=True, exist_ok=True)
@@ -2711,6 +4708,7 @@ def run_zlt1_auto_prediction(args: argparse.Namespace) -> List[GeneratedFigure]:
     np.savez(
         pred_save_path,
         lb=lb_common,
+        lb_edges=np.asarray(res_ls.get("lb_edges"), dtype=float) if res_ls.get("lb_edges") is not None else None,
         inst_list=np.array(inst_list),
         zbinedges=np.array(zbinedges),
         dl_ciber_auto_measured=dl_meas_arr,
@@ -2738,8 +4736,509 @@ def run_zlt1_auto_prediction(args: argparse.Namespace) -> List[GeneratedFigure]:
         cross_fit_file_hsc=str(REPO_ROOT / "data" / "cross_cl_fits" / hsc_cross_file),
         gal_auto_fit_file_ls=str(REPO_ROOT / "data" / "gal_auto_fits" / ls_auto_file),
         gal_auto_fit_file_hsc=str(REPO_ROOT / "data" / "gal_auto_fits" / hsc_auto_file),
+        source_paths_ls=res_ls.get("source_paths"),
+        source_paths_hsc=res_hsc.get("source_paths"),
+        ls_large_auto_paths=None if ls_large_auto is None else ls_large_auto.get("file_paths"),
+        ls_large_auto_lb=None if ls_large_auto is None else ls_large_auto.get("lb"),
+        cli_args=np.array(sys.argv, dtype=object),
     )
     print(f"Saved z<1 auto-prediction product -> {pred_save_path}")
+
+    per_z_save_path = None
+    if per_z_enabled and dl_pred_ls_z_arr is not None:
+        per_z_save_path = pred_outdir / f"ciber_auto_pred_from_zlt1_{fit_tag}_zslice_components.npz"
+        np.savez(
+            per_z_save_path,
+            lb=lb_common,
+            zbinedges=np.array(zbinedges),
+            dl_pred_ls_z=dl_pred_ls_z_arr,
+            dl_pred_ls_err_z=dl_pred_ls_err_z_arr,
+            dl_pred_ls_2h_z=dl_pred_ls_2h_z_arr,
+            dl_pred_ls_p16_z=dl_pred_ls_p16_z_arr,
+            dl_pred_ls_p84_z=dl_pred_ls_p84_z_arr,
+            dl_pred_hsc_z=dl_pred_hsc_z_arr,
+            dl_pred_hsc_err_z=dl_pred_hsc_err_z_arr,
+            dl_pred_hsc_2h_z=dl_pred_hsc_2h_z_arr,
+            dl_pred_hsc_p16_z=dl_pred_hsc_p16_z_arr,
+            dl_pred_hsc_p84_z=dl_pred_hsc_p84_z_arr,
+            s2h1h_ls_z=s2h1h_ls_z_arr,
+            s2h1h_ls_z_err=s2h1h_ls_z_err_arr,
+            s2h1h_hsc_z=s2h1h_hsc_z_arr,
+            s2h1h_hsc_z_err=s2h1h_hsc_z_err_arr,
+        )
+        print(f"Saved z-slice contribution product -> {per_z_save_path}")
+
+    from datetime import datetime, timezone
+    import json
+
+    def _paths_to_list(arr: Any) -> Optional[List[List[Optional[str]]]]:
+        if arr is None:
+            return None
+        out: List[List[Optional[str]]] = []
+        for row in np.asarray(arr, dtype=object):
+            out.append([None if x is None else str(x) for x in row])
+        return out
+
+    summary = {
+        "created_utc": datetime.now(timezone.utc).isoformat(),
+        "fit_tag": str(fit_tag),
+        "fit_mode": str(args.fit_mode),
+        "zbinedges": [float(z) for z in zbinedges],
+        "inputs": {
+            "cross_fit_lmax": float(cross_lmax),
+            "auto_fit_lmax": float(auto_lmax),
+            "scale_ell_min": float(args.scale_ell_min),
+            "scale_ell_max": float(args.scale_ell_max),
+            "auto_fit_ell_min": float(args.auto_fit_ell_min),
+            "auto_fit_ell_max": float(args.auto_fit_ell_max),
+            "shot_ell_min": float(args.shot_ell_min),
+            "shot_ell_max": float(args.shot_ell_max),
+            "gal_auto_denominator_mode": str(args.gal_auto_denominator_mode),
+            "ratio_scaling_mode": str(args.ratio_scaling_mode),
+            "cli_args": " ".join(sys.argv),
+        },
+        "fields": {
+            "desils_ifield_list": [int(x) for x in ifield_list],
+            "hsc_ifield_list": [int(x) for x in ifield_list_hsc],
+        },
+        "fit_files": {
+            "cross_fit_file_ls": str(REPO_ROOT / "data" / "cross_cl_fits" / ls_cross_file),
+            "cross_fit_file_hsc": str(REPO_ROOT / "data" / "cross_cl_fits" / hsc_cross_file),
+            "gal_auto_fit_file_ls": str(REPO_ROOT / "data" / "gal_auto_fits" / ls_auto_file),
+            "gal_auto_fit_file_hsc": str(REPO_ROOT / "data" / "gal_auto_fits" / hsc_auto_file),
+        },
+        "source_paths": {
+            "desils_ciber_gal_ps": _paths_to_list(res_ls.get("source_paths")),
+            "hsc_ciber_gal_ps": _paths_to_list(res_hsc.get("source_paths")),
+        },
+        "bandpowers": {
+            "lb_edges": None if res_ls.get("lb_edges") is None else [float(x) for x in res_ls.get("lb_edges")],
+            "lb_cross": [float(x) for x in np.asarray(res_ls["lb"], dtype=float)],
+        },
+        "one_halo_template": {
+            "mode": str(args.one_halo_template_mode),
+            "source": template_source,
+            "mu_1h": None if fixed_mu_1h is None else float(fixed_mu_1h),
+            "sigma_1h": None if fixed_sigma_1h is None else float(fixed_sigma_1h),
+            "n_used": template_n_used,
+            "template_dir": str(Path("data/ihl_templates")),
+        },
+        "large_field_ls_auto": {
+            "used": bool(args.ls_gal_auto_large_basepath),
+            "basepath": None if not args.ls_gal_auto_large_basepath else str(args.ls_gal_auto_large_basepath),
+            "suffix": None if not args.ls_gal_auto_large_basepath else str(args.ls_gal_auto_large_suffix),
+            "weight_mode": None if not args.ls_gal_auto_large_basepath else str(args.ls_gal_auto_large_weight),
+            "lb_large": None if ls_large_auto is None else [float(x) for x in np.asarray(ls_large_auto["lb"], dtype=float)],
+            "file_paths": None if ls_large_auto is None else [str(x) for x in np.ravel(ls_large_auto["file_paths"])],
+        },
+        "outputs": {
+            "prediction_file": str(pred_save_path),
+            "zslice_file": None if per_z_save_path is None else str(per_z_save_path),
+        },
+        "per_z_contributions": {
+            "enabled": bool(per_z_enabled),
+            "n_zbin": int(n_zbin),
+            "note": "Totals use summed posterior draws when available; otherwise quadrature sums.",
+        },
+        "per_field_desils": {
+            "enabled": bool(getattr(args, "ls_per_field", False)),
+            "ifields": None if not getattr(args, "ls_per_field", False) else [int(x) for x in getattr(args, "ls_per_field_list", [])],
+            "output_dir": str(pred_outdir),
+        },
+        "per_field_hsc": {
+            "enabled": False,
+            "ifields": None,
+            "output_dir": str(pred_outdir),
+        },
+    }
+
+    lines = write_summary(summary)
+    summary_path = pred_outdir / f"ciber_auto_pred_from_zlt1_{fit_tag}_summary.json"
+    summary_path.write_text(json.dumps(summary, indent=2))
+    print(f"Saved run summary -> {summary_path}")
+
+    summary_txt_path = pred_outdir / f"ciber_auto_pred_from_zlt1_{fit_tag}_summary.txt"
+    summary_txt_path.write_text("\n".join(lines))
+    print(f"Saved run summary (text) -> {summary_txt_path}")
+
+    # Load DGL auto constraints for overlay
+    dgl_dl, dgl_dl_err = _try_load_ciber_dgl_auto_constraints(lb_common, dgl_mode="sfd_clean")
+    
+    # Load z<1 mock IGL predictions for overlay
+    mock_igl_dl = None
+    try:
+        mock_igl_dl = _try_load_default_mock_igl_zlt1(lb_common)
+    except Exception as exc:
+        print(f"Warning: failed to load z<1 mock IGL predictions: {exc}")
+    
+    # Extract shot noise levels from cross fits
+    shot_dl = np.full((2, lb_common.size), np.nan, dtype=float)
+    for inst_idx, inst in enumerate(inst_list):
+        for res in [ls_cross_res, hsc_cross_res]:
+            if res is None:
+                continue
+            try:
+                params = res.get("params", None)
+                if params is not None and params.ndim >= 2:
+                    # params shape: (n_zbins, n_params)
+                    # Last parameter in cross fit is typically shot noise parameter A_shot
+                    # D_ell,shot = A_shot (flat across ell)
+                    shot_param = params[0, -1] if params.ndim >= 2 else params[-1]
+                    shot_dl[inst_idx] = float(shot_param)
+            except Exception as exc:
+                pass  # If extraction fails, shot_dl remains nan
+    
+    print('shot dl:', shot_dl)
+
+    lb_pred_intensity_common = None
+    dl_pred_intensity_hsc_arr = None
+    dl_pred_intensity_hsc_err_arr = None
+    dl_pred_intensity_hsc_p16_arr = None
+    dl_pred_intensity_hsc_p84_arr = None
+    dl_pred_intensity_ls_arr = None
+    dl_pred_intensity_ls_err_arr = None
+    dl_pred_intensity_ls_p16_arr = None
+    dl_pred_intensity_ls_p84_arr = None
+    intensity_pred_save_path = None
+    if args.include_intensity_weighted:
+        # Compute predictions for HSC intensity
+        dl_pred_intensity_hsc = []
+        dl_pred_intensity_hsc_err = []
+        dl_pred_intensity_hsc_model_err = []
+        dl_pred_intensity_hsc_p16 = []
+        dl_pred_intensity_hsc_p84 = []
+        dl_pred_intensity_hsc_draw_count = []
+
+        int_cross_res_hsc = None if intensity_fit_bundle_hsc is None else intensity_fit_bundle_hsc.get("cross_fit")
+        int_auto_res_hsc = None if intensity_fit_bundle_hsc is None else intensity_fit_bundle_hsc.get("auto_fit")
+
+        for inst_idx in range(2):
+            inst = inst_list[inst_idx]
+            if (
+                inst not in fluxweight_recon_results_hsc.get("all_results", {})
+                or int_cross_res_hsc is None
+                or int_auto_res_hsc is None
+            ):
+                dl_pred_intensity_hsc.append(np.full(lb_common.shape, np.nan, dtype=float))
+                dl_pred_intensity_hsc_err.append(np.full(lb_common.shape, np.nan, dtype=float))
+                dl_pred_intensity_hsc_model_err.append(np.full(lb_common.shape, np.nan, dtype=float))
+                dl_pred_intensity_hsc_p16.append(np.full(lb_common.shape, np.nan, dtype=float))
+                dl_pred_intensity_hsc_p84.append(np.full(lb_common.shape, np.nan, dtype=float))
+                dl_pred_intensity_hsc_draw_count.append(0)
+                continue
+
+            inst_res = fluxweight_recon_results_hsc["all_results"][inst]
+            lb = np.asarray(inst_res["lb"], dtype=float)
+            if lb_pred_intensity_common is None:
+                lb_pred_intensity_common = lb
+            pf_pred = lb * (lb + 1) / (2 * np.pi)
+
+            cl_int_auto_raw = inst_res.get("cl_intensity_auto")
+            cl_int_auto = np.asarray(cl_int_auto_raw, dtype=float) if cl_int_auto_raw is not None else None
+            if cl_int_auto is None:
+                cl_int_auto_1d = np.full(lb.shape, np.nan, dtype=float)
+            elif cl_int_auto.ndim == 2:
+                cl_int_auto_1d = np.nanmean(cl_int_auto, axis=0)
+            else:
+                cl_int_auto_1d = cl_int_auto
+
+            cl_int_auto_err_raw = inst_res.get("clerr_intensity_auto")
+            cl_int_auto_err = np.asarray(cl_int_auto_err_raw, dtype=float) if cl_int_auto_err_raw is not None else None
+            if cl_int_auto_err is None:
+                cl_int_auto_err_1d = np.full(lb.shape, np.nan, dtype=float)
+            elif cl_int_auto_err.ndim == 2:
+                cl_int_auto_err_1d = np.sqrt(np.nansum(cl_int_auto_err ** 2, axis=0)) / max(cl_int_auto_err.shape[0], 1)
+            else:
+                cl_int_auto_err_1d = cl_int_auto_err
+
+            cross_params = np.asarray(int_cross_res_hsc["params"][inst_idx, 0], dtype=float)
+            cross_params_err = np.asarray(int_cross_res_hsc["params_err"][inst_idx, 0], dtype=float)
+            auto_params = np.asarray(int_auto_res_hsc["params"][inst_idx, 0], dtype=float)
+            auto_params_err = np.asarray(int_auto_res_hsc["params_err"][inst_idx, 0], dtype=float)
+            cross_samples = _extract_fit_samples_cell(int_cross_res_hsc, inst_idx, 0)
+            auto_samples = _extract_fit_samples_cell(int_auto_res_hsc, inst_idx, 0)
+
+            comp_int = _predict_auto_2h1h_from_cross_and_shot_subtracted_auto(
+                lb_eval=lb,
+                cross_params=cross_params,
+                cross_params_err=cross_params_err,
+                cross_samples=cross_samples,
+                gal_lb=lb,
+                gal_cl=cl_int_auto_1d,
+                gal_cl_err=cl_int_auto_err_1d,
+                ell_range_for_scaling=ell_scaling,
+                shot_ell_min=float(args.shot_ell_min),
+                shot_ell_max=float(args.shot_ell_max),
+                gal_auto_denominator_mode=str(args.gal_auto_denominator_mode),
+                ratio_scaling_mode=str(args.ratio_scaling_mode),
+                gal_auto_params=auto_params,
+                gal_auto_params_err=auto_params_err,
+                gal_auto_samples=auto_samples,
+                nsamp=int(args.pred_nsamp),
+                seed=323 + inst_idx,
+                return_draws=True,
+            )
+
+            dl_pred = np.asarray(comp_int["dl_pred_2h1h"], dtype=float)
+            dl_pred_err_model = np.asarray(comp_int["dl_pred_2h1h_err"], dtype=float)
+            dl_pred_intensity_hsc_model_err.append(dl_pred_err_model)
+            dl_pred_intensity_hsc_draw_count.append(int(comp_int.get("n_draws", 0)))
+
+            # Extract percentile bands from posterior draws for plotting as shaded region
+            dl_pred_draws = comp_int.get("dl_pred_2h1h_draws")
+            if dl_pred_draws is not None and np.asarray(dl_pred_draws).size > 0:
+                dl_pred_draws_arr = np.asarray(dl_pred_draws, dtype=float)
+                if dl_pred_draws_arr.ndim == 2 and dl_pred_draws_arr.shape[0] > 0:
+                    dl_pred_p16_vals = _column_percentile(dl_pred_draws_arr, 16.0)
+                    dl_pred_p84_vals = _column_percentile(dl_pred_draws_arr, 84.0)
+                else:
+                    dl_pred_p16_vals = np.full(lb.shape, np.nan, dtype=float)
+                    dl_pred_p84_vals = np.full(lb.shape, np.nan, dtype=float)
+            else:
+                dl_pred_p16_vals = np.full(lb.shape, np.nan, dtype=float)
+                dl_pred_p84_vals = np.full(lb.shape, np.nan, dtype=float)
+
+            # Use HSC cross errors from the standard loader
+            hsc_lb = np.asarray(res_hsc["lb"], dtype=float)
+            hsc_cross_err = np.asarray(res_hsc["full_clerr_cross"][inst_idx], dtype=float)
+            if hsc_cross_err.ndim == 2:
+                cl_cross_err_ref = np.sqrt(np.nansum(hsc_cross_err ** 2, axis=0))
+            else:
+                cl_cross_err_ref = hsc_cross_err
+            cl_cross_err_ref = _interp_hold_edges(hsc_lb, cl_cross_err_ref, lb)
+
+            cl_gal_auto_raw = inst_res.get("cl_gal_auto")
+            cl_gal_auto = np.asarray(cl_gal_auto_raw, dtype=float) if cl_gal_auto_raw is not None else None
+            if cl_gal_auto is None:
+                cl_gal_auto_1d = _interp_hold_edges(
+                    hsc_lb,
+                    np.asarray(res_hsc["full_cl_gal"][0, 0], dtype=float),
+                    lb,
+                )
+            elif cl_gal_auto.ndim == 2:
+                cl_gal_auto_1d = np.nanmean(cl_gal_auto, axis=0)
+            else:
+                cl_gal_auto_1d = cl_gal_auto
+
+            ratio = np.full(lb.shape, np.nan, dtype=float)
+            m_ratio = np.isfinite(cl_int_auto_1d) & np.isfinite(cl_gal_auto_1d) & (cl_gal_auto_1d > 0.0)
+            if np.any(m_ratio):
+                ratio[m_ratio] = np.abs(cl_int_auto_1d[m_ratio] / cl_gal_auto_1d[m_ratio])
+
+            # Print uncertainty scaling factors
+            ratio_valid = ratio[np.isfinite(ratio)]
+            if ratio_valid.size > 0:
+                ratio_med = np.median(ratio_valid)
+                print(f"  TM{inst}: intensity uncertainty rescaling factor = {ratio_med:.2f}x (median over valid ell)")
+
+            dl_pred_err_rescaled = pf_pred * (cl_cross_err_ref * ratio)
+
+            # Preferred uncertainty per user request: rescaled default cross errors.
+            # Fallback to propagated posterior error if rescaling is unavailable.
+            dl_pred_err = np.asarray(dl_pred_err_rescaled, dtype=float)
+            m_bad = ~np.isfinite(dl_pred_err)
+            if np.any(m_bad):
+                dl_pred_err[m_bad] = dl_pred_err_model[m_bad]
+
+            dl_pred_intensity_hsc.append(dl_pred)
+            dl_pred_intensity_hsc_err.append(dl_pred_err)
+            dl_pred_intensity_hsc_p16.append(dl_pred_p16_vals)
+            dl_pred_intensity_hsc_p84.append(dl_pred_p84_vals)
+        
+        dl_pred_intensity_hsc_arr = np.asarray(dl_pred_intensity_hsc)
+        dl_pred_intensity_hsc_err_arr = np.asarray(dl_pred_intensity_hsc_err)
+        dl_pred_intensity_hsc_p16_arr = np.asarray(dl_pred_intensity_hsc_p16)
+        dl_pred_intensity_hsc_p84_arr = np.asarray(dl_pred_intensity_hsc_p84)
+        
+        # Compute predictions for LS intensity
+        dl_pred_intensity_ls = []
+        dl_pred_intensity_ls_err = []
+        dl_pred_intensity_ls_model_err = []
+        dl_pred_intensity_ls_p16 = []
+        dl_pred_intensity_ls_p84 = []
+        dl_pred_intensity_ls_draw_count = []
+
+        int_cross_res_ls = None if intensity_fit_bundle_ls is None else intensity_fit_bundle_ls.get("cross_fit")
+        int_auto_res_ls = None if intensity_fit_bundle_ls is None else intensity_fit_bundle_ls.get("auto_fit")
+
+        for inst_idx in range(2):
+            inst = inst_list[inst_idx]
+            if (
+                inst not in fluxweight_recon_results_ls.get("all_results", {})
+                or int_cross_res_ls is None
+                or int_auto_res_ls is None
+            ):
+                dl_pred_intensity_ls.append(np.full(lb_common.shape, np.nan, dtype=float))
+                dl_pred_intensity_ls_err.append(np.full(lb_common.shape, np.nan, dtype=float))
+                dl_pred_intensity_ls_model_err.append(np.full(lb_common.shape, np.nan, dtype=float))
+                dl_pred_intensity_ls_p16.append(np.full(lb_common.shape, np.nan, dtype=float))
+                dl_pred_intensity_ls_p84.append(np.full(lb_common.shape, np.nan, dtype=float))
+                dl_pred_intensity_ls_draw_count.append(0)
+                continue
+
+            inst_res = fluxweight_recon_results_ls["all_results"][inst]
+            lb = np.asarray(inst_res["lb"], dtype=float)
+            if lb_pred_intensity_common is None:
+                lb_pred_intensity_common = lb
+            pf_pred = lb * (lb + 1) / (2 * np.pi)
+
+            cl_int_auto_raw = inst_res.get("cl_intensity_auto")
+            cl_int_auto = np.asarray(cl_int_auto_raw, dtype=float) if cl_int_auto_raw is not None else None
+            if cl_int_auto is None:
+                cl_int_auto_1d = np.full(lb.shape, np.nan, dtype=float)
+            elif cl_int_auto.ndim == 2:
+                cl_int_auto_1d = np.nanmean(cl_int_auto, axis=0)
+            else:
+                cl_int_auto_1d = cl_int_auto
+
+            cl_int_auto_err_raw = inst_res.get("clerr_intensity_auto")
+            cl_int_auto_err = np.asarray(cl_int_auto_err_raw, dtype=float) if cl_int_auto_err_raw is not None else None
+            if cl_int_auto_err is None:
+                cl_int_auto_err_1d = np.full(lb.shape, np.nan, dtype=float)
+            elif cl_int_auto_err.ndim == 2:
+                cl_int_auto_err_1d = np.sqrt(np.nansum(cl_int_auto_err ** 2, axis=0)) / max(cl_int_auto_err.shape[0], 1)
+            else:
+                cl_int_auto_err_1d = cl_int_auto_err
+
+            cross_params = np.asarray(int_cross_res_ls["params"][inst_idx, 0], dtype=float)
+            cross_params_err = np.asarray(int_cross_res_ls["params_err"][inst_idx, 0], dtype=float)
+            auto_params = np.asarray(int_auto_res_ls["params"][inst_idx, 0], dtype=float)
+            auto_params_err = np.asarray(int_auto_res_ls["params_err"][inst_idx, 0], dtype=float)
+            cross_samples = _extract_fit_samples_cell(int_cross_res_ls, inst_idx, 0)
+            auto_samples = _extract_fit_samples_cell(int_auto_res_ls, inst_idx, 0)
+
+            comp_int = _predict_auto_2h1h_from_cross_and_shot_subtracted_auto(
+                lb_eval=lb,
+                cross_params=cross_params,
+                cross_params_err=cross_params_err,
+                cross_samples=cross_samples,
+                gal_lb=lb,
+                gal_cl=cl_int_auto_1d,
+                gal_cl_err=cl_int_auto_err_1d,
+                ell_range_for_scaling=ell_scaling,
+                shot_ell_min=float(args.shot_ell_min),
+                shot_ell_max=float(args.shot_ell_max),
+                gal_auto_denominator_mode=str(args.gal_auto_denominator_mode),
+                ratio_scaling_mode=str(args.ratio_scaling_mode),
+                gal_auto_params=auto_params,
+                gal_auto_params_err=auto_params_err,
+                gal_auto_samples=auto_samples,
+                nsamp=int(args.pred_nsamp),
+                seed=423 + inst_idx,
+                return_draws=True,
+            )
+
+            dl_pred = np.asarray(comp_int["dl_pred_2h1h"], dtype=float)
+            dl_pred_err_model = np.asarray(comp_int["dl_pred_2h1h_err"], dtype=float)
+            dl_pred_intensity_ls_model_err.append(dl_pred_err_model)
+            dl_pred_intensity_ls_draw_count.append(int(comp_int.get("n_draws", 0)))
+
+            # Extract percentile bands from posterior draws for plotting as shaded region
+            dl_pred_draws = comp_int.get("dl_pred_2h1h_draws")
+            if dl_pred_draws is not None and np.asarray(dl_pred_draws).size > 0:
+                dl_pred_draws_arr = np.asarray(dl_pred_draws, dtype=float)
+                if dl_pred_draws_arr.ndim == 2 and dl_pred_draws_arr.shape[0] > 0:
+                    dl_pred_p16_vals = _column_percentile(dl_pred_draws_arr, 16.0)
+                    dl_pred_p84_vals = _column_percentile(dl_pred_draws_arr, 84.0)
+                else:
+                    dl_pred_p16_vals = np.full(lb.shape, np.nan, dtype=float)
+                    dl_pred_p84_vals = np.full(lb.shape, np.nan, dtype=float)
+            else:
+                dl_pred_p16_vals = np.full(lb.shape, np.nan, dtype=float)
+                dl_pred_p84_vals = np.full(lb.shape, np.nan, dtype=float)
+
+            # Use LS cross errors from the standard loader
+            ls_lb = np.asarray(res_ls["lb"], dtype=float)
+            ls_cross_err = np.asarray(res_ls["full_clerr_cross"][inst_idx], dtype=float)
+            if ls_cross_err.ndim == 2:
+                cl_cross_err_ref = np.sqrt(np.nansum(ls_cross_err ** 2, axis=0))
+            else:
+                cl_cross_err_ref = ls_cross_err
+            cl_cross_err_ref = _interp_hold_edges(ls_lb, cl_cross_err_ref, lb)
+
+            cl_gal_auto_raw = inst_res.get("cl_gal_auto")
+            cl_gal_auto = np.asarray(cl_gal_auto_raw, dtype=float) if cl_gal_auto_raw is not None else None
+            if cl_gal_auto is None:
+                cl_gal_auto_1d = _interp_hold_edges(
+                    ls_lb,
+                    np.asarray(res_ls["full_cl_gal"][0, 0], dtype=float),
+                    lb,
+                )
+            elif cl_gal_auto.ndim == 2:
+                cl_gal_auto_1d = np.nanmean(cl_gal_auto, axis=0)
+            else:
+                cl_gal_auto_1d = cl_gal_auto
+
+            ratio = np.full(lb.shape, np.nan, dtype=float)
+            m_ratio = np.isfinite(cl_int_auto_1d) & np.isfinite(cl_gal_auto_1d) & (cl_gal_auto_1d > 0.0)
+            if np.any(m_ratio):
+                ratio[m_ratio] = np.abs(cl_int_auto_1d[m_ratio] / cl_gal_auto_1d[m_ratio])
+
+            ratio_valid = ratio[np.isfinite(ratio)]
+            if ratio_valid.size > 0:
+                ratio_med = np.median(ratio_valid)
+                print(f"  TM{inst} (LS): intensity uncertainty rescaling factor = {ratio_med:.2f}x (median over valid ell)")
+
+            dl_pred_err_rescaled = pf_pred * (cl_cross_err_ref * ratio)
+
+            dl_pred_err = np.asarray(dl_pred_err_rescaled, dtype=float)
+            m_bad = ~np.isfinite(dl_pred_err)
+            if np.any(m_bad):
+                dl_pred_err[m_bad] = dl_pred_err_model[m_bad]
+
+            dl_pred_intensity_ls.append(dl_pred)
+            dl_pred_intensity_ls_err.append(dl_pred_err)
+            dl_pred_intensity_ls_p16.append(dl_pred_p16_vals)
+            dl_pred_intensity_ls_p84.append(dl_pred_p84_vals)
+        
+        dl_pred_intensity_ls_arr = np.asarray(dl_pred_intensity_ls)
+        dl_pred_intensity_ls_err_arr = np.asarray(dl_pred_intensity_ls_err)
+        dl_pred_intensity_ls_p16_arr = np.asarray(dl_pred_intensity_ls_p16)
+        dl_pred_intensity_ls_p84_arr = np.asarray(dl_pred_intensity_ls_p84)
+
+        intensity_pred_save_path = pred_outdir / f"ciber_auto_pred_from_zlt1_{fit_tag}_intensity_weighted.npz"
+        np.savez(
+            intensity_pred_save_path,
+            lb=lb_pred_intensity_common,
+            inst_list=np.array(inst_list),
+            dl_ciber_auto_pred_intensity_hsc=dl_pred_intensity_hsc_arr,
+            dl_ciber_auto_pred_intensity_hsc_err=dl_pred_intensity_hsc_err_arr,
+            dl_ciber_auto_pred_intensity_hsc_p16=dl_pred_intensity_hsc_p16_arr,
+            dl_ciber_auto_pred_intensity_hsc_p84=dl_pred_intensity_hsc_p84_arr,
+            dl_ciber_auto_pred_intensity_hsc_err_model=np.asarray(dl_pred_intensity_hsc_model_err, dtype=float),
+            dl_ciber_auto_pred_intensity_ls=dl_pred_intensity_ls_arr,
+            dl_ciber_auto_pred_intensity_ls_err=dl_pred_intensity_ls_err_arr,
+            dl_ciber_auto_pred_intensity_ls_p16=dl_pred_intensity_ls_p16_arr,
+            dl_ciber_auto_pred_intensity_ls_p84=dl_pred_intensity_ls_p84_arr,
+            dl_ciber_auto_pred_intensity_ls_err_model=np.asarray(dl_pred_intensity_ls_model_err, dtype=float),
+            pred_nsamp=int(args.pred_nsamp),
+            gal_auto_denominator_mode=np.array(str(args.gal_auto_denominator_mode)),
+            ratio_scaling_mode=np.array(str(args.ratio_scaling_mode)),
+            intensity_cross_fit_file_hsc=None if intensity_fit_bundle_hsc is None else str(intensity_fit_bundle_hsc["cross_path"]),
+            intensity_auto_fit_file_hsc=None if intensity_fit_bundle_hsc is None else str(intensity_fit_bundle_hsc["auto_path"]),
+            intensity_cross_fit_file_ls=None if intensity_fit_bundle_ls is None else str(intensity_fit_bundle_ls["cross_path"]),
+            intensity_auto_fit_file_ls=None if intensity_fit_bundle_ls is None else str(intensity_fit_bundle_ls["auto_path"]),
+            n_draws_hsc=np.asarray(dl_pred_intensity_hsc_draw_count, dtype=int),
+            n_draws_ls=np.asarray(dl_pred_intensity_ls_draw_count, dtype=int),
+            uncertainty_mode=np.array("rescaled_default_catalog_cross_err_times_clint_over_clgal"),
+        )
+        print(f"Saved intensity-weighted prediction product (both catalogs) -> {intensity_pred_save_path}")
+
+        # Append intensity products to the run summary generated earlier.
+        try:
+            if summary_path.exists():
+                summary_obj = json.loads(summary_path.read_text())
+                summary_obj.setdefault("outputs", {})["intensity_weighted_prediction_file"] = str(intensity_pred_save_path)
+                if intensity_fit_bundle_hsc is not None:
+                    summary_obj.setdefault("fit_files", {})["intensity_cross_fit_file_hsc"] = str(intensity_fit_bundle_hsc["cross_path"])
+                    summary_obj.setdefault("fit_files", {})["intensity_auto_fit_file_hsc"] = str(intensity_fit_bundle_hsc["auto_path"])
+                if intensity_fit_bundle_ls is not None:
+                    summary_obj.setdefault("fit_files", {})["intensity_cross_fit_file_ls"] = str(intensity_fit_bundle_ls["cross_path"])
+                    summary_obj.setdefault("fit_files", {})["intensity_auto_fit_file_ls"] = str(intensity_fit_bundle_ls["auto_path"])
+                summary_path.write_text(json.dumps(summary_obj, indent=2))
+                print(f"Updated run summary with intensity outputs -> {summary_path}")
+        except Exception as exc:
+            print(f"Warning: could not append intensity outputs to summary: {exc}")
 
     fig = _plot_zlt1_auto_prediction_comparison(
         lb=lb_common,
@@ -2751,9 +5250,23 @@ def run_zlt1_auto_prediction(args: argparse.Namespace) -> List[GeneratedFigure]:
         dl_pred_hsc=dl_pred_hsc_arr,
         dl_pred_hsc_err=dl_pred_hsc_err_arr,
         dl_pred_hsc_2h=dl_pred_hsc_2h_arr,
+        dgl_dl=dgl_dl,
+        dgl_dl_err=dgl_dl_err,
+        shot_dl=shot_dl,
+        mock_igl_dl=mock_igl_dl,
+        lb_pred_intensity=lb_pred_intensity_common,
+        dl_pred_intensity_hsc=dl_pred_intensity_hsc_arr,
+        dl_pred_intensity_hsc_err=dl_pred_intensity_hsc_err_arr,
+        dl_pred_intensity_hsc_p16=dl_pred_intensity_hsc_p16_arr if args.include_intensity_weighted else None,
+        dl_pred_intensity_hsc_p84=dl_pred_intensity_hsc_p84_arr if args.include_intensity_weighted else None,
+        dl_pred_intensity_ls=dl_pred_intensity_ls_arr,
+        dl_pred_intensity_ls_err=dl_pred_intensity_ls_err_arr,
+        dl_pred_intensity_ls_p16=dl_pred_intensity_ls_p16_arr if args.include_intensity_weighted else None,
+        dl_pred_intensity_ls_p84=dl_pred_intensity_ls_p84_arr if args.include_intensity_weighted else None,
+        show_intensity_only=bool(args.intensity_weighted_only),
     )
 
-    return [
+    generated = [
         GeneratedFigure(
             "zlt1-auto-prediction:measured-vs-predicted",
             fig,
@@ -2763,8 +5276,311 @@ def run_zlt1_auto_prediction(args: argparse.Namespace) -> List[GeneratedFigure]:
             "zlt1-auto-prediction:fit-diagnostics",
             fig_fit_diag,
             "zlt1_cross_auto_fit_diagnostics",
-        )
+        ),
     ]
+
+    # Add intensity fit diagnostics figure if available
+    if fig_intensity_fit_diag_ls is not None:
+        generated.append(
+            GeneratedFigure(
+                "zlt1-auto-prediction:intensity-fit-diagnostics",
+                fig_intensity_fit_diag_ls,
+                "zlt1_intensity_cross_fit_diagnostics_ls",
+            )
+        )
+    if fig_intensity_fit_diag_hsc is not None:
+        generated.append(
+            GeneratedFigure(
+                "zlt1-auto-prediction:intensity-fit-diagnostics",
+                fig_intensity_fit_diag_hsc,
+                "zlt1_intensity_cross_fit_diagnostics_hsc",
+            )
+        )   
+
+    if fig_intensity_auto_fit_diag_ls is not None:
+        generated.append(
+            GeneratedFigure(
+                "zlt1-auto-prediction:intensity-auto-fit-diagnostics",
+                fig_intensity_auto_fit_diag_ls,
+                "zlt1_intensity_auto_fit_diagnostics_ls",
+            )
+        )
+    if fig_intensity_auto_fit_diag_hsc is not None:
+        generated.append(
+            GeneratedFigure(
+                "zlt1-auto-prediction:intensity-auto-fit-diagnostics",
+                fig_intensity_auto_fit_diag_hsc,
+                "zlt1_intensity_auto_fit_diagnostics_hsc",
+            )
+        )
+
+    if fig_intensity_spectra_ls is not None:
+        generated.append(
+            GeneratedFigure(
+                "zlt1-auto-prediction:intensity-spectra",
+                fig_intensity_spectra_ls,
+                "zlt1_intensity_auto_cross_f25b_spectra_ls",
+            )
+        )
+    if fig_intensity_spectra_hsc is not None:
+        generated.append(
+            GeneratedFigure(
+                "zlt1-auto-prediction:intensity-spectra",
+                fig_intensity_spectra_hsc,
+                "zlt1_intensity_auto_cross_f25b_spectra_hsc",
+            )
+        )
+
+    if fig_intensity_rell_ls is not None:
+        generated.append(
+            GeneratedFigure(
+                "zlt1-auto-prediction:intensity-rell-comparison",
+                fig_intensity_rell_ls,
+                "zlt1_intensity_rell_comparison_ls",
+            )
+        )
+    if fig_intensity_rell_hsc is not None:
+        generated.append(
+            GeneratedFigure(
+                "zlt1-auto-prediction:intensity-rell-comparison",
+                fig_intensity_rell_hsc,
+                "zlt1_intensity_rell_comparison_hsc",
+            )
+        )
+
+    if per_z_enabled and dl_pred_ls_z_arr is not None and dl_pred_ls_p16_z_arr is not None:
+        fig_ls_z = _plot_zlt1_zslice_components(
+            lb=lb_common,
+            zbinedges=zbinedges,
+            dl_pred_z=dl_pred_ls_z_arr,
+            dl_pred_p16_z=dl_pred_ls_p16_z_arr,
+            dl_pred_p84_z=dl_pred_ls_p84_z_arr,
+            dl_total=dl_pred_ls_arr,
+            dl_total_err=dl_pred_ls_err_arr,
+            tracer_label="DESI-LS",
+        )
+        fig_hsc_z = _plot_zlt1_zslice_components(
+            lb=lb_common,
+            zbinedges=zbinedges,
+            dl_pred_z=dl_pred_hsc_z_arr,
+            dl_pred_p16_z=dl_pred_hsc_p16_z_arr,
+            dl_pred_p84_z=dl_pred_hsc_p84_z_arr,
+            dl_total=dl_pred_hsc_arr,
+            dl_total_err=dl_pred_hsc_err_arr,
+            tracer_label="HSC",
+        )
+        generated.append(
+            GeneratedFigure(
+                "zlt1-auto-prediction:zslice-components:desils",
+                fig_ls_z,
+                "zlt1_auto_pred_desils_zslice_components",
+            )
+        )
+        generated.append(
+            GeneratedFigure(
+                "zlt1-auto-prediction:zslice-components:hsc",
+                fig_hsc_z,
+                "zlt1_auto_pred_hsc_zslice_components",
+            )
+        )
+
+    if getattr(args, "ls_per_field", False):
+        per_field_figs = _run_ls_perfield_auto_reconstruction(
+            args=args,
+            zbinedges=zbinedges,
+            inst_list=inst_list,
+            fixed_mu_1h=fixed_mu_1h,
+            fixed_sigma_1h=fixed_sigma_1h,
+            cross_prior_bounds=cross_prior_bounds,
+            cross_initial_guess=cross_initial_guess,
+            auto_prior_bounds=auto_prior_bounds,
+            nwalkers_fit=nwalkers_fit,
+            auto_use_damping=auto_use_damping,
+        )
+        generated.extend(per_field_figs)
+
+    return generated
+
+
+def _run_ls_perfield_auto_reconstruction(
+    args: argparse.Namespace,
+    zbinedges: Sequence[float],
+    inst_list: Sequence[int],
+    fixed_mu_1h: Optional[float],
+    fixed_sigma_1h: Optional[float],
+    cross_prior_bounds: np.ndarray,
+    cross_initial_guess: np.ndarray,
+    auto_prior_bounds: np.ndarray,
+    nwalkers_fit: int,
+    auto_use_damping: bool,
+) -> List[GeneratedFigure]:
+    from ciber.plotting.gal_plotting_fns import collect_ciber_gal_vs_redshift
+    from ciber.theory.cross_ps_parametric_model import (
+        load_fit_results_npz,
+        run_gal_auto_fits,
+        run_gal_cross_fits,
+    )
+
+    generated: List[GeneratedFigure] = []
+    per_field_list = getattr(args, "ls_per_field_list", None) or [4, 5, 6, 7, 8]
+    pred_outdir = REPO_ROOT / "data" / "ciber_auto_predictions"
+    pred_outdir.mkdir(parents=True, exist_ok=True)
+
+    for ifield in per_field_list:
+        field_tag = f"{args.fit_tag}_ifield{int(ifield)}"
+        cross_file = f"ciber_cl_fits_DESILS_coarsez_{field_tag}.npz"
+        auto_file = f"gal_auto_fits_DESILS_coarsez_{field_tag}.npz"
+        cross_path = REPO_ROOT / "data" / "cross_cl_fits" / cross_file
+        auto_path = REPO_ROOT / "data" / "gal_auto_fits" / auto_file
+
+        if not cross_path.exists():
+            run_gal_cross_fits(
+                inst_list=inst_list,
+                ifield_list=[int(ifield)],
+                cat="DESILS",
+                zbinedges=zbinedges,
+                maskstr="JHlt16_wFFerr",
+                chi2_eval_max=float(args.cross_fit_lmax),
+                lMax_fit=float(args.cross_fit_lmax),
+                fix_ihl_1h_shape=(fixed_mu_1h is not None and fixed_sigma_1h is not None),
+                use_ihl_1h_params=True,
+                ihl_1h_params_path=str(Path(args.ihl_1h_params_path).expanduser()),
+                save_figs=not args.no_save_intermediate_fits,
+                figbasedir=str(REPO_ROOT / "figures" / "generated_gal_cross_10deg" / f"zlt1_perfield_{field_tag}" / "cross_fit") + os.sep,
+                save_results=True,
+                file_fpath=cross_file,
+                fitstr=field_tag,
+                prior_bounds=cross_prior_bounds,
+                initial_guess=cross_initial_guess,
+                chi2_lim=[-6, 6],
+                use_astrometry_damping=True,
+                mu_1h_fixed_override=fixed_mu_1h,
+                sigma_1h_fixed_override=fixed_sigma_1h,
+                nwalkers=nwalkers_fit,
+                nsteps=args.fit_nsteps,
+                nburn=args.fit_nburn,
+            )
+
+        if not auto_path.exists():
+            run_gal_auto_fits(
+                inst_list=[1],
+                cat="DESILS",
+                zbinedges=zbinedges,
+                headstr=None,
+                ifield_list=[int(ifield)],
+                chi2_eval_max=float(args.auto_fit_lmax),
+                lMax_fit=float(args.auto_fit_lmax),
+                ihl_1h_params_path=str(Path(args.ihl_1h_params_path).expanduser()),
+                save_figs=not args.no_save_intermediate_fits,
+                figbasedir=str(REPO_ROOT / "figures" / "generated_gal_cross_10deg" / f"zlt1_perfield_{field_tag}" / "auto_fit") + os.sep,
+                save_results=True,
+                file_fpath=auto_file,
+                fitstr=field_tag,
+                prior_bounds=auto_prior_bounds,
+                chi2_lim=[-6, 6],
+                use_astrometry_damping=auto_use_damping,
+                mu_1h_fixed_override=fixed_mu_1h,
+                sigma_1h_fixed_override=fixed_sigma_1h,
+                nwalkers=nwalkers_fit,
+                nsteps=args.fit_nsteps,
+                nburn=args.fit_nburn,
+            )
+
+        res_ls = collect_ciber_gal_vs_redshift(
+            "LS",
+            subtract_randoms=True,
+            inst_list=list(inst_list),
+            zbinedges=zbinedges,
+            maskstr="JHlt16_wFFerr",
+            tl_pix_correct=True,
+            ifield_list=[int(ifield)],
+        )
+
+        ls_cross_res = load_fit_results_npz(str(cross_path))
+        ls_auto_res = load_fit_results_npz(str(auto_path))
+
+        params_ls_cross = np.asarray(ls_cross_res["params"], dtype=float)
+        params_ls_cross_err = np.asarray(ls_cross_res["params_err"], dtype=float)
+        params_ls_auto = np.asarray(ls_auto_res["params"], dtype=float)
+        params_ls_auto_err = np.asarray(ls_auto_res["params_err"], dtype=float)
+
+        n_zbin = len(zbinedges) - 1
+        lb_pred = _load_measured_ciber_auto_dl_exact(0)[0]
+        dl_pred_ls_z = np.full((2, n_zbin, lb_pred.size), np.nan, dtype=float)
+        dl_pred_ls_p16_z = np.full_like(dl_pred_ls_z, np.nan)
+        dl_pred_ls_p84_z = np.full_like(dl_pred_ls_z, np.nan)
+
+        for inst_idx in range(2):
+            lb_meas, _, _ = _load_measured_ciber_auto_dl_exact(inst_idx)
+            for zidx in range(n_zbin):
+                ls_cross_samples = _extract_fit_samples_cell(ls_cross_res, inst_idx, zidx)
+                ls_auto_samples = _extract_fit_samples_cell(ls_auto_res, 0, zidx)
+
+                comp = _predict_auto_2h1h_from_cross_and_shot_subtracted_auto(
+                    lb_meas,
+                    params_ls_cross[inst_idx, zidx],
+                    params_ls_cross_err[inst_idx, zidx],
+                    ls_cross_samples,
+                    np.asarray(res_ls["lb"], dtype=float),
+                    np.asarray(res_ls["full_cl_gal"][0, zidx], dtype=float),
+                    np.asarray(res_ls["full_clerr_gal"][0, zidx], dtype=float),
+                    ell_range_for_scaling=(float(args.scale_ell_min), float(args.scale_ell_max)),
+                    shot_ell_min=float(args.shot_ell_min),
+                    shot_ell_max=float(args.shot_ell_max),
+                    gal_auto_denominator_mode=str(args.gal_auto_denominator_mode),
+                    ratio_scaling_mode=str(args.ratio_scaling_mode),
+                    gal_auto_params=params_ls_auto[0, zidx],
+                    gal_auto_params_err=params_ls_auto_err[0, zidx],
+                    gal_auto_samples=ls_auto_samples,
+                    nsamp=int(args.pred_nsamp),
+                    seed=3000 + 100 * zidx + inst_idx,
+                )
+                dl_pred_ls_z[inst_idx, zidx] = comp["dl_pred_2h1h"]
+                dl_pred_ls_p16_z[inst_idx, zidx] = comp["dl_pred_2h1h_p16"]
+                dl_pred_ls_p84_z[inst_idx, zidx] = comp["dl_pred_2h1h_p84"]
+
+        lb_gal = np.asarray(res_ls["lb"], dtype=float)
+        pf_gal = lb_gal * (lb_gal + 1.0) / (2.0 * np.pi)
+        dl_gal_z = pf_gal[None, None, :] * np.asarray(res_ls["full_cl_gal"], dtype=float)
+        dl_gal_err_z = pf_gal[None, None, :] * np.asarray(res_ls["full_clerr_gal"], dtype=float)
+
+        per_field_save = pred_outdir / f"ciber_auto_pred_from_zlt1_{field_tag}_perfield.npz"
+        np.savez(
+            per_field_save,
+            lb_pred=lb_pred,
+            lb_gal=lb_gal,
+            zbinedges=np.array(zbinedges),
+            dl_pred_ls_z=dl_pred_ls_z,
+            dl_pred_ls_p16_z=dl_pred_ls_p16_z,
+            dl_pred_ls_p84_z=dl_pred_ls_p84_z,
+            dl_gal_z=dl_gal_z,
+            dl_gal_err_z=dl_gal_err_z,
+            field=int(ifield),
+            cross_fit_file=str(cross_path),
+            auto_fit_file=str(auto_path),
+        )
+
+        fig = _plot_ls_perfield_zslice_panels(
+            lb_pred=lb_pred,
+            lb_gal=lb_gal,
+            zbinedges=zbinedges,
+            dl_pred_z=dl_pred_ls_z,
+            dl_pred_p16_z=dl_pred_ls_p16_z,
+            dl_pred_p84_z=dl_pred_ls_p84_z,
+            dl_gal_z=dl_gal_z,
+            dl_gal_err_z=dl_gal_err_z,
+            field_label=f"ifield={int(ifield)}",
+        )
+
+        generated.append(
+            GeneratedFigure(
+                f"zlt1-auto-prediction:perfield:{int(ifield)}",
+                fig,
+                f"zlt1_auto_pred_desils_ifield{int(ifield)}_zslice_panels",
+            )
+        )
+
+    return generated
 
 
 def _make_zlt1_simple_fit_figure(
@@ -2990,7 +5806,8 @@ def run_zlt1_simple_model_diagnostics(args: argparse.Namespace) -> List[Generate
     inst_list = [1, 2]
     ifield_list = [4, 5, 6, 7, 8]
     ifield_list_hsc = [8]
-    zbinedges = [0.0, 1.0]
+    # zbinedges = [0.0, 1.0]
+    zbinedges = [0.0, 0.5]
 
     # Data for plotting fits.
     res_ls = collect_ciber_gal_vs_redshift(
@@ -2999,7 +5816,6 @@ def run_zlt1_simple_model_diagnostics(args: argparse.Namespace) -> List[Generate
         inst_list=inst_list,
         zbinedges=zbinedges,
         maskstr="JHlt16_wFFerr",
-        subtract_sn=False,
         tl_pix_correct=True,
         ifield_list=ifield_list,
     )
@@ -3009,7 +5825,6 @@ def run_zlt1_simple_model_diagnostics(args: argparse.Namespace) -> List[Generate
         inst_list=inst_list,
         zbinedges=zbinedges,
         maskstr=None,
-        subtract_sn=False,
         tl_pix_correct=True,
         ifield_list=ifield_list_hsc,
         with_ff_err=True,
@@ -3037,7 +5852,6 @@ def run_zlt1_simple_model_diagnostics(args: argparse.Namespace) -> List[Generate
             maskstr="JHlt16_wFFerr",
             chi2_eval_max=float(lmax),
             lMax_fit=float(lmax),
-            use_ihl_templates=False,
             use_one_halo=False,
             use_astrometry_damping=True,
             save_figs=not args.no_save_intermediate_fits,
@@ -3058,7 +5872,6 @@ def run_zlt1_simple_model_diagnostics(args: argparse.Namespace) -> List[Generate
             headstr=args.hsc_headstr,
             chi2_eval_max=float(lmax),
             lMax_fit=float(lmax),
-            use_ihl_templates=False,
             use_one_halo=False,
             use_astrometry_damping=True,
             save_figs=not args.no_save_intermediate_fits,
@@ -3361,7 +6174,6 @@ def _cross_component_bands(
         lb,
         use_powerlaw_2h=True,
         alpha_2h_fixed=0.0,
-        use_lorentzian_1h=False,
         use_astrometry_damping=(p.size >= 6),
         use_one_halo=True,
     )
@@ -3481,7 +6293,6 @@ def _make_zlt1_cross_1h_component_diagnostic(
                     lb,
                     use_powerlaw_2h=True,
                     alpha_2h_fixed=0.0,
-                    use_lorentzian_1h=False,
                     mu_1h_fixed=float(fixed_mu_1h),
                     sigma_1h_fixed=float(fixed_sigma_1h),
                     use_astrometry_damping=True,
@@ -3659,7 +6470,8 @@ def run_zlt1_cross_with1h_update_prediction(args: argparse.Namespace) -> List[Ge
     inst_list = [1, 2]
     ifield_list = [4, 5, 6, 7, 8]
     ifield_list_hsc = [8]
-    zbinedges = [0.0, 1.0]
+    # zbinedges = [0.0, 1.0]
+    zbinedges = [0.0, 0.5]
 
     res_ls = collect_ciber_gal_vs_redshift(
         "LS",
@@ -3667,7 +6479,6 @@ def run_zlt1_cross_with1h_update_prediction(args: argparse.Namespace) -> List[Ge
         inst_list=inst_list,
         zbinedges=zbinedges,
         maskstr="JHlt16_wFFerr",
-        subtract_sn=False,
         tl_pix_correct=True,
         ifield_list=ifield_list,
     )
@@ -3677,7 +6488,6 @@ def run_zlt1_cross_with1h_update_prediction(args: argparse.Namespace) -> List[Ge
         inst_list=inst_list,
         zbinedges=zbinedges,
         maskstr=None,
-        subtract_sn=False,
         tl_pix_correct=True,
         ifield_list=ifield_list_hsc,
         with_ff_err=True,
@@ -3829,7 +6639,6 @@ def run_zlt1_cross_with1h_update_prediction(args: argparse.Namespace) -> List[Ge
                 maskstr="JHlt16_wFFerr",
                 chi2_eval_max=float(lmax),
                 lMax_fit=float(lmax),
-                use_ihl_templates=False,
                 use_one_halo=True,
                 fix_ihl_1h_shape=cross_fix_1h_shape,
                 use_ihl_1h_params=False,
@@ -3856,7 +6665,6 @@ def run_zlt1_cross_with1h_update_prediction(args: argparse.Namespace) -> List[Ge
                 headstr=args.hsc_headstr,
                 chi2_eval_max=float(lmax),
                 lMax_fit=float(lmax),
-                use_ihl_templates=False,
                 use_one_halo=True,
                 fix_ihl_1h_shape=cross_fix_1h_shape,
                 use_ihl_1h_params=False,
@@ -4182,7 +6990,7 @@ def _compare_desils_with_without_cmgs_plot(
     labfs: int = 14,
     show: bool = True,
     capsize: float = 2.5,
-    bbox_to_anchor: Sequence[float] = (0.0, 1.3),
+    bbox_to_anchor: Sequence[float] = (-0.15, 1.35),
     ylim: Sequence[float] = (1e-3, 1e3),
     ylim_ratio: Sequence[float] = (-0.25, 0.6),
     xlim: Sequence[float] = (250, 1e5),
@@ -4194,7 +7002,9 @@ def _compare_desils_with_without_cmgs_plot(
 ):
     import matplotlib.pyplot as plt
 
-    colors = ["k", "C3", "C0"]
+    colors = ["C2", "#8A2BE2", "#2F4F4F"]
+
+    # colors = ['']
     lb = clres["lb"]
     pf = lb * (lb + 1) / (2 * np.pi)
 
@@ -4232,10 +7042,12 @@ def _compare_desils_with_without_cmgs_plot(
         for idx in range(len(inst_list))
     ]
 
+    ellminmask = (lb > lb[1])
+
     ax[0, 0].errorbar(
-        lb,
-        pf * clres["clg_full"],
-        yerr=pf * clres["clgerr_full"],
+        lb[ellminmask],
+        (pf * clres["clg_full"])[ellminmask],
+        yerr=(pf * clres["clgerr_full"])[ellminmask],
         fmt="o",
         color=colors[0],
         label=labels[0],
@@ -4243,9 +7055,9 @@ def _compare_desils_with_without_cmgs_plot(
         markersize=markersize,
     )
     ax[0, 0].errorbar(
-        lb,
-        pf * clres["clg_cmg"],
-        yerr=pf * clres["clgerr_cmg"],
+        lb[ellminmask],
+        (pf * clres["clg_cmg"])[ellminmask],
+        yerr=(pf * clres["clgerr_cmg"])[ellminmask],
         fmt="o",
         color=colors[1],
         label=labels[1],
@@ -4253,9 +7065,9 @@ def _compare_desils_with_without_cmgs_plot(
         markersize=markersize,
     )
     ax[0, 0].errorbar(
-        lb,
-        pf * clres["clg_nocmg"],
-        yerr=pf * clres["clgerr_nocmg"],
+        lb[ellminmask],
+        (pf * clres["clg_nocmg"])[ellminmask],
+        yerr=(pf * clres["clgerr_nocmg"])[ellminmask],
         fmt="o",
         color=colors[2],
         label=labels[2],
@@ -4264,16 +7076,16 @@ def _compare_desils_with_without_cmgs_plot(
     )
 
     ax[1, 0].errorbar(
-        lb,
-        1.0 - clres["clg_nocmg"] / clres["clg_full"],
-        yerr=clres["clgerr_nocmg"] / clres["clg_full"],
+        lb[ellminmask],
+        1.0 - (clres["clg_nocmg"][ellminmask] / clres["clg_full"][ellminmask]),
+        yerr=(clres["clgerr_nocmg"][ellminmask] / clres["clg_full"][ellminmask]),
         fmt="o",
         color=colors[0],
         capsize=capsize,
         markersize=markersize,
     )
 
-    ax[0, 0].legend(loc=2, ncol=3, bbox_to_anchor=bbox_to_anchor, fontsize=14)
+    ax[0, 0].legend(loc=2, ncol=3, bbox_to_anchor=bbox_to_anchor, fontsize=16)
 
     # Add thin dashed shot-noise guide curves in top row using high-ell averages.
     for cidx, c in enumerate(colors):
@@ -4281,27 +7093,27 @@ def _compare_desils_with_without_cmgs_plot(
 
     for idx, inst in enumerate(inst_list):
         ax[0, inst].errorbar(
-            lb,
-            pf * clres["clig_full"][idx],
-            yerr=pf * clres["cligerr_full"][idx],
+            lb[ellminmask],
+            (pf * clres["clig_full"][idx])[ellminmask],
+            yerr=(pf * clres["cligerr_full"][idx])[ellminmask],
             fmt="o",
             color=colors[0],
             capsize=capsize,
             markersize=markersize,
         )
         ax[0, inst].errorbar(
-            lb,
-            pf * clres["clig_cmg"][idx],
-            yerr=pf * clres["cligerr_cmg"][idx],
+            lb[ellminmask],
+            (pf * clres["clig_cmg"][idx])[ellminmask],
+            yerr=(pf * clres["cligerr_cmg"][idx])[ellminmask],
             fmt="o",
             color=colors[1],
             capsize=capsize,
             markersize=markersize,
         )
         ax[0, inst].errorbar(
-            lb,
-            pf * clres["clig_nocmg"][idx],
-            yerr=pf * clres["cligerr_nocmg"][idx],
+            lb[ellminmask],
+            (pf * clres["clig_nocmg"][idx])[ellminmask],
+            yerr=(pf * clres["cligerr_nocmg"][idx])[ellminmask],
             fmt="o",
             color=colors[2],
             capsize=capsize,
@@ -4309,9 +7121,9 @@ def _compare_desils_with_without_cmgs_plot(
         )
 
         ax[1, inst].errorbar(
-            lb,
-            1.0 - (clres["clig_nocmg"][idx] / clres["clig_full"][idx]),
-            yerr=np.abs(clres["cligerr_nocmg"][idx] / clres["clig_full"][idx]),
+            lb[ellminmask],
+            1.0 - (clres["clig_nocmg"][idx][ellminmask] / clres["clig_full"][idx][ellminmask]),
+            yerr=np.abs(clres["cligerr_nocmg"][idx][ellminmask] / clres["clig_full"][idx][ellminmask]),
             fmt="o",
             color=colors[0],
             capsize=capsize,
@@ -4335,6 +7147,9 @@ def _compare_desils_with_without_cmgs_plot(
         ax[0, x].set_yscale("log")
         ax[0, x].set_title(titles[x], fontsize=14)
 
+        ax[1, x].axhline(0, color=colors[2], linestyle='solid', linewidth=0.9, alpha=0.9)
+
+
         if x > 0:
             ax[0, x].set_yticks([1e-3, 1e-2, 1e-1, 1e0, 1e1, 1e2, 1e3], ["" for _ in range(7)])
             ax[1, x].set_yticks([-0.25, 0.0, 0.25, 0.5], ["" for _ in range(4)])
@@ -4344,8 +7159,11 @@ def _compare_desils_with_without_cmgs_plot(
             ax[k, x].set_xscale("log")
             ax[k, x].grid(alpha=0.2)
 
-    ax[0, 0].set_ylabel("$\\ell(\\ell+1)C_{\\ell}/2\\pi$", fontsize=labfs)
-    ax[1, 0].set_ylabel("$1-\\frac{C_{\\ell}^{\\rm w/o CMGs}}{C_{\\ell}^{\\rm full}}$", fontsize=labfs)
+    ax[0, 0].set_ylabel("$D_{\ell}^{\\rm XY}$", fontsize=labfs)
+
+    # ax[0, 0].set_ylabel("$\\ell(\\ell+1)C_{\\ell}/2\\pi$", fontsize=labfs)
+    ax[1, 0].set_ylabel("$1-\\frac{C_{\\ell}^{\\rm no CMGs}}{C_{\\ell}^{\\rm full}}$", fontsize=labfs+2)
+    # ax[1, 0].axhline(0, color=colors[2], linestyle='solid', linewidth=0.9, alpha=0.9)
 
     plt.subplots_adjust(hspace=0.1, wspace=0)
     if show:
@@ -4515,6 +7333,8 @@ def run_amplitude_vs_z(args: argparse.Namespace) -> List[GeneratedFigure]:
     from ciber.theory.cl_predictions import grab_ciber_cross_vs_z_predfpaths
 
     zbinedges_coarse = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
+    # zbinedges_coarse = [0.0, 0.5, 1.0, 2.0]
+
     z_centers = 0.5 * (np.array(zbinedges_coarse[:-1]) + np.array(zbinedges_coarse[1:]))
 
     # --- load fit results (one per catalog) ---
@@ -4651,7 +7471,8 @@ def run_compare_mock_vs_parametric(args: argparse.Namespace) -> List[GeneratedFi
         if tracer_key == "ls":
             heads = ["sdss_z_lt_22.0_CIBERfidmask", "sdss_z_lt_22.0"]
         else:
-            heads = ["hsc_i_lt_25.0_CIBERfidmask", "hsc_i_lt_25.0", "hsc_ilt25.0"]
+            # heads = ["hsc_i_lt_25.0_CIBERfidmask", "hsc_i_lt_25.0", "hsc_ilt25.0"]
+            heads = ["hsc_i_lt_24.0_CIBERfidmask", "hsc_i_lt_24.0", "hsc_ilt24.0"]
 
         base = Path(mock_basepath) / "mock_ps_pred" / f"TM{inst}" / "field_average"
         for head in heads:
@@ -4708,7 +7529,6 @@ def run_compare_mock_vs_parametric(args: argparse.Namespace) -> List[GeneratedFi
 
         use_powerlaw_2h = bool(fit_dat["use_powerlaw_2h"]) if "use_powerlaw_2h" in fit_dat else True
         alpha_2h_fixed = float(fit_dat["alpha_2h_fixed"]) if "alpha_2h_fixed" in fit_dat else 0.0
-        use_lorentzian_1h = bool(fit_dat["use_lorentzian_1h"]) if "use_lorentzian_1h" in fit_dat else False
 
         lb_ref_obj = fit_dat["lb_fit"][inst_idx, zbin_idx] if "lb_fit" in fit_dat else None
         if lb_ref_obj is None:
@@ -4722,7 +7542,6 @@ def run_compare_mock_vs_parametric(args: argparse.Namespace) -> List[GeneratedFi
             lb=lb_ref,
             use_powerlaw_2h=use_powerlaw_2h,
             alpha_2h_fixed=alpha_2h_fixed,
-            use_lorentzian_1h=use_lorentzian_1h,
             use_astrometry_damping=(params.size >= 6),
         )
 
@@ -5293,6 +8112,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Disable B_ell deconvolution when constructing standard-igl pred curves",
     )
     parser.add_argument(
+        "--nl-corrections",
+        action="store_true",
+        help="Apply non-linear power spectrum corrections to cross-correlation predictions",
+    )
+    parser.add_argument(
         "--diagnostics-basename",
         default="timing_diagnostics",
         help="Basename for diagnostics JSON/CSV",
@@ -5322,13 +8146,24 @@ def build_parser() -> argparse.ArgumentParser:
         "--omnibus-figsize",
         type=float,
         nargs=2,
-        default=[10, 6],
+        default=[7, 6],
         help="Figure size (width, height) for omnibus plots (default: 7 6)",
     )
     parser.add_argument(
         "--ls-gal-auto-large",
         default=None,
         help="Path to .npz from compute_gal_auto_spectrum_large() to replace the LS galaxy auto with a larger-footprint version",
+    )
+    parser.add_argument(
+        "--omnibus-pred-model-mode",
+        choices=["smooth_a2h_shot", "raw_interp"],
+        default="smooth_a2h_shot",
+        help="Omnibus model-curve mode: smooth A2h*ell^-2 + shot (default) or raw interpolation",
+    )
+    parser.add_argument(
+        "--omnibus-show-linear-pred",
+        action="store_true",
+        help="Also plot linear (non-scaled) predictions alongside NL predictions on omnibus",
     )
 
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -5430,6 +8265,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_zlt1.add_argument("--fit-tag", default="zlt1_parametric", help="Tag appended to saved fit and prediction filenames")
     p_zlt1.add_argument(
+        "--cross-fit-family",
+        default=None,
+        help="Optional fit-family/tag to load or use for cross-fit results (overrides --fit-tag for cross fits)",
+    )
+    p_zlt1.add_argument(
         "--fit-mode",
         choices=["bulk", "coarsez"],
         default="bulk",
@@ -5449,7 +8289,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_zlt1.add_argument(
         "--ihl-1h-params-path",
-        default="ihl_templates/ihl_1h_param_fit_v0.npz",
+        default="data/ihl_templates/ihl_1h_params_lin2h_corrected.npz",
         help="Path to IHL-derived one-halo parameter file used to temper priors/fixed 1h shape",
     )
     p_zlt1.add_argument(
@@ -5494,8 +8334,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_zlt1.add_argument("--endidx", type=int, default=-1, help="End index in ell bins for prediction products")
     p_zlt1.add_argument("--scale-ell-min", type=float, default=300.0, help="Min ell for cross/auto scaling ratio")
     p_zlt1.add_argument("--scale-ell-max", type=float, default=3000.0, help="Max ell for cross/auto scaling ratio")
-    p_zlt1.add_argument("--auto-fit-ell-min", type=float, default=300.0, help="Min ell for galaxy-auto fit inside prediction step")
-    p_zlt1.add_argument("--auto-fit-ell-max", type=float, default=80000.0, help="Max ell for galaxy-auto fit inside prediction step")
+    p_zlt1.add_argument("--auto-fit-ell-min", type=float, default=100.0, help="Min ell for galaxy-auto fit inside prediction step")
+    p_zlt1.add_argument("--auto-fit-ell-max", type=float, default=50000.0, help="Max ell for galaxy-auto fit inside prediction step")
     p_zlt1.add_argument("--pred-nsamp", type=int, default=2000, help="Posterior draws used for auto-prediction uncertainty propagation")
     p_zlt1.add_argument(
         "--gal-auto-denominator-mode",
@@ -5511,6 +8351,72 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_zlt1.add_argument("--shot-ell-min", type=float, default=5.0e4, help="Min ell used to estimate galaxy shot noise in prediction stage")
     p_zlt1.add_argument("--shot-ell-max", type=float, default=8.0e4, help="Max ell used to estimate galaxy shot noise in prediction stage")
+    p_zlt1.add_argument(
+        "--ls-gal-auto-large-basepath",
+        default=None,
+        help="Base path containing large-field LS auto files under TM*/gal_density/LS",
+    )
+    p_zlt1.add_argument(
+        "--ls-gal-auto-large-suffix",
+        default="wrandsub_6.0deg",
+        help="Suffix used in large-field LS auto filenames",
+    )
+    p_zlt1.add_argument(
+        "--ls-gal-auto-large-weight",
+        choices=["invvar", "uniform"],
+        default="invvar",
+        help="Field-averaging weight mode for large-field LS auto spectra",
+    )
+    p_zlt1.add_argument(
+        "--ls-per-field",
+        action="store_true",
+        help="Run per-field DESI-LS auto reconstruction and generate z-slice panel plots",
+    )
+    p_zlt1.add_argument(
+        "--ls-per-field-list",
+        type=int,
+        nargs="+",
+        default=[4, 5, 6, 7, 8],
+        help="DESI-LS field list used for per-field reconstruction (default: 4 5 6 7 8)",
+    )
+    p_zlt1.add_argument(
+        "--reuse-fit-cache",
+        action="store_true",
+        help="Reuse cached fit NPZ files and only regenerate figures for this fit tag",
+    )
+    p_zlt1.add_argument(
+        "--include-intensity-weighted",
+        action="store_true",
+        help=(
+            "Load intensity-weighted cross/auto fields from the same HSC cross-product NPZ files "
+            "and overlay reconstructed C_ell^II predictions."
+        ),
+    )
+    p_zlt1.add_argument(
+        "--intensity-weighted-only",
+        action="store_true",
+        help="When used with --include-intensity-weighted, hide overdensity-based reconstructed curves.",
+    )
+    p_zlt1.add_argument(
+        "--hsc-intensity-addstr",
+        default="hsc_ilt22.0_wrandsub_JHlt16_wFFerr",
+        help="Addstr suffix for HSC intensity reconstruction run to load (default: hsc_ilt22.0_wrandsub_JHlt16_wFFerr)",
+    )
+    p_zlt1.add_argument(
+        "--ls-intensity-addstr",
+        default="0.0_z_1.0_wrandsub_JHlt16_wFFerr",
+        help="Addstr suffix for DESI-LS intensity reconstruction run to load (default: 0.0_z_1.0_wrandsub_JHlt16_wFFerr)",
+    )
+
+    p_zlt1.add_argument(
+        "--intensity-field-weight-mode",
+        type=str,
+        default="per-field",
+        choices=["per-field", "uniform"],
+        help="Field weighting mode for intensity spectra: "
+             "'per-field' uses inverse-variance per-field weights from galaxy cross (default), "
+             "'uniform' uses simple field average",
+    )
 
     p_zlt1_simple = subparsers.add_parser(
         "zlt1-simple-model-diagnostics",
@@ -5533,7 +8439,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_zlt1_simple.add_argument(
         "--hsc-headstr",
-        default="hsc_ilt25.0",
+        default="hsc_ilt22.0",
         help="HSC headstr used to load z-binned spectra",
     )
     p_zlt1_simple.add_argument("--fit-nwalkers", type=int, default=24, help="Number of MCMC walkers")
@@ -5620,9 +8526,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_cross1h.add_argument(
         "--one-halo-template-mode",
         choices=["legacy", "slice-median", "slice-effective-z", "slice-z-range"],
-        default="slice-z-range",
+        default="slice-effective-z",
         help=(
-            "One-halo template policy for z<1 refits. Default uses slice-z-range over "
+            "One-halo template policy for z<1 refits. Default uses slice-effective-z over "
             "0.2<z<0.4 from provided slice fit files."
         ),
     )
@@ -5906,6 +8812,9 @@ def _validate_args(args: argparse.Namespace) -> None:
 
     if args.pred_source == "standard-igl" and args.pred_basepath:
         _normalize_pred_basepath(args.pred_basepath)
+
+    if getattr(args, "intensity_weighted_only", False) and not getattr(args, "include_intensity_weighted", False):
+        raise ValueError("--intensity-weighted-only requires --include-intensity-weighted")
 
 
 
