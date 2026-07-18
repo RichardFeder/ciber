@@ -35,7 +35,8 @@ def return_default_gal_cat_dict():
     
     # unWISE
     gal_cat_dict['rgb_mode'] = None
-    gal_cat_dict['w1_mag_cut'] = None
+    gal_cat_dict['w1_mag_max'] = None
+    gal_cat_dict['w1_mag_min'] = None
     gal_cat_dict['wise_bands'] = ['mag_W1', 'mag_W2']
     
     # DECaLS
@@ -46,7 +47,7 @@ def return_default_gal_cat_dict():
     # HSC
     gal_cat_dict['hsc_mag_max'] = None
     gal_cat_dict['hsc_mag_min'] = None
-    gal_cat_dict['hsc_bands'] = ['g_cmodel_mag', 'r_cmodel_mag']
+    gal_cat_dict['hsc_bands'] = ['g_cmodel_mag', 'r_cmodel_mag', 'z_cmodel_mag', 'i_cmodel_mag', 'y_cmodel_mag']
     gal_cat_dict['hsc_redshift_key'] = 'z_phot_mean'
 
     # photo-z parameters (when available)
@@ -59,11 +60,13 @@ def return_default_gal_cat_dict():
 
 class cat_select():
     
-    def __init__(self, gal_dict=None):
+    def __init__(self, gal_dict=None, which_hsc_band='i'):
         
         if gal_dict is not None:
             print('Loading galaxy parameter dict into cat_select()')
             self.gal_dict = gal_dict
+            
+        self.which_hsc_band = which_hsc_band
                 
     
     def decals_mask(self):
@@ -83,9 +86,14 @@ class cat_select():
             print('RGB mode is ', self.gal_dict['rgb_mode'])
             mask *= wise_rgb_cuts(self.cat_W1, self.cat_W2, self.gal_dict['rgb_mode'])
 
-        if self.gal_dict['w1_mag_cut'] is not None:
-            print('Cutting WISE sources with W1 > '+str(self.gal_dict['w1_mag_cut']))
-            mask *= (self.cat_W1 < self.gal_dict['w1_mag_cut'])
+        if self.gal_dict['w1_mag_max'] is not None:
+            print('Cutting WISE sources with W1 > '+str(self.gal_dict['w1_mag_max']))
+            mask *= (self.cat_W1 < self.gal_dict['w1_mag_max'])
+            
+        if self.gal_dict['w1_mag_min'] is not None:
+            print('Cutting WISE sources with W1 < '+str(self.gal_dict['w1_mag_min']))
+            mask *= (self.cat_W1 > self.gal_dict['w1_mag_min'])
+            
 
         return mask
         
@@ -98,30 +106,44 @@ class cat_select():
         if 'redshift' in self.cat_stack_labs:
             if self.gal_dict['zmin'] is not None:
                 print('Removing z < '+str(self.gal_dict['zmin'])+' sources')
-                mask *= (self.cat_z > self.gal_dict['zmin'])
+                mask *= (self.cat_redshift > self.gal_dict['zmin'])
             if self.gal_dict['zmax'] is not None:
                 print('Removing z > '+str(self.gal_dict['zmax'])+' sources')
-                mask *= (self.cat_z < self.gal_dict['zmax'])
+                mask *= (self.cat_redshift < self.gal_dict['zmax'])
 
         return mask.astype(int)
     
     
-    def hsc_cat_mask(self):
+    def gaia_cat_mask(self):
         
-#         g_r = all_cat_mag - all_cat_rmag
-#         g_r_mask = (~np.isnan(g_r))*(~np.isinf(g_r))*(np.abs(g_r) < 2.)*(g_r > -1.)
-#         med_gr = np.median(g_r[g_r_mask])
-
         mask = np.ones_like(self.cat_x).astype(int)
         
+        return mask
+    
+    def hsc_cat_mask(self):
+        
+        mask = np.ones_like(self.cat_x).astype(int)
+                    
         if self.gal_dict['hsc_mag_max'] is not None:
-            print('Removing sources with g > '+str(self.gal_dict['hsc_mag_max']))
-            mask *= (self.cat_g < self.gal_dict['hsc_mag_max'])
+            if self.which_hsc_band=='i':
+                print('Removing sources with i > '+str(self.gal_dict['hsc_mag_max']))
 
+                mask *= (self.cat_i < self.gal_dict['hsc_mag_max'])
+            elif self.which_hsc_band=='z':
+                
+                print('Removing sources with zAB > '+str(self.gal_dict['hsc_mag_max']))
+
+                mask *= (self.cat_z < self.gal_dict['hsc_mag_max'])
+                
+            
         if self.gal_dict['hsc_mag_min'] is not None:
-            print('Removing sources with g < '+str(self.gal_dict['hsc_mag_min']))
-            mask *= (self.cat_g < self.gal_dict['hsc_mag_min'])
+            if self.which_hsc_band=='i':
 
+                print('Removing sources with i < '+str(self.gal_dict['hsc_mag_min']))
+                mask *= (self.cat_i > self.gal_dict['hsc_mag_min'])
+            elif self.which_hsc_band=='z':
+                print('Removing sources with zAB < '+str(self.gal_dict['hsc_mag_min']))
+                mask *= (self.cat_z > self.gal_dict['hsc_mag_min'])
         
         return mask
     
@@ -130,19 +152,22 @@ class cat_select():
         
         mask = self.footprint_mask()       
         print(mask)
+
+        cat_mask = None
         if catname=='DECaLS':
-            cat_mask = self.decals_cat_mask()
+            cat_mask = self.decals_mask()
         
         elif catname=='WISE':
             cat_mask = self.wise_cat_mask()    
             
         elif catname=='HSC':
             cat_mask  = self.hsc_cat_mask()
-
-        else:
-            cat_mask = np.ones_like(mask)
             
-        mask *= cat_mask
+        elif catname=='gaia':
+            cat_mask = self.gaia_cat_mask()
+            
+        if cat_mask is not None:
+            mask *= cat_mask
         
         return mask
             
@@ -151,22 +176,25 @@ class cat_select():
         
         cat_df = pd.read_csv(fpath)
         
+        print(cat_df.keys())
+        
         self.cat_x, self.cat_y = np.array(cat_df['x'+str(ciber_inst)]), np.array(cat_df['y'+str(ciber_inst)])
         
         self.cat_stack = [self.cat_x, self.cat_y]
         self.cat_stack_labs = ['x', 'y']
             
-        if catname=='DECaLS':
-            self.cat_z, self.cat_type = np.array(cat_df['z_phot_mean']), np.array(cat_df['type'])
-            self.cat_stack.extend([self.cat_z, self.cat_type])
+        if catname=='LS':
+            self.cat_redshift, self.cat_type = np.array(cat_df['z_phot_mean']), np.array(cat_df['type'])
+            self.cat_stack.extend([self.cat_redshift, self.cat_type])
             self.cat_stack_labs.extend(['redshift', 'type'])
             
         elif catname=='HSC':
-            self.cat_z = np.array(cat_df['photoz_mean'])
-            self.cat_g, self.cat_r = np.array(cat_df['g_cmodel_mag']), np.array(cat_df['r_cmodel_mag'])
-                
-            self.cat_stack.extend([self.cat_z, self.cat_g, self.cat_r])
-            self.cat_stack_labs.extend(['redshift', 'mag_g', 'mag_r'])
+            self.cat_redshift = np.array(cat_df['photoz_mean'])
+            self.cat_redshift_unc = np.array(cat_df['photoz_std_mean'])
+            self.cat_g, self.cat_r, self.cat_i, self.cat_z, self.cat_ymag = [np.array(cat_df[bandstr]) for bandstr in ['g_cmodel_mag', 'r_cmodel_mag', 'i_cmodel_mag', 'z_cmodel_mag', 'y_cmodel_mag']]
+            
+            self.cat_stack.extend([self.cat_redshift, self.cat_g, self.cat_r, self.cat_i, self.cat_z, self.cat_ymag])
+            self.cat_stack_labs.extend(['redshift', 'mag_g', 'mag_r', 'mag_i', 'mag_z', 'mag_y'])
 
         elif catname=='WISE':
             self.cat_W1, self.cat_W2 = np.array(cat_df['mag_W1']), np.array(cat_df['mag_W2'])
@@ -175,7 +203,7 @@ class cat_select():
             self.cat_stack_labs.extend(['mag_W1', 'mag_W2'])
             
         print('cat labels:', self.cat_stack_labs)
-
+        
 
 
 
@@ -819,7 +847,7 @@ def separate_ls_catalog_by_z(zbinedges=None, ifield_list = [4, 5, 6, 7, 8], ls_c
 
 
 def preprocess_gal_density_maps(inst, ifield_list, catname, save=False, cat_fpath_list=None,\
-                                 show=True, addstr=None, **kwargs):
+                                 show=True, addstr=None, which_hsc_band='i', **kwargs):
     
     
     gal_dict = return_default_gal_cat_dict()
@@ -827,39 +855,139 @@ def preprocess_gal_density_maps(inst, ifield_list, catname, save=False, cat_fpat
        
     ciber_field_dict = dict({4:'elat10', 5:'elat30', 6:'Bootes B', 7:'Bootes A', 8:'SWIRE'})
     
-    gal_counts = np.zeros((len(ifield_list), gal_dict['ciber_dimx'], gal_dict['ciber_dimx']))
+    gal_densities = np.zeros((len(ifield_list), gal_dict['ciber_dimx'], gal_dict['ciber_dimx']))
     
+    all_w1 = []
     for fieldidx, ifield in enumerate(ifield_list):
         
         if cat_fpath_list is None:
-            cat_fpath = gal_dict['catalog_basepath']+catname+'/filt/'+catname+'_CIBER_ifield'+str(ifield)+'.csv'
+            cat_fpath = catalog_basepath+catname+'/filt/'+catname+'_CIBER_ifield'+str(ifield)+'.csv'
         else:
             cat_fpath = cat_fpath_list[fieldidx]
             
         # instantiate for each field separately
-        cat_sel_obj = cat_select(gal_dict)
+        cat_sel_obj = cat_select(gal_dict, which_hsc_band=which_hsc_band)
         cat_sel_obj.load_cat(cat_fpath, inst, catname)
         
         mask = cat_sel_obj.apply_cat_select(catname)
 
         cat_x_sel, cat_y_sel = cat_sel_obj.cat_x[np.where(mask)[0]], cat_sel_obj.cat_y[np.where(mask)[0]]
         
+        print(cat_x_sel)
+        
         print('After down-selections, the '+str(catname)+' catalog for '+str(ifield)+' has '+str(len(cat_x_sel))+' sources.')
         
         counts = get_count_field(cat_x_sel, cat_y_sel, imdim=gal_dict['ciber_dimx'])
         
+        if catname=='WISE':
+            cat_w1_sel = cat_sel_obj.cat_W1[np.where(mask)[0]]
+            all_w1.append(cat_w1_sel)
+        
         if show:
             plot_map(counts, title=catname+' ifield '+str(ifield))
         
-        gal_counts[fieldidx] = counts
+        gal_densities[fieldidx] = counts
+        
+    
+    if catname=='WISE':
+        plt.figure(figsize=(5, 4))
+        for fieldidx, ifield in enumerate(ifield_list):
+
+            nbar = len(all_w1[fieldidx][(all_w1[fieldidx]<18.0)])/4.
+
+            label = cbps.ciber_field_dict[ifield]+': $\\overline{n}=$'+str(int(nbar))+' deg$^{-2}$'
+
+            if fieldidx==0:
+                label +='\n(with W1 cut)'
+
+            plt.hist(all_w1[fieldidx], bins=np.linspace(15, 18.5, 20), histtype='step', label=label)
+        plt.yscale('log')
+        plt.xlabel('W1 magnitude [Vega]', fontsize=14)
+        plt.axvline(18.0, linestyle='dashed', color='k')
+        plt.legend(fontsize=9, loc=4)
+        plt.ylabel('$N_{src}$', fontsize=14)
+        plt.title('unWISE neo8 catalog', fontsize=16)
+        plt.savefig('figures/unWISE_neo8_W1counts_perfield_'+addstr+'.png', bbox_inches='tight')
+        plt.show()
+
         
     if save:
         
-        save_fpath = save_gal_density(inst, ifield_list, gal_counts, catname, addstr=addstr)
+        save_fpath = save_gal_density(inst, ifield_list, gal_densities, catname, addstr=addstr)
     else:
         save_fpath = None
     
     return save_fpath
+
+# def preprocess_gal_density_maps(inst, ifield_list, catname, save=False, cat_fpath_list=None,\
+#                                  show=True, addstr=None, **kwargs):
+    
+    
+#     gal_dict = return_default_gal_cat_dict()
+#     gal_dict = update_dicts([gal_dict], kwargs)[0]
+       
+#     ciber_field_dict = dict({4:'elat10', 5:'elat30', 6:'Bootes B', 7:'Bootes A', 8:'SWIRE'})
+    
+#     gal_counts = np.zeros((len(ifield_list), gal_dict['ciber_dimx'], gal_dict['ciber_dimx']))
+    
+#     for fieldidx, ifield in enumerate(ifield_list):
+        
+#         if cat_fpath_list is None:
+#             cat_fpath = gal_dict['catalog_basepath']+catname+'/filt/'+catname+'_CIBER_ifield'+str(ifield)+'.csv'
+#         else:
+#             cat_fpath = cat_fpath_list[fieldidx]
+            
+#         # instantiate for each field separately
+#         cat_sel_obj = cat_select(gal_dict)
+#         cat_sel_obj.load_cat(cat_fpath, inst, catname)
+        
+#         mask = cat_sel_obj.apply_cat_select(catname)
+
+#         cat_x_sel, cat_y_sel = cat_sel_obj.cat_x[np.where(mask)[0]], cat_sel_obj.cat_y[np.where(mask)[0]]
+        
+#         print('After down-selections, the '+str(catname)+' catalog for '+str(ifield)+' has '+str(len(cat_x_sel))+' sources.')
+        
+#         counts = get_count_field(cat_x_sel, cat_y_sel, imdim=gal_dict['ciber_dimx'])
+        
+#         if show:
+#             plot_map(counts, title=catname+' ifield '+str(ifield))
+        
+#         gal_counts[fieldidx] = counts
+        
+#     if save:
+        
+#         save_fpath = save_gal_density(inst, ifield_list, gal_counts, catname, addstr=addstr)
+#     else:
+#         save_fpath = None
+    
+#     return save_fpath
+
+
+def preprocess_intensity_maps(inst, ifield_list, catname='HSC', save=False, cat_fpath_list=None,
+                              show=False, addstr=None, hsc_mag_column='i_cmodel_mag',
+                              hsc_mag_min=None, hsc_mag_max=None, zmin=None, zmax=None,
+                              imdim=1024, **kwargs):
+    """Thin wrapper so intensity preprocessing is discoverable from galaxy_cross APIs."""
+    from ciber.cross_correlation.intensity_recon_cross import preprocess_intensity_maps as _preprocess
+
+    intensity_maps, save_fpath = _preprocess(
+        inst=inst,
+        ifield_list=ifield_list,
+        catname=catname,
+        save=save,
+        cat_fpath_list=cat_fpath_list,
+        addstr=addstr,
+        hsc_mag_column=hsc_mag_column,
+        hsc_mag_min=hsc_mag_min,
+        hsc_mag_max=hsc_mag_max,
+        zmin=zmin,
+        zmax=zmax,
+        show=show,
+        imdim=imdim,
+        **kwargs,
+    )
+
+    return intensity_maps, save_fpath
 
 
 def preprocess_ls_density_maps(inst, zbinedges, ifield_list, 

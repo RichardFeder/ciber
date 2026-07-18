@@ -540,7 +540,7 @@ class ciber_mock():
         return 3631*u.Jansky*10**(-0.4*mags)
 
     def mag_2_nu_Inu(self, mags, band=None, lam_eff=None):
-        ''' conversion from magnitudes to intensity at specific wavelength ''' 
+        ''' conversion from magnitudes to intensity at specific wavelength. has units of nW m^-2 sr^-1. In the presence of a realistic bandpass this needs to change ''' 
         jansky_arr = self.mag_2_jansky(mags)
         if lam_eff is None:
             lam_eff = self.lam_effs[band]

@@ -241,18 +241,19 @@ def compute_overdensity_with_smoothing(
     return delta_g, B_ell
 	
 def ciber_gal_cross(inst_list, ifield_list_use, catname, addstr=None, randstr=None, mask_tail_list=None, masking_maglim_list=None, \
-				   estimate_ciber_noise_gal=False, estimate_gal_noise_ciber=False, \
-				   estimate_ciber_noise_gal_noise=False, ifield_list_full=[4, 5, 6, 7, 8], \
-				   clip_sigma=5, niter=5, nitermax=5, per_quadrant=True, save=True, plot=False, \
-				   nsims=500, n_split=10, fc_sub=False, fc_sub_quad_offset=True, fc_sub_n_terms=2, \
-				   compute_cl_theta=True, cl_theta_cut=True, n_rad_bins=8, ell_min_wedge=2000, \
-				   quadoff_grad=False, grad_sub=False, subtract_randoms=False, maskstr=None, \
-				   rad_offset=None, theta0=np.pi, gal_downgrade_fac=None, apply_pixel_corr=True, \
-				   rand_downgrade_fac=4,
-				   include_ff_errors=True,
-				   observed_run_name = 'observed_Jlt16.0_Hlt15.5_072424_quadoff_grad_fcsub_order2',
-				   tailstr_save=None, save_ciber_map=False,
-				   noisemodl_basepath=None):
+			   mkk_maglim_list=None, \
+			   estimate_ciber_noise_gal=False, estimate_gal_noise_ciber=False, \
+			   estimate_ciber_noise_gal_noise=False, ifield_list_full=[4, 5, 6, 7, 8], \
+			   clip_sigma=5, niter=5, nitermax=5, per_quadrant=True, save=True, plot=False, \
+			   nsims=500, n_split=10, fc_sub=False, fc_sub_quad_offset=True, fc_sub_n_terms=2, \
+			   compute_cl_theta=True, cl_theta_cut=True, n_rad_bins=8, ell_min_wedge=2000, \
+			   quadoff_grad=False, grad_sub=False, subtract_randoms=False, maskstr=None, \
+			   rad_offset=None, theta0=np.pi, gal_downgrade_fac=None, apply_pixel_corr=True, \
+			   rand_downgrade_fac=4,
+			   include_ff_errors=True,
+			   observed_run_name = 'observed_Jlt16.0_Hlt15.5_072424_quadoff_grad_fcsub_order2',
+			   tailstr_save=None, save_ciber_map=False,
+			   noisemodl_basepath=None, intensity_map_addstr=None):
 	
 	
 	cbps = CIBER_PS_pipeline()
@@ -304,6 +305,9 @@ def ciber_gal_cross(inst_list, ifield_list_use, catname, addstr=None, randstr=No
 			noisemodl_basepath_inst = noisemodl_basepath
 
 		all_cl_cross, all_cl_gal, all_clerr_cross, all_clerr_gal = [[] for x in range(4)]
+		all_cl_intensity_cross, all_cl_intensity_auto = [], []
+		all_clerr_intensity_cross, all_clerr_intensity_auto = [], []
+		all_rl_intensity_cross = []
 		all_cl_ciber_auto_inplace = []
 
 
@@ -323,8 +327,18 @@ def ciber_gal_cross(inst_list, ifield_list_use, catname, addstr=None, randstr=No
 		else:
 			masking_maglim = masking_maglim_list[idx]
 		
+		# Optional: override maglim used for mkk file paths (e.g. reuse J<16 mkk for J<15 data)
+		if mkk_maglim_list is not None:
+			mkk_maglim = mkk_maglim_list[idx]
+		else:
+			mkk_maglim = masking_maglim
+		
 		# gal_densities, noise_base_path = load_delta_g_maps(catname, inst, addstr)
 		gal_counts, noise_base_path = load_delta_g_maps(catname, inst, addstr)
+		intensity_counts = None
+		if intensity_map_addstr is not None:
+			print(f'Loading intensity recon maps with addstr={intensity_map_addstr}')
+			intensity_counts, _ = load_delta_g_maps(catname, inst, intensity_map_addstr)
 
 		if subtract_randoms:
 			rand_counts, _ = load_delta_g_maps(catname, inst, randstr)
@@ -334,7 +348,13 @@ def ciber_gal_cross(inst_list, ifield_list_use, catname, addstr=None, randstr=No
 		else:
 			mask_tail = 'maglim_'+bandstr+'_Vega_'+str(masking_maglim)+'_111323_ukdebias'
 
+		# mkk_mask_tail uses mkk_maglim instead of masking_maglim
+		mkk_mask_tail = 'maglim_'+bandstr+'_Vega_'+str(mkk_maglim)+'_111323_ukdebias'
+
 		print('Loading from mask tail = ', mask_tail)
+		if mkk_maglim != masking_maglim:
+			print(f'  (using mkk_maglim={mkk_maglim} instead of masking_maglim={masking_maglim})')
+			print('Loading mkk from tail = ', mkk_mask_tail)
 
 		dc_template = cbps.load_dark_current_template(inst, verbose=True, inplace=False)
 
@@ -396,7 +416,7 @@ def ciber_gal_cross(inst_list, ifield_list_use, catname, addstr=None, randstr=No
 			
 			if fc_sub:
 				mkk_type = 'quadoff_grad_fcsub_order'+str(fc_sub_n_terms)+'_estimate'
-				Mkk = fits.open(config.ciber_basepath+'data/fluctuation_data/TM'+str(inst)+'/mkk/'+mask_tail+'/mkk_'+mkk_type+'_ifield'+str(ifield)+'_observed_'+mask_tail+'.fits')['Mkk_'+str(ifield)].data 
+				Mkk = fits.open(config.ciber_basepath+'data/fluctuation_data/TM'+str(inst)+'/mkk/'+mkk_mask_tail+'/mkk_'+mkk_type+'_ifield'+str(ifield)+'_observed_'+mkk_mask_tail+'.fits')['Mkk_'+str(ifield)].data 
 				truncated_mkk_matrix, inv_Mkk_truncated = truncate_invert_mkkmat(Mkk)
 
 			else:
@@ -405,7 +425,7 @@ def ciber_gal_cross(inst_list, ifield_list_use, catname, addstr=None, randstr=No
 				else:
 					mkk_type = 'maskonly'
 
-				mkkonly_savepath = config.ciber_basepath+'data/fluctuation_data/TM'+str(inst)+'/mkk/'+mask_tail+'/mkk_'+mkk_type+'_estimate_ifield'+str(ifield)+'_observed_'+mask_tail+'.fits'
+				mkkonly_savepath = config.ciber_basepath+'data/fluctuation_data/TM'+str(inst)+'/mkk/'+mkk_mask_tail+'/mkk_'+mkk_type+'_estimate_ifield'+str(ifield)+'_observed_'+mkk_mask_tail+'.fits'
 				
 				# mkk for CIBER + HSC mask
 				# if catname=='HSC':
@@ -441,7 +461,7 @@ def ciber_gal_cross(inst_list, ifield_list_use, catname, addstr=None, randstr=No
 
 				print('scale is ', scale)
 
-				plot_map(scale*rand_map, figsize=(6, 6), title='alpha*rand_map')
+				# plot_map(scale*rand_map, figsize=(6, 6), title='alpha*rand_map')
 
 				# Subtract scaled randoms from galaxy counts
 
@@ -477,8 +497,21 @@ def ciber_gal_cross(inst_list, ifield_list_use, catname, addstr=None, randstr=No
 			masked_gal_map -= filter_comp
 			masked_gal_map *= masks[fieldidx]
 
+			masked_intensity_map = None
+			if intensity_counts is not None:
+				intensity_map = intensity_counts['ifield'+str(ifield)].data.transpose().astype(float)
+				masked_intensity_map = intensity_map*masks[fieldidx]
+				if np.sum(masks[fieldidx] != 0) > 0:
+					masked_intensity_map[masks[fieldidx] != 0] -= np.mean(masked_intensity_map[masks[fieldidx] != 0])
+
+				# theta_I, filter_comp_I = apply_filter_to_map_precomp(masked_intensity_map, dot1, X, mask_rav=mask_rav)
+				# masked_intensity_map -= filter_comp_I
+				# masked_intensity_map *= masks[fieldidx]
+
 			if plot:
 				plot_map(gaussian_filter(masked_gal_map*masks[fieldidx], 1), figsize=(6,6), title='gal after filtering')
+				if masked_intensity_map is not None:
+					plot_map(gaussian_filter(masked_intensity_map*masks[fieldidx], 1), figsize=(6,6), title='intensity recon after filtering')
 
 			masked_ciber_map = processed_ciber_maps[fieldidx]*masks[fieldidx]
 			masked_ciber_map[masks[fieldidx]!= 0] -= np.mean(masked_ciber_map[masks[fieldidx]!= 0])
@@ -504,6 +537,15 @@ def ciber_gal_cross(inst_list, ifield_list_use, catname, addstr=None, randstr=No
 																			 theta_masks=theta_masks if compute_cl_theta else None, \
 																			 n_rad_bins=n_rad_bins, theta0=theta0, rad_offset=rad_offset, \
 																			 ell_min_wedge=ell_min_wedge)
+				all_nl1ds_intensity = None
+				if masked_intensity_map is not None:
+					_, _, all_nl1ds_intensity = estimate_ciber_noise_cross_gal(cbps, inst, ifield, catname, masked_intensity_map, masks[fieldidx], \
+																	 include_ff_errors=include_ff_errors, add_str=addstr+'_intensity_recon' if addstr is not None else 'intensity_recon', plot=False, \
+																	 nsims=nsims, n_split=n_split, observed_run_name=observed_run_name, \
+																	 compute_cl_theta=compute_cl_theta, cl_theta_cut=cl_theta_cut, \
+																	 theta_masks=theta_masks if compute_cl_theta else None, \
+																	 n_rad_bins=n_rad_bins, theta0=theta0, rad_offset=rad_offset, \
+																	 ell_min_wedge=ell_min_wedge)
 			else:
 				nl_save_fpath = noise_base_path+'nl1ds_TM'+str(inst)+'_ifield'+str(ifield)+'_ciber_noise'
 				if addstr is not None:
@@ -511,6 +553,7 @@ def ciber_gal_cross(inst_list, ifield_list_use, catname, addstr=None, randstr=No
 
 				nl_save_fpath += '.npz'
 				all_nl1ds = np.load(nl_save_fpath)['all_nl1ds_cross_gal']
+				all_nl1ds_intensity = None
 				
 			if pscb_dict['compute_cl_theta'] and pscb_dict['cut_cl_theta']:
 				weights = np.ones_like(masked_ciber_map)
@@ -521,13 +564,22 @@ def ciber_gal_cross(inst_list, ifield_list_use, catname, addstr=None, randstr=No
 
 			lb, clproc, clerr_raw = get_power_spec(masked_ciber_map, map_b=masked_gal_map, lbinedges=cbps.Mkk_obj.binl, lbins=cbps.Mkk_obj.midbin_ell, weights=weights)
 			lb, clproc_gal, clerr_raw_gal = get_power_spec(masked_gal_map, lbinedges=cbps.Mkk_obj.binl, lbins=cbps.Mkk_obj.midbin_ell, weights=weights)
+			if masked_intensity_map is not None:
+				lb, clproc_intensity_cross, clerr_raw_intensity_cross = get_power_spec(masked_ciber_map, map_b=masked_intensity_map, lbinedges=cbps.Mkk_obj.binl, lbins=cbps.Mkk_obj.midbin_ell, weights=weights)
+				lb, clproc_intensity_auto, clerr_raw_intensity_auto = get_power_spec(masked_intensity_map, lbinedges=cbps.Mkk_obj.binl, lbins=cbps.Mkk_obj.midbin_ell, weights=weights)
 
 			if fc_sub and fc_sub_n_terms==2:
 				clproc[2:] = np.dot(inv_Mkk_truncated.transpose(), clproc[2:])
 				clproc_gal[2:] = np.dot(inv_Mkk_truncated.transpose(), clproc_gal[2:])
+				if masked_intensity_map is not None:
+					clproc_intensity_cross[2:] = np.dot(inv_Mkk_truncated.transpose(), clproc_intensity_cross[2:])
+					clproc_intensity_auto[2:] = np.dot(inv_Mkk_truncated.transpose(), clproc_intensity_auto[2:])
 			else:
 				clproc = np.dot(inv_Mkk.transpose(), clproc)
 				clproc_gal = np.dot(inv_Mkk.transpose(), clproc_gal)
+				if masked_intensity_map is not None:
+					clproc_intensity_cross = np.dot(inv_Mkk.transpose(), clproc_intensity_cross)
+					clproc_intensity_auto = np.dot(inv_Mkk.transpose(), clproc_intensity_auto)
 
 			
 			if apply_pixel_corr:
@@ -536,24 +588,35 @@ def ciber_gal_cross(inst_list, ifield_list_use, catname, addstr=None, randstr=No
 					pix_res_arcsec *= gal_downgrade_fac
 				wp_ell = get_pixel_window_function(lb, pix_res_arcsec)
 
-				plt.figure()
-				plt.plot(lb, wp_ell)
-				plt.yscale('log')
-				plt.xscale('log')
-				plt.xlabel('$\\ell$', fontsize=14)
-				plt.ylabel('$W_p(\\ell)', fontsize=14)
-				plt.grid(alpha=0.3)
-				plt.show()
+				# plt.figure()
+				# plt.plot(lb, wp_ell)
+				# plt.yscale('log')
+				# plt.xscale('log')
+				# plt.xlabel('$\\ell$', fontsize=14)
+				# plt.ylabel('$W_p(\\ell)', fontsize=14)
+				# plt.grid(alpha=0.3)
+				# plt.show()
 
 				clproc /= np.sqrt(wp_ell)
 				clproc_gal /= wp_ell
+				# if masked_intensity_map is not None:
+				# 	clproc_intensity_cross /= np.sqrt(wp_ell)
+				# 	clproc_intensity_auto /= wp_ell
 
 
 			clproc /= B_ells[fieldidx]
 			clerr_raw /= B_ells[fieldidx]
+			if masked_intensity_map is not None:
+				clproc_intensity_cross /= B_ells[fieldidx]
+				clerr_raw_intensity_cross /= B_ells[fieldidx]
 
 			std_nl1ds = np.std(all_nl1ds, axis=0)
 			std_nl1ds /= B_ells[fieldidx]
+			if all_nl1ds_intensity is not None:
+				std_nl1ds_intensity = np.std(all_nl1ds_intensity, axis=0)
+				std_nl1ds_intensity /= B_ells[fieldidx]
+			else:
+				std_nl1ds_intensity = std_nl1ds
 
 			# --- In-situ CIBER auto-spectrum with noise subtraction ---
 			# Uses the same masked_ciber_map, Mkk, and beam as the cross-spectrum.
@@ -587,6 +650,21 @@ def ciber_gal_cross(inst_list, ifield_list_use, catname, addstr=None, randstr=No
 			all_cl_ciber_auto_inplace.append(cl_ciber_auto_inplace)
 			# ----------------------------------------------------------
 
+			if masked_intensity_map is not None:
+				all_cl_intensity_cross.append(clproc_intensity_cross)
+				all_clerr_intensity_cross.append(std_nl1ds_intensity)
+				all_cl_intensity_auto.append(clproc_intensity_auto)
+				all_clerr_intensity_auto.append(clerr_raw_intensity_auto)
+
+				if cl_ciber_auto_inplace is not None:
+					denom = np.sqrt(np.abs(clproc_intensity_auto*cl_ciber_auto_inplace))
+					rl_intensity = np.full_like(clproc_intensity_cross, np.nan)
+					valid = denom > 0
+					rl_intensity[valid] = clproc_intensity_cross[valid]/denom[valid]
+				else:
+					rl_intensity = np.full_like(clproc_intensity_cross, np.nan)
+				all_rl_intensity_cross.append(rl_intensity)
+
 			all_cl_gal.append(clproc_gal)
 			all_clerr_gal.append(clerr_raw_gal)
 
@@ -595,6 +673,18 @@ def ciber_gal_cross(inst_list, ifield_list_use, catname, addstr=None, randstr=No
 	
 		all_cl_cross, all_clerr_cross = np.array(all_cl_cross), np.array(all_clerr_cross)
 		all_cl_gal, all_clerr_gal = np.array(all_cl_gal), np.array(all_clerr_gal)
+		if len(all_cl_intensity_cross) > 0:
+			all_cl_intensity_cross = np.array(all_cl_intensity_cross)
+			all_clerr_intensity_cross = np.array(all_clerr_intensity_cross)
+			all_cl_intensity_auto = np.array(all_cl_intensity_auto)
+			all_clerr_intensity_auto = np.array(all_clerr_intensity_auto)
+			all_rl_intensity_cross = np.array(all_rl_intensity_cross)
+		else:
+			all_cl_intensity_cross = None
+			all_clerr_intensity_cross = None
+			all_cl_intensity_auto = None
+			all_clerr_intensity_auto = None
+			all_rl_intensity_cross = None
 		# Convert list (entries may be None if noisemodl not provided) to object array
 		all_cl_ciber_auto_inplace_arr = np.array(all_cl_ciber_auto_inplace, dtype=object) \
 			if any(x is None for x in all_cl_ciber_auto_inplace) \
@@ -616,11 +706,19 @@ def ciber_gal_cross(inst_list, ifield_list_use, catname, addstr=None, randstr=No
 			if tailstr_save is not None:
 				addstr_save += '_'+tailstr_save
 
+			if intensity_map_addstr is not None:
+				addstr_save += '_'+intensity_map_addstr
+
 			ps_save_fpath = save_ciber_gal_ps(inst, ifield_list_use, catname, lb, all_cl_gal, all_clerr_gal, all_cl_cross, all_clerr_cross,
                                            masking_maglim=masking_maglim,
                                            addstr=addstr_save,
                                            scaling_factor=scale if subtract_randoms else None,
-                                           all_cl_ciber_auto_inplace=all_cl_ciber_auto_inplace_arr)
+										   all_cl_ciber_auto_inplace=all_cl_ciber_auto_inplace_arr,
+										   all_cl_intensity_cross=all_cl_intensity_cross,
+										   all_clerr_intensity_cross=all_clerr_intensity_cross,
+										   all_cl_intensity_auto=all_cl_intensity_auto,
+										   all_clerr_intensity_auto=all_clerr_intensity_auto,
+										   all_rl_intensity_cross=all_rl_intensity_cross)
 		
 			all_ps_save_fpath.append(ps_save_fpath)
 			all_addstr_use.append(addstr_save)

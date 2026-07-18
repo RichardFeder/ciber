@@ -1637,7 +1637,10 @@ def save_mock_items_to_npz(filepath, catalog=None, srcmap_full=None, srcmap_nb=N
 def save_ciber_gal_ps(inst, ifield_list_use, catname,\
                       lb, all_cl_gal, all_clerr_gal, all_cl_cross, all_clerr_cross, \
                       masking_maglim=None, addstr=None, scaling_factor=None,
-                      all_cl_ciber_auto_inplace=None):
+					  all_cl_ciber_auto_inplace=None,
+					  all_cl_intensity_cross=None, all_clerr_intensity_cross=None,
+					  all_cl_intensity_auto=None, all_clerr_intensity_auto=None,
+					  all_rl_intensity_cross=None):
 
 	ps_basepath = config.ciber_basepath+'data/input_recovered_ps/ciber_gal_cross/'+catname+'/TM'+str(inst)+'/'
 
@@ -1653,6 +1656,16 @@ def save_ciber_gal_ps(inst, ifield_list_use, catname,\
 	                 scaling_factor=scaling_factor)
 	if all_cl_ciber_auto_inplace is not None:
 		save_dict['all_cl_ciber_auto_inplace'] = all_cl_ciber_auto_inplace
+	if all_cl_intensity_cross is not None:
+		save_dict['all_cl_intensity_cross'] = all_cl_intensity_cross
+	if all_clerr_intensity_cross is not None:
+		save_dict['all_clerr_intensity_cross'] = all_clerr_intensity_cross
+	if all_cl_intensity_auto is not None:
+		save_dict['all_cl_intensity_auto'] = all_cl_intensity_auto
+	if all_clerr_intensity_auto is not None:
+		save_dict['all_clerr_intensity_auto'] = all_clerr_intensity_auto
+	if all_rl_intensity_cross is not None:
+		save_dict['all_rl_intensity_cross'] = all_rl_intensity_cross
 
 	np.savez(ps_save_fpath+'.npz', **save_dict)
 
