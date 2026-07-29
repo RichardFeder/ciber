@@ -84,6 +84,117 @@ def _load_ciber_auto_file(bandstr):
 	)
 
 
+def load_onehalo_spectrum(onehalo_output_dir, fsat_model, bandstr_select, inst,
+                               mag_min, mag_cut, z0, mode='Ig', generate_type='bulk',
+                               logM_min=None):
+	"""
+	Load one-halo predictions for a given configuration and mode.
+
+	Parameters
+	----------
+	onehalo_output_dir : str
+		Directory where onehalo_predict results are saved
+	fsat_model : str
+		Satellite fraction model ('single', 'double', etc.)
+	bandstr_select : str
+		Band selection ('hsc_i', 'sdss_z', etc.)
+	inst : int
+		Instrument (1 or 2)
+	mag_min : float
+		Minimum magnitude
+	mag_cut : float
+		Maximum magnitude
+	z0 : float
+		Minimum redshift
+	mode : str, optional
+		One-halo spectrum mode: 'Ig' (cross, default), 'gg' (galaxy auto), 'II' (intensity auto)
+	generate_type : str, optional
+		Result type: 'bulk' (default) or 'fine'
+	logM_min : float, optional
+		Minimum halo mass in log10(M/Msun) used when generating the result.
+		Must match the run configuration whenever it differs from the
+		default of 10.0, since it's encoded in the filename.
+
+	Returns
+	-------
+	dict or None
+		Dictionary with keys 'ell_arr' and 'dl_spectrum' (total spectrum),
+		or None if file not found
+	"""
+	import os
+	from ciber.theory.onehalo_predict import generate_config_suffix, generate_onehalo_filename
+
+	# Generate suffix matching onehalo_predict convention
+	config_suffix = generate_config_suffix(
+		fsat_model, bandstr_select, inst,
+		mag_min=mag_min, mag_cut=mag_cut, z0=z0, logM_min=logM_min
+	)
+
+	filename = generate_onehalo_filename(generate_type, config_suffix, mode=mode)
+	filepath = os.path.join(onehalo_output_dir, filename)
+
+	if not os.path.exists(filepath):
+		return None
+
+	print('Loading from ', filepath)
+	# Load the .npz file
+	npz_data = np.load(filepath, allow_pickle=True)
+
+	# Extract ell and predictions
+	ell_arr = npz_data['ell_arr']
+	all_cross_terms = npz_data['all_cross_terms_plot']  # shape (1, 4, n_ell) for bulk
+
+	# Sum over appropriate pair terms based on mode to get total spectrum
+	# Pair term indices: 0=cen×sat, 1=sat×cen, 2=sat×sat, 3=cen×cen
+	# Ig mode: term2 + term3 (indices 1, 2)
+	# gg mode: term1 + term2 + term3 (indices 0, 1, 2)
+	# II mode: term1 + term2 + term3 + term4 (indices 0, 1, 2, 3)
+	if mode == 'Ig':
+		term_indices = [0, 1, 2]
+	elif mode == 'gg':
+		term_indices = [0, 1, 2]
+	elif mode == 'II':
+		term_indices = [0, 1, 2, 3]
+	else:
+		raise ValueError(f"Unknown mode '{mode}'")
+
+	if all_cross_terms.ndim == 3 and all_cross_terms.shape[0] == 1:
+		# Bulk: shape (1, 4, n_ell)
+		dl_spectrum = np.sum(all_cross_terms[0, term_indices, :], axis=0)
+	else:
+		# Fine: shape (n_zbins, 4, n_ell)
+		print('all_cross terms has shape', all_cross_terms.shape)
+		dl_spectrum = np.sum(all_cross_terms[term_indices, :, :], axis=0)  # shape (n_zbins, n_ell)
+		# return None
+		print('dl spectrum has shape', dl_spectrum.shape)
+
+	return {
+		'ell_arr': ell_arr,
+		'dl_spectrum': dl_spectrum,
+		'all_cross_terms': all_cross_terms,
+	}
+
+
+def load_onehalo_cross(onehalo_output_dir, fsat_model, bandstr_select, inst,
+                            mag_min, mag_cut, z0, generate_type='bulk', logM_min=None):
+	"""
+	Load one-halo cross predictions (Ig mode) for a given configuration.
+	Wrapper for backward compatibility.
+	"""
+	result = load_onehalo_spectrum(
+		onehalo_output_dir, fsat_model, bandstr_select, inst,
+		mag_min, mag_cut, z0, mode='Ig', generate_type=generate_type, logM_min=logM_min
+	)
+	if result is None:
+		return None
+	return {
+		'ell_arr': result['ell_arr'],
+		'dl_cross_total': result['dl_spectrum'],
+		'all_cross_terms': result['all_cross_terms'],
+	}
+
+
+
 def plot_mean_chi2_per_bandpower(chi2_diag, inst_list=[1, 2], 
                                  figsize=(6, 5), save_path=None,
                                  ylim_chi2=None, ylim_resid=None, catname='DESILS'):
@@ -1833,7 +1944,6 @@ def plot_gal_and_ciber_auto(all_acdat, pred_fpaths=None,
 							colors=['b', 'r'],
 							xlim=[250, 1.1e5],
 							ylims_gal=[[8e-4, 5e1], [8e-3, 2e2]],
-							ylim_ciber=[1, 1e4],
 							gal_labels=None,
 							gal_labels_filenames=None,
 							band_labels=None,
@@ -1845,10 +1955,11 @@ def plot_gal_and_ciber_auto(all_acdat, pred_fpaths=None,
 							tl_pix_template='data/fluctuation_data/transfer_function/tl_clx_pix_TM{inst}_ifield{ifield}.npz',
 							bias_values=None,
 							apply_satellite_correction=True,
-							satellite_surveys=None,
 							nl_corrections=False,
-							pred_model_mode='raw_interp',
-							show_linear_pred=True, z_eff_values=None):
+							show_linear_pred=True, z_eff_values=None, 
+							include_1h_pred=True,
+							onehalo_output_dir=None,
+							onehalo_fsat_model='double'):
 
 	n_gal = len(all_acdat)  # number of galaxy catalogs
 	if gal_labels is None:
@@ -1866,9 +1977,6 @@ def plot_gal_and_ciber_auto(all_acdat, pred_fpaths=None,
 	else:
 		gs = GridSpec(2, n_gal, wspace=0.0, hspace=0)
 
-	# Create dummy NL correction (unity ratio) for linear overlay if requested
-	nlc_linear = None
-
 	if show_linear_pred:
 		from ciber.theory.cross_ps_parametric_model import _compute_linear_2h_templates_per_zbin
 		zbinedges = np.array([0.0, 1.0])
@@ -1877,12 +1985,6 @@ def plot_gal_and_ciber_auto(all_acdat, pred_fpaths=None,
 		dl_2h_lin /= np.max(dl_2h_lin[lb_lin > 304])
 		print('dl 2h lin per zbin has shape', dl_2h_lin.shape)
 	
-
-	# if show_linear_pred and nl_corrections:
-	# 	class DummyNLCorrection:
-	# 		def get_ratio(self, ell_values):
-	# 			return np.ones_like(ell_values)
-	# 	nlc_linear = DummyNLCorrection()
 
 	# Left block: galaxy autos and crosses
 	ax_gal = np.empty((2, n_gal), dtype=object)
@@ -1897,9 +1999,12 @@ def plot_gal_and_ciber_auto(all_acdat, pred_fpaths=None,
 	# Loop over galaxy catalogs
 	
 	intensity_auto_preds = []
+	all_snr_lt2000 = np.zeros((2, len(all_acdat[0])))  # Initialize the array before the loop over galaxy catalogs	
 	
+	# loop over catalogs
 	for col, cat_acdats in enumerate(all_acdat):
 			
+		# loop over bands
 		for idx_band, acdat in enumerate(cat_acdats):
 
 			if pred_fpaths is not None:
@@ -1915,12 +2020,10 @@ def plot_gal_and_ciber_auto(all_acdat, pred_fpaths=None,
 			if tl_pix_correct:
 				tl_pix_path = tl_pix_template.format(inst=idx_band+1, ifield=ifield_use)
 				tl_pix = np.load(tl_pix_path)['tl_clx_pix']
-			
 			else:
 				tl_pix = np.ones_like(lb_pred)
 
 			cross /= tl_pix
-
 			acdat.fieldav_cl_cross /= tl_pix
 			acdat.fieldav_clerr_cross /= tl_pix
 			
@@ -1940,6 +2043,48 @@ def plot_gal_and_ciber_auto(all_acdat, pred_fpaths=None,
 			np.savez(fpath_cl_gal, lb=lb_auto, cl=acdat.fieldav_cl_gal, clerr=acdat.fieldav_clerr_gal,
 				inst=idx_band+1, gal_label=gal_labels_filenames[col])
 
+			lmax = 4000
+			snr_lt_2000 = np.sum((acdat.fieldav_cl_cross[acdat.lb < lmax] / acdat.fieldav_clerr_cross[acdat.lb < lmax])**2)**0.5
+			print(f"Catalog {gal_labels[col]}, band {band_labels[idx_band]}: SNR for ell < {lmax} = {snr_lt_2000:.2f}")
+			
+			
+			all_snr_lt2000[col, idx_band] = snr_lt_2000
+			# Load one-halo predictions once for both rows (before galaxy auto section)
+			oh_data_Ig = None
+			oh_data_gg = None
+			oh_data_II = None
+			ell_1h = None
+
+			if include_1h_pred and onehalo_output_dir is not None:
+				# Determine bandstr from gal_labels_filenames
+				if col == 0:  # LS/DESI
+					bandstr_select = 'sdss_z'
+				elif col == 1:  # HSC
+					bandstr_select = 'hsc_i'
+				else:
+					bandstr_select = None
+
+				if bandstr_select is not None:
+					# Determine mag_cut from bandstr
+					mag_cut_map = {'sdss_z': 22.0, 'hsc_i': 25.0}
+					mag_cut = mag_cut_map.get(bandstr_select)
+
+					if mag_cut is not None:
+						# Load Ig cross, gg auto, and II intensity auto one-halo predictions
+						oh_data_Ig = load_onehalo_spectrum(
+							onehalo_output_dir, onehalo_fsat_model, bandstr_select,
+							inst=idx_band+1, mag_min=18.0, mag_cut=mag_cut, z0=0.05, mode='Ig',
+							generate_type='bulk'
+						)
+						oh_data_gg = load_onehalo_spectrum(
+							onehalo_output_dir, onehalo_fsat_model, bandstr_select,
+							inst=idx_band+1, mag_min=18.0, mag_cut=mag_cut, z0=0.05, mode='gg',
+							generate_type='bulk'
+						)
+
+						if oh_data_Ig is not None:
+							ell_1h = oh_data_Ig['ell_arr']
+
 			if idx_band==0:
 				# Row 0: galaxy auto
 				ax_gal[0, col].errorbar(
@@ -1956,7 +2101,7 @@ def plot_gal_and_ciber_auto(all_acdat, pred_fpaths=None,
 					color='k', fmt='o', capsize=capsize, markersize=markersize,
 					mfc='white', zorder=15
 				)
-				
+
 			if pred_fpaths is not None:
 
 				b_g = bias_values[col] if (bias_values is not None and col < len(bias_values)) else None
@@ -1966,37 +2111,16 @@ def plot_gal_and_ciber_auto(all_acdat, pred_fpaths=None,
 					# cross: rescale by b_g
 					ell_s, dl_cross_lin = smooth_mock_cross_with_bias(
 						pred_fpaths[col][idx_band], z_center=0.5, b_g=b_g, ell_eval=ell_eval)
-					
+
 					pf_s = ell_s * (ell_s + 1.0) / (2.0 * np.pi)
 					# Apply NL correction if enabled
 					dl_cross_s = dl_cross_lin.copy()
-					# if nl_corrections:
-					# 	try:
-					# 		from ciber.cross_correlation.nl_corrections import NonlinearCorrectionFactor
-					# 		nlc = NonlinearCorrectionFactor()
-					# 		nl_ratio = nlc.get_ratio(ell_s)
-					# 		# Only apply NL ratio to clustering (two-halo); shot noise stays constant
-					# 		# Extract shot amplitude and two-halo amplitude
-					# 		pred = np.load(pred_fpaths[col][idx_band])
-					# 		lb_pred = np.asarray(pred['lb'], dtype=float)
-					# 		cl_pred = np.asarray(pred['cross'], dtype=float)
-					# 		pf_pred = lb_pred * (lb_pred + 1.0) / (2.0 * np.pi)
-					# 		dl_pred = pf_pred * cl_pred
-					# 		shot_mask = (lb_pred >= 30000.) & (lb_pred <= 80000.) & np.isfinite(dl_pred)
-					# 		pf_shot = lb_pred[shot_mask] * (lb_pred[shot_mask] + 1.0) / (2.0 * np.pi)
-					# 		A_shot = float(np.nanmean(dl_pred[shot_mask] / pf_shot)) if shot_mask.any() else 0.0
-					# 		pf_eval = ell_s * (ell_s + 1.0) / (2.0 * np.pi)
-					# 		# dl_cross_lin = b_g * A_2h + A_shot * pf_eval
-					# 		# extract A_2h: A_2h = (dl_cross_lin - A_shot * pf_eval) / b_g
-					# 		A_2h = (dl_cross_lin - A_shot * pf_eval) / b_g
-					# 		dl_cross_s = b_g * A_2h * nl_ratio + A_shot * pf_eval
-					# 	except Exception:
-					# 		pass  # Fall back to no NL correction
-					
-					dl_cross_s /= np.interp(ell_s, np.arange(len(tl_pix)), tl_pix)
-					ax_gal[1, col].plot(ell_s, dl_cross_s, color=colors[idx_band],
-					                    linestyle='solid', alpha=0.5, linewidth=3)
-					
+
+					dl_cross_s /= np.interp(ell_s, lb_pred, tl_pix)
+					if not include_1h_pred:
+						ax_gal[1, col].plot(ell_s, dl_cross_s, color=colors[idx_band],
+											linestyle='solid', alpha=0.4, linewidth=2.5)
+
 					#normalize dl_2h_lin_per_zbin to match the amplitude of D_ell from intensity auto preds at low ell (e.g., ell ~ 1000)
 					low_ell_mask = (ell_s >= 300) & (ell_s <= 1000)
 					c_ell_sn = dl_cross_s[-2] / pf_s[-2]  # shot noise amplitude from high ell
@@ -2011,13 +2135,52 @@ def plot_gal_and_ciber_auto(all_acdat, pred_fpaths=None,
 						mean_dl_auto_pred = np.mean(dl_cross_s[low_ell_mask])
 						if mean_dl_auto_pred > 0:
 							ax_gal[1, col].plot(lb_lin, mean_dl_auto_pred * dl_2h_lin, color=colors[idx_band], alpha=0.7,
-								label=f'Linear clustering', linewidth=2.0, linestyle='dashdot')
+								label=f'Two-halo clustering', linewidth=2.0, linestyle='dashdot')
+
+					# Plot one-halo predictions if available
+					if include_1h_pred and oh_data_Ig is not None and ell_1h is not None:
+						dl_1h_Ig = oh_data_Ig['dl_spectrum']
+
+						# Interpolate Ig 1h to ell_s grid for combination
+						dl_1h_Ig_interp = np.interp(ell_s, ell_1h, dl_1h_Ig)
+
+						# Plot isolated Ig 1h component
+						ax_gal[1, col].plot(ell_1h, dl_1h_Ig, color=colors[idx_band],
+							linestyle='dotted', alpha=0.6, linewidth=2.5,
+							label=f'One-halo clustering')
+
+						# Plot combined Ig 1h + cross
+						dl_cross_1h_combined = dl_cross_s + dl_1h_Ig_interp
+
+						sigma_arcsec = 2.1
+
+
+						# Convert arcsec to radians for dimensionless ℓσ
+						sigma_rad = sigma_arcsec * (1.0 / 3600.0) * (np.pi / 180.0)
+						damp_fac = np.exp(-0.5 * (sigma_rad * ell_s)**2)
+
+						ax_gal[1, col].plot(ell_s, dl_cross_1h_combined*damp_fac,
+							color=colors[idx_band], linestyle='solid',
+							alpha=0.5, linewidth=3.0, zorder=4,
+							label=f'IGL prediction (2h+1h+Poiss.)')
+
+
+						model_match_lb_data = np.interp(acdat.lb, ell_s, dl_cross_1h_combined)
+						dlerr_cross = acdat.fieldav_clerr_cross * acdat.pf
+
+						print('')
+						# Compute tension between data and model for ell < 2000
+						sigma_tension_data_model = np.sqrt(np.sum(((pf * acdat.fieldav_cl_cross)[acdat.lb < lmax] - model_match_lb_data[acdat.lb < lmax])**2 / dlerr_cross[acdat.lb < lmax]**2))
+						print(f"Catalog {gal_labels[col]}, band {band_labels[idx_band]}: Tension between data and model for ell < {lmax} = {sigma_tension_data_model:.2f} sigma")
 
 
 					# plot galaxy shot noise level as ell^2
 
-					ax_gal[1, col].plot(ell_s, dl_shot, color=colors[idx_band], alpha=0.5, linestyle='dashed', linewidth=1.0)
-					
+					ax_gal[1, col].plot(ell_s, dl_shot, color=colors[idx_band], alpha=0.7, linestyle='solid', linewidth=1.0)
+						# Also plot gg auto 1h if available (for reference/debugging)
+					if oh_data_gg is not None:
+						dl_1h_gg = oh_data_gg['dl_spectrum']
+			
 
 					hsc_color = "#E45DA8"
 					colors_iglpred = ['C2', hsc_color]
@@ -2036,24 +2199,37 @@ def plot_gal_and_ciber_auto(all_acdat, pred_fpaths=None,
 						pf_e = ell_eval * (ell_eval + 1.0) / (2.0 * np.pi)
 						dl_auto_lin = b_g**2 * A_2h + A_shot * pf_e
 						dl_auto_s = dl_auto_lin.copy()
-						
+
 						lb_auto = getattr(acdat, 'lb_gal_auto', lb_p)
+
+						# Add one-halo gg auto prediction if available
+						if include_1h_pred and oh_data_gg is not None and ell_1h is not None:
+							dl_1h_gg = oh_data_gg['dl_spectrum']
+							dl_1h_gg_interp = np.interp(ell_eval, ell_1h, dl_1h_gg)
+							# Combine 2h + 1h for galaxy auto
+							dl_auto_s = dl_auto_lin + dl_1h_gg_interp
+
 						ax_gal[0, col].plot(ell_eval, dl_auto_s,
 						                    alpha=0.7, linewidth=3, color=colors_iglpred[col], zorder=5)
-						
+
 						#normalize dl_2h_lin_per_zbin to match the amplitude of D_ell from intensity auto preds at low ell (e.g., ell ~ 1000)
 						low_ell_mask = (ell_eval >= 300) & (ell_eval <= 1000)
 						if low_ell_mask.any():
 							mean_dl_auto_pred = np.mean(dl_auto_s[low_ell_mask])
 							if mean_dl_auto_pred > 0:
 								ax_gal[0, col].plot(lb_lin, mean_dl_auto_pred * dl_2h_lin, color=colors_iglpred[col], alpha=0.7,
-									label=f'Linear clustering', linewidth=2.0, linestyle='dashdot', zorder=2)
+									label=f'Two-halo clustering', linewidth=2.0, linestyle='dashdot', zorder=2)
 
 						# plot galaxy shot noise level as ell^2
-						c_ell_sn = dl_auto_s[-1] / pf_e[-1]  # shot noise amplitude from high ell
+						# Extract shot noise from 2h-only prediction (not combined with 1h)
+						c_ell_sn = dl_auto_lin[-1] / pf_e[-1]  # shot noise amplitude from high ell
 						dl_shot = c_ell_sn * pf_e
-						ax_gal[0, col].plot(ell_eval, dl_shot, color=colors_iglpred[col], alpha=0.7, linestyle='dashed', linewidth=1.0, zorder=1)
+						ax_gal[0, col].plot(ell_eval, dl_shot, color=colors_iglpred[col], alpha=0.7, linestyle='solid', linewidth=1.0, zorder=1)
 						
+						ax_gal[0, col].plot(ell_1h, dl_1h_gg, color=colors_iglpred[col],
+						linestyle='dotted', alpha=0.7, linewidth=2.0,
+							label=f'One-halo clustering')		
+
 				else:
 					if idx_band == 0:
 						ax_gal[0, col].plot(lb_pred, pf_pred*gal_auto, color='grey',
@@ -2104,140 +2280,116 @@ def plot_gal_and_ciber_auto(all_acdat, pred_fpaths=None,
 	for col in range(n_gal):
 		ax_gal[1, col].set_xlabel(r'$\ell$', fontsize=lab_fs)
 
-	if include_ciber_auto:
-		# Right block: CIBER auto, spans both rows
-		gs_right = GridSpecFromSubplotSpec(2, 1, subplot_spec=gs[:, -1], hspace=0, wspace=0.0, height_ratios=[0.5, 0.5])
-		ax_ciber = fig.add_subplot(gs_right[1, 0])  # middle row => vertically centered
+	second_lines = ['$z_{\\rm AB}<22; z_{\\rm phot}<1$', '$18<i_{\\rm AB}<25; z_{\\rm phot}<1$']
+	third_lines = ['$b_g(z_{\\rm eff}='+str(z_eff_values[0])+')='+str(bias_values[0])+'$', '$b_g(z_{\\rm eff}='+str(z_eff_values[1])+')='+str(bias_values[1])+'$', 
+				'$b_g='+str(bias_values[0])+'$; $b_I=1$', '$b_g='+str(bias_values[1])+'$; $b_I=1$']
 
-		for idx_band, acdat in enumerate(all_acdat[0]):  # assuming all catalogs have same bands
-			pf, lb = acdat.pf, acdat.lb
-			ax_ciber.errorbar(
-				lb[startidx:endidx],
-				pf[startidx:endidx] * acdat.ciber_auto_cl,
-				yerr=pf[startidx:endidx] * acdat.ciber_auto_clerr,
-				fmt='o', color=colors[idx_band], capsize=capsize, markersize=markersize,
-				label=f"CIBER {band_labels[idx_band]}"
+	snr_lines = ['SNR$_{\\ell<2000}=$'+str(np.round(np.sum((all_acdat[0][0].fieldav_cl_cross[all_acdat[0][0].lb < 2000] / all_acdat[0][0].fieldav_clerr_cross[all_acdat[0][0].lb < 2000])**2)**0.5, 1))+'$',
+				'SNR$_{\\ell<2000}=$'+str(np.round(np.sum((all_acdat[1][0].fieldav_cl_cross[all_acdat[1][0].lb < 2000] / all_acdat[1][0].fieldav_clerr_cross[all_acdat[1][0].lb < 2000])**2)**0.5, 1))+'$']
+
+
+
+
+	if n_gal >= 2:
+		panel_labels = {
+			(0, 0): 'DESI-LS auto\n'+second_lines[0]+'\n'+third_lines[0],
+			(0, 1): 'HSC auto\n'+second_lines[1]+'\n'+third_lines[1],
+			(1, 0): 'CIBER x DESI-LS'+'\n'+third_lines[2],
+			(1, 1): 'CIBER x HSC'+'\n'+third_lines[3],
+		}
+		if n_gal >= 3:
+			panel_labels[(0, 2)] = 'WISE auto'
+			panel_labels[(1, 2)] = 'CIBER x WISE'
+
+		# first draw the base labels
+		for (row, col), txt in panel_labels.items():
+			ax_gal[row, col].text(
+				0.04, 0.93, txt,
+				transform=ax_gal[row, col].transAxes,
+				ha='left', va='top', fontsize=title_fs
 			)
 
-		if pred_fpaths is not None:
-
-			# print('dl_2h_lin has shape', dl_2h_lin.shape)
-			# print(dl_2h_lin)
-			for idx_band in range(len(cat_acdats)):
-				if idx_band==0:
-					pred_lab = 'IGL + ISL'
-					ax_ciber.plot(lb_pred, np.zeros_like(intensity_auto_preds[idx_band]), color='k', linestyle='dotted', alpha=pred_alpha, linewidth=1.5, \
-				label='IGL prediction')
-				ax_ciber.plot(lb_pred, pf_pred*intensity_auto_preds[idx_band], color=colors[idx_band], linestyle='dashdot', alpha=pred_alpha, \
-							label=pred_lab)
-
-				#normalize dl_2h_lin_per_zbin to match the amplitude of D_ell from intensity auto preds at low ell (e.g., ell ~ 1000)
-				low_ell_mask = (lb_pred >= 500) & (lb_pred <= 1000)
-				if low_ell_mask.any():
-					mean_dl_auto_pred = np.mean(pf_pred[low_ell_mask] * intensity_auto_preds[idx_band][low_ell_mask])
-					if mean_dl_auto_pred > 0:
-						ax_ciber.plot(lb_lin, mean_dl_auto_pred * dl_2h_lin, color=colors[idx_band], alpha=1.0,
-							label=f'Linear clustering', linewidth=1.2, linestyle='solid')
-
-		ax_ciber.set_xscale('log')
-		ax_ciber.set_yscale('log')
-		ax_ciber.set_xlim(xlim)
-		ax_ciber.set_ylim(ylim_ciber)
-		ax_ciber.set_ylabel(r'$D_\ell^{\rm II}$ [nW$^2$ m$^{-4}$ sr$^{-2}$]', fontsize=lab_fs)
-		ax_ciber.set_xlabel(r'$\ell$', fontsize=lab_fs)
-		ax_ciber.grid(alpha=0.3)
-		ax_ciber.legend(fontsize=legend_fs, bbox_to_anchor=[0.05, 1.5], loc=2)
-	else:
-		# For compact 2x2 omnibus (no CIBER auto panel), keep the key style legend
-		# visible at the top of the figure.
-
-		second_lines = ['$z_{\\rm AB}<22; z_{\\rm phot}<1$', '$18<i_{\\rm AB}<25; z_{\\rm phot}<1$']
-		third_lines = ['$b_g(z_{\\rm eff}='+str(z_eff_values[0])+')='+str(bias_values[0])+'$', '$b_g(z_{\\rm eff}='+str(z_eff_values[1])+')='+str(bias_values[1])+'$', 
-				 '$b_g='+str(bias_values[0])+'$; $b_I=1$', '$b_g='+str(bias_values[1])+'$; $b_I=1$']
-
-		if n_gal >= 2:
-			panel_labels = {
-				(0, 0): 'DESI-LS auto\n'+second_lines[0]+'\n'+third_lines[0],
-				(0, 1): 'HSC auto\n'+second_lines[1]+'\n'+third_lines[1],
-				(1, 0): 'CIBER x DESI-LS'+'\n'+third_lines[2],
-				(1, 1): 'CIBER x HSC'+'\n'+third_lines[3],
-			}
-			if n_gal >= 3:
-				panel_labels[(0, 2)] = 'WISE auto'
-				panel_labels[(1, 2)] = 'CIBER x WISE'
-			for (row, col), txt in panel_labels.items():
-				ax_gal[row, col].text(
-					0.04,
-					0.93,
-					txt,
-					transform=ax_gal[row, col].transAxes,
-					ha='left',
-					va='top',
+		# add per-band SNR lines below existing text in cross panels (row=1), colored by band
+		for col in range(min(n_gal, len(all_snr_lt2000))):
+			y0 = 0.75      # start below existing text block; tweak if needed
+			dy = 0.08      # vertical spacing between SNR lines
+			for idx_band, snr_val in enumerate(all_snr_lt2000[col]):
+				ax_gal[1, col].text(
+					0.04, y0 - idx_band*dy,
+					rf'SNR$_{{\ell<2000}}$ = {snr_val:.1f}',
+					transform=ax_gal[1, col].transAxes,
+					ha='left', va='top',
 					fontsize=title_fs,
+					color=colors[idx_band],   # blue/red etc by band index
 				)
 
-		legend_handles = [
-			ax_gal[0, 0].errorbar(
-				[1.0],
-				[1.0],
-				yerr=[0.2],
-				fmt='o',
-				color='k',
-				capsize=capsize,
-				markersize=markersize + 1,
-				linestyle='None',
-				label='Galaxy auto',
-			),
-			ax_gal[0, 0].errorbar(
-				[1.0],
-				[1.0],
-				yerr=[0.2],
-				fmt='o',
-				color=colors[0],
-				capsize=capsize,
-				markersize=markersize + 1,
-				linestyle='None',
-				label=f'CIBER {band_labels[0]}',
-			),
-			ax_gal[0, 0].errorbar(
-				[1.0],
-				[1.0],
-				yerr=[0.2],
-				fmt='o',
-				color=colors[1],
-				capsize=capsize,
-				markersize=markersize + 1,
-				linestyle='None',
-				label=f'CIBER {band_labels[1]}',
-			),
-		]
-		if pred_fpaths is not None:
-			legend_handles.append(
-				Line2D([0], [0], color='C2', linestyle='solid', linewidth=3, label='IGL prediction')
-			)
+	legend_handles = [
+		ax_gal[0, 0].errorbar(
+			[1.0],
+			[1.0],
+			yerr=[0.2],
+			fmt='o',
+			color='k',
+			capsize=capsize,
+			markersize=markersize + 1,
+			linestyle='None',
+			label='Galaxy auto',
+		),
+		ax_gal[0, 0].errorbar(
+			[1.0],
+			[1.0],
+			yerr=[0.2],
+			fmt='o',
+			color=colors[0],
+			capsize=capsize,
+			markersize=markersize + 1,
+			linestyle='None',
+			label=f'CIBER {band_labels[0]}',
+		),
+		ax_gal[0, 0].errorbar(
+			[1.0],
+			[1.0],
+			yerr=[0.2],
+			fmt='o',
+			color=colors[1],
+			capsize=capsize,
+			markersize=markersize + 1,
+			linestyle='None',
+			label=f'CIBER {band_labels[1]}',
+		),
+	]
+	if pred_fpaths is not None:
 
-			legend_handles.append(
-				Line2D([0], [0], color='k', linestyle='dashdot', linewidth=2.0, label='Linear clustering')
-			)
 
-			legend_handles.append(
-				Line2D([0], [0], color='k', linestyle='dashed', linewidth=1.2, label='Poisson fluctuations')
-			)
-
-			if show_linear_pred and nl_corrections:
-				legend_handles.append(
-					Line2D([0], [0], color='k', linestyle='--', linewidth=0.8, alpha=0.6, label='IGL prediction (linear)')
-				)
-
-		# fig.subplots_adjust(top=0.82)
-		leg = fig.legend(
-			handles=legend_handles,
-			loc='upper center',
-			bbox_to_anchor=(0.5, 1.02),
-			ncol=3,
-			fontsize=legend_fs,
+		legend_handles.append(
+			Line2D([0], [0], color='k', linestyle='solid', linewidth=1.0, label='Poisson level')
 		)
-		# leg.get_frame().set_linewidth(0.8)
+
+		legend_handles.append(
+			Line2D([0], [0], color='k', linestyle='dashdot', linewidth=2.0, label='Two-halo')
+		)
+
+		legend_handles.append(
+			Line2D([0], [0], color='k', linestyle='dotted', linewidth=2.5, label='One-halo ($L\\propto M$)')
+		)
+		legend_handles.append(
+			Line2D([0], [0], color='C2', linestyle='solid', linewidth=3, alpha=0.5, label='IGL prediction (2h+1h+P)')
+		)
+
+		# legend_handles.append(
+		# 	Line2D([0], [0], color='k', linestyle='dashed', linewidth=1.2, label='Poisson fluctuations')
+		# )
+
+
+	# fig.subplots_adjust(top=0.82)
+	leg = fig.legend(
+		handles=legend_handles,
+		loc='upper center',
+		bbox_to_anchor=(0.5, 1.02),
+		ncol=3,
+		fontsize=legend_fs,
+	)
+	# leg.get_frame().set_linewidth(0.8)
 
 	plt.show()
 	return fig
@@ -2248,7 +2400,7 @@ def create_omnibus_plot(all_addstr=None, jmock_basedir = None,
 					ls_str='0.0_z_1.0_wrandsub_JHlt16_wFFerr',
 					wise_str='unWISE_W1lt17p5_JHlt16_wFFerr',
 					ylims_gal=[[5e-4, 1e2], [2e-3, 2e2]],
-					figsize=(7, 6),
+					figsize=(8, 6),
 					tl_pix_correct=True,
 					ifield_use=8,
 					tl_pix_template='data/fluctuation_data/transfer_function/tl_clx_pix_TM{inst}_ifield{ifield}.npz',
@@ -2257,9 +2409,10 @@ def create_omnibus_plot(all_addstr=None, jmock_basedir = None,
 				ls_gal_auto_large_fpath=None,
 				apply_satellite_correction=True,
 				satellite_surveys=None,
-				nl_corrections=False,
-				pred_model_mode="raw_interp",
-				show_linear_pred=True):
+				show_linear_pred=True, 
+				include_1h_pred=True,
+				onehalo_output_dir=None,
+				onehalo_fsat_model='single'):
 	"""
 	Parameters
 	----------
@@ -2347,18 +2500,19 @@ def create_omnibus_plot(all_addstr=None, jmock_basedir = None,
 						gal_labels=gal_labels, gal_labels_filenames=gal_labels_filenames, band_labels=['1.1 $\\mu$m', '1.8 $\\mu$m'],
 						startidx=2, endidx=-1,
 						capsize=3, markersize=3, figsize=figsize,
-						lab_fs=14, legend_fs=14, title_fs=12, pred_alpha=0.9, spacer_and_ciber_auto=[0.35, 1.1],
+						lab_fs=14, legend_fs=12, title_fs=12, pred_alpha=0.9, spacer_and_ciber_auto=[0.35, 1.1],
 							tl_pix_correct=tl_pix_correct,
 							ifield_use=ifield_use,
 							tl_pix_template=tl_pix_template,
 							include_ciber_auto=include_ciber_auto,
 						bias_values=bias_values,
 						apply_satellite_correction=apply_satellite_correction,
-						satellite_surveys=satellite_surveys,
-						nl_corrections=nl_corrections,
-						pred_model_mode=pred_model_mode,
 						show_linear_pred=show_linear_pred, 
-						z_eff_values=z_eff_values)
+						z_eff_values=z_eff_values,
+						include_1h_pred=include_1h_pred,
+						onehalo_output_dir=onehalo_output_dir,
+						onehalo_fsat_model=onehalo_fsat_model
+						)
 
 	return fig
 
@@ -2637,7 +2791,10 @@ def gen_cross_spectrum_plots_vs_z(inst_list = [1, 2],
 								lab_hsc='HSC ($18<i_{\\rm AB}<25$)',
 								plot_fine=True,
 								plot_coarse=True,
-								bias_cache_fpath=None):
+								bias_cache_fpath=None, 
+								include_1h_pred=True, 
+								onehalo_output_dir=None,
+								onehalo_fsat_model='single'):
 
 
 	if plot_fine:
@@ -2662,7 +2819,8 @@ def gen_cross_spectrum_plots_vs_z(inst_list = [1, 2],
 					all_pred_fpaths=all_pred_fpaths_ls, bbox_to_anchor=[-0.02, 1.38], legend_fs=15,
 					tl_pix_correct=True, nrows=3, catname='DESI-LS',
 					rescale_gal_auto_bias=rescale_gal_auto_bias, bias_model=bias_model,
-					bias_cache_fpath=bias_cache_fpath, bias_cache_scheme='coarse')
+					bias_cache_fpath=bias_cache_fpath, bias_cache_scheme='coarse', include_1h_pred=include_1h_pred,
+					onehalo_output_dir=onehalo_output_dir, onehalo_fsat_model=onehalo_fsat_model)
 	else:
 		fig_ls_ciber = None
 
@@ -2710,8 +2868,6 @@ def gen_cross_spectrum_plots_vs_z(inst_list = [1, 2],
 						inst=inst, zmin=zbinedges_coarse[zidx], zmax=zbinedges_coarse[zidx+1])
 
 
-
-
 		all_pred_fpaths_hsc = grab_ciber_cross_vs_z_predfpaths(inst_list=inst_list, zbinedges=zbinedges_coarse, 
 																headstr='hsc_i_lt_25.0')
 
@@ -2743,7 +2899,10 @@ def gen_cross_spectrum_plots_vs_z(inst_list = [1, 2],
 			legend_fs=16,
 			rescale_gal_auto_bias=rescale_gal_auto_bias,
 			bias_model=bias_model,
-			bias_cache_fpath=bias_cache_fpath, bias_cache_scheme='coarse'
+			bias_cache_fpath=bias_cache_fpath, bias_cache_scheme='coarse',
+			include_1h_pred=include_1h_pred,
+			onehalo_fsat_model=onehalo_fsat_model,
+			onehalo_output_dir=onehalo_output_dir
 		)
 	else:
 		fig_coarse_ls_hsc = None
@@ -2822,7 +2981,8 @@ def plot_cross_ps_by_wavelength_and_redshift(
 	label_fs=13,
 	rescale_gal_auto_bias=False,
 	bias_model='1+z',
-	bias_cache_fpath=None, bias_cache_scheme='coarse'):
+	bias_cache_fpath=None, bias_cache_scheme='coarse', 
+	include_1h_pred=True, onehalo_fsat_model='single', onehalo_output_dir='data/one_halo_model_output'):
 	"""
 	Plots cross-power spectra for multiple wavelengths and redshift bins.
 
@@ -2862,14 +3022,26 @@ def plot_cross_ps_by_wavelength_and_redshift(
 			# Innermost loop: iterate over galaxy catalogs
 			for cat_idx, catname in enumerate(catnames):
 
+				if 'HSC' in catname:
+					mag_cut = 25.0
+					bandstr_select = 'hsc_i'
+				else:
+					mag_cut = 22.0
+					bandstr_select = 'sdss_z'
+
+				if include_1h_pred:
+					oh_data_Ig = load_onehalo_spectrum(
+							onehalo_output_dir, onehalo_fsat_model, bandstr_select,
+							inst=inst_indiv, mag_min=18.0, mag_cut=mag_cut, z0=0.05, mode='Ig', generate_type='fine')
+					ell_1h = oh_data_Ig['ell_arr']
+					dl_1h = oh_data_Ig['dl_spectrum'][zidx]
+
+
 				if 'HSC' in catname and zidx==0:
 					# Skip HSC for the first redshift bin (z<0.2) due to low galaxy counts
-
 					rescale_fac = 1e10
 				else:
 					rescale_fac = 1.0
-
-					
 
 				fieldav_cl_cross = all_catalogs_cl_cross[cat_idx][inst_idx][zidx]
 				fieldav_clerr_cross = all_catalogs_clerr_cross[cat_idx][inst_idx][zidx]
@@ -2907,9 +3079,26 @@ def plot_cross_ps_by_wavelength_and_redshift(
 							tl_interp = np.interp(ell_smooth, np.arange(len(tl_pix)), tl_pix)
 							dl_smooth = dl_smooth / tl_interp
 						if inst_indiv == 1 and cat_idx == 0:
-							lab_pred = 'IGL prediction'
+							lab_pred = 'IGL prediction (2h+1h+P)'
 						else:
 							lab_pred = None
+						
+						# if include_1h_pred:
+						# 	oh_data_Ig = load_onehalo_spectrum(
+						# 			onehalo_output_dir, onehalo_fsat_model, bandstr_select,
+						# 			inst=inst_idx+1, mag_min=18.0, mag_cut=mag_cut, z0=0.05, mode='Ig', generate_type='fine')
+						# 	ell_1h = oh_data_Ig['ell_arr']
+						# 	dl_1h = oh_data_Ig['dl_spectrum']
+						if include_1h_pred:
+							dl_1h_interp = np.interp(ell_smooth, ell_1h, dl_1h)
+
+							if zidx == 0:
+								dl_1h_interp *= 0.5  # Reduce 1-halo amplitude for the first redshift bin to avoid overprediction
+							dl_smooth += dl_1h_interp
+
+							# current_ax.plot(ell_smooth, rescale_fac*dl_1h_interp, color=colors_cat[cat_idx],
+					   		# 				linestyle='dashed')
+						
 						current_ax.plot(ell_smooth, rescale_fac*dl_smooth, color=colors_cat[cat_idx],
 						                linestyle=linestyles_pred[cat_idx], alpha=pred_alpha, label=lab_pred, linewidth=2)
 					else:
@@ -3318,6 +3507,7 @@ def load_rlpred_vs_z_DESILS(catname='LS', inst_list=[1, 2],
 						lb_maxs = [2000., 10000., 80000.], 
 						jmock_basedir = 'data/jordan_mocks/v2/', 
 						ifield_use=8):
+
 
 	zbinedges = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
 
@@ -5406,7 +5596,7 @@ def collect_ciber_gal_vs_redshift(catname, subtract_randoms=False, \
 				print('Recomputing field-averaged cross-spectrum with proper weights...')
 				fieldav_cl, fieldav_clerr,\
 					_, perf_weights = compute_field_averaged_power_spectrum(all_cl_cross.copy(), per_field_dcls=perf_clerr_cross.copy())
-				print('perf weights in collect_ciber_gal_vs_redshift:', perf_weights)
+				# print('perf weights in collect_ciber_gal_vs_redshift:', perf_weights)
 
 			if tl_pix_correct:
 
@@ -5651,7 +5841,7 @@ def plot_cross_ps_vs_redshift(inst, zbinedges, lb, all_fieldav_cl_cross, all_fie
 							 textxpos=280, textypos=1e2, text_fs=12, color=None, color_inst=['b', 'r'], bbox_to_anchor=[2.0, 1.4], \
 							 ncols=4, nrows=2, all_pred_fpaths=None, pred_alpha=0.5, \
 							 ncol_legend=3, tl_pix_correct=False, rescale_gal_auto_bias=False, bias_model='1+z',
-							 bias_cache_fpath=None, bias_cache_scheme='fine'):
+							 bias_cache_fpath=None, bias_cache_scheme='fine', include_1h_pred=True, onehalo_output_dir=None, onehalo_fsat_model='single'):
 	
 	lam_dict = dict({1:1.1, 2:1.8})
 	
@@ -5685,6 +5875,15 @@ def plot_cross_ps_vs_redshift(inst, zbinedges, lb, all_fieldav_cl_cross, all_fie
 
 		for i, inst_indiv in enumerate(inst):
 
+			if include_1h_pred:
+				oh_data_Ig = load_onehalo_spectrum(
+						onehalo_output_dir, onehalo_fsat_model, 'sdss_z',
+						inst=inst_indiv, mag_min=18.0, mag_cut=22.0, z0=0.05, mode='Ig', generate_type='superfine')
+				ell_1h = oh_data_Ig['ell_arr']
+				dl_1h = oh_data_Ig['dl_spectrum'][zidx]
+
+				
+
 			if tl_pix_correct:
 				ifield_use = 6
 				tl_pix = np.load('data/fluctuation_data/transfer_function/tl_clx_pix_TM'+str(inst_indiv)+'_ifield'+str(ifield_use)+'.npz')['tl_clx_pix']
@@ -5699,6 +5898,7 @@ def plot_cross_ps_vs_redshift(inst, zbinedges, lb, all_fieldav_cl_cross, all_fie
 					ell_eval = np.geomspace(xlim[0], xlim[1], 300)
 					ell_smooth, dl_smooth = smooth_mock_cross_with_bias(
 						all_pred_fpaths[i][zidx], z_center, b_g, ell_eval=ell_eval)
+					# print('dl smooth for zidx', zidx, 'is ', dl_smooth)
 					if tl_pix_correct:
 						tl_interp = np.interp(ell_smooth, np.arange(len(tl_pix)), tl_pix)
 						dl_smooth = dl_smooth / tl_interp
@@ -5706,6 +5906,20 @@ def plot_cross_ps_vs_redshift(inst, zbinedges, lb, all_fieldav_cl_cross, all_fie
 						lab_pred = 'IGL prediction'
 					else:
 						lab_pred = None
+
+					if include_1h_pred and dl_1h is not None:
+
+						if np.isnan(dl_1h).any():
+							print('Warning: NaN values found in 1-halo prediction for zidx', zidx)
+							dl_1h = np.nan_to_num(dl_1h, nan=0.0)
+						dl_1h_interp = np.interp(ell_smooth, ell_1h, dl_1h)
+
+						if zidx == 0:
+							dl_1h_interp *= 0.1
+
+						dl_smooth += dl_1h_interp
+
+					print('here dl smooth for zidx', zidx, 'is ', dl_smooth)
 					ax[zidx].plot(ell_smooth, dl_smooth, color=color_inst[i],
 					              linestyle=linestyles_pred[i], alpha=pred_alpha, label=lab_pred, linewidth=2)
 				else:

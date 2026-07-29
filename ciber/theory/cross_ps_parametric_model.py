@@ -32,6 +32,8 @@ import numpy as np
 DEFAULT_BOUNDS = {
     'A_2h': (0., 10.),
     'A_1h': (0., 10.),
+    'mu_1h': (np.log(500.), np.log(30000.)),  # log(ell_peak) bounds
+    'sigma_1h': (0.1, 1.5),  # log-space width bounds
     'A_shot': (0., 100.),
     'sigma_damp': (0.1, 4.0),
 }
@@ -394,6 +396,9 @@ class CrossPowerSpectrumModel:
             fit_names = ['A_1h', 'A_shot']
         elif fixed_mu_sigma:
             fit_names = ['A_2h', 'A_1h', 'A_shot']
+        else:
+            # Default case: both 1h and 2h free, no fixed params
+            fit_names = ['A_2h', 'A_1h', 'mu_1h', 'sigma_1h', 'A_shot']
 
         if self.use_astrometry_damping and not fixed_sigma_damp:
             fit_names.append('sigma_damp')

@@ -1198,12 +1198,37 @@ def _plot_spectra_summary(args: argparse.Namespace) -> None:
                     if pred_fpath is not None and os.path.exists(pred_fpath):
                         try:
                             from ciber.plotting.gal_plotting_fns import smooth_mock_cross_with_bias
+                            from ciber.theory.onehalo_predict import load_onehalo_spectrum
                             if cat == 'DESILS' and bias_cache is not None:
                                 b_g = float(np.poly1d(np.asarray(bias_cache['coarse_poly_coeffs']))(zcen))
                             else:
                                 b_g = 1.0 + 0.84 * zcen
                             ell_igl = np.geomspace(lb_fit.min() * 0.8, lb_fit.max() * 1.2, 300)
                             _, dl_igl = smooth_mock_cross_with_bias(pred_fpath, zcen, b_g, ell_eval=ell_igl)
+
+                            onehalo_output_dir ='data/jordan_mocks/v3/fov_10.0/onehalo_predict/'
+
+                            if cat=='HSC':
+                                bandstr_select = 'hsc_i'
+                                mag_cut = 25.0
+                            elif cat=='DESILS':
+                                bandstr_select = 'sdss_z'
+                                mag_cut = 22.0
+
+                            oh_data_Ig = load_onehalo_spectrum(
+                                        onehalo_output_dir, 'single', bandstr_select,
+                                        inst=inst_idx+1, mag_min=18.0, mag_cut=mag_cut, z0=0.05, mode='Ig', generate_type='fine')
+                            ell_1h = oh_data_Ig['ell_arr']
+                            dl_1h = oh_data_Ig['dl_spectrum'][zidx]
+
+                            dl_1h_interp = np.interp(ell_igl, ell_1h, dl_1h)
+
+                            if zidx==0:
+                                dl_1h_interp *= 0.5
+
+                            dl_igl += dl_1h_interp
+
+
                             ax_spec.plot(ell_igl, dl_igl, color='k', linestyle='solid', lw=2.5,
                                          label='IGL prediction', alpha=0.5, zorder=6)
                         except Exception as e:
@@ -4431,8 +4456,29 @@ def _plot_2x2_spectrum_panel(ax, results, inst_idx, z_idx, lMax, colors, lams,
     if igl_pred_fpath is not None and b_g is not None and os.path.exists(igl_pred_fpath):
         try:
             from ciber.plotting.gal_plotting_fns import smooth_mock_cross_with_bias
+            from ciber.theory.onehalo_predict import load_onehalo_spectrum
             ell_igl = np.geomspace(lb_fit.min() * 0.8, lb_fit.max() * 1.2, 300)
             _, dl_igl = smooth_mock_cross_with_bias(igl_pred_fpath, 0.0, b_g, ell_eval=ell_igl)
+
+            onehalo_output_dir ='data/jordan_mocks/v3/fov_10.0/onehalo_predict/'
+
+            if 'hsc' in igl_pred_fpath.lower():
+                bandstr_select = 'hsc_i'
+                mag_cut = 25.0
+            else:
+                bandstr_select = 'sdss_z'
+                mag_cut = 22.0
+
+            oh_data_Ig = load_onehalo_spectrum(
+                        onehalo_output_dir, 'single', bandstr_select,
+                        inst=inst_idx+1, mag_min=18.0, mag_cut=mag_cut, z0=0.05, mode='Ig', generate_type='fine')
+            ell_1h = oh_data_Ig['ell_arr']
+            dl_1h = oh_data_Ig['dl_spectrum'][z_idx]
+
+            dl_1h_interp = np.interp(ell_igl, ell_1h, dl_1h)
+            dl_igl += dl_1h_interp
+
+
             ax.plot(ell_igl, dl_igl, color='k',
                     linewidth=2.5, linestyle='solid', alpha=0.5, zorder=5)
         except Exception as e:

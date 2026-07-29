@@ -38,6 +38,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from ciber.theory.onehalo_predict import load_onehalo_spectrum
 
 from ciber.theory.ihl_1h_template_cache import create_and_cache_effective_1h_template, load_effective_1h_for_fitting
 
@@ -793,9 +794,10 @@ def run_omnibus(args: argparse.Namespace) -> List[GeneratedFigure]:
         "ifield_use": args.omnibus_tl_ifield,
         "tl_pix_template": args.omnibus_tl_pix_template,
         "ls_gal_auto_large_fpath": args.ls_gal_auto_large,
-        "nl_corrections": args.nl_corrections,
-        "pred_model_mode": args.omnibus_pred_model_mode,
         "show_linear_pred": args.omnibus_show_linear_pred,
+        "include_1h_pred": args.omnibus_show_1h_pred,
+        "onehalo_output_dir": args.omnibus_onehalo_output_dir,
+        "onehalo_fsat_model": args.omnibus_onehalo_fsat_model,
     }
 
     if args.pred_source == "current":
@@ -1429,6 +1431,7 @@ def run_cross_redshift(args: argparse.Namespace) -> List[GeneratedFigure]:
         plot_fine=True,
         plot_coarse=True,
         bias_cache_fpath=bias_cache,
+        onehalo_output_dir=args.omnibus_onehalo_output_dir
     )
 
     out: List[GeneratedFigure] = []
@@ -3458,6 +3461,20 @@ def _plot_zlt1_auto_prediction_comparison(
 
         if mock_igl_dl is not None and np.any(np.isfinite(mock_igl_dl[idx])):
             mock_curve = _extend_series_loglog(lb, np.asarray(mock_igl_dl[idx], dtype=float), x_line)
+
+
+            # from ciber.theory.onehalo_predict import load_onehalo_spectrum
+
+            onehalo_output_dir = 'data/jordan_mocks/v3/fov_10.0/onehalo_predict/'
+
+            oh_data_Ig = load_onehalo_spectrum(
+                    onehalo_output_dir, 'single', 'hsc_i',
+                    inst=idx+1, mag_min=18.0, mag_cut=25.0, z0=0.05, mode='II', generate_type='bulk')
+            ell_1h = oh_data_Ig['ell_arr']
+            dl_1h = oh_data_Ig['dl_spectrum']
+
+            dl_1h_interp = np.interp(x_line, ell_1h, dl_1h, left=np.nan, right=np.nan)
+            mock_curve += dl_1h_interp
             
             pf_line = x_line * (x_line + 1) / (2 * np.pi)
 
@@ -8165,6 +8182,23 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Also plot linear (non-scaled) predictions alongside NL predictions on omnibus",
     )
+
+    parser.add_argument(
+        "--omnibus-show-1h-pred",
+        action="store_true",
+        help="Include 1-halo cross term in omnibus model predictions (default: False)",
+    )
+    parser.add_argument(
+        "--omnibus-onehalo-output-dir",
+        default='data/jordan_mocks/v3/fov_10.0/onehalo_predict/',
+        help="Output directory for one-halo model predictions",
+    )
+    parser.add_argument(
+        "--omnibus-onehalo-fsat-model",
+        default="double",
+        help="Fsat model for one-halo predictions (default: double)",
+    )
+
 
     subparsers = parser.add_subparsers(dest="command", required=True)
 
