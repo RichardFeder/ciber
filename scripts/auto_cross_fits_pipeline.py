@@ -60,6 +60,7 @@ from ciber.theory.cross_ps_parametric_model import (
     run_gal_auto_fits_two_stage,
     run_gal_cross_fits,
     CrossPowerSpectrumModel,
+    attach_onehalo_template_to_model,
 )
 from ciber.io.ciber_data_utils import load_fit_results_npz
 from ciber.plotting.gal_plotting_fns import (
@@ -88,6 +89,33 @@ def _savefig(fig, path: Path, fmt: str) -> None:
     else:
         fig.savefig(path.with_suffix(".pdf"), bbox_inches="tight")
         print(f"saved {path.with_suffix('.pdf')}")
+
+
+def _build_plot_path_with_model(path: Path, args=None, results=None) -> Path:
+    """Append an fsat-model suffix to a figure path when metadata is available."""
+    suffix_parts = []
+
+    fsat_model = None
+    concentration_scale = None
+    if results is not None:
+        fsat_model = results.get("onehalo_fsat_model", None)
+        concentration_scale = results.get("onehalo_concentration_scale", None)
+    if fsat_model is None and args is not None:
+        fsat_model = getattr(args, "onehalo_fsat_model", None)
+    if concentration_scale is None and args is not None:
+        concentration_scale = getattr(args, "concentration_scale", None)
+
+    if fsat_model:
+        suffix_parts.append(f"fsat{fsat_model}")
+    if concentration_scale is not None and concentration_scale != 1.0:
+        suffix_parts.append(f"concscale{float(concentration_scale):.2f}".replace('.', 'p'))
+
+    if not suffix_parts:
+        return path
+
+    if path.suffix:
+        return path.with_name(f"{path.stem}_" + "_".join(suffix_parts) + path.suffix)
+    return path.with_name(f"{path.name}_" + "_".join(suffix_parts))
 
 
 def _headstr_tag(headstr: Optional[str]) -> str:
@@ -639,6 +667,10 @@ def _run_cross_fits(args: argparse.Namespace) -> None:
                 A_2h_fixed_arr=a2h_fixed_arr,
                 use_linear_2h=args.use_linear_2h,
                 sigma_damp_fixed=args.sigma_damp_fixed,
+                onehalo_output_dir=args.onehalo_dir,
+                onehalo_generate_type=args.onehalo_generate_type,
+                onehalo_fsat_model=args.onehalo_fsat_model,
+                onehalo_concentration_scale=args.concentration_scale,
             )
 
 
@@ -743,6 +775,7 @@ def _plot_components(args: argparse.Namespace) -> None:
             continue
 
         stem = figdir / f"{cat}_cross_components_{args.fitstr_cross}_lMax={args.lmax_components}"
+        stem = _build_plot_path_with_model(stem, args=args)
         fig, _ = plot_cross_fit_components_from_file(
             str(fpath),
             zbinedges=args.zbinedges,
@@ -913,6 +946,13 @@ def _plot_fit_spectra(args: argparse.Namespace) -> None:
                         "ihl_templates":         None,
                         "template_names":        None,
                         "samples":               samples_bin if samples_bin is not None and len(np.asarray(samples_bin).shape) > 0 else None,
+                        "onehalo_mode":          bool(results.get("onehalo_mode", False)),
+                        "onehalo_output_dir":    results.get("onehalo_output_dir", ""),
+                        "onehalo_generate_type": results.get("onehalo_generate_type", "bulk"),
+                        "onehalo_fsat_model":    results.get("onehalo_fsat_model", "single"),
+                        "onehalo_concentration_scale": float(results.get("onehalo_concentration_scale", getattr(args, 'concentration_scale', 1.0))),
+                        "inst":                  int(inst),
+                        "cat":                   cat,
                     }
 
                     # Extract model configuration from results
@@ -1077,6 +1117,7 @@ def _plot_spectra_summary(args: argparse.Namespace) -> None:
                         pred_fpaths_by_zbin = {zi: p for zi, p in enumerate(cands)}
                         break
 
+                zbin_plot_data = []
                 for zidx in range(n_zbins):
                     ax_spec = spec_axes[zidx]
                     ax_res = res_axes[zidx]
@@ -1086,12 +1127,14 @@ def _plot_spectra_summary(args: argparse.Namespace) -> None:
                     data_dl    = (pf_data * full_cl_cross[inst_idx, zidx])[startidx:endidx]
                     data_dlerr = (pf_data * full_clerr_cross[inst_idx, zidx])[startidx:endidx]
 
-                    params     = results["params"][inst_idx, zidx, :]
-                    params_16  = results.get("params_16",  results["params"] - results["params_err"])[inst_idx, zidx, :]
-                    params_84  = results.get("params_84",  results["params"] + results["params_err"])[inst_idx, zidx, :]
+                    params     = np.asarray(results["params"])[inst_idx, zidx, :]
+                    params_err = np.asarray(results["params_err"])[inst_idx, zidx, :]
+                    params_16  = np.asarray(results.get("params_16", results["params"] - results["params_err"]))[inst_idx, zidx, :]
+                    params_84  = np.asarray(results.get("params_84", results["params"] + results["params_err"]))[inst_idx, zidx, :]
                     samples_bin = results.get("samples", np.empty((0,)))[inst_idx, zidx]
                     n_params_stored = int(np.sum(~np.isnan(params)))
                     params     = params[:n_params_stored]
+                    params_err = params_err[:n_params_stored]
                     params_16  = params_16[:n_params_stored]
                     params_84  = params_84[:n_params_stored]
 
@@ -1109,6 +1152,35 @@ def _plot_spectra_summary(args: argparse.Namespace) -> None:
                         use_linear_2h=use_linear_2h,
                         dl_2h_lin_per_zbin=dl_2h_lin_per_zbin,
                     )
+
+                    fit_result = {
+                        "params": params,
+                        "params_err": params_err,
+                        "use_astrometry_damping": use_damping,
+                        "samples": samples_bin if samples_bin is not None and len(np.asarray(samples_bin).shape) > 0 else None,
+                        "onehalo_mode": bool(results.get("onehalo_mode", False)),
+                        "onehalo_output_dir": results.get("onehalo_output_dir", ""),
+                        "onehalo_generate_type": results.get("onehalo_generate_type", "bulk"),
+                        "onehalo_fsat_model": results.get("onehalo_fsat_model", "single"),
+                        "onehalo_concentration_scale": float(results.get("onehalo_concentration_scale", getattr(args, 'concentration_scale', 1.0))),
+                        "inst": int(inst),
+                        "cat": cat,
+                    }
+                    attach_onehalo_template_to_model(
+                        model, fit_result, z_bin_index=zidx, use_default_if_missing=False, zbinedges=zbinedges
+                    )
+
+                    zbin_plot_data.append({
+                        "zidx": zidx,
+                        "model": model,
+                        "params": params,
+                        "use_damping": use_damping,
+                        "sd_med": params[5] if use_damping else None,
+                        "data_dl": data_dl,
+                        "data_dlerr": data_dlerr,
+                        "zlo": zlo,
+                        "zhi": zhi,
+                    })
 
                     # Top panel: spectra
                     ax_spec.errorbar(lb_fit, data_dl, yerr=data_dlerr, fmt='o',
@@ -1309,60 +1381,56 @@ def _plot_spectra_summary(args: argparse.Namespace) -> None:
                                bbox_to_anchor=(0.5, 1.02))
 
                 stem = figdir / f"{cat}_TM{inst}_lMax={lMax}_summary"
+                stem = _build_plot_path_with_model(stem, args=args, results=results)
                 _savefig(fig, stem, args.fig_fmt)
                 plt.close(fig)
 
                 # Generate second figure: data/model ratio vs ell for all z-bins in one panel
-                fig, ax = plt.subplots(figsize=(6, 5))
+                fig, ax = plt.subplots(figsize=(8, 5))
                 
                 if inst==1:
-                    colors = plt.cm.Blues(np.linspace(0.3, 1, n_zbins))
+                    colors = plt.cm.Blues(np.linspace(0.4, 1, n_zbins))
                 else:
-                    colors = plt.cm.Reds(np.linspace(0.3, 1, n_zbins))
-                
-                for zidx in range(n_zbins):
-                    zlo, zhi = zbinedges[zidx], zbinedges[zidx + 1]
-                    zcen = 0.5 * (zlo + zhi)
-                    
-                    data_dl    = (pf_data * full_cl_cross[inst_idx, zidx])[startidx:endidx]
-                    data_dlerr = (pf_data * full_clerr_cross[inst_idx, zidx])[startidx:endidx]
-                    
-                    params     = results["params"][inst_idx, zidx, :]
-                    n_params_stored = int(np.sum(~np.isnan(params)))
-                    params     = params[:n_params_stored]
-                    
-                    pnf_bin = pnf_arr[inst_idx, zidx] if pnf_arr is not None else None
-                    use_damping = (pnf_bin is not None and
-                                   any("damp" in str(p).lower() for p in pnf_bin))
-                    
-                    model = CrossPowerSpectrumModel(
-                        lb=lb_fit, use_powerlaw_2h=use_powerlaw_2h,
-                        alpha_2h_fixed=alpha_2h_fixed,
-                        use_astrometry_damping=use_damping,
-                        use_linear_2h=use_linear_2h,
-                        dl_2h_lin_per_zbin=dl_2h_lin_per_zbin,
-                    )
-                    
-                    # Evaluate model at data ell values
-                    model_dl = model.model_components(lb_fit, *params[:5],
-                                                      sigma_damp=params[5] if use_damping else None,
-                                                      z_bin_index=zidx)['total']
-                    
-                    # Compute ratio
+                    colors = plt.cm.Reds(np.linspace(0.4, 1, n_zbins))
+
+                ratios = []
+                for zbin_info in zbin_plot_data:
+                    zidx = zbin_info["zidx"]
+                    zlo, zhi = zbin_info["zlo"], zbin_info["zhi"]
+
+                    data_dl = zbin_info["data_dl"]
+                    data_dlerr = zbin_info["data_dlerr"]
+                    params = zbin_info["params"]
+                    model = zbin_info["model"]
+                    sd_med = zbin_info["sd_med"]
+
+                    model_dl = model.model_components(
+                        lb_fit,
+                        *params[:5],
+                        sigma_damp=sd_med,
+                        z_bin_index=zidx,
+                    )['total']
+
                     ratio = data_dl / model_dl
-                    ratio_err = data_dlerr / model_dl  # Normalized uncertainty
-                    
-                    ax.errorbar(lb_fit, ratio, yerr=ratio_err, fmt='o', 
-                               color=colors[zidx], markersize=4, capsize=2, 
-                               alpha=0.7, label=f'z∈[{zlo:.1f},{zhi:.1f}]')
+                    ratio_err = data_dlerr / model_dl
+
+                    ratios.append(ratio)
+
+                    ax.errorbar(lb_fit, ratio, yerr=ratio_err, fmt='o',
+                                color=colors[zidx], markersize=5, capsize=3,
+                                alpha=0.9, label=f'z∈[{zlo:.1f},{zhi:.1f}]')
+
+                # ratios = np.array(ratios)
+
+                # ax.plot(lb_fit, np.mean(ratios, axis=0), 'k--', lw=1.5, alpha=0.5)
                 
                 ax.axhline(1.0, color='k', linestyle='--', linewidth=1.5, alpha=0.5)
                 ax.set_xscale('log')
                 ax.set_xlabel(r'$\ell$', fontsize=14)
                 ax.set_ylabel('Data / Model', fontsize=14)
                 ax.set_xlim([lb_fit.min() * 0.8, lb_fit.max() * 1.2])
-                ax.set_ylim([0.1, 3])
-                ax.set_yscale('log')
+                ax.set_ylim([0.0, 3])
+                # ax.set_yscale('log')
                 ax.grid(True, alpha=0.3, which='major')
                 ax.axvspan(lMax*0.9, lb_fit.max() * 1.2, color='lightgray', alpha=0.3, zorder=0)
                 ax.legend(fontsize=12, loc=2)
@@ -1377,6 +1445,7 @@ def _plot_spectra_summary(args: argparse.Namespace) -> None:
                 
                 plt.tight_layout()
                 stem = figdir / f"{cat}_TM{inst}_lMax={lMax}_ratio"
+                stem = _build_plot_path_with_model(stem, args=args, results=results)
                 _savefig(fig, stem, args.fig_fmt)
                 plt.close(fig)
 
@@ -4226,6 +4295,8 @@ def _plot_redshift_panels_2x2(args: argparse.Namespace) -> None:
                     chi2_reduced=cat_results['reduced_chisq'][col, z_idx],
                     igl_pred_fpath=pred_fpath,
                     b_g=b_g,
+                    cat="DESILS" if row == 0 else "HSC",
+                    zbinedges_plot=zbinedges,
                 )
 
         # Add shared legend above all panels
@@ -4259,12 +4330,14 @@ def _plot_redshift_panels_2x2(args: argparse.Namespace) -> None:
         plt.subplots_adjust(wspace=0.05, hspace=0.05)
         # Save to spectra/ subdirectory
         stem = figdir / f"cross_spectrum_2x2_z{z_low:.01f}_{z_high:.01f}_lMax{lMax}"
+        meta_results = desils_results if desils_results.get("onehalo_fsat_model") is not None else hsc_results
+        stem = _build_plot_path_with_model(stem, args=args, results=meta_results)
         _savefig(fig, stem, args.fig_fmt)
         plt.close(fig)
 
 def _plot_2x2_spectrum_panel(ax, results, inst_idx, z_idx, lMax, colors, lams,
                               title="", chi2_reduced=None,
-                              igl_pred_fpath=None, b_g=None):
+                              igl_pred_fpath=None, b_g=None, cat=None, zbinedges_plot=None):
     """Plot a single spectrum panel into a pre-existing axis for the 2x2 figure.
 
     Mirrors the uncertainty band logic of plot_fit_fixed_1h_templates as called
@@ -4312,6 +4385,27 @@ def _plot_2x2_spectrum_panel(ax, results, inst_idx, z_idx, lMax, colors, lams,
         use_astrometry_damping=use_damping,
         use_linear_2h=use_linear_2h,
         dl_2h_lin_per_zbin=dl_2h_lin_per_zbin,
+    )
+
+    fit_result = {
+        "params": params,
+        "params_err": params_err,
+        "use_astrometry_damping": use_damping,
+        "samples": samples_bin if samples_bin is not None and len(np.asarray(samples_bin).shape) > 0 else None,
+        "onehalo_mode": bool(results.get("onehalo_mode", False)),
+        "onehalo_output_dir": results.get("onehalo_output_dir", ""),
+        "onehalo_generate_type": results.get("onehalo_generate_type", "bulk"),
+        "onehalo_fsat_model": results.get("onehalo_fsat_model", "single"),
+        "inst": int(results.get("inst_list", [1])[inst_idx]),
+        "cat": cat,
+    }
+    
+    # Use provided plotting zbinedges if available, otherwise extract from results
+    if zbinedges_plot is None:
+        zbinedges_plot = results.get("zbinedges", np.array([0.0, 0.2, 0.4, 0.6, 0.8, 1.0]))
+    
+    attach_onehalo_template_to_model(
+        model, fit_result, z_bin_index=z_idx, use_default_if_missing=False, zbinedges=zbinedges_plot
     )
 
     # Smooth ell grid matching plot_fit_fixed_1h_templates
@@ -5895,6 +5989,28 @@ def parse_args() -> argparse.Namespace:
         "--ihl-params",
         default="data/ihl_1h_params_corrected.npz",
         help="Path to IHL 1h parameter file",
+    )
+    parser.add_argument(
+        "--onehalo-dir",
+        default=None,
+        help="Directory containing onehalo_predict outputs to use as fixed one-halo templates",
+    )
+    parser.add_argument(
+        "--onehalo-generate-type",
+        default="bulk",
+        choices=["bulk", "fine"],
+        help="onehalo_predict output type to load",
+    )
+    parser.add_argument(
+        "--onehalo-fsat-model",
+        default="single",
+        help="Satellite fraction model used when loading onehalo_predict outputs",
+    )
+    parser.add_argument(
+        "--concentration-scale",
+        type=float,
+        default=1.0,
+        help="Scale factor applied to the NFW concentration when loading one-halo templates; use a value != 1.0 to select concentration-specific saved files",
     )
 
     # plot_components / plot_compare_cats specific

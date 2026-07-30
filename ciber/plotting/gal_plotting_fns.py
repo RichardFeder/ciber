@@ -86,7 +86,7 @@ def _load_ciber_auto_file(bandstr):
 
 def load_onehalo_spectrum(onehalo_output_dir, fsat_model, bandstr_select, inst,
                                mag_min, mag_cut, z0, mode='Ig', generate_type='bulk',
-                               logM_min=None):
+                               logM_min=None, concentration_scale=None):
 	"""
 	Load one-halo predictions for a given configuration and mode.
 
@@ -127,7 +127,8 @@ def load_onehalo_spectrum(onehalo_output_dir, fsat_model, bandstr_select, inst,
 	# Generate suffix matching onehalo_predict convention
 	config_suffix = generate_config_suffix(
 		fsat_model, bandstr_select, inst,
-		mag_min=mag_min, mag_cut=mag_cut, z0=z0, logM_min=logM_min
+		mag_min=mag_min, mag_cut=mag_cut, z0=z0, logM_min=logM_min,
+		concentration_scale=concentration_scale,
 	)
 
 	filename = generate_onehalo_filename(generate_type, config_suffix, mode=mode)

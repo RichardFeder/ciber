@@ -272,6 +272,10 @@ def save_fit_results_npz(all_fit_results_mcmc, zbinedges, inst_list,
 		template_names=np.array(model_config['template_names']),
 		ihl_template_path=model_config['ihl_template_path'],
 		use_linear_2h=model_config['use_linear_2h'],
+		onehalo_mode=sample_result.get('onehalo_mode', False),
+		onehalo_output_dir=sample_result.get('onehalo_output_dir', ''),
+		onehalo_generate_type=sample_result.get('onehalo_generate_type', 'bulk'),
+		onehalo_fsat_model=sample_result.get('onehalo_fsat_model', 'single'),
 	)
 
 	print(f"✓ Saved fit results to: {save_path}")
@@ -346,6 +350,14 @@ def load_fit_results_npz(load_path):
 		results['alpha_2h_fixed'] = float(data['alpha_2h_fixed'])
 	if 'use_lorentzian_1h' in data:
 		results['use_lorentzian_1h'] = bool(data['use_lorentzian_1h'])
+	if 'onehalo_mode' in data:
+		results['onehalo_mode'] = bool(data['onehalo_mode'])
+	if 'onehalo_output_dir' in data:
+		results['onehalo_output_dir'] = str(data['onehalo_output_dir'])
+	if 'onehalo_generate_type' in data:
+		results['onehalo_generate_type'] = str(data['onehalo_generate_type'])
+	if 'onehalo_fsat_model' in data:
+		results['onehalo_fsat_model'] = str(data['onehalo_fsat_model'])
 	if 'template_names' in data:
 		template_names_array = data['template_names']
 		if template_names_array.ndim == 0:

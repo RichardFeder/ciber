@@ -24,10 +24,10 @@ from functools import partial
 
 from ciber.plotting.gal_plotting_fns import *
 from ciber.theory.cl_template import *
+from ciber.theory.onehalo_predict import load_onehalo_spectrum
 
 
 from dataclasses import dataclass
-import numpy as np
 
 DEFAULT_BOUNDS = {
     'A_2h': (0., 10.),
@@ -196,7 +196,7 @@ class CrossPowerSpectrumModel:
     def __init__(self, lb, cl_2h_pred=None, cl_shot_pred=None, use_powerlaw_2h=True, alpha_2h_fixed=-1.5,
                  chi2_eval_max=5000., mu_1h_fixed=None, sigma_1h_fixed=None, use_astrometry_damping=False,
                  use_one_halo=True, use_two_halo=True, A_2h_fixed=None, use_linear_2h=False, 
-                 dl_2h_lin_per_zbin=None, sigma_damp_fixed=None):
+                 dl_2h_lin_per_zbin=None, sigma_damp_fixed=None, onehalo_template_1h_dl=None):
         self.lb = np.asarray(lb)
         self.cl_2h_pred = np.asarray(cl_2h_pred) if cl_2h_pred is not None else None
         self.cl_shot_pred = cl_shot_pred
@@ -212,6 +212,7 @@ class CrossPowerSpectrumModel:
         self.use_linear_2h = use_linear_2h
         self.dl_2h_lin_per_zbin = dl_2h_lin_per_zbin if dl_2h_lin_per_zbin is not None else {}
         self.sigma_damp_fixed = sigma_damp_fixed if sigma_damp_fixed is not None else {}
+        self.onehalo_template_1h_dl = onehalo_template_1h_dl
         
         # Convert to D_ℓ
         self.pf = self.lb * (self.lb + 1) / (2 * np.pi)
@@ -365,16 +366,73 @@ class CrossPowerSpectrumModel:
                 dl_extrap = np.full(np.sum(extrapolate_mask), template_dl[0])
             
             # Interpolate normally for all other points
-            dl_interp = np.interp(ell, template_ell, template_dl, left=0.0, right=0.0)
+            dl_interp = np.interp(ell, template_ell, template_dl, left=0.0, right=template_dl[-1])
             
             # Replace extrapolated values
             dl_interp[extrapolate_mask] = dl_extrap
         else:
             # No extrapolation needed, use normal interpolation
-            dl_interp = np.interp(ell, template_ell, template_dl, left=0.0, right=0.0)
+            dl_interp = np.interp(ell, template_ell, template_dl, left=0.0, right=template_dl[-1])
         
         return amplitude * dl_interp
     
+    def _get_onehalo_template(self, z_bin_index=None):
+        """Return a fixed one-halo template for the requested redshift bin, if available."""
+        if self.onehalo_template_1h_dl is None:
+            return None
+
+        if isinstance(self.onehalo_template_1h_dl, dict):
+            if z_bin_index is not None and z_bin_index in self.onehalo_template_1h_dl:
+                template = self.onehalo_template_1h_dl[z_bin_index]
+            else:
+                template = self.onehalo_template_1h_dl.get(None)
+                if template is None and len(self.onehalo_template_1h_dl) == 1:
+                    template = next(iter(self.onehalo_template_1h_dl.values()))
+                elif template is None and z_bin_index is None:
+                    template = next(iter(self.onehalo_template_1h_dl.values()))
+        else:
+            template = self.onehalo_template_1h_dl
+
+        if template is None:
+            return None
+
+        if isinstance(template, dict):
+            if 'ell_arr' in template:
+                ell_arr = template['ell_arr']
+                dl_spectrum = template['dl_spectrum']
+            elif 'ell' in template and 'dl' in template:
+                ell_arr = template['ell']
+                dl_spectrum = template['dl']
+            else:
+                raise ValueError("One-halo template dict must contain 'ell_arr'/'dl_spectrum' or 'ell'/'dl'.")
+        elif isinstance(template, (list, tuple)) and len(template) == 2:
+            ell_arr, dl_spectrum = template
+        else:
+            raise TypeError("Unsupported one-halo template format.")
+
+        return {
+            'ell_arr': np.asarray(ell_arr),
+            'dl_spectrum': np.asarray(dl_spectrum),
+        }
+
+    def _onehalo_template_component(self, ell, amplitude, mu_1h=None, sigma_1h=None, z_bin_index=None):
+        """Evaluate the one-halo term from either a fixed template or a lognormal fallback."""
+        if not self.use_one_halo:
+            return np.zeros_like(ell, dtype=float)
+
+        template_data = self._get_onehalo_template(z_bin_index=z_bin_index)
+        if template_data is not None:
+            return self.ihl_template_component(
+                ell,
+                amplitude,
+                template_data['ell_arr'],
+                template_data['dl_spectrum'],
+            )
+
+        if mu_1h is None or sigma_1h is None:
+            raise ValueError("mu_1h and sigma_1h are required when no one-halo template is provided")
+        return self.lognormal_component(ell, amplitude, mu_1h, sigma_1h)
+
     def _build_fit_config(self, z_value=None, inst=None, verbose=True):
         fixed_mu_sigma = (self.mu_1h_fixed is not None and self.sigma_1h_fixed is not None)
         fixed_A2h = (self.A_2h_fixed is not None) and self.use_one_halo and self.use_two_halo
@@ -465,8 +523,13 @@ class CrossPowerSpectrumModel:
             dl_2h = A_2h * np.interp(ell, self.lb, self.dl_2h_pred)
         
 
-        # For log-normal: mu_1h is log(ell_peak), sigma_1h is log-width
-        dl_1h = self.lognormal_component(ell, A_1h, mu_1h, sigma_1h)
+        dl_1h = self._onehalo_template_component(
+            ell,
+            A_1h,
+            mu_1h=mu_1h,
+            sigma_1h=sigma_1h,
+            z_bin_index=z_bin_index,
+        )
         
         # Shot noise contribution
         dl_shot = self.shot_noise_component(ell, A_shot)
@@ -517,7 +580,13 @@ class CrossPowerSpectrumModel:
             dl_2h = np.zeros_like(ell)
         
         if self.use_one_halo:
-            dl_1h = self.lognormal_component(ell, A_1h, mu_1h, sigma_1h)
+            dl_1h = self._onehalo_template_component(
+                ell,
+                A_1h,
+                mu_1h=mu_1h,
+                sigma_1h=sigma_1h,
+                z_bin_index=z_bin_index,
+            )
         else:
             dl_1h = np.zeros_like(ell)
             
@@ -1743,6 +1812,173 @@ def separate_2h_shot_from_prediction(lb, cl_pred_total, ell_fit_max=3000, ell_sh
     return cl_2h, cl_shot, fit_params
 
 
+def _select_onehalo_template_for_zbin(dl_spectrum, z_bin_index=None, zbinedges=None, z0=0.0):
+    """Select the one-halo template that matches a requested redshift bin.
+
+    One-halo fine files can contain a spectrum for each default dz=0.2 redshift
+    bin spanning 0.0 to 1.0. When the fit is for a narrower bin such as
+    [0.2, 0.4], select the template whose redshift interval overlaps the fit
+    interval most closely instead of rejecting the file.
+    """
+    if np.ndim(dl_spectrum) == 1:
+        return dl_spectrum
+
+    dl_spectrum = np.asarray(dl_spectrum)
+    if dl_spectrum.ndim != 2:
+        raise ValueError(f"Expected a 1D or 2D one-halo spectrum, got shape {dl_spectrum.shape}")
+
+    if z_bin_index is not None and z_bin_index < dl_spectrum.shape[0]:
+        if zbinedges is None or len(zbinedges) < 2:
+            return dl_spectrum[z_bin_index]
+        requested_nbins = len(zbinedges) - 1
+        if requested_nbins == dl_spectrum.shape[0]:
+            return dl_spectrum[z_bin_index]
+
+    if zbinedges is None:
+        return dl_spectrum[0]
+
+    if len(zbinedges) < 2:
+        return dl_spectrum[0]
+
+    if z_bin_index is None:
+        z_bin_index = 0
+
+    if z_bin_index >= len(zbinedges) - 1:
+        return dl_spectrum[0]
+
+    requested_zlo = float(zbinedges[z_bin_index])
+    requested_zhi = float(zbinedges[z_bin_index + 1])
+
+    template_bins = []
+    z_left = float(z0)
+    while z_left < 1.0:
+        z_right = min(z_left + 0.2, 1.0)
+        template_bins.append((z_left, z_right))
+        z_left = z_right
+
+    for idx, (tlo, thi) in enumerate(template_bins[:dl_spectrum.shape[0]]):
+        if np.isclose(requested_zlo, tlo) and np.isclose(requested_zhi, thi):
+            return dl_spectrum[idx]
+
+    return dl_spectrum[0]
+
+
+def resolve_onehalo_template_from_fit_result(
+    fit_result,
+    onehalo_output_dir=None,
+    z_bin_index=None,
+    inst=None,
+    cat='HSC',
+    use_default_if_missing=True,
+    zbinedges=None,
+):
+    """Resolve a fixed one-halo template from fit-result metadata or a supplied directory.
+    
+    Parameters
+    ----------
+    fit_result : dict
+        Saved fit result metadata
+    onehalo_output_dir : str, optional
+        Directory containing one-halo predictions
+    z_bin_index : int, optional
+        Index of the redshift bin (in the plotting context)
+    inst : int, optional
+        Instrument number (1 or 2)
+    cat : str, optional
+        Catalog name ('HSC' or 'DESILS')
+    use_default_if_missing : bool, optional
+        If True, fall back to defaults; if False, return None
+    zbinedges : array_like, optional
+        Redshift bin edges for the current plotting context.
+        If provided, used to select the correct fine-mode spectrum.
+    """
+    if not fit_result.get('onehalo_mode', False):
+        return None
+
+    if onehalo_output_dir is None:
+        onehalo_output_dir = fit_result.get('onehalo_output_dir')
+
+    if onehalo_output_dir is None:
+        if use_default_if_missing:
+            onehalo_output_dir = 'data/jordan_mocks/v3/fov_10.0/onehalo_predict/'
+        else:
+            return None
+
+    if not os.path.exists(onehalo_output_dir):
+        if use_default_if_missing:
+            return None
+        return None
+
+    if cat == 'HSC':
+        bandstr_select = 'hsc_i'
+        mag_cut = 25.0
+    elif cat == 'DESILS':
+        bandstr_select = 'sdss_z'
+        mag_cut = 22.0
+    else:
+        bandstr_select = 'sdss_z'
+        mag_cut = 22.0
+
+    generate_type = fit_result.get('onehalo_generate_type', 'bulk')
+    fsat_model = fit_result.get('onehalo_fsat_model', 'single')
+
+    if inst is None:
+        inst = fit_result.get('inst', 1)
+
+    try:
+        result = load_onehalo_spectrum(
+            onehalo_output_dir,
+            fsat_model,
+            bandstr_select,
+            inst=inst,
+            mag_min=18.0,
+            mag_cut=mag_cut,
+            z0=0.05,
+            mode='Ig',
+            generate_type=generate_type,
+            concentration_scale=fit_result.get('onehalo_concentration_scale', 1.0),
+        )
+    except Exception as exc:
+        if use_default_if_missing:
+            return None
+        raise RuntimeError(f"Could not load one-halo template from {onehalo_output_dir}: {exc}") from exc
+
+    if result is None:
+        return None
+
+    if np.ndim(result['dl_spectrum']) == 1:
+        return {
+            'ell_arr': result['ell_arr'],
+            'dl_spectrum': result['dl_spectrum'],
+        }
+
+    dl_spectrum = np.asarray(result['dl_spectrum'])
+    if dl_spectrum.ndim == 1:
+        return {
+            'ell_arr': result['ell_arr'],
+            'dl_spectrum': dl_spectrum,
+        }
+
+    if z_bin_index is None:
+        return {
+            'ell_arr': result['ell_arr'],
+            'dl_spectrum': _select_onehalo_template_for_zbin(
+                dl_spectrum, z_bin_index=None, zbinedges=zbinedges
+            ),
+        }
+    if z_bin_index < dl_spectrum.shape[0] and zbinedges is None:
+        return {
+            'ell_arr': result['ell_arr'],
+            'dl_spectrum': dl_spectrum[z_bin_index],
+        }
+    return {
+        'ell_arr': result['ell_arr'],
+        'dl_spectrum': _select_onehalo_template_for_zbin(
+            dl_spectrum, z_bin_index=z_bin_index, zbinedges=zbinedges
+        ),
+    }
+
+
 def _extract_plot_config(fit_result, model):
     """
     Extract PlotConfig from fit_result dictionary.
@@ -1773,6 +2009,55 @@ def _extract_plot_config(fit_result, model):
         one_halo_params_dict=fit_result.get('one_halo_params_dict', None),
         sigma_fixed=fit_result.get('sigma_fixed', None),
     )
+
+
+def attach_onehalo_template_to_model(model, fit_result, z_bin_index=None, use_default_if_missing=False, zbinedges=None):
+    """Attach a fixed one-halo template to the model from saved fit metadata when available.
+    
+    Parameters
+    ----------
+    model : CrossPowerSpectrumModel
+        The model to attach the template to
+    fit_result : dict
+        Saved fit result metadata
+    z_bin_index : int, optional
+        Index of the redshift bin in the current context
+    use_default_if_missing : bool, optional
+        If True, use default paths; if False, return None on missing data
+    zbinedges : array_like, optional
+        Redshift bin edges for the current context.
+        If provided, used to select the correct fine-mode spectrum.
+    """
+    if not getattr(model, 'use_one_halo', False):
+        return None
+
+    resolved_template = None
+    try:
+        resolved_template = resolve_onehalo_template_from_fit_result(
+            fit_result,
+            onehalo_output_dir=fit_result.get('onehalo_output_dir'),
+            z_bin_index=z_bin_index,
+            inst=fit_result.get('inst'),
+            cat=fit_result.get('cat', 'HSC'),
+            use_default_if_missing=use_default_if_missing,
+            zbinedges=zbinedges,
+        )
+    except Exception:
+        resolved_template = None
+
+    if resolved_template is None:
+        return None
+
+    existing_template = getattr(model, 'onehalo_template_1h_dl', None)
+    if existing_template is None:
+        model.onehalo_template_1h_dl = {z_bin_index: resolved_template} if z_bin_index is not None else {None: resolved_template}
+    elif isinstance(existing_template, dict):
+        if z_bin_index is not None and z_bin_index not in existing_template:
+            existing_template[z_bin_index] = resolved_template
+        elif z_bin_index is None and None not in existing_template:
+            existing_template[None] = resolved_template
+
+    return resolved_template
 
 
 def plot_fit_fixed_1h_templates(model, lb_data, dl_data, dl_err, fit_result,
@@ -1838,6 +2123,15 @@ def plot_fit_fixed_1h_templates(model, lb_data, dl_data, dl_err, fit_result,
     
     # Extract plot configuration from fit_result
     plot_cfg = _extract_plot_config(fit_result, model)
+
+    # Reconstruct a fixed one-halo template from saved fit metadata when needed.
+    if getattr(model, 'use_one_halo', False):
+        attach_onehalo_template_to_model(
+            model,
+            fit_result,
+            z_bin_index=z_bin_index,
+            use_default_if_missing=False,
+        )
     
     # Initialize uncertainty_bands to None (will be computed if errors available)
     uncertainty_bands = None
@@ -3379,7 +3673,9 @@ def run_gal_cross_fits(inst_list=[1, 2], ifield_list=[4,5,6,7,8], maskstr='JHlt1
                        mu_1h_fixed_override=None, sigma_1h_fixed_override=None,
                        nwalkers=32, nsteps=4000, nburn=1000, prior_bounds=None, chi2_lim=[-20, 5],
                        use_astrometry_damping=False, initial_guess=None, headstr = 'hsc_ilt24.0', uniform_weight_ell=None,
-                       A_2h_fixed_arr=None, use_linear_2h=False, sigma_damp_fixed=None):
+                       A_2h_fixed_arr=None, use_linear_2h=False, sigma_damp_fixed=None,
+                       onehalo_output_dir=None, onehalo_generate_type='bulk', onehalo_fsat_model='single',
+                       onehalo_concentration_scale=1.0):
     """
     Run galaxy cross-spectrum fits for CIBER data.
     
@@ -3439,6 +3735,15 @@ def run_gal_cross_fits(inst_list=[1, 2], ifield_list=[4,5,6,7,8], maskstr='JHlt1
         - dict: {1: sigma_damp_tm1, 2: sigma_damp_tm2} for per-instrument values (arcsec)
         - list/tuple: [sigma_damp_tm1, sigma_damp_tm2] (converted to dict internally)
         If None (default), sigma_damp floats normally when use_astrometry_damping=True.
+    onehalo_output_dir : str, optional
+        Directory containing precomputed onehalo_predict outputs. If provided,
+        the fit uses those templates as the fixed 1h shape instead of the
+        old lognormal IHL path.
+    onehalo_generate_type : str, optional
+        onehalo_predict output type: 'bulk' or 'fine'. Default 'bulk'.
+    onehalo_fsat_model : str, optional
+        Satellite fraction model used when loading onehalo_predict outputs.
+        Default 'single'.
     
     Returns
     -------
@@ -3509,6 +3814,67 @@ def run_gal_cross_fits(inst_list=[1, 2], ifield_list=[4,5,6,7,8], maskstr='JHlt1
         # Convert to dict: {1: sigma_damp_fixed[0], 2: sigma_damp_fixed[1], ...}
         sigma_damp_fixed = {i+1: float(val) for i, val in enumerate(sigma_damp_fixed)}
 
+    onehalo_templates_by_inst = {}
+    if onehalo_output_dir is not None:
+        if not os.path.exists(onehalo_output_dir):
+            raise FileNotFoundError(f"One-halo template directory not found: {onehalo_output_dir}")
+
+        if cat == 'HSC':
+            bandstr_select = 'hsc_i'
+            mag_cut = 25.0
+        elif cat == 'DESILS':
+            bandstr_select = 'sdss_z'
+            mag_cut = 22.0
+        else:
+            bandstr_select = 'sdss_z'
+            mag_cut = 22.0
+
+        print(f"\nLoading fixed one-halo templates from {onehalo_output_dir} ({onehalo_generate_type})")
+        for inst in inst_list:
+            templates_by_zidx = {}
+            for zidx in range(len(zbinedges) - 1):
+                result = load_onehalo_spectrum(
+                    onehalo_output_dir,
+                    onehalo_fsat_model,
+                    bandstr_select,
+                    inst=inst,
+                    mag_min=18.0,
+                    mag_cut=mag_cut,
+                    z0=0.05,
+                    mode='Ig',
+                    generate_type=onehalo_generate_type,
+                    concentration_scale=onehalo_concentration_scale,
+                )
+                if result is None:
+                    raise FileNotFoundError(
+                        f"Could not locate one-halo template for inst={inst}, zidx={zidx} in {onehalo_output_dir}"
+                    )
+
+                if np.ndim(result['dl_spectrum']) == 1:
+                    template_data = {
+                        'ell_arr': result['ell_arr'],
+                        'dl_spectrum': result['dl_spectrum'],
+                    }
+                    templates_by_zidx[zidx] = template_data
+                else:
+                    dl_spectrum = np.asarray(result['dl_spectrum'])
+                    if dl_spectrum.shape[0] == len(zbinedges) - 1:
+                        selected_template = dl_spectrum[zidx]
+                    else:
+                        selected_template = _select_onehalo_template_for_zbin(
+                            dl_spectrum,
+                            z_bin_index=zidx,
+                            zbinedges=zbinedges,
+                            z0=0.0,
+                        )
+                    templates_by_zidx[zidx] = {
+                        'ell_arr': result['ell_arr'],
+                        'dl_spectrum': selected_template,
+                    }
+            onehalo_templates_by_inst[inst] = templates_by_zidx
+
+        print(f"Loaded one-halo templates for {len(onehalo_templates_by_inst)} instruments")
+
     if cat=='DESILS':
         catname = 'LS'
 
@@ -3575,6 +3941,7 @@ def run_gal_cross_fits(inst_list=[1, 2], ifield_list=[4,5,6,7,8], maskstr='JHlt1
                 fix_bias=True
             # Get fixed sigma_damp for this instrument if provided
             sigma_damp_for_inst = sigma_damp_fixed.get(inst, None)
+            onehalo_template_1h_dl = onehalo_templates_by_inst.get(inst, None) if onehalo_output_dir is not None else None
             
             model = CrossPowerSpectrumModel(
                 lb,
@@ -3590,6 +3957,7 @@ def run_gal_cross_fits(inst_list=[1, 2], ifield_list=[4,5,6,7,8], maskstr='JHlt1
                 use_linear_2h=use_linear_2h,
                 dl_2h_lin_per_zbin=dl_2h_lin_per_zbin,
                 sigma_damp_fixed={inst: sigma_damp_for_inst} if sigma_damp_for_inst is not None else {},
+                onehalo_template_1h_dl=onehalo_template_1h_dl,
             )
             
             # Prepare data
@@ -3661,6 +4029,10 @@ def run_gal_cross_fits(inst_list=[1, 2], ifield_list=[4,5,6,7,8], maskstr='JHlt1
             fit_result_mcmc['data_dl'] = dl_data[startidx:endidx]
             fit_result_mcmc['data_dlerr'] = dlerr_data[startidx:endidx]
             fit_result_mcmc['use_linear_2h'] = use_linear_2h
+            fit_result_mcmc['onehalo_mode'] = onehalo_output_dir is not None
+            fit_result_mcmc['onehalo_output_dir'] = onehalo_output_dir if onehalo_output_dir is not None else ""
+            fit_result_mcmc['onehalo_generate_type'] = onehalo_generate_type
+            fit_result_mcmc['onehalo_fsat_model'] = onehalo_fsat_model
 
             all_fit_results_mcmc[key] = {
                 'fit_result': fit_result_mcmc,
