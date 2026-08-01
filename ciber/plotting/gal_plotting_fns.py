@@ -956,7 +956,7 @@ def plot_amplitude_comparison_by_instrument(configs, inst_list=(1, 2), colors=No
 def plot_amplitude_chi2_by_instrument(configs, inst_list=(1, 2), colors=None, markers=None,
 														linestyles=None, figsize=(11, 9),
 														save_path=None, legend_ncol=2,
-														ylim_2h=[-0.05, 0.6], ylim_ihl=[-0.05, 1.0], ylim_chi2=[0, 4.0],
+														ylim_2h=[-0.05, 0.6], ylim_ihl=[-0.05, 5.0], ylim_chi2=[0, 4.0],
 														bbox_to_anchor=(0.2, 1.2),
 														use_cmap=True, cmap_name='Blues',
 														x_offset_scale=0.05):
@@ -3028,6 +3028,7 @@ def plot_rl_vs_z_vs_scale_DESILS(res_meas, mean_rl_diffscale_pred,
 def plot_cross_ps_by_wavelength_and_redshift(
 	all_catalogs_cl_cross, all_catalogs_clerr_cross,
 	catnames, zbinedges, lb, 
+	all_catalogs_cl_galauto=None, all_catalogs_clerr_galauto=None,
 	inst=[1, 2],figsize=(16, 8), 
 	startidx=2, endidx=-1,
 	xlim=[150, 1.1e5], ylim=[1e-4, 2e2], 
@@ -3059,6 +3060,8 @@ def plot_cross_ps_by_wavelength_and_redshift(
 	bias_cache = np.load(bias_cache_fpath, allow_pickle=False) if bias_cache_fpath is not None else None
 
 	nrows = len(inst)
+	if all_catalogs_cl_galauto is not None:
+		nrows += 1
 	ncols = len(zbinedges) - 1
 	
 	fig, ax = plt.subplots(nrows=nrows, ncols=ncols, figsize=figsize, sharex=True, sharey=True)
@@ -3145,21 +3148,12 @@ def plot_cross_ps_by_wavelength_and_redshift(
 						else:
 							lab_pred = None
 						
-						# if include_1h_pred:
-						# 	oh_data_Ig = load_onehalo_spectrum(
-						# 			onehalo_output_dir, onehalo_fsat_model, bandstr_select,
-						# 			inst=inst_idx+1, mag_min=18.0, mag_cut=mag_cut, z0=0.05, mode='Ig', generate_type='fine')
-						# 	ell_1h = oh_data_Ig['ell_arr']
-						# 	dl_1h = oh_data_Ig['dl_spectrum']
 						if include_1h_pred:
 							dl_1h_interp = np.interp(ell_smooth, ell_1h, dl_1h)
 
 							if zidx == 0:
 								dl_1h_interp *= 0.5  # Reduce 1-halo amplitude for the first redshift bin to avoid overprediction
 							dl_smooth += dl_1h_interp
-
-							# current_ax.plot(ell_smooth, rescale_fac*dl_1h_interp, color=colors_cat[cat_idx],
-					   		# 				linestyle='dashed')
 						
 						current_ax.plot(ell_smooth, rescale_fac*dl_smooth, color=colors_cat[cat_idx],
 						                linestyle=linestyles_pred[cat_idx], alpha=pred_alpha, label=lab_pred, linewidth=2)

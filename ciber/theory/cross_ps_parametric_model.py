@@ -1577,7 +1577,8 @@ class CrossPowerSpectrumModel:
         }
     
     @staticmethod
-    def plot_mcmc_corner(fit_result, labels=None, title=None, save_path=None, figsize=(5,5), fix_bias=False):
+    def plot_mcmc_corner(fit_result, labels=None, title=None, save_path=None, figsize=(5,5), fix_bias=False, 
+                         color=None):
         """
         Plot corner plot of MCMC posterior distributions.
         Handles both IHL template fits and parametric log-normal fits.
@@ -1629,6 +1630,9 @@ class CrossPowerSpectrumModel:
             if shot_idx is not None:
                 samples[:, shot_idx] = samples[:, shot_idx] * 1e7
                 labels[shot_idx] = labels[shot_idx].replace('shot}$', 'shot} \\times 10^7$')
+
+            labels = ['$A_{\\rm 2h}^{\\rm Ig}$', '$A_{\\rm 1h}^{\\rm Ig}$', '$A_{\\rm shot} \\times 10^7$', '$f_{\\rm pop}$']
+
         else:
             # Fallback to original logic for backward compatibility
             if 'samples' not in fit_result or fit_result['samples'] is None:
@@ -1642,7 +1646,9 @@ class CrossPowerSpectrumModel:
             # Scale shot noise amplitude for better display
             samples = samples_original.copy()
             samples[:, -1] = samples[:, -1] * 1e7  # Scale shot noise by 10^7
-            
+
+
+            labels = ['$A_{\\rm 2h}^{\\rm Ig}', '$A_{\\rm 1h}^{\\rm Ig}$', '$A_{\\rm shot} \\times 10^7$', '$f_{\\rm pop}$']
             # Build labels
             if labels is None:
                 param_names = fit_result.get('param_names', [f'p{i}' for i in range(n_params)])
@@ -1702,11 +1708,38 @@ class CrossPowerSpectrumModel:
                            title_fmt='.2g',  # 2 significant figures
                            title_kwargs={"fontsize": 14},
                            label_kwargs={"fontsize": 20},
-                           figsize=figsize)
+                           figsize=figsize, 
+                           plot_datapoints=False,   # removes scatter points in 2D panels
+                           plot_density=True,
+                           plot_contours=True,      # keep contour outlines
+                           smooth=1.0,              # smoothing for 2D histograms (Gaussian sigma in bins)
+                           smooth1d=1.0,            # smoothing for 1D marginals
+                           bins=35,                 # moderate bin count for smoother appearance
+                           levels=(0.68, 0.95),     # cleaner 2-level contours
+                                # keep 1D hist neutral (not green-washed)
+                            hist_kwargs={
+                                "color": color,      # dark gray
+                                "alpha": 0.9,
+                                "linewidth": 1.5
+                            },
+                            color=color,
+
+                            # only contour lines get level colors
+                            contour_kwargs={
+                                "colors": [color, color],  # light/dark green per level
+                                "linewidths": 1.8,
+                                "alpha": 1.0
+                            },    # filled contour regions (outer, inner)
+                            )
         
-        if title:
-            fig.suptitle(title, y=1.05, fontsize=16)
-        
+        if title is not None:
+            # fig.suptitle(title, y=1.05, fontsize=16)
+
+            st = fig.suptitle(title, fontsize=22)   # create title
+            st.set_position((0.9, 0.9))          # (x,y) in figure coords
+            st.set_ha("right")                      # anchor text to right
+            st.set_va("top")
+                
         if save_path:
             plt.savefig(save_path, dpi=200, bbox_inches='tight')
             print(f"Saved corner plot to {save_path}")
@@ -4262,39 +4295,39 @@ def run_gal_cross_fits(inst_list=[1, 2], ifield_list=[4,5,6,7,8], maskstr='JHlt1
                 print("  MCMC diagnostics unavailable")
 
             # Corner plot
-            fig = CrossPowerSpectrumModel.plot_mcmc_corner(
-                fit_result_mcmc,
-                title=title, 
-                figsize=(5, 5),
-                fix_bias=fix_bias,
+            # fig = CrossPowerSpectrumModel.plot_mcmc_corner(
+            #     fit_result_mcmc,
+            #     title=title, 
+            #     figsize=(5, 5),
+            #     fix_bias=fix_bias,
 
-            )
-            plt.show()
+            # )
+            # plt.show()
 
             # Power spectrum plot - plot_fit_fixed_1h_templates handles both IHL and parametric models
-            fig_mcmc, ax = plot_fit_fixed_1h_templates(
-                model, 
-                lb[startidx:endidx], 
-                dl_data[startidx:endidx], 
-                dlerr_data[startidx:endidx], 
-                fit_result_mcmc, 
-                save_path=None, 
-                ylim=[1e-3, 5e2], 
-                figsize=(6, 6), 
-                title=title, 
-                title_fs=16, 
-                textxpos=350,
-                lMax_fit=lMax_fit,
-                z_bin_index=zidx, 
-                chi2_lim=chi2_lim 
-            )
+            # fig_mcmc, ax = plot_fit_fixed_1h_templates(
+            #     model, 
+            #     lb[startidx:endidx], 
+            #     dl_data[startidx:endidx], 
+            #     dlerr_data[startidx:endidx], 
+            #     fit_result_mcmc, 
+            #     save_path=None, 
+            #     ylim=[1e-3, 5e2], 
+            #     figsize=(6, 6), 
+            #     title=title, 
+            #     title_fs=16, 
+            #     textxpos=350,
+            #     lMax_fit=lMax_fit,
+            #     z_bin_index=zidx, 
+            #     chi2_lim=chi2_lim 
+            # )
 
-            if save_figs:
-                os.makedirs(figbasedir+cat+'_coarsez/corner/', exist_ok=True)
-                os.makedirs(figbasedir+cat+'_coarsez/ps_fits/', exist_ok=True)
-                fig.savefig(figbasedir+cat+'_coarsez/corner/ciber_cl_fit_corner_'+str(zbinedges[zidx])+'_z_'+str(zbinedges[zidx+1])+'_TM'+str(inst)+'_'+cat+'_'+fitstr_updated+'_lMaxfit='+str(lMax_fit)+'.png', bbox_inches='tight', dpi=300)
-                # fig.savefig(figbasedir+cat+'_coarsez/corner/ciber_cl_fit_corner_'+str(zbinedges[zidx])+'_z_'+str(zbinedges[zidx+1])+'_TM'+str(inst)+'_'+cat+'_'+fitstr_updated+'.png', bbox_inches='tight', dpi=300)
-                fig_mcmc.savefig(figbasedir+cat+'_coarsez/ps_fits/ciber_cl_fit_'+str(zbinedges[zidx])+'_z_'+str(zbinedges[zidx+1])+'_TM'+str(inst)+'_'+cat+'_'+fitstr_updated+'_lMaxfit='+str(lMax_fit)+'.png', bbox_inches='tight', dpi=300)
+            # if save_figs:
+            #     os.makedirs(figbasedir+cat+'_coarsez/corner/', exist_ok=True)
+            #     os.makedirs(figbasedir+cat+'_coarsez/ps_fits/', exist_ok=True)
+            #     fig.savefig(figbasedir+cat+'_coarsez/corner/ciber_cl_fit_corner_'+str(zbinedges[zidx])+'_z_'+str(zbinedges[zidx+1])+'_TM'+str(inst)+'_'+cat+'_'+fitstr_updated+'_lMaxfit='+str(lMax_fit)+'.png', bbox_inches='tight', dpi=300)
+            #     # fig.savefig(figbasedir+cat+'_coarsez/corner/ciber_cl_fit_corner_'+str(zbinedges[zidx])+'_z_'+str(zbinedges[zidx+1])+'_TM'+str(inst)+'_'+cat+'_'+fitstr_updated+'.png', bbox_inches='tight', dpi=300)
+            #     fig_mcmc.savefig(figbasedir+cat+'_coarsez/ps_fits/ciber_cl_fit_'+str(zbinedges[zidx])+'_z_'+str(zbinedges[zidx+1])+'_TM'+str(inst)+'_'+cat+'_'+fitstr_updated+'_lMaxfit='+str(lMax_fit)+'.png', bbox_inches='tight', dpi=300)
 
             key = f'inst{inst}_zbin{zidx}'
 

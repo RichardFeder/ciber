@@ -48,6 +48,8 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.lines import Line2D
+from scipy import stats
 
 THIS_DIR = Path(__file__).resolve().parent
 REPO_ROOT = THIS_DIR.parent
@@ -1828,6 +1830,12 @@ def _plot_corner(args: argparse.Namespace) -> None:
                 print(f"[plot_corner] no MCMC samples in {fpath.name}, skipping {cat}")
                 continue
 
+
+            if cat == "HSC":
+                color = "#e377c2"  # same pink as other plots
+            else:
+                color = "C2"  # default blue for other catalogs
+
             for inst_idx, inst in enumerate(inst_list):
                 for zidx in range(len(zbinedges) - 1):
                     zlo, zhi = zbinedges[zidx], zbinedges[zidx + 1]
@@ -1848,14 +1856,220 @@ def _plot_corner(args: argparse.Namespace) -> None:
                         "use_astrometry_damping": results.get("use_astrometry_damping", False),
                     }
 
-                    title = f"{cat} × CIBER TM{inst}, z∈[{zlo:.1f},{zhi:.1f}], ℓ_max={lMax}"
+                    lams = [1.1, 1.8]
+                    title = "CIBER " + str(lams[inst-1]) + " $\\mu$m $\\times$ " + str(cat) + f"\n{zlo:.1f}<z<{zhi:.1f}"
                     fig = CrossPowerSpectrumModel.plot_mcmc_corner(
                         fit_result, figsize=(5, 5),
                         save_path=None,
+                        color=color,
+                        title=title,
                     )
                     stem = figdir / f"{cat}_TM{inst}_z{zidx:02d}_lMax={lMax}"
                     _savefig(fig, stem, args.fig_fmt)
                     plt.close(fig)
+
+
+# ---------------------------------------------------------------------------
+# Corner plot overlay helpers
+# ---------------------------------------------------------------------------
+
+
+
+
+def _plot_corner_overlay(args: argparse.Namespace) -> None:
+    """Overlay MCMC posteriors from multiple catalogs using corner.corner.
+
+    For each redshift bin and instrument, creates a corner plot with the first
+    catalog as the base (full styling) and overlays 2D contours from the second
+    catalog for comparison.
+    """
+    try:
+        import corner
+    except ImportError:
+        raise ImportError("corner is required for corner plots. Install with: pip install corner")
+
+    if len(args.cat) < 2:
+        print("[plot_corner_overlay] requires at least 2 catalogs; skipping")
+        return
+
+    figdir = Path(args.figdir) / args.fitstr_cross / "corners"
+    figdir.mkdir(parents=True, exist_ok=True)
+
+    # Load results for all catalogs at all lMax values
+    cat_results = {}
+    for cat in args.cat:
+        headstr = args.headstr if cat == "HSC" else None
+        cat_results[cat] = {}
+        for lMax in args.lmax:
+            results = _load_cross_results_merged_jh14(
+                args.datadir_cross, cat, headstr, args.fitstr_cross, lMax, maskstr=args.maskstr
+            )
+            if results is None:
+                fpath = _cross_fpath(args.datadir_cross, cat, headstr, args.fitstr_cross, lMax, maskstr=args.maskstr)
+                print(f"[plot_corner_overlay] missing {fpath}, skipping {cat} lMax={lMax}")
+                continue
+            cat_results[cat][lMax] = results
+
+    # Color scheme for catalogs
+    cat_colors = {"HSC": "#c0392b", "DESILS": "#2980b9"}
+    cat_display = {"HSC": "HSC", "DESILS": "DESI-LS"}
+
+    # Iterate over lMax values
+    for lMax in args.lmax:
+        # Check which catalogs have results at this lMax
+        available_cats = sorted([cat for cat in args.cat if lMax in cat_results[cat]])
+        if len(available_cats) < 2:
+            print(f"[plot_corner_overlay] fewer than 2 catalogs available at lMax={lMax}; skipping")
+            continue
+
+        # Use the first available catalog to determine redshift structure
+        ref_cat = available_cats[0]
+        ref_results = cat_results[ref_cat][lMax]
+        zbinedges = ref_results["zbinedges"]
+        inst_list = list(ref_results["inst_list"])
+
+        # Iterate over each (inst, z-bin) pair
+        for inst_idx, inst in enumerate(inst_list):
+            for zidx in range(len(zbinedges) - 1):
+                zlo, zhi = zbinedges[zidx], zbinedges[zidx + 1]
+
+                # Collect samples from available catalogs for this (inst, z-bin)
+                catalog_samples = {}
+                for cat in available_cats:
+                    results = cat_results[cat][lMax]
+                    samples_array = results.get("samples", None)
+                    sf_arr = results.get("samples_fitted", None)
+
+                    if samples_array is None:
+                        continue
+
+                    samples = samples_array[inst_idx, zidx]
+                    if samples is None:
+                        continue
+
+                    # Prefer fitted samples if available
+                    if sf_arr is not None:
+                        sf = sf_arr[inst_idx, zidx]
+                        if sf is not None:
+                            samples = sf
+
+                    if samples is None or len(samples) < 10:
+                        continue
+
+                    catalog_samples[cat] = samples.copy()
+
+                if len(catalog_samples) < 2:
+                    continue
+
+                # Use first catalog as base for corner.corner
+                base_cat = available_cats[0]
+                overlay_cat = available_cats[1]
+                base_samples = catalog_samples[base_cat]
+                overlay_samples = catalog_samples[overlay_cat]
+
+                # Prepare labels (parametric model)
+                param_names = ref_results.get("param_names", None)
+                if param_names is None:
+                    n_params = base_samples.shape[1]
+                    if n_params == 5:
+                        labels = [
+                            r'$A_{\rm 2h}$',
+                            r'$A_{\rm 1h}$',
+                            r'$\mu_{\rm 1h}$',
+                            r'$\sigma_{\rm 1h}$',
+                            r'$A_{\rm shot} \times 10^7$'
+                        ]
+                    else:
+                        labels = [f'$p_{i}$' for i in range(n_params)]
+                else:
+                    labels = list(param_names)
+
+                # Scale shot noise for display (last parameter)
+                base_samples_scaled = base_samples.copy()
+                base_samples_scaled[:, -1] = base_samples_scaled[:, -1] * 1e7
+                overlay_samples_scaled = overlay_samples.copy()
+                overlay_samples_scaled[:, -1] = overlay_samples_scaled[:, -1] * 1e7
+
+                # Update labels for scaled shot noise
+                labels = labels.copy()
+                if 'shot' in labels[-1].lower() or 'shot' in str(labels[-1]):
+                    labels[-1] = labels[-1].replace('shot}$', 'shot} \\times 10^7$')
+
+                # Create base corner plot with first catalog
+                title = f"{cat_display.get(base_cat, base_cat)} × CIBER TM{inst}, z∈[{zlo:.1f},{zhi:.1f}], ℓ_max={lMax}"
+                fig = corner.corner(
+                    base_samples_scaled,
+                    labels=labels,
+                    quantiles=[0.16, 0.5, 0.84],
+                    show_titles=True,
+                    title_kwargs={"fontsize": 10},
+                    label_kwargs={"fontsize": 11},
+                )
+
+                # Overlay second catalog's contours on off-diagonal panels
+                ndim = base_samples_scaled.shape[1]
+                axes = np.array(fig.axes).reshape((ndim, ndim))
+
+                for i in range(ndim):
+                    for j in range(ndim):
+                        ax = axes[i, j]
+
+                        # Only add overlay contours to off-diagonal panels
+                        if i != j:
+                            overlay_2d = overlay_samples_scaled[:, [j, i]]
+
+                            # Compute axis ranges from both samples
+                            x_min = min(np.percentile(base_samples_scaled[:, j], 0.5),
+                                       np.percentile(overlay_samples_scaled[:, j], 0.5))
+                            x_max = max(np.percentile(base_samples_scaled[:, j], 99.5),
+                                       np.percentile(overlay_samples_scaled[:, j], 99.5))
+                            y_min = min(np.percentile(base_samples_scaled[:, i], 0.5),
+                                       np.percentile(overlay_samples_scaled[:, i], 0.5))
+                            y_max = max(np.percentile(base_samples_scaled[:, i], 99.5),
+                                       np.percentile(overlay_samples_scaled[:, i], 99.5))
+
+                            # Subsample for KDE if needed
+                            if len(overlay_2d) > 10000:
+                                idx = np.random.choice(len(overlay_2d), 10000, replace=False)
+                                overlay_2d = overlay_2d[idx]
+
+                            try:
+                                # Compute 2D KDE for overlay catalog
+                                kde = stats.gaussian_kde(overlay_2d.T)
+                                x = np.linspace(x_min, x_max, 50)
+                                y = np.linspace(y_min, y_max, 50)
+                                X, Y = np.meshgrid(x, y)
+                                Z = kde(np.vstack([X.ravel(), Y.ravel()])).reshape(X.shape)
+
+                                # Compute credible levels (68% and 95%)
+                                flat = np.sort(Z.ravel())[::-1]
+                                cumsum = np.cumsum(flat) / np.sum(flat)
+                                levels = []
+                                for level in [0.68, 0.95]:
+                                    idx_lev = np.searchsorted(cumsum, level, side="right")
+                                    idx_lev = min(max(idx_lev, 0), len(flat) - 1)
+                                    levels.append(float(flat[idx_lev]))
+                                levels = sorted(set(levels))
+                                if len(levels) == 1:
+                                    levels = [levels[0], levels[0] * 1.001]
+
+                                ax.contour(X, Y, Z, levels=levels,
+                                         colors=[cat_colors.get(overlay_cat, "C0")],
+                                         alpha=0.7, linewidths=1.5, linestyles='--')
+                            except Exception as e:
+                                print(f"[plot_corner_overlay] contour error for {overlay_cat} panel ({i},{j}): {e}")
+
+                # Add title with both catalog names
+                cat_str = f"{cat_display.get(base_cat, base_cat)} (solid) vs {cat_display.get(overlay_cat, overlay_cat)} (dashed)"
+                fig.suptitle(f"{cat_str} — z∈[{zlo:.1f},{zhi:.1f}], TM{inst}, ℓ_max={lMax}",
+                            fontsize=12, y=0.995)
+
+                # Save
+                cat_suffix = "_".join(available_cats)
+                stem = figdir / f"{cat_suffix}_TM{inst}_z{zidx:02d}_lMax={lMax}_overlay"
+                _savefig(fig, stem, args.fig_fmt)
+                plt.close(fig)
+
 
 
 def _plot_compare_cats(args: argparse.Namespace) -> None:
@@ -6724,7 +6938,7 @@ def parse_args() -> argparse.Namespace:
         nargs="+",
         choices=["run_auto", "run_cross", "plot_auto", "plot_cross", "plot_components",
                  "plot_compare_cats", "plot_fit_spectra", "plot_spectra_summary",
-                 "plot_fpop_vs_redshift", "plot_corner", "plot_corr_a1h_a2h", "plot_sigma_damp", "plot_chi2_1h",
+                 "plot_fpop_vs_redshift", "plot_corner", "plot_corner_overlay", "plot_corr_a1h_a2h", "plot_sigma_damp", "plot_chi2_1h",
                  "plot_chi2_2h", "plot_redshift_panels_2x2", "plot_a1h_vs_redshift",
                  "plot_a1h_vs_redshift_three_row", "plot_a1h_vs_redshift_alternate_layout", "plot_a1h_vs_redshift_mag_comparison",
                  "plot_a1h_model_pred_vs_redshift", "plot_a1h_band_ratio_vs_redshift", "plot_parameter_consistency_vs_lmax",
@@ -6908,7 +7122,7 @@ def parse_args() -> argparse.Namespace:
 # ---------------------------------------------------------------------------
 
 _ALL_MODES = ["run_auto", "run_cross", "plot_auto", "plot_cross", "plot_components",
-              "plot_compare_cats", "plot_fit_spectra", "plot_spectra_summary", "plot_fpop_vs_redshift", "plot_corner",
+              "plot_compare_cats", "plot_fit_spectra", "plot_spectra_summary", "plot_fpop_vs_redshift", "plot_corner", "plot_corner_overlay",
               "plot_corr_a1h_a2h", "plot_sigma_damp", "plot_chi2_1h", "plot_chi2_2h",
               "plot_redshift_panels_2x2", "plot_a1h_vs_redshift", "plot_a1h_vs_redshift_three_row",
               "plot_a1h_vs_redshift_alternate_layout", "plot_a1h_vs_redshift_mag_comparison", "plot_a1h_model_pred_vs_redshift", "plot_a1h_band_ratio_vs_redshift",
@@ -6946,6 +7160,8 @@ def main() -> None:
         _plot_fpop_vs_redshift(args)
     if "plot_corner" in modes:
         _plot_corner(args)
+    if "plot_corner_overlay" in modes:
+        _plot_corner_overlay(args)
     if "plot_compare_cats" in modes:
         _plot_compare_cats(args)
     if "plot_corr_a1h_a2h" in modes:
