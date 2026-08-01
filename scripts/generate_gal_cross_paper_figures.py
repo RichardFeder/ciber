@@ -1431,7 +1431,8 @@ def run_cross_redshift(args: argparse.Namespace) -> List[GeneratedFigure]:
         plot_fine=True,
         plot_coarse=True,
         bias_cache_fpath=bias_cache,
-        onehalo_output_dir=args.omnibus_onehalo_output_dir
+        onehalo_output_dir=args.omnibus_onehalo_output_dir,
+        mode='auto'
     )
 
     out: List[GeneratedFigure] = []

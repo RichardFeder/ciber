@@ -86,7 +86,7 @@ def _load_ciber_auto_file(bandstr):
 
 def load_onehalo_spectrum(onehalo_output_dir, fsat_model, bandstr_select, inst,
                                mag_min, mag_cut, z0, mode='Ig', generate_type='bulk',
-                               logM_min=None, concentration_scale=None):
+                               logM_min=None, concentration_scale=None, population='combined'):
 	"""
 	Load one-halo predictions for a given configuration and mode.
 
@@ -159,19 +159,70 @@ def load_onehalo_spectrum(onehalo_output_dir, fsat_model, bandstr_select, inst,
 	else:
 		raise ValueError(f"Unknown mode '{mode}'")
 
-	if all_cross_terms.ndim == 3 and all_cross_terms.shape[0] == 1:
-		# Bulk: shape (1, 4, n_ell)
-		dl_spectrum = np.sum(all_cross_terms[0, term_indices, :], axis=0)
+
+	print("Loading from population selection:", population)
+
+	def _extract_population_spectrum(dl_bypop_arr, pop_idx):
+		if dl_bypop_arr is None:
+			return None
+		arr = np.asarray(dl_bypop_arr)
+		if arr.ndim == 2:
+			arr = arr[None, :, :]
+		if arr.ndim != 3 or arr.shape[0] <= pop_idx:
+			return None
+		pop_spectra = np.asarray(arr[pop_idx])
+		if pop_spectra.ndim == 1:
+			return pop_spectra
+		selected = np.empty_like(pop_spectra, dtype=float)
+		for zidx in range(pop_spectra.shape[0]):
+			spec = pop_spectra[zidx]
+			if np.all(np.isfinite(spec)) and np.any(np.abs(spec) > 0.0):
+				selected[zidx] = spec
+			elif zidx > 0:
+				selected[zidx] = selected[zidx - 1]
+			else:
+				selected[zidx] = spec
+		return np.asarray(selected)
+
+	dl_bypop = npz_data.get('dl_bypop', None)
+	if isinstance(dl_bypop, np.ndarray):
+		dl_bypop_arr = np.asarray(dl_bypop)
+	elif isinstance(dl_bypop, dict):
+		dl_bypop_arr = np.asarray(dl_bypop.get(mode, next(iter(dl_bypop.values()))))
 	else:
-		# Fine: shape (n_zbins, 4, n_ell)
-		print('all_cross terms has shape', all_cross_terms.shape)
-		dl_spectrum = np.sum(all_cross_terms[term_indices, :, :], axis=0)  # shape (n_zbins, n_ell)
-		# return None
-		print('dl spectrum has shape', dl_spectrum.shape)
+		dl_bypop_arr = None
+
+	dl_spectrum_pop0 = _extract_population_spectrum(dl_bypop_arr, 0)
+	dl_spectrum_pop1 = _extract_population_spectrum(dl_bypop_arr, 1)
+
+	population_key = str(population).lower()
+	if population_key in {'combined', 'all', 'default'}:
+		if all_cross_terms.ndim == 3 and all_cross_terms.shape[0] == 1:
+			# Bulk: shape (1, 4, n_ell)
+			dl_spectrum = np.sum(all_cross_terms[0, term_indices, :], axis=0)
+		else:
+			# Fine: shape (n_zbins, 4, n_ell)
+			print('all_cross terms has shape', all_cross_terms.shape)
+			dl_spectrum = np.sum(all_cross_terms[term_indices, :, :], axis=0)  # shape (n_zbins, n_ell)
+			# return None
+			print('dl spectrum has shape', dl_spectrum.shape)
+	else:
+		pop_idx = 0 if population_key == 'pop0' else 1 if population_key == 'pop1' else None
+		if pop_idx is None:
+			raise ValueError(f"Unknown population '{population}'. Expected 'combined', 'pop0', or 'pop1'.")
+
+		if pop_idx == 0:
+			dl_spectrum = dl_spectrum_pop0
+		else:
+			dl_spectrum = dl_spectrum_pop1
+		if dl_spectrum is None:
+			raise ValueError(f"Could not interpret dl_bypop for requested population '{population}'")
 
 	return {
 		'ell_arr': ell_arr,
 		'dl_spectrum': dl_spectrum,
+		'dl_spectrum_pop0': dl_spectrum_pop0,
+		'dl_spectrum_pop1': dl_spectrum_pop1,
 		'all_cross_terms': all_cross_terms,
 	}
 
@@ -2681,7 +2732,7 @@ def rescale_gal_auto_2halo_bias(lb, gal_auto, z_center, bias_model='1+z',
 
 def smooth_mock_cross_with_bias(pred_fpath, z_center, b_g,
                                 shot_ell_min=30000., shot_ell_max=80000.,
-                                twoh_ell_max=1000., ell_eval=None):
+                                twoh_ell_max=1000., ell_eval=None, mode='cross'):
 	"""Fit shot-noise + flat two-halo to a noisy mock cross-spectrum and rescale by b_g.
 
 	The mock prediction files assume b_g = 1.  This function:
@@ -2717,7 +2768,10 @@ def smooth_mock_cross_with_bias(pred_fpath, z_center, b_g,
 
 	pred = np.load(pred_fpath)
 	lb   = np.asarray(pred['lb'], dtype=float)
-	cl   = np.asarray(pred['cross'], dtype=float)
+	if mode=='cross':
+		cl = np.asarray(pred['cross'], dtype=float)
+	else:
+		cl = np.asarray(pred['gal_auto'], dtype=float)
 	pf   = lb * (lb + 1.0) / (2.0 * np.pi)
 	dl   = pf * cl
 
@@ -2740,6 +2794,8 @@ def smooth_mock_cross_with_bias(pred_fpath, z_center, b_g,
 	dl_sub    = dl - A_shot * pf
 	A_2h      = float(np.nanmean(dl_sub[twoh_mask])) if np.any(twoh_mask) else 0.0
 	A_2h      = max(A_2h, 0.0)
+
+	print('A_2h is ', A_2h)
 
 	# --- smooth model: only two-halo rescaled by b_g (cross ∝ b_g^1); shot noise unchanged ---
 	dl_smooth = b_g * A_2h + A_shot * pf_eval
@@ -2795,7 +2851,8 @@ def gen_cross_spectrum_plots_vs_z(inst_list = [1, 2],
 								bias_cache_fpath=None, 
 								include_1h_pred=True, 
 								onehalo_output_dir=None,
-								onehalo_fsat_model='single'):
+								onehalo_fsat_model='single',
+								mode='cross'):
 
 
 	if plot_fine:
@@ -2834,8 +2891,9 @@ def gen_cross_spectrum_plots_vs_z(inst_list = [1, 2],
 											maskstr=maskstr, subtract_sn=False, 
 											tl_pix_correct=True)
 		
-		lb, full_cl_cross_ls_coarse, full_clerr_cross_ls_coarse = [res_ls_coarse[key] for key in ['lb', 'full_cl_cross', 'full_clerr_cross']]
+		# lb, full_cl_cross_ls_coarse, full_clerr_cross_ls_coarse = [res_ls_coarse[key] for key in ['lb', 'full_cl_cross', 'full_clerr_cross']]
 
+		lb, full_cl_cross_ls_coarse, full_clerr_cross_ls_coarse = [res_ls_coarse[key] for key in ['lb', 'full_cl_gal', 'full_clerr_gal']]
 
 		# for zidx in range(len(zbinedges_coarse)-1):
 			# fpath_ls = 'data/ciber_gal_cross_cls/DESILS_coarsez/cl_CIBER_DESILS_zbin'+str(zidx)+'.npz'
@@ -2854,19 +2912,20 @@ def gen_cross_spectrum_plots_vs_z(inst_list = [1, 2],
 											with_ff_err=True, 
 											headstr=headstr_hsc)
 		
-		lb, cl_cross_hsc, clerr_cross_hsc = [res_hsc[key] for key in ['lb', 'full_cl_cross', 'full_clerr_cross']]
+		# lb, cl_cross_hsc, clerr_cross_hsc = [res_hsc[key] for key in ['lb', 'full_cl_cross', 'full_clerr_cross']]
+		lb, cl_cross_hsc, clerr_cross_hsc = [res_hsc[key] for key in ['lb', 'full_cl_gal', 'full_clerr_gal']]
 
-		for inst in inst_list:
-			for zidx in range(len(zbinedges_coarse)-1):
-				fpath_hsc = 'data/ciber_gal_cross_cls/HSC_coarsez/cl_CIBER_TM'+str(inst)+'_HSC_ilt25.0_zbin'+str(zidx)+'.npz'
-				print('saving to ', fpath_hsc)
-				print('cl_Cross_hsc has shape', cl_cross_hsc.shape)
-				np.savez(fpath_hsc, lb=lb, cl=cl_cross_hsc[inst-1][zidx], clerr=clerr_cross_hsc[inst-1][zidx], 
-						inst=inst, zmin=zbinedges_coarse[zidx], zmax=zbinedges_coarse[zidx+1])
+		# for inst in inst_list:
+		# 	for zidx in range(len(zbinedges_coarse)-1):
+		# 		fpath_hsc = 'data/ciber_gal_cross_cls/HSC_coarsez/cl_CIBER_TM'+str(inst)+'_HSC_ilt25.0_zbin'+str(zidx)+'.npz'
+		# 		print('saving to ', fpath_hsc)
+		# 		print('cl_Cross_hsc has shape', cl_cross_hsc.shape)
+		# 		np.savez(fpath_hsc, lb=lb, cl=cl_cross_hsc[inst-1][zidx], clerr=clerr_cross_hsc[inst-1][zidx], 
+		# 				inst=inst, zmin=zbinedges_coarse[zidx], zmax=zbinedges_coarse[zidx+1])
 
-				fpath_ls = 'data/ciber_gal_cross_cls/DESILS_coarsez/cl_CIBER_TM'+str(inst)+'_DESILS_zbin'+str(zidx)+'.npz'
-				np.savez(fpath_ls, lb=lb, cl=full_cl_cross_ls_coarse[inst-1][zidx], clerr=full_clerr_cross_ls_coarse[inst-1][zidx], 
-						inst=inst, zmin=zbinedges_coarse[zidx], zmax=zbinedges_coarse[zidx+1])
+		# 		fpath_ls = 'data/ciber_gal_cross_cls/DESILS_coarsez/cl_CIBER_TM'+str(inst)+'_DESILS_zbin'+str(zidx)+'.npz'
+		# 		np.savez(fpath_ls, lb=lb, cl=full_cl_cross_ls_coarse[inst-1][zidx], clerr=full_clerr_cross_ls_coarse[inst-1][zidx], 
+		# 				inst=inst, zmin=zbinedges_coarse[zidx], zmax=zbinedges_coarse[zidx+1])
 
 
 		all_pred_fpaths_hsc = grab_ciber_cross_vs_z_predfpaths(inst_list=inst_list, zbinedges=zbinedges_coarse, 
@@ -2903,7 +2962,8 @@ def gen_cross_spectrum_plots_vs_z(inst_list = [1, 2],
 			bias_cache_fpath=bias_cache_fpath, bias_cache_scheme='coarse',
 			include_1h_pred=include_1h_pred,
 			onehalo_fsat_model=onehalo_fsat_model,
-			onehalo_output_dir=onehalo_output_dir
+			onehalo_output_dir=onehalo_output_dir,
+			mode=mode
 		)
 	else:
 		fig_coarse_ls_hsc = None
@@ -2983,7 +3043,8 @@ def plot_cross_ps_by_wavelength_and_redshift(
 	rescale_gal_auto_bias=False,
 	bias_model='1+z',
 	bias_cache_fpath=None, bias_cache_scheme='coarse', 
-	include_1h_pred=True, onehalo_fsat_model='single', onehalo_output_dir='data/one_halo_model_output'):
+	include_1h_pred=True, onehalo_fsat_model='single', onehalo_output_dir='data/one_halo_model_output', 
+	mode='cross'):
 	"""
 	Plots cross-power spectra for multiple wavelengths and redshift bins.
 
@@ -3072,7 +3133,7 @@ def plot_cross_ps_by_wavelength_and_redshift(
 							b_g = 1.0 + 0.84 * z_center
 						ell_eval = np.geomspace(xlim[0], xlim[1], 300)
 						ell_smooth, dl_smooth = smooth_mock_cross_with_bias(
-							pred_path, z_center, b_g, ell_eval=ell_eval)
+							pred_path, z_center, b_g, ell_eval=ell_eval, mode=mode)
 						if tl_pix_correct:
 							ifield_use = 6
 							tl_pix_path = f'data/fluctuation_data/transfer_function/tl_clx_pix_TM{inst_indiv}_ifield{ifield_use}.npz'

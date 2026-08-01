@@ -35,13 +35,270 @@ DEFAULT_BOUNDS = {
     'mu_1h': (np.log(500.), np.log(30000.)),  # log(ell_peak) bounds
     'sigma_1h': (0.1, 1.5),  # log-space width bounds
     'A_shot': (0., 100.),
+    'f_pop': (0., 1.),
     'sigma_damp': (0.1, 4.0),
 }
+
+
+def _full_param_name_sequence(include_sigma_damp=False, use_onehalo_popmix=False):
+    names = ['A_2h', 'A_1h', 'mu_1h', 'sigma_1h', 'A_shot']
+    if use_onehalo_popmix:
+        names.append('f_pop')
+    if include_sigma_damp:
+        names.append('sigma_damp')
+    return names
+
+
+def _normalize_param_name(name):
+    if name is None:
+        return ''
+    text = str(name).strip().lower()
+    text = text.replace('$', '').replace('\\', '').replace('{', '').replace('}', '').replace(' ', '')
+    aliases = {
+        'a2h': 'A_2h',
+        'a_2h': 'A_2h',
+        'a1h': 'A_1h',
+        'a_1h': 'A_1h',
+        'mu1h': 'mu_1h',
+        'mu_1h': 'mu_1h',
+        'sigma1h': 'sigma_1h',
+        'sigma_1h': 'sigma_1h',
+        'ashot': 'A_shot',
+        'a_shot': 'A_shot',
+        'fpop': 'f_pop',
+        'f_pop': 'f_pop',
+        'sigmadamp': 'sigma_damp',
+        'sigma_damp': 'sigma_damp',
+        'damp': 'sigma_damp',
+    }
+    # Try exact match first
+    if text in aliases:
+        return aliases[text]
+    # Check if key substrings are present (for LaTeX-formatted names)
+    if 'damp' in text:
+        return 'sigma_damp'
+    if 'fpop' in text or 'f_pop' in text:
+        return 'f_pop'
+    return text
+
+
+def resolve_full_param_value(params, param_names, param_name, use_astrometry_damping=False, use_onehalo_popmix=False, model=None):
+    """Resolve a parameter value from either a full parameter vector or a fitted-parameter subset."""
+    if params is None:
+        return None
+
+    if isinstance(param_names, (list, tuple, np.ndarray)):
+        names = list(param_names)
+    else:
+        names = _full_param_name_sequence(
+            include_sigma_damp=bool(use_astrometry_damping),
+            use_onehalo_popmix=bool(use_onehalo_popmix),
+        )
+
+    if isinstance(params, dict):
+        return params.get(param_name, None)
+
+    params_arr = np.asarray(params, dtype=float)
+    if params_arr.ndim == 0:
+        return None
+
+    normalized_target = _normalize_param_name(param_name)
+    if len(names) == len(params_arr):
+        for idx, name in enumerate(names):
+            if _normalize_param_name(name) == normalized_target:
+                return float(params_arr[idx])
+        return None
+
+    # Allow a fitted-parameter subset to be mapped using a standard full-parameter ordering.
+    if param_name == 'A_2h':
+        return float(params_arr[0]) if len(params_arr) > 0 else None
+    if param_name == 'A_1h':
+        return float(params_arr[1]) if len(params_arr) > 1 else None
+    if param_name == 'mu_1h':
+        return float(params_arr[2]) if len(params_arr) > 2 else None
+    if param_name == 'sigma_1h':
+        return float(params_arr[3]) if len(params_arr) > 3 else None
+    if param_name == 'A_shot':
+        return float(params_arr[4]) if len(params_arr) > 4 else None
+    if param_name == 'f_pop':
+        if use_onehalo_popmix:
+            return float(params_arr[5]) if len(params_arr) > 5 else None
+        return None
+    if param_name == 'sigma_damp':
+        if use_astrometry_damping:
+            # sigma_damp is at index 6 if popmix is enabled, else at index 5
+            damp_idx = 6 if use_onehalo_popmix else 5
+            print('SIGMA DAMP RESOLVED IS ', params_arr[damp_idx])
+            return float(params_arr[damp_idx]) if len(params_arr) > damp_idx else None
+        return None
+    return None
+
+
+def expand_fit_samples_to_full_vector(samples, params_full, param_names_fitted=None, use_astrometry_damping=False, use_onehalo_popmix=False):
+    """Expand MCMC samples from fitted-parameter space into the full model parameter vector."""
+    if samples is None:
+        return None
+
+    samples_arr = np.asarray(samples, dtype=float)
+    if samples_arr.ndim == 1:
+        samples_arr = samples_arr[np.newaxis, :]
+
+    n_samples = samples_arr.shape[0]
+    full_names = _full_param_name_sequence(
+        include_sigma_damp=bool(use_astrometry_damping),
+        use_onehalo_popmix=bool(use_onehalo_popmix),
+    )
+    params_full_arr = np.asarray(params_full, dtype=float)[:len(full_names)]
+
+    if samples_arr.shape[1] == len(full_names):
+        return samples_arr
+
+    full_samples = np.tile(params_full_arr, (n_samples, 1))
+    if samples_arr.shape[1] == 0:
+        return full_samples
+
+    if param_names_fitted is None:
+        param_names_fitted = []
+
+    name_labels = [_normalize_param_name(name) for name in param_names_fitted]
+    if len(name_labels) == samples_arr.shape[1]:
+        for fit_idx, label in enumerate(name_labels):
+            if label in {'A_2h', 'a2h'}:
+                target = 'A_2h'
+            elif label in {'A_1h', 'a1h'}:
+                target = 'A_1h'
+            elif label in {'mu_1h', 'mu1h'}:
+                target = 'mu_1h'
+            elif label in {'sigma_1h', 'sigma1h'}:
+                target = 'sigma_1h'
+            elif label in {'A_shot', 'ashot'}:
+                target = 'A_shot'
+            elif label in {'f_pop', 'fpop'}:
+                target = 'f_pop'
+            elif label in {'sigma_damp'}:
+                target = 'sigma_damp'
+            else:
+                target = None
+
+            if target is not None:
+                target_idx = full_names.index(target)
+                full_samples[:, target_idx] = samples_arr[:, fit_idx]
+        return full_samples
+
+    # Fallback for common fixed-shape cases.
+    if use_astrometry_damping and use_onehalo_popmix:
+        # Fitted order: [A_2h, A_1h, A_shot, f_pop, sigma_damp]
+        if samples_arr.shape[1] >= 5:
+            full_samples[:, 0] = samples_arr[:, 0]
+            full_samples[:, 1] = samples_arr[:, 1]
+            full_samples[:, 4] = samples_arr[:, 2]
+            full_samples[:, 5] = samples_arr[:, 3]
+            full_samples[:, 6] = samples_arr[:, 4]
+            return full_samples
+    if use_astrometry_damping and not use_onehalo_popmix:
+        if samples_arr.shape[1] >= 4:
+            full_samples[:, 0] = samples_arr[:, 0]
+            full_samples[:, 1] = samples_arr[:, 1]
+            full_samples[:, 4] = samples_arr[:, 2]
+            full_samples[:, 5] = samples_arr[:, 3]
+            return full_samples
+    if use_onehalo_popmix and not use_astrometry_damping:
+        if samples_arr.shape[1] >= 4:
+            full_samples[:, 0] = samples_arr[:, 0]
+            full_samples[:, 1] = samples_arr[:, 1]
+            full_samples[:, 4] = samples_arr[:, 2]
+            full_samples[:, 5] = samples_arr[:, 3]
+            return full_samples
+    if samples_arr.shape[1] >= 3:
+        full_samples[:, 0] = samples_arr[:, 0]
+        full_samples[:, 1] = samples_arr[:, 1]
+        full_samples[:, 4] = samples_arr[:, 2]
+    return full_samples
+
 
 def _bounds_from_names(names):
     lo = np.array([DEFAULT_BOUNDS[n][0] for n in names], float)
     hi = np.array([DEFAULT_BOUNDS[n][1] for n in names], float)
     return lo, hi
+
+
+def _autocorr_time(x):
+    """Estimate the integrated autocorrelation time for a 1D chain."""
+    x = np.asarray(x, dtype=float)
+    if x.size < 2:
+        return np.nan
+
+    try:
+        from emcee.autocorr import integrated_time as emcee_integrated_time
+        return float(emcee_integrated_time(x, quiet=True))
+    except Exception:
+        x = x - np.mean(x)
+        n = x.size
+        corr = np.correlate(x, x, mode='full')[n - 1:] / np.arange(n, 0, -1)
+        corr = corr / corr[0]
+        tau = 1.0
+        for lag in range(1, len(corr)):
+            if corr[lag] <= 0:
+                break
+            tau += 2.0 * corr[lag]
+        return float(tau)
+
+
+def _gelman_rubin(chains):
+    """Compute the Gelman-Rubin R-hat statistic for a set of chains."""
+    chains = np.asarray(chains, dtype=float)
+    if chains.ndim != 3:
+        raise ValueError("chains must have shape (nchains, nsteps, nparams)")
+
+    n_chains, n_steps, n_params = chains.shape
+    if n_chains < 2:
+        return np.ones(n_params, dtype=float)
+
+    chain_means = np.mean(chains, axis=1)
+    chain_vars = np.var(chains, axis=1, ddof=1)
+
+    mean_of_means = np.mean(chain_means, axis=0)
+    between = n_steps * np.var(chain_means, axis=0, ddof=1)
+    within = np.mean(chain_vars, axis=0)
+    var_est = ((n_steps - 1.0) / n_steps) * within + between / (n_steps * n_chains)
+    rhat = np.sqrt(np.divide(var_est, within, out=np.ones_like(var_est), where=np.abs(within) > 1e-30))
+    return rhat
+
+
+def _compute_mcmc_diagnostics(samples, sampler=None, discard=0, param_names=None):
+    """Compute autocorrelation time, R-hat, and effective sample size."""
+    samples_arr = np.asarray(samples, dtype=float)
+    if samples_arr.size == 0:
+        tau = np.array([], dtype=float)
+        rhat = np.array([], dtype=float)
+        ess = np.array([], dtype=float)
+        return {'tau': tau, 'rhat': rhat, 'ess': ess, 'param_names': list(param_names or [])}
+
+    if samples_arr.ndim == 1:
+        samples_arr = samples_arr[:, None]
+    if samples_arr.ndim != 2:
+        raise ValueError("samples must be 1D or 2D")
+
+    n_samples, n_params = samples_arr.shape
+    tau = np.array([_autocorr_time(samples_arr[:, j]) for j in range(n_params)], dtype=float)
+    ess = np.array([float(n_samples / max(tau_j, 1e-12)) for tau_j in tau], dtype=float)
+    ess = np.clip(ess, 0.0, float(n_samples))
+
+    if sampler is not None:
+        try:
+            chain_samples = sampler.get_chain(discard=discard, flat=False)
+            if chain_samples.ndim == 3:
+                chains = np.moveaxis(chain_samples, 0, 1)
+                rhat = _gelman_rubin(chains)
+            else:
+                rhat = np.ones(n_params, dtype=float)
+        except Exception:
+            rhat = np.ones(n_params, dtype=float)
+    else:
+        rhat = np.ones(n_params, dtype=float)
+
+    return {'tau': tau, 'rhat': rhat, 'ess': ess, 'param_names': list(param_names or [])}
+
 
 @dataclass
 class FitConfig:
@@ -64,6 +321,9 @@ class FitConfig:
 
     # fitted parameter names (subset space)
     fit_names: list[str] = None
+    full_param_names: list[str] = None
+    fixed_values: dict | None = None
+    use_onehalo_popmix: bool = False
 
 
 @dataclass
@@ -413,29 +673,63 @@ class CrossPowerSpectrumModel:
         return {
             'ell_arr': np.asarray(ell_arr),
             'dl_spectrum': np.asarray(dl_spectrum),
+            'dl_spectrum_pop0': np.asarray(template['dl_spectrum_pop0']) if isinstance(template, dict) and template.get('dl_spectrum_pop0') is not None else None,
+            'dl_spectrum_pop1': np.asarray(template['dl_spectrum_pop1']) if isinstance(template, dict) and template.get('dl_spectrum_pop1') is not None else None,
         }
 
-    def _onehalo_template_component(self, ell, amplitude, mu_1h=None, sigma_1h=None, z_bin_index=None):
+    def _supports_onehalo_population_mixture(self, z_bin_index=None):
+        template_data = self._get_onehalo_template(z_bin_index=z_bin_index)
+        if template_data is None:
+            return False
+        return template_data.get('dl_spectrum_pop0') is not None and template_data.get('dl_spectrum_pop1') is not None
+
+    def _full_param_name_sequence(self, include_sigma_damp=False, use_onehalo_popmix=False):
+        return _full_param_name_sequence(
+            include_sigma_damp=include_sigma_damp,
+            use_onehalo_popmix=use_onehalo_popmix,
+        )
+
+    def _expand_fit_params(self, params_subset, cfg: FitConfig, zero_fixed=False):
+        full = dict(cfg.fixed_values or {})
+        for i, name in enumerate(cfg.fit_names):
+            full[name] = float(params_subset[i])
+
+        if zero_fixed:
+            for name, value in list(full.items()):
+                if name not in cfg.fit_names and value is not None:
+                    full[name] = 0.0
+
+        ordered = [full[name] for name in cfg.full_param_names]
+        return np.asarray(ordered, dtype=float)
+
+    def _onehalo_template_component(self, ell, amplitude, mu_1h=None, sigma_1h=None, z_bin_index=None, f_pop=None):
         """Evaluate the one-halo term from either a fixed template or a lognormal fallback."""
         if not self.use_one_halo:
             return np.zeros_like(ell, dtype=float)
 
         template_data = self._get_onehalo_template(z_bin_index=z_bin_index)
         if template_data is not None:
+            dl_template = template_data['dl_spectrum']
+            dl_pop0 = template_data.get('dl_spectrum_pop0')
+            dl_pop1 = template_data.get('dl_spectrum_pop1')
+            if dl_pop0 is not None and dl_pop1 is not None and f_pop is not None:
+                f_use = float(np.clip(f_pop, 0.0, 1.0))
+                dl_template = (1.0 - f_use) * dl_pop0 + f_use * dl_pop1
             return self.ihl_template_component(
                 ell,
                 amplitude,
                 template_data['ell_arr'],
-                template_data['dl_spectrum'],
+                dl_template,
             )
 
         if mu_1h is None or sigma_1h is None:
             raise ValueError("mu_1h and sigma_1h are required when no one-halo template is provided")
         return self.lognormal_component(ell, amplitude, mu_1h, sigma_1h)
 
-    def _build_fit_config(self, z_value=None, inst=None, verbose=True):
+    def _build_fit_config(self, z_value=None, inst=None, verbose=True, z_bin_index=None):
         fixed_mu_sigma = (self.mu_1h_fixed is not None and self.sigma_1h_fixed is not None)
         fixed_A2h = (self.A_2h_fixed is not None) and self.use_one_halo and self.use_two_halo
+        use_onehalo_popmix = self.use_one_halo and self._supports_onehalo_population_mixture(z_bin_index=z_bin_index)
 
         ln_val = None
 
@@ -445,21 +739,42 @@ class CrossPowerSpectrumModel:
             sigma_damp_val = self.sigma_damp_fixed.get(inst, None)
             fixed_sigma_damp = sigma_damp_val is not None
 
-        # Define fitted subset names once
-        if not self.use_two_halo:
-            fit_names = ['A_1h', 'A_shot']
-        elif not self.use_one_halo:
-            fit_names = ['A_2h', 'A_shot']
-        elif fixed_A2h and fixed_mu_sigma:
-            fit_names = ['A_1h', 'A_shot']
-        elif fixed_mu_sigma:
-            fit_names = ['A_2h', 'A_1h', 'A_shot']
-        else:
-            # Default case: both 1h and 2h free, no fixed params
-            fit_names = ['A_2h', 'A_1h', 'mu_1h', 'sigma_1h', 'A_shot']
+        full_param_names = self._full_param_name_sequence(
+            include_sigma_damp=self.use_astrometry_damping,
+            use_onehalo_popmix=use_onehalo_popmix,
+        )
 
-        if self.use_astrometry_damping and not fixed_sigma_damp:
-            fit_names.append('sigma_damp')
+        fixed_values = {
+            'A_2h': None,
+            'A_1h': None,
+            'mu_1h': None,
+            'sigma_1h': None,
+            'A_shot': None,
+        }
+        if use_onehalo_popmix:
+            fixed_values['f_pop'] = None
+        if self.use_astrometry_damping:
+            fixed_values['sigma_damp'] = None
+
+        if not self.use_two_halo:
+            fixed_values['A_2h'] = 0.0
+        elif fixed_A2h:
+            fixed_values['A_2h'] = self.A_2h_fixed
+
+        if not self.use_one_halo:
+            fixed_values['A_1h'] = 0.0
+            fixed_values['mu_1h'] = 0.0
+            fixed_values['sigma_1h'] = 0.0
+            if use_onehalo_popmix:
+                fixed_values['f_pop'] = 0.5
+        elif fixed_mu_sigma:
+            fixed_values['mu_1h'] = self.mu_1h_fixed
+            fixed_values['sigma_1h'] = self.sigma_1h_fixed
+
+        if self.use_astrometry_damping and fixed_sigma_damp:
+            fixed_values['sigma_damp'] = sigma_damp_val
+
+        fit_names = [name for name in full_param_names if fixed_values.get(name) is None]
 
         return FitConfig(
             use_two_halo=self.use_two_halo,
@@ -473,11 +788,14 @@ class CrossPowerSpectrumModel:
             sigma_val=self.sigma_1h_fixed if fixed_mu_sigma else None,
             ln_ell_peak_val=ln_val,
             sigma_damp_val=sigma_damp_val,
-            fit_names=fit_names
+            fit_names=fit_names,
+            full_param_names=full_param_names,
+            fixed_values=fixed_values,
+            use_onehalo_popmix=use_onehalo_popmix,
         )
 
 
-    def model_dl(self, ell, A_2h, A_1h, mu_1h, sigma_1h, A_shot, sigma_damp=None, z_bin_index=None):
+    def model_dl(self, ell, A_2h, A_1h, mu_1h, sigma_1h, A_shot, sigma_damp=None, z_bin_index=None, f_pop=None):
         """
         Full parametric model in D_ℓ space.
         
@@ -529,6 +847,7 @@ class CrossPowerSpectrumModel:
             mu_1h=mu_1h,
             sigma_1h=sigma_1h,
             z_bin_index=z_bin_index,
+            f_pop=f_pop,
         )
         
         # Shot noise contribution
@@ -544,7 +863,7 @@ class CrossPowerSpectrumModel:
         
         return dl_total
         
-    def model_components(self, ell, A_2h, A_1h, mu_1h, sigma_1h, A_shot, sigma_damp=None, z_bin_index=None):
+    def model_components(self, ell, A_2h, A_1h, mu_1h, sigma_1h, A_shot, sigma_damp=None, z_bin_index=None, f_pop=None):
         """
         Get individual model components.
         
@@ -586,6 +905,7 @@ class CrossPowerSpectrumModel:
                 mu_1h=mu_1h,
                 sigma_1h=sigma_1h,
                 z_bin_index=z_bin_index,
+                f_pop=f_pop,
             )
         else:
             dl_1h = np.zeros_like(ell)
@@ -929,10 +1249,13 @@ class CrossPowerSpectrumModel:
         if dl_err is None:
             raise ValueError("dl_err is required for MCMC fitting when no covariance provided")
     
-        cfg = self._build_fit_config(z_value=z_value, inst=inst, verbose=verbose)
+        cfg = self._build_fit_config(z_value=z_value, inst=inst, verbose=verbose, z_bin_index=z_bin_index)
 
-        param_names = cfg.fit_names   
+        param_names = list(cfg.fit_names)
         n_params = len(param_names)
+        use_fixed_mu_sigma = cfg.fixed_mu_sigma
+        use_fixed_A_2h = cfg.fixed_A2h
+        use_fixed_sigma_damp = cfg.fixed_sigma_damp
 
         # Apply fit range mask
         if fit_range is not None:
@@ -943,61 +1266,12 @@ class CrossPowerSpectrumModel:
         else:
             lb_fit, dl_fit, dl_err_fit = lb_data, dl_data, dl_err
         
-        # Check if using one-halo term and two-halo term
-        if not self.use_two_halo:
-            # When fitting without 2h, check if 1h shape parameters are fixed
-            use_fixed_mu_sigma = (self.mu_1h_fixed is not None and self.sigma_1h_fixed is not None)
-            use_fixed_A_2h = False  # 2h is zeroed, not fixed to a value
-            
-            if verbose:
-                if use_fixed_mu_sigma:
-                    print(f"Fitting without two-halo term: [A_1h, A_shot] (with fixed 1h shape)")
-                if self.use_astrometry_damping:
-                    print("  + damping parameter [sigma_damp]")
-        elif not self.use_one_halo:
-            # When fitting without 1h, check if 2h parameters are fixed
-            use_fixed_mu_sigma = False  # 1h not being used
-            use_fixed_A_2h = False  # not relevant without 1h
-            if verbose:
-                print("Fitting without one-halo term: [A_2h, A_shot]")
-                if self.use_astrometry_damping:
-                    print("  + damping parameter [sigma_damp]")
-        else:
-            # Check if using fixed 1h shape parameters
-            use_fixed_mu_sigma = (self.mu_1h_fixed is not None and self.sigma_1h_fixed is not None)
-            use_fixed_A_2h = self.A_2h_fixed is not None
-            
-            if use_fixed_mu_sigma:
-                if verbose:
-                    print(f"Fixing 1h shape: mu_1h={self.mu_1h_fixed:.3f}, sigma_1h={self.sigma_1h_fixed:.3f}")
-            
-            if use_fixed_A_2h:
-                if verbose:
-                    print(f"Fixing A_2h to IGL prediction: A_2h={self.A_2h_fixed:.4f} (free params: [A_1h, A_shot])")
-        
-
         lower_bounds, upper_bounds = _bounds_from_names(cfg.fit_names)
         
         print('n_params:', n_params)
         print('param_names:', param_names)
         print('lower bounds:', lower_bounds)
         print('upper bounds:', upper_bounds)
-        
-        # Check if sigma_damp is fixed for this instrument
-        use_fixed_sigma_damp = False
-        sigma_damp_fixed_value = None
-        if self.use_astrometry_damping and inst is not None and self.sigma_damp_fixed:
-            sigma_damp_fixed_value = self.sigma_damp_fixed.get(inst, None)
-            if sigma_damp_fixed_value is not None:
-                use_fixed_sigma_damp = True
-                # Only remove sigma_damp from the parameters if it's actually there
-                # (it might not be if _build_fit_config already excluded it)
-                if 'sigma_damp' in param_names:
-                    n_params -= 1
-                    param_names = param_names[:-1]  # Remove sigma_damp from names
-                    # Remove sigma_damp bounds
-                    lower_bounds = lower_bounds[:-1]
-                    upper_bounds = upper_bounds[:-1]
         
         if verbose:
             print("\n" + "="*60)
@@ -1009,6 +1283,8 @@ class CrossPowerSpectrumModel:
                 print(f"Fixed parameters: mu_1h={self.mu_1h_fixed:.3f}, sigma_1h={self.sigma_1h_fixed:.3f}")
             if use_fixed_A_2h:
                 print(f"Fixed A_2h = {self.A_2h_fixed:.4f} (IGL prediction)")
+            if cfg.use_onehalo_popmix:
+                print("Fitting one-halo population mix fraction: f_pop")
             print(f"Prior bounds:")
             for i, name in enumerate(param_names):
                 print(f"  {name}: [{lower_bounds[i]:.4g}, {upper_bounds[i]:.4g}]")
@@ -1025,51 +1301,26 @@ class CrossPowerSpectrumModel:
         
         # Define log likelihood
         def log_likelihood(params):
-            # Extract damping parameter if present
-            if self.use_astrometry_damping and not use_fixed_sigma_damp:
-                params_no_damp = params[:-1]
-                sigma_damp = params[-1]
-            elif use_fixed_sigma_damp:
-                params_no_damp = params
-                sigma_damp = sigma_damp_fixed_value
-            else:
-                params_no_damp = params
-                sigma_damp = None
-            
-            if not self.use_two_halo:
-                # NO 2h component case: [A_1h, ...] (+ optional sigma_damp)
-                # Insert zero value for A_2h to make 5-parameter array
-                if use_fixed_mu_sigma:
-                    # mu and sigma are fixed: params = [A_1h, A_shot]
-                    params_full = np.array([0.0, params_no_damp[0], 
-                                           self.mu_1h_fixed, self.sigma_1h_fixed, params_no_damp[1]])
-                else:
-                    # Full 1h parameters vary: params = [A_1h, mu_1h, sigma_1h, A_shot]
-                    params_full = np.array([0.0, params_no_damp[0], 
-                                           params_no_damp[1], params_no_damp[2], params_no_damp[3]])
-            elif not self.use_one_halo:
-                # 2-parameter case: [A_2h, A_shot] (+ optional sigma_damp)
-                # Insert zero values for 1h parameters to make 5-parameter array
-                params_full = np.array([params_no_damp[0], 0.0, 0.0, 0.0, params_no_damp[1]])
-            elif use_fixed_A_2h and use_fixed_mu_sigma:
-                # A_2h fixed to IGL value, 1h shape fixed: params = [A_1h, A_shot]
-                # Reconstruct 5-parameter array using fixed values
-                params_full = np.array([self.A_2h_fixed, params_no_damp[0],
-                                       self.mu_1h_fixed, self.sigma_1h_fixed, params_no_damp[1]])
-            elif use_fixed_mu_sigma:
-                # 3-parameter case: [A_2h, A_1h, A_shot] (+ optional sigma_damp)
-                # Insert fixed mu and sigma to make 5-parameter array
-                params_full = np.array([params_no_damp[0], params_no_damp[1], 
-                                       self.mu_1h_fixed, self.sigma_1h_fixed, params_no_damp[2]])
-            else:
-                # 5-parameter case: use as is (+ optional sigma_damp)
-                params_full = params_no_damp
-            
-            # Call model_dl with or without damping
-            if sigma_damp is not None:
-                model = self.model_dl(lb_fit, *params_full, sigma_damp=sigma_damp, z_bin_index=z_bin_index)
-            else:
-                model = self.model_dl(lb_fit, *params_full, z_bin_index=z_bin_index)
+            params_full = self._expand_fit_params(params, cfg)
+            A_2h, A_1h, mu_1h, sigma_1h, A_shot = params_full[:5]
+            offset = 5
+            f_pop = None
+            if cfg.use_onehalo_popmix:
+                f_pop = params_full[offset]
+                offset += 1
+            sigma_damp = params_full[offset] if cfg.use_astrometry_damping else None
+
+            model = self.model_dl(
+                lb_fit,
+                A_2h,
+                A_1h,
+                mu_1h,
+                sigma_1h,
+                A_shot,
+                sigma_damp=sigma_damp,
+                z_bin_index=z_bin_index,
+                f_pop=f_pop,
+            )
             
             # Compute likelihood
             residual = dl_fit - model
@@ -1109,21 +1360,9 @@ class CrossPowerSpectrumModel:
         else:
             # User provided initial_guess - ensure it has correct dimension
             initial_guess = np.array(initial_guess)
-            
-            # Check if damping parameter needs to be added/removed
-            if self.use_astrometry_damping:
-                expected_len = n_params  # Should include damping
-                if len(initial_guess) == expected_len - 1:
-                    # User didn't provide damping parameter, add default
-                    if verbose:
-                        print("Adding default damping parameter (2.0 arcsec) to initial guess")
-                    initial_guess = np.append(initial_guess, 2.0)
-                elif len(initial_guess) != expected_len:
-                    raise ValueError(f"Initial guess has wrong dimension: {len(initial_guess)} vs expected {expected_len}")
-            else:
-                # Not using damping
-                if len(initial_guess) != n_params:
-                    raise ValueError(f"Initial guess has wrong dimension: {len(initial_guess)} vs expected {n_params}")
+
+            if len(initial_guess) != n_params:
+                raise ValueError(f"Initial guess has wrong dimension: {len(initial_guess)} vs expected {n_params}")
             
             # Validate initial guess
             if len(initial_guess) != len(lower_bounds):
@@ -1138,10 +1377,10 @@ class CrossPowerSpectrumModel:
         # Initialize walkers with proper spread to ensure linear independence
         prior_widths = upper_bounds - lower_bounds
         perturbation_scale = prior_widths * 0.01  # Default 1% of prior range
-        
-        # Damping parameter gets larger perturbation scale (~1 arcsec)
-        if self.use_astrometry_damping:
-            perturbation_scale[-1] = 1.0
+
+        if 'sigma_damp' in param_names:
+            damp_idx = param_names.index('sigma_damp')
+            perturbation_scale[damp_idx] = 1.0
         
         # Generate initial positions
         pos = initial_guess + perturbation_scale * np.random.randn(nwalkers, n_params)
@@ -1186,86 +1425,8 @@ class CrossPowerSpectrumModel:
         # Compute covariance matrix
         cov_matrix = np.cov(samples.T)
         
-        # Reconstruct full 5-parameter array for compatibility (6 if damping enabled)
         def reconstruct_full_params(params_subset, zero_fixed=False):
-            """Insert fixed parameters back into full array
-            
-            If zero_fixed=True, set fixed parameter uncertainties to 0.0
-            """
-            if not self.use_two_halo:
-                # No two-halo: A_2h=0
-                mu_val = 0.0 if zero_fixed else self.mu_1h_fixed
-                sigma_val = 0.0 if zero_fixed else self.sigma_1h_fixed
-                if use_fixed_mu_sigma:
-                    # params_subset = [A_1h, A_shot, sigma_damp (optional, only if not fixed)]
-                    if self.use_astrometry_damping and not use_fixed_sigma_damp:
-                        # Return [A_2h, A_1h, mu_1h, sigma_1h, A_shot, sigma_damp]
-                        return np.array([0.0, params_subset[0], mu_val,
-                                       sigma_val, params_subset[1], params_subset[2]])
-                    elif use_fixed_sigma_damp:
-                        # Return [A_2h, A_1h, mu_1h, sigma_1h, A_shot, sigma_damp]
-                        return np.array([0.0, params_subset[0], mu_val,
-                                       sigma_val, params_subset[1], sigma_damp_fixed_value])
-                    else:
-                        # Return [A_2h, A_1h, mu_1h, sigma_1h, A_shot]
-                        return np.array([0.0, params_subset[0], mu_val,
-                                       sigma_val, params_subset[1]])
-                else:
-                    # Full 1h parameters: params_subset = [A_1h, mu_1h, sigma_1h, A_shot, sigma_damp (optional)]
-                    if self.use_astrometry_damping and not use_fixed_sigma_damp:
-                        return np.array([0.0, params_subset[0], params_subset[1],
-                                       params_subset[2], params_subset[3], params_subset[4]])
-                    elif use_fixed_sigma_damp:
-                        return np.array([0.0, params_subset[0], params_subset[1],
-                                       params_subset[2], params_subset[3], sigma_damp_fixed_value])
-                    else:
-                        return np.array([0.0, params_subset[0], params_subset[1],
-                                       params_subset[2], params_subset[3]])
-            elif not self.use_one_halo:
-                # No one-halo: insert dummy values for A_1h, mu_1h, sigma_1h
-                if self.use_astrometry_damping and not use_fixed_sigma_damp:
-                    # params_subset = [A_2h, A_shot, sigma_damp]
-                    return np.array([params_subset[0], 0.0, 0.0, 0.0, params_subset[1], params_subset[2]])
-                elif use_fixed_sigma_damp:
-                    return np.array([params_subset[0], 0.0, 0.0, 0.0, params_subset[1], sigma_damp_fixed_value])
-                else:
-                    # params_subset = [A_2h, A_shot]
-                    return np.array([params_subset[0], 0.0, 0.0, 0.0, params_subset[1]])
-            elif use_fixed_A_2h and use_fixed_mu_sigma:
-                # A_2h fixed to IGL, 1h shape fixed: params_subset = [A_1h, A_shot, sigma_damp (optional)]
-                a2h_val = 0.0 if zero_fixed else self.A_2h_fixed
-                mu_val = 0.0 if zero_fixed else self.mu_1h_fixed
-                sigma_val = 0.0 if zero_fixed else self.sigma_1h_fixed
-                if self.use_astrometry_damping and not use_fixed_sigma_damp:
-                    return np.array([a2h_val, params_subset[0], mu_val,
-                                   sigma_val, params_subset[1], params_subset[2]])
-                elif use_fixed_sigma_damp:
-                    return np.array([a2h_val, params_subset[0], mu_val,
-                                   sigma_val, params_subset[1], sigma_damp_fixed_value])
-                else:
-                    return np.array([a2h_val, params_subset[0], mu_val,
-                                   sigma_val, params_subset[1]])
-            elif use_fixed_mu_sigma:
-                # Insert mu_1h at index 2, sigma_1h at index 3
-                mu_val = 0.0 if zero_fixed else self.mu_1h_fixed
-                sigma_val = 0.0 if zero_fixed else self.sigma_1h_fixed
-                if self.use_astrometry_damping and not use_fixed_sigma_damp:
-                    return np.array([params_subset[0], params_subset[1], mu_val,
-                                   sigma_val, params_subset[2], params_subset[3]])
-                elif use_fixed_sigma_damp:
-                    return np.array([params_subset[0], params_subset[1], mu_val,
-                                   sigma_val, params_subset[2], sigma_damp_fixed_value])
-                else:
-                    return np.array([params_subset[0], params_subset[1], mu_val,
-                                   sigma_val, params_subset[2]])
-
-            else:
-                # Full parameters
-                if use_fixed_sigma_damp:
-                    # params_subset doesn't have sigma_damp, add it
-                    return np.append(params_subset, sigma_damp_fixed_value)
-                else:
-                    return params_subset
+            return self._expand_fit_params(params_subset, cfg, zero_fixed=zero_fixed)
         
         params_median_full = reconstruct_full_params(params_median)
         params_std_full = reconstruct_full_params(params_std, zero_fixed=True)
@@ -1282,13 +1443,20 @@ class CrossPowerSpectrumModel:
         chi2_mask = (lb_fit >= 300) & (lb_fit <= chi2_eval_max)
         lb_chi2 = lb_fit[chi2_mask]
         dl_chi2 = dl_fit[chi2_mask]
-        # Call model_dl with proper parameter handling for damping
-        if self.use_astrometry_damping:
-            # params_median_full has 6 elements: [A_2h, A_1h, mu_1h, sigma_1h, A_shot, sigma_damp]
-            model_chi2 = self.model_dl(lb_chi2, *params_median_full[:5], sigma_damp=params_median_full[5], z_bin_index=z_bin_index)
-        else:
-            # params_median_full has 5 elements
-            model_chi2 = self.model_dl(lb_chi2, *params_median_full, z_bin_index=z_bin_index)
+        offset = 5
+        f_pop_med = None
+        if cfg.use_onehalo_popmix:
+            f_pop_med = params_median_full[offset]
+            offset += 1
+        sigma_damp_med = params_median_full[offset] if cfg.use_astrometry_damping else None
+
+        model_chi2 = self.model_dl(
+            lb_chi2,
+            *params_median_full[:5],
+            sigma_damp=sigma_damp_med,
+            z_bin_index=z_bin_index,
+            f_pop=f_pop_med,
+        )
         dl_err_chi2 = dl_err_fit[chi2_mask]
         
         chisq = np.sum(((dl_chi2 - model_chi2) / dl_err_chi2)**2)
@@ -1332,12 +1500,16 @@ class CrossPowerSpectrumModel:
                     print(f"  sigma_1h = {params_median_full[3]:.4f} (fixed)")
                 else:
                     print(f"  sigma_1h = {params_median_full[3]:.4f} ± {params_std_full[3]:.4f} [{params_16_full[3]:.4f}, {params_84_full[3]:.4f}]")
+                if cfg.use_onehalo_popmix:
+                    f_idx = 5
+                    print(f"  f_pop    = {params_median_full[f_idx]:.4f} ± {params_std_full[f_idx]:.4f} [{params_16_full[f_idx]:.4f}, {params_84_full[f_idx]:.4f}]")
             print(f"  A_shot   = {1e7*params_median_full[4]:.4f} ± {1e7*params_std_full[4]:.4f} [{1e7*params_16_full[4]:.4f}, {1e7*params_84_full[4]:.4f}]")
             if self.use_astrometry_damping:
+                damp_idx = 6 if cfg.use_onehalo_popmix else 5
                 if use_fixed_sigma_damp:
-                    print(f"  σ_damp   = {params_median_full[5]:.2f} arcsec (fixed)")
+                    print(f"  σ_damp   = {params_median_full[damp_idx]:.2f} arcsec (fixed)")
                 else:
-                    print(f"  σ_damp   = {params_median_full[5]:.2f} ± {params_std_full[5]:.2f} [{params_16_full[5]:.2f}, {params_84_full[5]:.2f}] arcsec")
+                    print(f"  σ_damp   = {params_median_full[damp_idx]:.2f} ± {params_std_full[damp_idx]:.2f} [{params_16_full[damp_idx]:.2f}, {params_84_full[damp_idx]:.2f}] arcsec")
             if self.use_powerlaw_2h:
                 print(f"  alpha_2h = {self.alpha_2h_fixed:.2f} (fixed)")
             print(f"  χ²/dof   = {chisq:.2f}/{ndof} = {reduced_chisq:.2f} (ℓ < {chi2_eval_max})")
@@ -1346,31 +1518,25 @@ class CrossPowerSpectrumModel:
             if report_A2h_upper_limit:
                 print("\n  ⚠️  Consider reporting A_2h as upper limit (posterior piled up near zero)")
         
-        # Create parameter names for only the fitted parameters (for corner plot)
-        if not self.use_two_halo:
-            # Fitting without 2-halo term
-            if use_fixed_mu_sigma:
-                # 2-parameter case: only A_1h, A_shot
-                param_names_fitted = ['$A_{1h}$', '$A_{shot}$']
-        elif not self.use_one_halo:
-            # 2-parameter case: only A_2h, A_shot
-            param_names_fitted = ['$A_{2h}$', '$A_{shot}$']
-        elif use_fixed_mu_sigma:
-            # 3-parameter case: only A_2h, A_1h, A_shot
-            param_names_fitted = ['$A_{2h}$', '$A_{1h}$', '$A_{shot}$']
-        else:
-            # 5-parameter case: all parameters
-            param_names_fitted = ['$A_{2h}$', '$A_{1h}$', r'$\mu_{1h}$', r'$\sigma_{1h}$', '$A_{shot}$']
-        
-        # Add damping parameter name if enabled
-        if self.use_astrometry_damping:
-            param_names_fitted.append(r'$\sigma_{\rm damp}$')
+        pretty_param_names = {
+            'A_2h': '$A_{2h}$',
+            'A_1h': '$A_{1h}$',
+            'mu_1h': r'$\mu_{1h}$',
+            'sigma_1h': r'$\sigma_{1h}$',
+            'A_shot': '$A_{shot}$',
+            'f_pop': '$f_{pop}$',
+            'sigma_damp': r'$\sigma_{\rm damp}$',
+        }
+        param_names_fitted = [pretty_param_names.get(name, name) for name in cfg.fit_names]
         
         # Compute best-fit model and residuals for full data range
-        if self.use_astrometry_damping:
-            model_full = self.model_dl(lb_fit, *params_median_full[:5], sigma_damp=params_median_full[5], z_bin_index=z_bin_index)
-        else:
-            model_full = self.model_dl(lb_fit, *params_median_full, z_bin_index=z_bin_index)
+        model_full = self.model_dl(
+            lb_fit,
+            *params_median_full[:5],
+            sigma_damp=sigma_damp_med,
+            z_bin_index=z_bin_index,
+            f_pop=f_pop_med,
+        )
         
         residuals = (dl_fit - model_full) / dl_err_fit  # Normalized residuals (z-scores)
         
@@ -1383,7 +1549,7 @@ class CrossPowerSpectrumModel:
             'params_997': params_997_full,  # 99.7th percentile for 3σ upper limits
             'cov_matrix': cov_matrix,  # This is still for the fitted (3-6) parameters
             'samples': samples,  # These are the actual MCMC samples (3-6 params depending on config)
-            'param_names': ['A_2h', 'A_1h', 'mu_1h', 'sigma_1h', 'A_shot'],
+            'param_names': cfg.full_param_names,
             'samples_fitted': samples,  # Samples for only fitted parameters
             'param_names_fitted': param_names_fitted,  # Labels for only fitted parameters
             'chisq': chisq,
@@ -1921,6 +2087,7 @@ def resolve_onehalo_template_from_fit_result(
 
     generate_type = fit_result.get('onehalo_generate_type', 'bulk')
     fsat_model = fit_result.get('onehalo_fsat_model', 'single')
+    population = fit_result.get('onehalo_population', 'combined')
 
     if inst is None:
         inst = fit_result.get('inst', 1)
@@ -1937,6 +2104,7 @@ def resolve_onehalo_template_from_fit_result(
             mode='Ig',
             generate_type=generate_type,
             concentration_scale=fit_result.get('onehalo_concentration_scale', 1.0),
+            population=population,
         )
     except Exception as exc:
         if use_default_if_missing:
@@ -1946,17 +2114,35 @@ def resolve_onehalo_template_from_fit_result(
     if result is None:
         return None
 
+    use_popmix = bool(fit_result.get('onehalo_fit_popmix', False))
+
     if np.ndim(result['dl_spectrum']) == 1:
         return {
             'ell_arr': result['ell_arr'],
             'dl_spectrum': result['dl_spectrum'],
+            'dl_spectrum_pop0': result.get('dl_spectrum_pop0', None) if use_popmix else None,
+            'dl_spectrum_pop1': result.get('dl_spectrum_pop1', None) if use_popmix else None,
         }
 
     dl_spectrum = np.asarray(result['dl_spectrum'])
+    dl_pop0 = result.get('dl_spectrum_pop0', None) if use_popmix else None
+    dl_pop1 = result.get('dl_spectrum_pop1', None) if use_popmix else None
+
+    if dl_pop0 is not None and np.ndim(dl_pop0) > 1:
+        dl_pop0 = _select_onehalo_template_for_zbin(
+            np.asarray(dl_pop0), z_bin_index=z_bin_index, zbinedges=zbinedges
+        )
+    if dl_pop1 is not None and np.ndim(dl_pop1) > 1:
+        dl_pop1 = _select_onehalo_template_for_zbin(
+            np.asarray(dl_pop1), z_bin_index=z_bin_index, zbinedges=zbinedges
+        )
+
     if dl_spectrum.ndim == 1:
         return {
             'ell_arr': result['ell_arr'],
             'dl_spectrum': dl_spectrum,
+            'dl_spectrum_pop0': dl_pop0,
+            'dl_spectrum_pop1': dl_pop1,
         }
 
     if z_bin_index is None:
@@ -1965,17 +2151,23 @@ def resolve_onehalo_template_from_fit_result(
             'dl_spectrum': _select_onehalo_template_for_zbin(
                 dl_spectrum, z_bin_index=None, zbinedges=zbinedges
             ),
+            'dl_spectrum_pop0': dl_pop0,
+            'dl_spectrum_pop1': dl_pop1,
         }
     if z_bin_index < dl_spectrum.shape[0] and zbinedges is None:
         return {
             'ell_arr': result['ell_arr'],
             'dl_spectrum': dl_spectrum[z_bin_index],
+            'dl_spectrum_pop0': dl_pop0,
+            'dl_spectrum_pop1': dl_pop1,
         }
     return {
         'ell_arr': result['ell_arr'],
         'dl_spectrum': _select_onehalo_template_for_zbin(
             dl_spectrum, z_bin_index=z_bin_index, zbinedges=zbinedges
         ),
+        'dl_spectrum_pop0': dl_pop0,
+        'dl_spectrum_pop1': dl_pop1,
     }
 
 
@@ -2136,18 +2328,31 @@ def plot_fit_fixed_1h_templates(model, lb_data, dl_data, dl_err, fit_result,
     # Initialize uncertainty_bands to None (will be computed if errors available)
     uncertainty_bands = None
     
-    # Pure parametric MCMC case
-    # params structure depends on use_damping:
-    # - Without damping: [A_2h, A_1h, mu_1h, sigma_1h, A_shot] (5 elements)
-    # - With damping: [A_2h, A_1h, mu_1h, sigma_1h, A_shot, sigma_damp] (6 elements)
-    if plot_cfg.use_damping:
-        # Extract damping parameter (always last)
-        params_no_damp = plot_cfg.params[:5]  # First 5 are the standard params
-        sigma_damp = plot_cfg.params[5]
-        components = model.model_components(ell_model, *params_no_damp, sigma_damp=sigma_damp, z_bin_index=z_bin_index)
-    else:
-        # No damping: use all 5 params
-        components = model.model_components(ell_model, *plot_cfg.params[:5], z_bin_index=z_bin_index)
+    mix_active = model._supports_onehalo_population_mixture(z_bin_index=z_bin_index)
+    f_pop_plot = resolve_full_param_value(
+        plot_cfg.params,
+        plot_cfg.params,
+        'f_pop',
+        use_astrometry_damping=plot_cfg.use_damping,
+        use_onehalo_popmix=mix_active,
+        model=model,
+    ) if mix_active else None
+    sigma_damp_plot = resolve_full_param_value(
+        plot_cfg.params,
+        plot_cfg.params,
+        'sigma_damp',
+        use_astrometry_damping=plot_cfg.use_damping,
+        use_onehalo_popmix=mix_active,
+        model=model,
+    ) if plot_cfg.use_damping else None
+
+    components = model.model_components(
+        ell_model,
+        *plot_cfg.params[:5],
+        sigma_damp=sigma_damp_plot,
+        z_bin_index=z_bin_index,
+        f_pop=f_pop_plot,
+    )
 
     # Compute uncertainty bands from MCMC samples if available, otherwise from param errors
     if plot_cfg.samples is not None and len(plot_cfg.samples) > 0:
@@ -2163,33 +2368,19 @@ def plot_fit_fixed_1h_templates(model, lb_data, dl_data, dl_err, fit_result,
         # Expand fitted-parameter samples to the full model parameter vector.
         # Saved chains often exclude fixed parameters (e.g. mu_1h, sigma_1h, sigma_damp).
         n_samples = len(samples_arr)
-        n_params_full = 6 if plot_cfg.use_damping else 5
+        n_params_full = 5 + (1 if mix_active else 0) + (1 if plot_cfg.use_damping else 0)
         n_params_fit = samples_arr.shape[1]
 
         if n_params_fit == n_params_full:
             samples_expanded = samples_arr
         else:
-            samples_expanded = np.tile(np.asarray(plot_cfg.params[:n_params_full], dtype=float), (n_samples, 1))
-
-            if model.use_one_halo and plot_cfg.use_damping:
-                # Common fixed-shape+damping cases:
-                # fit=[A_2h, A_1h, A_shot] or [A_2h, A_1h, A_shot, sigma_damp]
-                if n_params_fit >= 3:
-                    samples_expanded[:, 0] = samples_arr[:, 0]  # A_2h
-                    samples_expanded[:, 1] = samples_arr[:, 1]  # A_1h
-                    samples_expanded[:, 4] = samples_arr[:, 2]  # A_shot
-                if n_params_fit >= 4:
-                    samples_expanded[:, 5] = samples_arr[:, 3]  # sigma_damp
-            elif model.use_one_halo and (not plot_cfg.use_damping):
-                # Common fixed-shape case: fit=[A_2h, A_1h, A_shot]
-                if n_params_fit >= 3:
-                    samples_expanded[:, 0] = samples_arr[:, 0]  # A_2h
-                    samples_expanded[:, 1] = samples_arr[:, 1]  # A_1h
-                    samples_expanded[:, 4] = samples_arr[:, 2]  # A_shot
-            else:
-                # No-one-halo variants: map the first fitted parameters in order.
-                ncopy = min(n_params_fit, n_params_full)
-                samples_expanded[:, :ncopy] = samples_arr[:, :ncopy]
+            samples_expanded = expand_fit_samples_to_full_vector(
+                samples_arr,
+                plot_cfg.params[:n_params_full],
+                param_names_fitted=fit_result.get('param_names_fitted', None),
+                use_astrometry_damping=plot_cfg.use_damping,
+                use_onehalo_popmix=mix_active,
+            )
         
         # Initialize arrays to store component values for each sample
         dl_2h_samples = np.zeros((n_samples, len(ell_model)))
@@ -2205,15 +2396,18 @@ def plot_fit_fixed_1h_templates(model, lb_data, dl_data, dl_err, fit_result,
             sigma_1h = samples_expanded[i, 3]
             A_shot = samples_expanded[i, 4]
             
-            if plot_cfg.use_damping and samples_expanded.shape[1] > 5:
-                sigma_damp = samples_expanded[i, 5]
+            f_pop_i = samples_expanded[i, 5] if mix_active and samples_expanded.shape[1] > 5 else None
+            if plot_cfg.use_damping:
+                damp_idx = 6 if mix_active else 5
+                sigma_damp = samples_expanded[i, damp_idx] if samples_expanded.shape[1] > damp_idx else None
             else:
                 sigma_damp = None
             
             # Compute components for this sample
             sample_components = model.model_components(ell_model, A_2h, A_1h, mu_1h, sigma_1h, A_shot,
                                                        sigma_damp=sigma_damp, 
-                                                       z_bin_index=z_bin_index)
+                                                       z_bin_index=z_bin_index,
+                                                       f_pop=f_pop_i)
             
             dl_2h_samples[i] = sample_components['two_halo']
             if model.use_one_halo:
@@ -2273,8 +2467,22 @@ def plot_fit_fixed_1h_templates(model, lb_data, dl_data, dl_err, fit_result,
         # 1-halo bounds (only if one-halo term is enabled)
         if model.use_one_halo:
             # Vary amplitude while keeping shape parameters at best-fit   
-            dl_1h_upper = model.lognormal_component(ell_model, plot_cfg.params[1] + plot_cfg.params_err[1], plot_cfg.params[2], plot_cfg.params[3])
-            dl_1h_lower = model.lognormal_component(ell_model, max(0, plot_cfg.params[1] - plot_cfg.params_err[1]), plot_cfg.params[2], plot_cfg.params[3])
+            dl_1h_upper = model._onehalo_template_component(
+                ell_model,
+                plot_cfg.params[1] + plot_cfg.params_err[1],
+                mu_1h=plot_cfg.params[2],
+                sigma_1h=plot_cfg.params[3],
+                z_bin_index=z_bin_index,
+                f_pop=f_pop_plot,
+            )
+            dl_1h_lower = model._onehalo_template_component(
+                ell_model,
+                max(0, plot_cfg.params[1] - plot_cfg.params_err[1]),
+                mu_1h=plot_cfg.params[2],
+                sigma_1h=plot_cfg.params[3],
+                z_bin_index=z_bin_index,
+                f_pop=f_pop_plot,
+            )
     
         # Shot noise bounds (parameter index depends on whether one-halo is enabled)
         shot_idx = 4 if model.use_one_halo else 1
@@ -2321,7 +2529,14 @@ def plot_fit_fixed_1h_templates(model, lb_data, dl_data, dl_err, fit_result,
                     if dl_total_undamped is None:
                         dl_total_undamped = components['two_halo'] + components['shot_noise']
                     
-                    sigma_damp = plot_cfg.params[2]  # Third parameter is damping when no one-halo
+                    sigma_damp = resolve_full_param_value(
+                        plot_cfg.params,
+                        plot_cfg.params,
+                        'sigma_damp',
+                        use_astrometry_damping=plot_cfg.use_damping,
+                        use_onehalo_popmix=mix_active,
+                        model=model,
+                    )
                     damping_factor = model.astrometry_damping_component(ell_model, sigma_damp)
                     
                     dl_total_upper = (dl_total_undamped + total_std) * damping_factor
@@ -2415,7 +2630,7 @@ def plot_fit_fixed_1h_templates(model, lb_data, dl_data, dl_err, fit_result,
                         dl_total_undamped = components['two_halo'] + components['one_halo'] + components['shot_noise']
                     
                     # Apply damping to the uncertainty bounds
-                    sigma_damp = plot_cfg.params[5]
+                    sigma_damp = sigma_damp_plot
                     damping_factor = model.astrometry_damping_component(ell_model, sigma_damp)
                     
                     dl_total_upper = (dl_total_undamped + total_std) * damping_factor
@@ -2503,14 +2718,14 @@ def plot_fit_fixed_1h_templates(model, lb_data, dl_data, dl_err, fit_result,
     # Bottom panel: per-bandpower chi residuals
     # Generate model at data points for chi residuals
 
-    if len(plot_cfg.params) == 5 or plot_cfg.use_damping:
-        # Pure parametric MCMC case
-        if plot_cfg.use_damping:
-            # With damping: params = [A_2h, A_1h, mu_1h, sigma_1h, A_shot, sigma_damp]
-            model_data = model.model_dl(lb_data, *plot_cfg.params[:5], sigma_damp=plot_cfg.params[5], z_bin_index=z_bin_index)
-        else:
-            # Without damping: params = [A_2h, A_1h, mu_1h, sigma_1h, A_shot]
-            model_data = model.model_dl(lb_data, *plot_cfg.params[:5], z_bin_index=z_bin_index)
+    if len(plot_cfg.params) >= 5:
+        model_data = model.model_dl(
+            lb_data,
+            *plot_cfg.params[:5],
+            sigma_damp=sigma_damp_plot,
+            z_bin_index=z_bin_index,
+            f_pop=f_pop_plot,
+        )
 
     chi_vals = (dl_data - model_data) / dl_err if dl_err is not None else (dl_data - model_data)
     
@@ -3588,7 +3803,7 @@ def _compute_linear_2h_templates_per_zbin(zbinedges, lmax_fit, verbose=True, cac
             cached = np.load(cache_file, allow_pickle=True)
             ell_values_full = cached['ell_values']
             dl_lin_full = cached['dl_lin']
-            
+
         else:
             # Need to compute - initialize CAMB only on first compute
             if camb_ps is None:
@@ -3612,8 +3827,13 @@ def _compute_linear_2h_templates_per_zbin(zbinedges, lmax_fit, verbose=True, cac
             # Convert linear output to D_ell
             pf = ell_values_linear * (ell_values_linear + 1) / (2 * np.pi)
             dl_lin_linear = pf * cl_lin
-            dl_lin_linear /= np.max(dl_lin_linear) # normalize to peak D_ell units
-            
+            # dl_lin_linear /= np.max(dl_lin_linear) # normalize to peak D_ell units
+
+            # for double checking normalization, let's normalize to a specific ell value (e.g., ell=300) instead of peak
+            ell_norm = 300
+            dl_lin_linear /= dl_lin_linear[np.argmin(np.abs(ell_values_linear - ell_norm))] # normalize to peak D_ell units
+
+            print('dl lin linear:', dl_lin_linear)
             # Rebin to logarithmic spacing for cache (finely sampled)
             # Use ~100 bins per log decade for smooth interpolation
             n_logbins = int(100 * np.log10(CACHE_LMAX / 100.0))
@@ -3675,7 +3895,8 @@ def run_gal_cross_fits(inst_list=[1, 2], ifield_list=[4,5,6,7,8], maskstr='JHlt1
                        use_astrometry_damping=False, initial_guess=None, headstr = 'hsc_ilt24.0', uniform_weight_ell=None,
                        A_2h_fixed_arr=None, use_linear_2h=False, sigma_damp_fixed=None,
                        onehalo_output_dir=None, onehalo_generate_type='bulk', onehalo_fsat_model='single',
-                       onehalo_concentration_scale=1.0):
+                       onehalo_concentration_scale=1.0, onehalo_population='combined',
+                       onehalo_fit_popmix=False):
     """
     Run galaxy cross-spectrum fits for CIBER data.
     
@@ -3844,6 +4065,7 @@ def run_gal_cross_fits(inst_list=[1, 2], ifield_list=[4,5,6,7,8], maskstr='JHlt1
                     mode='Ig',
                     generate_type=onehalo_generate_type,
                     concentration_scale=onehalo_concentration_scale,
+                    population=onehalo_population,
                 )
                 if result is None:
                     raise FileNotFoundError(
@@ -3855,6 +4077,9 @@ def run_gal_cross_fits(inst_list=[1, 2], ifield_list=[4,5,6,7,8], maskstr='JHlt1
                         'ell_arr': result['ell_arr'],
                         'dl_spectrum': result['dl_spectrum'],
                     }
+                    if onehalo_fit_popmix:
+                        template_data['dl_spectrum_pop0'] = result.get('dl_spectrum_pop0', None)
+                        template_data['dl_spectrum_pop1'] = result.get('dl_spectrum_pop1', None)
                     templates_by_zidx[zidx] = template_data
                 else:
                     dl_spectrum = np.asarray(result['dl_spectrum'])
@@ -3871,6 +4096,31 @@ def run_gal_cross_fits(inst_list=[1, 2], ifield_list=[4,5,6,7,8], maskstr='JHlt1
                         'ell_arr': result['ell_arr'],
                         'dl_spectrum': selected_template,
                     }
+                    if onehalo_fit_popmix:
+                        dl_pop0 = result.get('dl_spectrum_pop0', None)
+                        dl_pop1 = result.get('dl_spectrum_pop1', None)
+                        if dl_pop0 is not None:
+                            dl_pop0 = np.asarray(dl_pop0)
+                            if dl_pop0.ndim == 1:
+                                templates_by_zidx[zidx]['dl_spectrum_pop0'] = dl_pop0
+                            else:
+                                templates_by_zidx[zidx]['dl_spectrum_pop0'] = _select_onehalo_template_for_zbin(
+                                    dl_pop0,
+                                    z_bin_index=zidx,
+                                    zbinedges=zbinedges,
+                                    z0=0.0,
+                                )
+                        if dl_pop1 is not None:
+                            dl_pop1 = np.asarray(dl_pop1)
+                            if dl_pop1.ndim == 1:
+                                templates_by_zidx[zidx]['dl_spectrum_pop1'] = dl_pop1
+                            else:
+                                templates_by_zidx[zidx]['dl_spectrum_pop1'] = _select_onehalo_template_for_zbin(
+                                    dl_pop1,
+                                    z_bin_index=zidx,
+                                    zbinedges=zbinedges,
+                                    z0=0.0,
+                                )
             onehalo_templates_by_inst[inst] = templates_by_zidx
 
         print(f"Loaded one-halo templates for {len(onehalo_templates_by_inst)} instruments")
@@ -3987,6 +4237,30 @@ def run_gal_cross_fits(inst_list=[1, 2], ifield_list=[4,5,6,7,8], maskstr='JHlt1
                 inst=inst
             )
 
+            diagnostics = _compute_mcmc_diagnostics(
+                fit_result_mcmc.get('samples'),
+                sampler=fit_result_mcmc.get('sampler'),
+                discard=nburn,
+                param_names=fit_result_mcmc.get('param_names_fitted'),
+            )
+            fit_result_mcmc['mcmc_diagnostics'] = diagnostics
+            fit_result_mcmc['mcmc_tau'] = diagnostics['tau']
+            fit_result_mcmc['mcmc_rhat'] = diagnostics['rhat']
+            fit_result_mcmc['mcmc_ess'] = diagnostics['ess']
+
+            diag_text = []
+            for name, tau_val, rhat_val, ess_val in zip(
+                fit_result_mcmc.get('param_names_fitted', []),
+                diagnostics['tau'],
+                diagnostics['rhat'],
+                diagnostics['ess'],
+            ):
+                diag_text.append(f"{name}: tau={tau_val:.2f}, Rhat={rhat_val:.3f}, ESS={ess_val:.1f}")
+            if diag_text:
+                print("  MCMC diagnostics: " + "; ".join(diag_text))
+            else:
+                print("  MCMC diagnostics unavailable")
+
             # Corner plot
             fig = CrossPowerSpectrumModel.plot_mcmc_corner(
                 fit_result_mcmc,
@@ -4033,6 +4307,8 @@ def run_gal_cross_fits(inst_list=[1, 2], ifield_list=[4,5,6,7,8], maskstr='JHlt1
             fit_result_mcmc['onehalo_output_dir'] = onehalo_output_dir if onehalo_output_dir is not None else ""
             fit_result_mcmc['onehalo_generate_type'] = onehalo_generate_type
             fit_result_mcmc['onehalo_fsat_model'] = onehalo_fsat_model
+            fit_result_mcmc['onehalo_population'] = onehalo_population
+            fit_result_mcmc['onehalo_fit_popmix'] = bool(onehalo_fit_popmix)
 
             all_fit_results_mcmc[key] = {
                 'fit_result': fit_result_mcmc,

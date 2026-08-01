@@ -61,7 +61,10 @@ from ciber.theory.cross_ps_parametric_model import (
     run_gal_cross_fits,
     CrossPowerSpectrumModel,
     attach_onehalo_template_to_model,
+    resolve_full_param_value,
+    expand_fit_samples_to_full_vector,
 )
+from ciber.theory.onehalo_predict import load_onehalo_results
 from ciber.io.ciber_data_utils import load_fit_results_npz
 from ciber.plotting.gal_plotting_fns import (
     plot_amplitude_comparison,
@@ -118,6 +121,23 @@ def _build_plot_path_with_model(path: Path, args=None, results=None) -> Path:
     return path.with_name(f"{path.name}_" + "_".join(suffix_parts))
 
 
+def _normalize_model_components(comps, ell):
+    """Return a dict-like component mapping expected by the plotting code."""
+    if isinstance(comps, dict):
+        return comps
+
+    arr = np.asarray(comps, dtype=float)
+    if arr.ndim == 0:
+        arr = np.full_like(np.asarray(ell, dtype=float), float(arr), dtype=float)
+
+    return {
+        "two_halo": np.zeros_like(arr, dtype=float),
+        "one_halo": np.zeros_like(arr, dtype=float),
+        "shot_noise": np.zeros_like(arr, dtype=float),
+        "total": arr,
+    }
+
+
 def _headstr_tag(headstr: Optional[str]) -> str:
     """Convert headstr to the file-name infix used by the saving functions.
 
@@ -130,7 +150,6 @@ def _headstr_tag(headstr: Optional[str]) -> str:
     if "ilt" in headstr:
         return "_" + headstr[headstr.index("ilt"):]
     return ""
-
 
 def _auto_fpath(datadir: str, cat: str, fitstr: str, lMax: int, headstr: Optional[str] = None) -> Path:
     """Build path for a galaxy auto fit result file.
@@ -439,6 +458,7 @@ def _compute_igl_a2h_predictions(cat, zbinedges, inst_list,
     n_zbins = len(zbinedges) - 1
     n_inst = len(inst_list)
     a2h_arr = np.full((n_inst, n_zbins), np.nan)
+    a2h_gal_auto = np.full((n_inst, n_zbins), np.nan)
 
     z_centers = 0.5 * (zbinedges[:-1] + zbinedges[1:])
 
@@ -474,6 +494,7 @@ def _compute_igl_a2h_predictions(cat, zbinedges, inst_list,
         bias_str = ", ".join(f"z={z:.2f}: b_g={b:.4f}" for z, b in zip(z_centers, b_g))
         print(f"[igl_a2h] Galaxy bias for {cat}: {bias_str}")
 
+
         for inst_idx, inst in enumerate(inst_list):
             for zidx in range(n_zbins):
                 zmin_s = f"{zbinedges[zidx]:.1f}"
@@ -483,6 +504,8 @@ def _compute_igl_a2h_predictions(cat, zbinedges, inst_list,
                     a2h_arr[inst_idx, zidx] = (
                         b_g[zidx] * _bi_function(bi_model, z_centers[zidx]) * max(A_2h_raw, 0.0)
                     )
+                    a2h_gal_auto[inst_idx, zidx] = np.sqrt(b_g[zidx]) * max(A_2h_raw, 0.0)
+
                 else:
                     print(f"[igl_a2h] Warning: no cache entry for TM{inst} zmin={zmin_s} zmax={zmax_s}")
 
@@ -495,7 +518,7 @@ def _compute_igl_a2h_predictions(cat, zbinedges, inst_list,
             vals = ", ".join(f"{v:.4f}" if np.isfinite(v) else "NaN"
                              for v in a2h_arr[inst_idx])
             print(f"  TM{inst}: [{vals}]")
-        return a2h_arr
+        return a2h_arr, a2h_gal_auto
 
     # ---------------------------------------------------------------
     # Slow path: load from individual .npz prediction files
@@ -553,6 +576,21 @@ def _compute_igl_a2h_predictions(cat, zbinedges, inst_list,
             pf_m = lb_m * (lb_m + 1.0) / (2.0 * np.pi)
             dl_m = pf_m * cl_m
 
+            # process galaxy auto to get divisor for A2h^IG
+            cl_g_nobias = np.asarray(d["gal_auto"], dtype=float)
+            dl_g_nobias = pf_m * cl_g_nobias
+            shot_mask = (lb_m >= 30000.) & (lb_m <= 80000.) & np.isfinite(dl_m)
+            pf_shot = lb_m[shot_mask] * (lb_m[shot_mask] + 1.0) / (2.0 * np.pi)
+            A_shot = float(np.nanmean(dl_g_nobias[shot_mask] / pf_shot)) if shot_mask.any() else 0.0
+            ell_norm = 300.
+            which_lb_m = np.argmin(np.abs(lb_m - ell_norm))
+
+            # amplitude of sn subtracted ps at ell=300
+            # A_2h_matter = float(dl_g_nobias[which_lb_m] - A_shot * pf_m[which_lb_m]) if np.isfinite(dl_g_nobias[which_lb_m]) else 0.0
+            A_2h_matter = float(dl_g_nobias[which_lb_m]) if np.isfinite(dl_g_nobias[which_lb_m]) else 0.0
+
+            # A_2h_matter = max(float(np.nanmax(dl_g_nobias[twoh_mask] - A_shot * pf_m[twoh_mask])), 0.0) if twoh_mask.any() else 0.0
+
             # Estimate shot noise from high-ell tail
             shot_mask = (lb_m >= 30000.0) & (lb_m <= 80000.0) & np.isfinite(dl_m)
             if shot_mask.any():
@@ -569,6 +607,9 @@ def _compute_igl_a2h_predictions(cat, zbinedges, inst_list,
 
             a2h_arr[inst_idx, zidx] = b_g[zidx] * _bi_function(bi_model, z_centers[zidx]) * max(A_2h_raw, 0.0)
 
+            a2h_gal_auto[inst_idx, zidx] = np.sqrt(b_g[zidx]) * A_2h_matter
+
+
     bi_str = f" [b_I model: {bi_model}]" if bi_model != "constant" else ""
     if bi_model != "constant":
         bi_vals = ", ".join(f"z={z:.2f}: b_I={_bi_function(bi_model, z):.4f}" for z in z_centers)
@@ -578,7 +619,7 @@ def _compute_igl_a2h_predictions(cat, zbinedges, inst_list,
         vals = ", ".join(f"{v:.4f}" if np.isfinite(v) else "NaN"
                          for v in a2h_arr[inst_idx])
         print(f"  TM{inst}: [{vals}]")
-    return a2h_arr
+    return a2h_arr, a2h_gal_auto
 
 
 def _run_cross_fits(args: argparse.Namespace) -> None:
@@ -625,7 +666,7 @@ def _run_cross_fits(args: argparse.Namespace) -> None:
             jmock_basedir = getattr(args, "igl_pred_basedir", "data/jordan_mocks/v2/")
             igl_headstr = getattr(args, "igl_pred_headstr", None)
             bi_model = getattr(args, "bi_model", "constant")
-            a2h_fixed_arr = _compute_igl_a2h_predictions(
+            a2h_fixed_arr, _ = _compute_igl_a2h_predictions(
                 cat=cat,
                 zbinedges=zbinedges_use,
                 inst_list=inst_list_for_cat,
@@ -634,6 +675,9 @@ def _run_cross_fits(args: argparse.Namespace) -> None:
                 headstr=igl_headstr,
                 bi_model=bi_model,
             )
+
+            # a2h_gal_arr  # for computing dI/dz upper limits
+        
 
         for lMax in args.lmax:
             fpath = _cross_fpath(args.datadir_cross, cat, args.headstr if cat == "HSC" else None,
@@ -671,6 +715,9 @@ def _run_cross_fits(args: argparse.Namespace) -> None:
                 onehalo_generate_type=args.onehalo_generate_type,
                 onehalo_fsat_model=args.onehalo_fsat_model,
                 onehalo_concentration_scale=args.concentration_scale,
+                onehalo_population=getattr(args, 'onehalo_population', 'combined'),
+                onehalo_fit_popmix=getattr(args, 'onehalo_fit_popmix', False),
+                nwalkers=args.nwalkers,
             )
 
 
@@ -950,6 +997,8 @@ def _plot_fit_spectra(args: argparse.Namespace) -> None:
                         "onehalo_output_dir":    results.get("onehalo_output_dir", ""),
                         "onehalo_generate_type": results.get("onehalo_generate_type", "bulk"),
                         "onehalo_fsat_model":    results.get("onehalo_fsat_model", "single"),
+                        "onehalo_population":    results.get("onehalo_population", getattr(args, 'onehalo_population', 'combined')),
+                        "onehalo_fit_popmix":    bool(results.get("onehalo_fit_popmix", getattr(args, 'onehalo_fit_popmix', False))),
                         "onehalo_concentration_scale": float(results.get("onehalo_concentration_scale", getattr(args, 'concentration_scale', 1.0))),
                         "inst":                  int(inst),
                         "cat":                   cat,
@@ -1004,6 +1053,187 @@ def _plot_fit_spectra(args: argparse.Namespace) -> None:
                     plt.close(fig)
 
 
+def _parse_sigma_damp_fixed_mapping(source: object) -> dict:
+    """Normalize fixed sigma_damp values from either args or results objects."""
+    raw = None
+    if source is None:
+        return {}
+    if hasattr(source, "sigma_damp_fixed"):
+        raw = getattr(source, "sigma_damp_fixed", None)
+    elif isinstance(source, dict):
+        raw = source.get("sigma_damp_fixed", None)
+    if raw is None:
+        return {}
+    if isinstance(raw, (list, tuple, np.ndarray)):
+        return {i + 1: float(val) for i, val in enumerate(raw)}
+    if isinstance(raw, dict):
+        return {int(k): float(v) for k, v in raw.items()}
+    return {}
+
+
+def _extract_effective_fpop_from_weights(weight_pop1, z_idx=None):
+    """Return the baseline effective f_pop implied by the combined one-halo weights."""
+    if weight_pop1 is None:
+        return None
+    arr = np.asarray(weight_pop1, dtype=float)
+    if arr.ndim == 0:
+        return float(arr)
+    if z_idx is None:
+        return arr
+    if z_idx < arr.size:
+        return float(arr[z_idx])
+    return float(arr[-1])
+
+
+def _plot_fpop_vs_redshift(args: argparse.Namespace) -> None:
+    """Plot fitted f_pop versus redshift alongside the baseline effective f_pop from combined one-halo predictions."""
+    figdir = Path(args.figdir) / args.fitstr_cross / "popmix"
+    lams = {1: 1.1, 2: 1.8}
+
+    for cat in args.cat:
+        headstr = args.headstr if cat == "HSC" else None
+        for lMax in args.lmax:
+            results = _load_cross_results_merged_jh14(args.datadir_cross, cat, headstr, args.fitstr_cross, lMax, maskstr=args.maskstr)
+            if results is None:
+                fpath = _cross_fpath(args.datadir_cross, cat, headstr, args.fitstr_cross, lMax, maskstr=args.maskstr)
+                print(f"[plot_fpop_vs_redshift] missing {fpath}, skipping")
+                continue
+            if not bool(results.get("onehalo_fit_popmix", False)):
+                print(f"[plot_fpop_vs_redshift] {cat} lMax={lMax} has no popmix fit, skipping")
+                continue
+
+            zbinedges = np.asarray(results.get("zbinedges", np.array([0.0, 0.2, 0.4, 0.6, 0.8, 1.0])), dtype=float)
+            zcenters = 0.5 * (zbinedges[:-1] + zbinedges[1:])
+            inst_list = list(results.get("inst_list", [1, 2]))
+
+            onehalo_output_dir = getattr(args, "onehalo_dir", None) or results.get("onehalo_output_dir", None)
+            fsat_model = results.get("onehalo_fsat_model", getattr(args, "onehalo_fsat_model", "single"))
+            generate_type = results.get("onehalo_generate_type", getattr(args, "onehalo_generate_type", "bulk"))
+            concentration_scale = results.get("onehalo_concentration_scale", getattr(args, "concentration_scale", 1.0))
+
+            if cat == "HSC":
+                bandstr_select = "hsc_i"
+                mag_cut = 25.0
+            else:
+                bandstr_select = "sdss_z"
+                mag_cut = 22.0
+
+            fig, axes = plt.subplots(1, len(inst_list), figsize=(8, 4), sharey=True)
+            if len(inst_list) == 1:
+                axes = [axes]
+
+            for inst_idx, inst in enumerate(inst_list):
+                ax = axes[inst_idx]
+                fitted = []
+                fitted_lo = []
+                fitted_hi = []
+                baseline = []
+
+                for z_idx in range(len(zcenters)):
+                    params = np.asarray(results["params"], dtype=float)
+                    params_err = np.asarray(results.get("params_err", np.full_like(params, np.nan)), dtype=float)
+                    params_16 = np.asarray(results.get("params_16", params - params_err), dtype=float)
+                    params_84 = np.asarray(results.get("params_84", params + params_err), dtype=float)
+                    pnf = results.get("param_names_fitted", None)
+                    pnf_bin = pnf[inst_idx, z_idx] if pnf is not None else None
+
+                    n_params_stored = int(np.sum(~np.isnan(params[inst_idx, z_idx, :])))
+                    params_i = params[inst_idx, z_idx, :n_params_stored]
+                    params_err_i = params_err[inst_idx, z_idx, :n_params_stored]
+                    params_16_i = params_16[inst_idx, z_idx, :n_params_stored]
+                    params_84_i = params_84[inst_idx, z_idx, :n_params_stored]
+                    pnf_bin_i = pnf_bin[:n_params_stored] if pnf_bin is not None else None
+
+                    use_damping = bool(results.get("use_astrometry_damping", False))
+                    if pnf_bin_i is not None:
+                        use_damping = use_damping or any("damp" in str(p).lower() for p in pnf_bin_i)
+
+                    med = resolve_full_param_value(
+                        params_i,
+                        pnf_bin_i,
+                        "f_pop",
+                        use_astrometry_damping=use_damping,
+                        use_onehalo_popmix=True,
+                    )
+                    lo = resolve_full_param_value(
+                        params_16_i,
+                        pnf_bin_i,
+                        "f_pop",
+                        use_astrometry_damping=use_damping,
+                        use_onehalo_popmix=True,
+                    )
+                    hi = resolve_full_param_value(
+                        params_84_i,
+                        pnf_bin_i,
+                        "f_pop",
+                        use_astrometry_damping=use_damping,
+                        use_onehalo_popmix=True,
+                    )
+
+                    fitted.append(float(med))
+                    fitted_lo.append(float(lo))
+                    fitted_hi.append(float(hi))
+
+                    if onehalo_output_dir is not None and os.path.exists(onehalo_output_dir):
+                        try:
+                            onehalo_result = load_onehalo_results(
+                                onehalo_output_dir,
+                                fsat_model,
+                                bandstr_select,
+                                inst=int(inst),
+                                mag_min=18.0,
+                                mag_cut=mag_cut,
+                                z0=0.05,
+                                generate_type=generate_type,
+                                mode="Ig",
+                                concentration_scale=float(concentration_scale),
+                                prefer_merged=False,
+                            )
+                            baseline.append(_extract_effective_fpop_from_weights(onehalo_result.get("weight_pop1"), z_idx=z_idx))
+                        except Exception as exc:
+                            print(f"[plot_fpop_vs_redshift] failed to load baseline one-halo result for {cat} TM{inst}: {exc}")
+                            baseline.append(np.nan)
+                    else:
+                        baseline.append(np.nan)
+
+                fitted = np.asarray(fitted, dtype=float)
+                fitted_lo = np.asarray(fitted_lo, dtype=float)
+                fitted_hi = np.asarray(fitted_hi, dtype=float)
+                baseline = np.asarray(baseline, dtype=float)
+                valid_baseline = np.isfinite(baseline)
+
+                ax.errorbar(
+                    zcenters,
+                    fitted,
+                    yerr=[np.clip(fitted - fitted_lo, 0.0, None), np.clip(fitted_hi - fitted, 0.0, None)],
+                    fmt='o',
+                    color='C0',
+                    ecolor='C0',
+                    capsize=3,
+                    markersize=5,
+                    label='Fitted f_pop',
+                    zorder=5,
+                )
+                if np.any(valid_baseline):
+                    ax.plot(zcenters[valid_baseline], baseline[valid_baseline], 'k--', lw=1.5, label='Baseline combined', zorder=4)
+                ax.set_xticks(zcenters)
+                ax.set_xlim([zbinedges[0], zbinedges[-1]])
+                ax.set_ylim([0.0, 1.0])
+                ax.set_xlabel(r'$z$', fontsize=12)
+                ax.set_ylabel(r'$f_{\rm pop}$', fontsize=12)
+                ax.set_title(f"CIBER {lams[int(inst)]} μm × {cat}", fontsize=12)
+                ax.grid(True, alpha=0.25)
+                ax.axhline(0.5, color='gray', linestyle=':', lw=1.0)
+
+            axes[0].legend(loc='best', fontsize=10)
+            fig.suptitle(f"Popmix f_pop vs redshift, ℓ_max={lMax}", fontsize=13)
+            fig.tight_layout(rect=[0, 0, 1, 0.97])
+            stem = figdir / f"{cat}_popmix_fpop_vs_redshift_lMax={lMax}"
+            stem = _build_plot_path_with_model(stem, args=args, results=results)
+            _savefig(fig, stem, args.fig_fmt)
+            plt.close(fig)
+
+
 def _plot_spectra_summary(args: argparse.Namespace) -> None:
     """Two rows of 5 panels each (top: data + model, bottom: residuals).
 
@@ -1014,6 +1244,16 @@ def _plot_spectra_summary(args: argparse.Namespace) -> None:
     from ciber.cross_correlation.galaxy_cross import collect_ciber_gal_vs_redshift
 
     figdir = Path(args.figdir) / args.fitstr_cross / "spectra"
+
+
+    colors = {
+        "data": "#000000",
+        "igl": "#595959",
+        "total": "red",      # strong red-orange
+        "two_halo": "blue",      # muted blue
+        "one_halo": "#C28B1E",      # green (CB-safe shade)
+        "shot_noise": "grey",       # warm orange
+    }
 
     for cat in args.cat:
         headstr = args.headstr if cat == "HSC" else None
@@ -1072,6 +1312,7 @@ def _plot_spectra_summary(args: argparse.Namespace) -> None:
                 dl_2h_lin_per_zbin = _compute_linear_2h_templates_per_zbin(zbinedges, 1.2e5, verbose=False)
             
             pnf_arr = results.get("param_names_fitted", None)
+            sigma_damp_fixed_map = _parse_sigma_damp_fixed_mapping(args)
 
             for inst_idx, inst in enumerate(inst_list):
                 fig = plt.figure(figsize=(14, 5))
@@ -1144,6 +1385,9 @@ def _plot_spectra_summary(args: argparse.Namespace) -> None:
                     pnf_bin = pnf_arr[inst_idx, zidx] if pnf_arr is not None else None
                     use_damping = (pnf_bin is not None and
                                    any("damp" in str(p).lower() for p in pnf_bin))
+                    sigma_damp_fixed_for_inst = sigma_damp_fixed_map.get(int(inst), None)
+                    if sigma_damp_fixed_for_inst is not None:
+                        use_damping = True
 
                     model = CrossPowerSpectrumModel(
                         lb=lb_fit, use_powerlaw_2h=use_powerlaw_2h,
@@ -1158,10 +1402,13 @@ def _plot_spectra_summary(args: argparse.Namespace) -> None:
                         "params_err": params_err,
                         "use_astrometry_damping": use_damping,
                         "samples": samples_bin if samples_bin is not None and len(np.asarray(samples_bin).shape) > 0 else None,
+                        "param_names_fitted": pnf_bin,
                         "onehalo_mode": bool(results.get("onehalo_mode", False)),
                         "onehalo_output_dir": results.get("onehalo_output_dir", ""),
                         "onehalo_generate_type": results.get("onehalo_generate_type", "bulk"),
                         "onehalo_fsat_model": results.get("onehalo_fsat_model", "single"),
+                        "onehalo_population": results.get("onehalo_population", getattr(args, 'onehalo_population', 'combined')),
+                        "onehalo_fit_popmix": bool(results.get("onehalo_fit_popmix", getattr(args, 'onehalo_fit_popmix', False))),
                         "onehalo_concentration_scale": float(results.get("onehalo_concentration_scale", getattr(args, 'concentration_scale', 1.0))),
                         "inst": int(inst),
                         "cat": cat,
@@ -1174,8 +1421,26 @@ def _plot_spectra_summary(args: argparse.Namespace) -> None:
                         "zidx": zidx,
                         "model": model,
                         "params": params,
-                        "use_damping": use_damping,
-                        "sd_med": params[5] if use_damping else None,
+                        "use_damping": True,
+                        "use_popmix": bool(fit_result.get("onehalo_fit_popmix", False)),
+                        "sd_med": (
+                            sigma_damp_fixed_for_inst
+                            if sigma_damp_fixed_for_inst is not None
+                            else resolve_full_param_value(
+                                params,
+                                pnf_bin,
+                                "sigma_damp",
+                                use_astrometry_damping=True,
+                                use_onehalo_popmix=bool(fit_result.get("onehalo_fit_popmix", False)),
+                            )
+                        ) if use_damping else None,
+                        "f_pop_med": resolve_full_param_value(
+                            params,
+                            pnf_bin,
+                            "f_pop",
+                            use_astrometry_damping=True,
+                            use_onehalo_popmix=bool(fit_result.get("onehalo_fit_popmix", False)),
+                        ) if bool(fit_result.get("onehalo_fit_popmix", False)) else None,
                         "data_dl": data_dl,
                         "data_dlerr": data_dlerr,
                         "zlo": zlo,
@@ -1187,41 +1452,86 @@ def _plot_spectra_summary(args: argparse.Namespace) -> None:
                                      color='k', markersize=3, capsize=2, alpha=0.6, label='Data', zorder=7)
 
                     ell_m = np.logspace(np.log10(100), np.log10(1.2e5), 500)
-                    sd_med = params[5] if use_damping else None
-                    comps     = model.model_components(ell_m, *params[:5],    sigma_damp=sd_med, z_bin_index=zidx)
+                    use_popmix_bin = bool(fit_result.get("onehalo_fit_popmix", False))
+                    f_pop_med = resolve_full_param_value(
+                        params,
+                        pnf_bin,
+                        "f_pop",
+                        use_astrometry_damping=True,
+                        use_onehalo_popmix=use_popmix_bin,
+                    ) if use_popmix_bin else None
+                    sd_med = (
+                        sigma_damp_fixed_for_inst
+                        if sigma_damp_fixed_for_inst is not None
+                        else resolve_full_param_value(
+                            params,
+                            pnf_bin,
+                            "sigma_damp",
+                            use_astrometry_damping=True,
+                            use_onehalo_popmix=use_popmix_bin,
+                        )
+                    ) if use_damping else None
+                    comps_result = model.model_components(
+                        ell_m,
+                        *params[:5],
+                        sigma_damp=sd_med,
+                        z_bin_index=zidx,
+                        f_pop=f_pop_med,
+                    )
+                    
+                    # Ensure comps is a dict; if not, wrap it
+                    if not isinstance(comps_result, dict):
+                        if comps_result is None:
+                            print(f"[plot_spectra_summary] Warning: model_components returned None for zidx={zidx}")
+                            comps = {
+                                'two_halo': np.zeros(ell_m.size),
+                                'one_halo': np.zeros(ell_m.size),
+                                'shot_noise': np.zeros(ell_m.size),
+                                'total': np.zeros(ell_m.size),
+                            }
+                        else:
+                            comps = _normalize_model_components(comps_result, ell_m)
+                    else:
+                        comps = comps_result
+
 
                     # Match plot_fit_spectra uncertainty behavior: use posterior samples first.
                     bands = None
                     if samples_bin is not None:
                         s = np.asarray(samples_bin, dtype=float)
                         if s.ndim == 2 and s.shape[0] > 1:
-                            nfull = 6 if use_damping else 5
+                            nfull = 5 + (1 if use_popmix_bin else 0) + (1 if use_damping else 0)
                             if s.shape[1] == nfull:
                                 sfull = s
                             else:
-                                sfull = np.tile(np.asarray(params[:nfull], dtype=float), (s.shape[0], 1))
-                                if use_damping and s.shape[1] >= 3:
-                                    sfull[:, 0] = s[:, 0]
-                                    sfull[:, 1] = s[:, 1]
-                                    sfull[:, 4] = s[:, 2]
-                                    if s.shape[1] >= 4:
-                                        sfull[:, 5] = s[:, 3]
-                                elif (not use_damping) and s.shape[1] >= 3:
-                                    sfull[:, 0] = s[:, 0]
-                                    sfull[:, 1] = s[:, 1]
-                                    sfull[:, 4] = s[:, 2]
+                                sfull = expand_fit_samples_to_full_vector(
+                                    s,
+                                    np.asarray(params[:nfull], dtype=float),
+                                    param_names_fitted=pnf_bin,
+                                    use_astrometry_damping=True,
+                                    use_onehalo_popmix=use_popmix_bin,
+                                )
 
                             c2h = np.zeros((sfull.shape[0], ell_m.size))
                             c1h = np.zeros((sfull.shape[0], ell_m.size))
                             csh = np.zeros((sfull.shape[0], ell_m.size))
                             ctot = np.zeros((sfull.shape[0], ell_m.size))
                             for ii in range(sfull.shape[0]):
-                                sd_i = sfull[ii, 5] if use_damping else None
-                                cc = model.model_components(
+                                f_pop_i = sfull[ii, 5] if (use_popmix_bin and sfull.shape[1] > 5) else None
+                                if use_damping:
+                                    damp_idx = 6 if use_popmix_bin else 5
+                                    sd_i = sfull[ii, damp_idx] if sfull.shape[1] > damp_idx else None
+                                else:
+                                    sd_i = None
+                                cc = _normalize_model_components(
+                                    model.model_components(
+                                        ell_m,
+                                        sfull[ii, 0], sfull[ii, 1], sfull[ii, 2], sfull[ii, 3], sfull[ii, 4],
+                                        sigma_damp=sd_i,
+                                        z_bin_index=zidx,
+                                        f_pop=f_pop_i,
+                                    ),
                                     ell_m,
-                                    sfull[ii, 0], sfull[ii, 1], sfull[ii, 2], sfull[ii, 3], sfull[ii, 4],
-                                    sigma_damp=sd_i,
-                                    z_bin_index=zidx,
                                 )
                                 c2h[ii] = cc['two_halo']
                                 c1h[ii] = cc['one_halo']
@@ -1237,10 +1547,50 @@ def _plot_spectra_summary(args: argparse.Namespace) -> None:
 
                     # Fallback for older files without chain samples.
                     if bands is None:
-                        sd_lo  = params_16[5] if use_damping else None
-                        sd_hi  = params_84[5] if use_damping else None
-                        comps_lo  = model.model_components(ell_m, *params_16[:5], sigma_damp=sd_lo, z_bin_index=zidx)
-                        comps_hi  = model.model_components(ell_m, *params_84[:5], sigma_damp=sd_hi, z_bin_index=zidx)
+                        f_lo = resolve_full_param_value(
+                            params_16,
+                            pnf_bin,
+                            "f_pop",
+                            use_astrometry_damping=use_damping,
+                            use_onehalo_popmix=use_popmix_bin,
+                        ) if use_popmix_bin else None
+                        f_hi = resolve_full_param_value(
+                            params_84,
+                            pnf_bin,
+                            "f_pop",
+                            use_astrometry_damping=use_damping,
+                            use_onehalo_popmix=use_popmix_bin,
+                        ) if use_popmix_bin else None
+                        sd_lo = (
+                            sigma_damp_fixed_for_inst
+                            if sigma_damp_fixed_for_inst is not None
+                            else resolve_full_param_value(
+                                params_16,
+                                pnf_bin,
+                                "sigma_damp",
+                                use_astrometry_damping=use_damping,
+                                use_onehalo_popmix=use_popmix_bin,
+                            )
+                        ) if use_damping else None
+                        sd_hi = (
+                            sigma_damp_fixed_for_inst
+                            if sigma_damp_fixed_for_inst is not None
+                            else resolve_full_param_value(
+                                params_84,
+                                pnf_bin,
+                                "sigma_damp",
+                                use_astrometry_damping=use_damping,
+                                use_onehalo_popmix=use_popmix_bin,
+                            )
+                        ) if use_damping else None
+                        comps_lo = _normalize_model_components(
+                            model.model_components(ell_m, *params_16[:5], sigma_damp=sd_lo, z_bin_index=zidx, f_pop=f_lo),
+                            ell_m,
+                        )
+                        comps_hi = _normalize_model_components(
+                            model.model_components(ell_m, *params_84[:5], sigma_damp=sd_hi, z_bin_index=zidx, f_pop=f_hi),
+                            ell_m,
+                        )
                         bands = {
                             'total': (comps_lo['total'], comps_hi['total']),
                             'two_halo': (comps_lo['two_halo'], comps_hi['two_halo']),
@@ -1248,29 +1598,27 @@ def _plot_spectra_summary(args: argparse.Namespace) -> None:
                             'shot_noise': (comps_lo['shot_noise'], comps_hi['shot_noise']),
                         }
 
-                    ax_spec.plot(ell_m, comps['total'], 'r-', lw=2, label='Best-fit model', zorder=7)
+                    ax_spec.plot(ell_m, comps['total'], color=colors['total'], lw=2.5, label='Best-fit model', zorder=7)
                     ax_spec.fill_between(ell_m, bands['total'][0], bands['total'][1],
-                                         color='red', alpha=0.15)
-                    ax_spec.plot(ell_m, comps['two_halo'], 'b', linestyle='dashdot', lw=1.2, alpha=0.7, label='Two-halo', zorder=6)
+                                         color=colors['total'], alpha=0.15)
+                    ax_spec.plot(ell_m, comps['two_halo'], color=colors['two_halo'], linestyle='dashdot', lw=1.2, alpha=0.7, label='Two-halo', zorder=6)
                     ax_spec.fill_between(ell_m, bands['two_halo'][0], bands['two_halo'][1],
-                                         color='blue', alpha=0.12)
-                    ax_spec.plot(ell_m, comps['one_halo'], 'g-', lw=1.2, alpha=0.7, label='One-halo', zorder=6)
+                                         color=colors["two_halo"], alpha=0.12)
+                    ax_spec.plot(ell_m, comps['one_halo'], color=colors['one_halo'], lw=1.2, alpha=0.7, label='One-halo', zorder=6)
                     ax_spec.fill_between(ell_m, bands['one_halo'][0], bands['one_halo'][1],
-                                         color='green', alpha=0.12)
+                                         color=colors['one_halo'], alpha=0.12)
                     
                     
-                    ax_spec.plot(ell_m, comps['shot_noise'], color='grey', linestyle='dashed', lw=1.2, alpha=0.7, label='Poisson level')
+                    ax_spec.plot(ell_m, comps['shot_noise'], color=colors['shot_noise'], linestyle='dashed', lw=1.2, alpha=0.7, label='Poisson level')
                     ax_spec.fill_between(ell_m, bands['shot_noise'][0], bands['shot_noise'][1],
-                                         color='grey', alpha=0.12)
-
+                                         color=colors['shot_noise'], alpha=0.12)
 
 
                     # IGL overlay — same approach as _plot_redshift_panels_2x2
                     pred_fpath = pred_fpaths_by_zbin.get(zidx)
                     if pred_fpath is not None and os.path.exists(pred_fpath):
                         try:
-                            from ciber.plotting.gal_plotting_fns import smooth_mock_cross_with_bias
-                            from ciber.theory.onehalo_predict import load_onehalo_spectrum
+                            from ciber.plotting.gal_plotting_fns import smooth_mock_cross_with_bias, load_onehalo_spectrum
                             if cat == 'DESILS' and bias_cache is not None:
                                 b_g = float(np.poly1d(np.asarray(bias_cache['coarse_poly_coeffs']))(zcen))
                             else:
@@ -1289,7 +1637,8 @@ def _plot_spectra_summary(args: argparse.Namespace) -> None:
 
                             oh_data_Ig = load_onehalo_spectrum(
                                         onehalo_output_dir, 'single', bandstr_select,
-                                        inst=inst_idx+1, mag_min=18.0, mag_cut=mag_cut, z0=0.05, mode='Ig', generate_type='fine')
+                                        inst=inst_idx+1, mag_min=18.0, mag_cut=mag_cut, z0=0.05, mode='Ig', generate_type='fine',
+                                        population=getattr(args, 'onehalo_population', 'combined'))
                             ell_1h = oh_data_Ig['ell_arr']
                             dl_1h = oh_data_Ig['dl_spectrum'][zidx]
 
@@ -1345,7 +1694,10 @@ def _plot_spectra_summary(args: argparse.Namespace) -> None:
                     ax_spec.tick_params(axis='x', labelbottom=False)
 
                     # Bottom panel: residuals
-                    model_at_data = model.model_components(lb_fit, *params[:5], sigma_damp=sd_med, z_bin_index=zidx)['total']
+                    model_at_data = _normalize_model_components(
+                        model.model_components(lb_fit, *params[:5], sigma_damp=sd_med, z_bin_index=zidx, f_pop=f_pop_med),
+                        lb_fit,
+                    )['total']
                     residuals = (data_dl - model_at_data) / data_dlerr
                     ax_res.plot(lb_fit, residuals, 'o', color='k', markersize=3, zorder=5)
                     ax_res.axhline(0, color='r', linestyle='-', lw=1.5, alpha=0.7)
@@ -1389,9 +1741,9 @@ def _plot_spectra_summary(args: argparse.Namespace) -> None:
                 fig, ax = plt.subplots(figsize=(8, 5))
                 
                 if inst==1:
-                    colors = plt.cm.Blues(np.linspace(0.4, 1, n_zbins))
+                    colors_ratio = plt.cm.Blues(np.linspace(0.4, 1, n_zbins))
                 else:
-                    colors = plt.cm.Reds(np.linspace(0.4, 1, n_zbins))
+                    colors_ratio = plt.cm.Reds(np.linspace(0.4, 1, n_zbins))
 
                 ratios = []
                 for zbin_info in zbin_plot_data:
@@ -1403,12 +1755,14 @@ def _plot_spectra_summary(args: argparse.Namespace) -> None:
                     params = zbin_info["params"]
                     model = zbin_info["model"]
                     sd_med = zbin_info["sd_med"]
+                    f_pop_med = zbin_info.get("f_pop_med", None)
 
                     model_dl = model.model_components(
                         lb_fit,
                         *params[:5],
                         sigma_damp=sd_med,
                         z_bin_index=zidx,
+                        f_pop=f_pop_med,
                     )['total']
 
                     ratio = data_dl / model_dl
@@ -1417,7 +1771,7 @@ def _plot_spectra_summary(args: argparse.Namespace) -> None:
                     ratios.append(ratio)
 
                     ax.errorbar(lb_fit, ratio, yerr=ratio_err, fmt='o',
-                                color=colors[zidx], markersize=5, capsize=3,
+                                color=colors_ratio[zidx], markersize=5, capsize=3,
                                 alpha=0.9, label=f'z∈[{zlo:.1f},{zhi:.1f}]')
 
                 # ratios = np.array(ratios)
@@ -1997,9 +2351,9 @@ def _plot_a1h_vs_redshift_alternate_layout(args: argparse.Namespace) -> None:
 
     # Color palettes per tracer (from colormap)
     tracer_colors = {
-        "DESILS": ["#1f77b4", "#aec7e8", "#d62728", "#ff7f0e"],  # Blues dominant
-        "HSC_22":  ["#ff7f0e", "#ffbb78", "#2ca02c", "#98df8a"],  # Oranges dominant
-        "HSC_25":  ["#2ca02c", "#98df8a", "#1f77b4", "#aec7e8"],  # Greens dominant
+        "DESILS": ["C2", "C2", "C2", "C2"],
+        "HSC_22":  ["#E45DA8", "#E45DA8", "#E45DA8", "#E45DA8"],
+        "HSC_25":  ["#E45DA8", "#E45DA8", "#E45DA8", "#E45DA8"],
     }
 
     variant_markers = {"full": "o", "fixA2h": "^", "biLinear": "D", "biQuad": "v"}
@@ -2041,7 +2395,7 @@ def _plot_a1h_vs_redshift_alternate_layout(args: argparse.Namespace) -> None:
                 print(f"[plot_a1h_vs_redshift_alternate] missing JHlt14 {fpath_jh14.name}")
 
     # Create 2-row layout (one per band)
-    fig, axes = plt.subplots(2, 1, figsize=(8, 7), sharex=True, sharey=True)
+    fig, axes = plt.subplots(2, 1, figsize=(7, 6), sharex=True, sharey=True)
 
     for band_idx, inst in enumerate([1, 2]):
         ax = axes[band_idx]
@@ -2181,36 +2535,25 @@ def _plot_a1h_vs_redshift_alternate_layout(args: argparse.Namespace) -> None:
         ax.text(0.02, 0.95, title_text, transform=ax.transAxes,
                 fontsize=14, verticalalignment='top', weight='bold')
 
+        # Add tracer labels in the matching colors
+        cat_display = {"DESILS": "DESI-LS", "HSC": "HSC"}
+        for tracer_idx, (cat, headstr, tracer_label) in enumerate(tracer_defs):
+            tracer_key_short = "DESILS" if cat == "DESILS" else ("HSC_22" if headstr == "hsc_ilt22.0" else "HSC_25")
+
+            color = tracer_colors[tracer_key_short][0]
+            ax.text(0.04 + 0.28 * tracer_idx, 0.90, cat_display[cat],
+                    transform=ax.transAxes, fontsize=11, color=color,
+                    weight='bold', va='top', ha='left')
+
         ax.grid(True, alpha=0.3)
         ax.set_xlim(zbinedges[0], zbinedges[-1])
-        ax.set_ylim(0, 1.0)
+        ax.set_yscale("log")
+        ax.set_ylim(1e-3, 1e0)
         ax.tick_params(labelsize=12)
 
-    # Create custom legend combining tracer and variant info
-    from matplotlib.lines import Line2D
-    legend_elements = []
-    
-    # Tracer colors
-    for tracer_idx, (cat, headstr, tracer_label) in enumerate(tracer_defs):
-        tracer_key_short = "DESILS" if cat == "DESILS" else ("HSC_22" if headstr == "hsc_ilt22.0" else "HSC_25")
-        color_sample = tracer_colors[tracer_key_short][0]
-        legend_elements.append(Line2D([0], [0], color=color_sample, lw=3, label=tracer_label))
-    
-    legend_elements.append(Line2D([0], [0], color='white', label=''))  # Spacer
-    
-    # Variant markers/styles
-    for var_key in variant_defs:
-        marker = variant_markers[var_key[0]]
-        label_text = var_key[0].replace("biLinear", "Linear $b_I$").replace("biQuad", "Quad $b_I$")
-        legend_elements.append(Line2D([0], [0], marker=marker, color='grey', linestyle='None',
-                                       markersize=8, label=label_text))
-
-    fig.legend(handles=legend_elements, loc='upper center', bbox_to_anchor=(0.5, 1.05),
-               ncol=4, fontsize=12, frameon=True)
-
     # Set axis labels
-    axes[0].set_ylabel(r"$A_{1h}^{\rm Ig}$", fontsize=15)
-    axes[1].set_ylabel(r"$A_{1h}^{\rm Ig}$", fontsize=15)
+    axes[0].set_ylabel(r"$A_{1h}^{\rm Ig}$ [arb. unit]", fontsize=15)
+    axes[1].set_ylabel(r"$A_{1h}^{\rm Ig}$ [arb. unit]", fontsize=15)
     axes[1].set_xlabel("Redshift (z)", fontsize=15)
 
     fig.subplots_adjust(left=0.11, right=0.98, top=0.92, bottom=0.10, hspace=0.2, wspace=0.07)
@@ -2220,6 +2563,431 @@ def _plot_a1h_vs_redshift_alternate_layout(args: argparse.Namespace) -> None:
     plt.close(fig)
     print(f"[plot_a1h_vs_redshift_alternate_layout] generated {stem.with_suffix('.pdf')}")
 
+
+
+def _plot_a1h_model_pred_vs_redshift(args: argparse.Namespace, ell_eval: float = 10000.0, ylim: tuple = (4e-3, 5)) -> None:
+    """Compare fitted one-halo power versus model-predicted one-halo power vs redshift.
+
+    The figure mirrors the structure of the existing spectrum-panel plotting helpers:
+    it rebuilds the model from the saved fit parameters, attaches the one-halo template
+    using the same helper as the spectrum plots, and evaluates both the fit and the
+    one-halo prediction at the requested multipole.
+    """
+    figdir = Path(args.figdir) / args.fitstr_cross
+    figdir.mkdir(parents=True, exist_ok=True)
+
+    lMax = args.lmax[-1] if args.lmax else args.lmax_compare
+    fitstr = args.fitstr_cross
+    maskstr = getattr(args, "maskstr", None)
+    result_source_label = "merged" if maskstr in (None, "", "merged") else str(maskstr)
+
+    zbinedges = args.zbinedges
+
+    tracer_defs = [
+        ("DESILS", None, r"DESI-LS ($z_{\rm AB} < 22$)"),
+        ("HSC", "hsc_ilt25.0", r"HSC ($18<i_{\rm AB}<25$)"),
+    ]
+    lams = {1: 1.1, 2: 1.8}
+    shade_colors = ("#f5f5f5", "#eeeeee")
+    tracer_colors = {
+        "DESILS": ["C2", "C2", "C2", "C2"],
+        "HSC_22": ["#E45DA8", "#E45DA8", "#E45DA8", "#E45DA8"],
+        "HSC_25": ["#E45DA8", "#E45DA8", "#E45DA8", "#E45DA8"],
+    }
+    colors = {"DESILS": "C2", "HSC": "#E45DA8"}
+
+    fig, axes = plt.subplots(2, 1, figsize=(8, 6), sharex=True, sharey=True)
+
+    for band_idx, inst in enumerate([1, 2]):
+        ax = axes[band_idx]
+        ax.set_xscale("linear")
+        ax.set_yscale("log")
+
+        for tracer_idx, (cat, headstr, tracer_label) in enumerate(tracer_defs):
+            # Load results using merged_jh14 helper with maskstr, matching _plot_spectra_summary
+            res = _load_cross_results_merged_jh14(
+                args.datadir_cross, cat, headstr, fitstr, lMax, maskstr=args.maskstr
+            )
+            if res is None:
+                fpath = _cross_fpath(args.datadir_cross, cat, headstr, fitstr, lMax, maskstr=args.maskstr)
+                print(f"[plot_a1h_model_pred_vs_redshift] missing {fpath.name}")
+                continue
+
+            inst_list = list(res["inst_list"])
+            if inst not in inst_list:
+                continue
+            inst_idx = inst_list.index(inst)
+
+            zbinedges = np.asarray(res["zbinedges"])
+            z_centers = 0.5 * (zbinedges[:-1] + zbinedges[1:])
+            n_zbins = len(zbinedges) - 1
+
+            for zbin_idx in range(n_zbins):
+                z0, z1 = zbinedges[zbin_idx], zbinedges[zbin_idx + 1]
+                ax.axvspan(z0, z1, color=shade_colors[zbin_idx % 2], alpha=0.22, zorder=0)
+
+            # Load model configuration from results, same as _plot_spectra_summary
+            use_powerlaw_2h = res.get("use_powerlaw_2h", True)
+            alpha_2h_fixed = res.get("alpha_2h_fixed", 0.0)
+            use_linear_2h = res.get("use_linear_2h", False)
+            
+            # Regenerate linear 2H templates if needed (with high ell_max for full plotting range)
+            dl_2h_lin_per_zbin = {}
+            if use_linear_2h:
+                from ciber.theory.cross_ps_parametric_model import _compute_linear_2h_templates_per_zbin
+                zbinedges_res = res.get("zbinedges", np.array([0.0, 0.2, 0.4, 0.6, 0.8, 1.0]))
+                dl_2h_lin_per_zbin = _compute_linear_2h_templates_per_zbin(zbinedges_res, 1.2e5, verbose=False)
+
+            pnames = res.get("param_names_fitted")
+            sigma_damp_fixed_map = _parse_sigma_damp_fixed_mapping(args)
+            
+            # Build model once with ell range that includes ell_eval for interpolation
+            ell_m = np.logspace(np.log10(100), np.log10(1.2e5), 500)
+            model = CrossPowerSpectrumModel(
+                lb=ell_m, use_powerlaw_2h=use_powerlaw_2h,
+                alpha_2h_fixed=alpha_2h_fixed,
+                use_astrometry_damping=True,
+                use_linear_2h=use_linear_2h,
+                dl_2h_lin_per_zbin=dl_2h_lin_per_zbin,
+            )
+            
+            fit_vals = np.full(n_zbins, np.nan)
+            fit_lo = np.full(n_zbins, np.nan)
+            fit_hi = np.full(n_zbins, np.nan)
+            pred_vals = np.full(n_zbins, np.nan)
+
+            for zbin_idx in range(n_zbins):
+                if cat == "HSC" and zbin_idx == 0:
+                    continue
+
+                params = np.asarray(res["params"])[inst_idx, zbin_idx, :]
+                params_err = np.asarray(res["params_err"])[inst_idx, zbin_idx, :]
+                params_16 = np.asarray(res.get("params_16", res["params"] - res["params_err"]))[inst_idx, zbin_idx, :]
+                params_84 = np.asarray(res.get("params_84", res["params"] + res["params_err"]))[inst_idx, zbin_idx, :]
+                n_params_stored = int(np.sum(~np.isnan(params)))
+                params = params[:n_params_stored]
+                params_err = params_err[:n_params_stored]
+                params_16 = params_16[:n_params_stored]
+                params_84 = params_84[:n_params_stored]
+
+                pnf_bin = pnames[inst_idx, zbin_idx] if pnames is not None else None
+                use_popmix = bool(res.get("onehalo_fit_popmix", False))
+                use_damping = (pnf_bin is not None and
+                               any("damp" in str(p).lower() for p in pnf_bin))
+                sigma_damp_fixed_for_inst = sigma_damp_fixed_map.get(int(inst), None)
+                if sigma_damp_fixed_for_inst is not None:
+                    use_damping = True
+
+                # Attach one-halo template to model, matching _plot_spectra_summary
+                fit_result = {
+                    "params": params,
+                    "params_err": params_err,
+                    "use_astrometry_damping": use_damping,
+                    "samples": res.get("samples", np.empty((0,)))[inst_idx, zbin_idx] if res.get("samples") is not None else None,
+                    "param_names_fitted": pnf_bin,
+                    "onehalo_mode": bool(res.get("onehalo_mode", False)),
+                    "onehalo_output_dir": res.get("onehalo_output_dir", ""),
+                    "onehalo_generate_type": res.get("onehalo_generate_type", "bulk"),
+                    "onehalo_fsat_model": res.get("onehalo_fsat_model", "single"),
+                    "onehalo_population": res.get("onehalo_population", getattr(args, 'onehalo_population', 'combined')),
+                    "onehalo_fit_popmix": bool(res.get("onehalo_fit_popmix", getattr(args, 'onehalo_fit_popmix', False))),
+                    "onehalo_concentration_scale": float(res.get("onehalo_concentration_scale", getattr(args, 'concentration_scale', 1.0))),
+                    "inst": int(inst),
+                    "cat": cat,
+                }
+                attach_onehalo_template_to_model(
+                    model, fit_result, z_bin_index=zbin_idx, use_default_if_missing=False, zbinedges=zbinedges
+                )
+
+                # Evaluate model over ell_m range at median parameters, then interpolate to ell_eval
+                sd_med = (
+                    sigma_damp_fixed_for_inst
+                    if sigma_damp_fixed_for_inst is not None
+                    else resolve_full_param_value(
+                        params,
+                        pnf_bin,
+                        "sigma_damp",
+                        use_astrometry_damping=use_damping,
+                        use_onehalo_popmix=use_popmix,
+                    )
+                ) if use_damping else None
+                f_pop_med = (
+                    resolve_full_param_value(
+                        params,
+                        pnf_bin,
+                        "f_pop",
+                        use_astrometry_damping=use_damping,
+                        use_onehalo_popmix=use_popmix,
+                    )
+                    if use_popmix else None
+                )
+
+                comps = model.model_components(
+                    ell_m,
+                    *params[:5],
+                    sigma_damp=sd_med,
+                    z_bin_index=zbin_idx,
+                    f_pop=f_pop_med,
+                )
+                if comps is not None and 'one_halo' in comps:
+                    fit_vals[zbin_idx] = float(np.interp(ell_eval, ell_m, comps['one_halo']))
+
+                # Extract uncertainty from samples if available, otherwise from parameter percentiles
+                samples_bin = fit_result.get("samples", None)
+                if samples_bin is not None:
+                    s = np.asarray(samples_bin, dtype=float)
+                    if s.ndim == 2 and s.shape[0] > 1:
+                        nfull = 5 + (1 if use_popmix else 0) + (1 if use_damping else 0)
+                        if s.shape[1] == nfull:
+                            sfull = s
+                        else:
+                            sfull = expand_fit_samples_to_full_vector(
+                                s,
+                                np.asarray(params[:nfull], dtype=float),
+                                param_names_fitted=pnf_bin,
+                                use_astrometry_damping=use_damping,
+                                use_onehalo_popmix=use_popmix,
+                            )
+
+                        c1h = np.zeros(sfull.shape[0])
+                        for ii in range(sfull.shape[0]):
+                            f_pop_i = sfull[ii, 5] if (use_popmix and sfull.shape[1] > 5) else None
+                            if use_damping:
+                                damp_idx = 6 if use_popmix else 5
+                                sd_i = sfull[ii, damp_idx] if sfull.shape[1] > damp_idx else None
+                            else:
+                                sd_i = None
+                            cc = model.model_components(
+                                ell_m,
+                                sfull[ii, 0], sfull[ii, 1], sfull[ii, 2], sfull[ii, 3], sfull[ii, 4],
+                                sigma_damp=sd_i,
+                                z_bin_index=zbin_idx,
+                                f_pop=f_pop_i,
+                            )
+                            if cc is not None and 'one_halo' in cc:
+                                c1h[ii] = float(np.interp(ell_eval, ell_m, cc['one_halo']))
+                        fit_lo[zbin_idx] = float(np.percentile(c1h, 16))
+                        fit_hi[zbin_idx] = float(np.percentile(c1h, 84))
+                else:
+                    # Fallback: evaluate at parameter percentiles
+                    sd_lo = (
+                        sigma_damp_fixed_for_inst
+                        if sigma_damp_fixed_for_inst is not None
+                        else resolve_full_param_value(
+                            params_16,
+                            pnf_bin,
+                            "sigma_damp",
+                            use_astrometry_damping=use_damping,
+                            use_onehalo_popmix=use_popmix,
+                        )
+                    ) if use_damping else None
+                    f_pop_lo = (
+                        resolve_full_param_value(
+                            params_16,
+                            pnf_bin,
+                            "f_pop",
+                            use_astrometry_damping=use_damping,
+                            use_onehalo_popmix=use_popmix,
+                        )
+                        if use_popmix else None
+                    )
+
+                    comps_lo = model.model_components(
+                        ell_m,
+                        *params_16[:5],
+                        sigma_damp=sd_lo,
+                        z_bin_index=zbin_idx,
+                        f_pop=f_pop_lo,
+                    )
+                    if comps_lo is not None and 'one_halo' in comps_lo:
+                        fit_lo[zbin_idx] = float(np.interp(ell_eval, ell_m, comps_lo['one_halo']))
+
+                    sd_hi = (
+                        sigma_damp_fixed_for_inst
+                        if sigma_damp_fixed_for_inst is not None
+                        else resolve_full_param_value(
+                            params_84,
+                            pnf_bin,
+                            "sigma_damp",
+                            use_astrometry_damping=use_damping,
+                            use_onehalo_popmix=use_popmix,
+                        )
+                    ) if use_damping else None
+                    f_pop_hi = (
+                        resolve_full_param_value(
+                            params_84,
+                            pnf_bin,
+                            "f_pop",
+                            use_astrometry_damping=use_damping,
+                            use_onehalo_popmix=use_popmix,
+                        )
+                        if use_popmix else None
+                    )
+
+                    comps_hi = model.model_components(
+                        ell_m,
+                        *params_84[:5],
+                        sigma_damp=sd_hi,
+                        z_bin_index=zbin_idx,
+                        f_pop=f_pop_hi,
+                    )
+                    if comps_hi is not None and 'one_halo' in comps_hi:
+                        fit_hi[zbin_idx] = float(np.interp(ell_eval, ell_m, comps_hi['one_halo']))
+
+                # Evaluate model prediction (predicted one-halo power with A_1h not amplified)
+                # Load one-halo spectrum prediction and interpolate to ell_eval
+                try:
+                    from ciber.plotting.gal_plotting_fns import load_onehalo_spectrum
+                    
+                    onehalo_output_dir = getattr(args, "onehalo_dir", None) or fit_result.get("onehalo_output_dir", None)
+                    if onehalo_output_dir and os.path.exists(onehalo_output_dir):
+                        bandstr_select = "sdss_z" if cat == "DESILS" else "hsc_i"
+                        mag_cut = 22.0 if cat == "DESILS" else 25.0
+                        generate_type = getattr(args, "onehalo_generate_type", fit_result.get("onehalo_generate_type", "bulk"))
+                        fsat_model = getattr(args, "onehalo_fsat_model", fit_result.get("onehalo_fsat_model", "single"))
+                        population = getattr(args, "onehalo_population", fit_result.get("onehalo_population", "combined"))
+                        concentration_scale = float(fit_result.get("onehalo_concentration_scale", 1.0))
+
+                        oh_data_Ig = load_onehalo_spectrum(
+                            onehalo_output_dir,
+                            fsat_model,
+                            bandstr_select,
+                            inst=int(inst),
+                            mag_min=18.0,
+                            mag_cut=mag_cut,
+                            z0=0.05,
+                            mode="Ig",
+                            generate_type=generate_type,
+                            concentration_scale=concentration_scale,
+                            population=population,
+                        )
+                        if oh_data_Ig is not None:
+                            ell_1h = np.asarray(oh_data_Ig["ell_arr"], dtype=float)
+                            dl_1h = np.asarray(oh_data_Ig["dl_spectrum"], dtype=float)
+                            if dl_1h.ndim == 1:
+                                dl_1h_zbin = dl_1h
+                            elif dl_1h.ndim >= 2:
+                                dl_1h_zbin = dl_1h[zbin_idx]
+                            else:
+                                dl_1h_zbin = np.array([], dtype=float)
+
+                            if zbin_idx == 0:
+                                dl_1h_zbin *= 0.25
+
+                            if ell_1h.size > 0 and dl_1h_zbin.size > 0:
+                                pred_vals[zbin_idx] = float(np.interp(ell_eval, ell_1h, dl_1h_zbin))
+                except Exception as exc:
+                    pass
+
+            valid_fit = np.isfinite(fit_vals)
+            valid_pred = np.isfinite(pred_vals)
+
+            fit_err_lo = np.where(valid_fit, fit_vals - fit_lo, np.nan)
+            fit_err_hi = np.where(valid_fit, fit_hi - fit_vals, np.nan)
+            is_ul_fit = valid_fit & np.isfinite(fit_err_lo) & ((fit_vals - 2.0 * fit_err_lo) <= 0.0)
+            is_det_fit = valid_fit & ~is_ul_fit
+
+            dz_shift = 0.04 * (tracer_idx - (len(tracer_defs) - 1) / 2.0)
+            z_centers_shifted = z_centers + dz_shift
+
+            if np.any(is_det_fit):
+                ax.errorbar(
+                    z_centers_shifted[is_det_fit], fit_vals[is_det_fit],
+                    yerr=np.array([fit_vals[is_det_fit] - fit_lo[is_det_fit], fit_hi[is_det_fit] - fit_vals[is_det_fit]]),
+                    fmt='o',
+                    color=colors[cat],
+                    markerfacecolor=colors[cat],
+                    markeredgecolor=colors[cat],
+                    linestyle='None',
+                    markersize=7,
+                    capsize=7,
+                    linewidth=2.0,
+                    capthick=2,
+                    alpha=0.9,
+                    label=f"This work" if tracer_idx == 0 and band_idx == 0 else None,
+                )
+
+            if np.any(is_ul_fit):
+                # choose floor exactly like the A2h style
+                ymin = max(ylim[0], 1e-3)   # or just ymin = 1e-3 if your ylim starts <= 1e-3
+
+                ul_vals = fit_vals[is_ul_fit] + 2.0 * fit_err_hi[is_ul_fit]
+                xs_ul = z_centers_shifted[is_ul_fit]
+
+                # horizontal cap at UL value
+                ax.plot(
+                    xs_ul, ul_vals,
+                    marker='_', linestyle='none',
+                    color=colors[cat],
+                    markersize=12, markeredgewidth=2,
+                    alpha=0.85, zorder=6
+                )
+
+                # downward arrow
+                for x, y_top in zip(xs_ul, ul_vals):
+                    if np.isfinite(y_top) and y_top > ymin:
+                        ax.annotate(
+                            '',
+                            xy=(x, ymin), xytext=(x, y_top),
+                            arrowprops=dict(
+                                arrowstyle='-|>',
+                                color=colors[cat],
+                                alpha=0.85,
+                                lw=2.5,
+                                mutation_scale=15,
+                                shrinkA=0, shrinkB=0
+                            ),
+                            zorder=6
+                        )
+
+
+            if np.any(valid_pred):
+                ax.plot(
+                    z_centers_shifted[valid_pred], pred_vals[valid_pred],
+                    color=colors[cat],
+                    linestyle='--',
+                    marker='^',
+                    linewidth=1.8,
+                    markersize=4,
+                    alpha=0.95,
+                    label=f"IGL one-halo prediction" if tracer_idx == 0 and band_idx == 0 else None,
+                )
+
+        if band_idx==0:
+            ax.legend(fontsize=16, loc=2, bbox_to_anchor=(0.02, 1.25), ncols=2)
+
+        cat_display = {"DESILS": "DESI-LS ($z_{\\rm AB} < 22$)", "HSC": "HSC ($18 < i_{\\rm AB} < 25$)"}
+        for tracer_idx, (cat, headstr, tracer_label) in enumerate(tracer_defs):
+            tracer_key_short = "DESILS" if cat == "DESILS" else ("HSC_22" if headstr == "hsc_ilt22.0" else "HSC_25")
+            color = tracer_colors[tracer_key_short][0]
+
+            ax.text(0.4, 0.95 - 0.12 * tracer_idx,
+                    fr"CIBER {lams[inst]:.1f} $\mu$m $\times$ {cat_display[cat]}",
+                    transform=ax.transAxes, fontsize=14, color=color,
+                    va='top', ha='left')
+
+
+        ax.text(0.05, 0.1, '$\\ell='+str(int(ell_eval))+'$', transform=ax.transAxes, fontsize=18, color='black', va='bottom', ha='left')
+
+        ax.grid(True, alpha=0.3)
+        ax.set_xlim(zbinedges[0], zbinedges[-1])
+        ax.set_ylim(ylim)
+        ax.tick_params(labelsize=12)
+
+    # ylabel = '$C_{\\ell='+str(int(ell_eval))+'}^{\\rm 1h, Ig}$ [nW m$^{-2}$ sr$^{-1}$]'
+    ylabel = '$D_{\\ell, \\rm 1h}^{\\rm Ig}$ [nW m$^{-2}$ sr$^{-1}$]'
+
+    axes[0].set_ylabel(ylabel, fontsize=14)
+    axes[1].set_ylabel(ylabel, fontsize=14)
+    axes[1].set_xlabel("Redshift (z)", fontsize=14)
+
+    fig.subplots_adjust(wspace=0.03, hspace=0.02)
+
+    # fig.subplots_adjust(left=0.12, right=0.98, top=0.90, bottom=0.10, hspace=0.18, wspace=0.07)
+    stem = figdir / f"a1h_model_pred_vs_redshift_lMax={lMax}_ell={int(ell_eval)}"
+    _savefig(fig, stem, args.fig_fmt)
+    plt.close(fig)
+    print(f"[plot_a1h_model_pred_vs_redshift] generated {stem.with_suffix('.pdf')}")
 
 
 def _plot_a1h_band_ratio_vs_redshift(args: argparse.Namespace) -> None:
@@ -3407,20 +4175,13 @@ def _plot_a1h_vs_redshift_mag_comparison(args: argparse.Namespace) -> None:
     plt.close(fig)
     print(f"[plot_a1h_vs_redshift_mag_comparison] generated {stem.with_suffix('.pdf')}")
 
-
 def _plot_a2h_vs_redshift(args: argparse.Namespace) -> None:
-    """Plot A_2h (2-halo amplitude) vs redshift with model predictions.
-    
-    Shows observed A_2h from full model as data points with upper limits (black).
-    Overlays three IGL model predictions: bI=1 (constant), bI=1+0.6z (linear),
-    bI=(1+z)^2 (quadratic). One panel per band/catalog combination.
-    """
     figdir = Path(args.figdir) / args.fitstr_cross
     figdir.mkdir(parents=True, exist_ok=True)
 
     lMax = args.lmax[-1] if args.lmax else args.lmax_compare
 
-    # Load full model results
+    # Load fit results
     results_full = {}
     for cat in args.cat:
         headstr = args.headstr if cat == "HSC" else None
@@ -3430,191 +4191,209 @@ def _plot_a2h_vs_redshift(args: argparse.Namespace) -> None:
         else:
             print(f"[plot_a2h_vs_redshift] missing {fpath.name}")
 
-    # Build panel list from full-model results
-    panel_info = []
-    for cat in args.cat:
-        res = results_full.get(cat)
-        if not res:
-            continue
-        for inst in list(res["inst_list"]):
-            panel_info.append((cat, inst))
-
-    if not panel_info:
+    if not any(c in results_full for c in args.cat):
         print("[plot_a2h_vs_redshift] no results found, skipping")
         return
 
-    n_panels = len(panel_info)
-    n_cols = 2
-    n_rows = (n_panels + n_cols - 1) // n_cols
-    fig, axes = plt.subplots(n_rows, n_cols, figsize=(8, 6), sharex=True, sharey=True)
-    if n_panels == 1:
-        axes = np.array([[axes]])
-    elif n_rows == 1 or n_cols == 1:
-        axes = axes.reshape(n_rows, n_cols)
-
+    # --- 2-panel layout (like a1h): one panel per band ---
+    fig, axes = plt.subplots(2, 1, figsize=(8, 6), sharex=True, sharey=True)
+    inst_order = [1, 2]
 
     plot_alpha = 0.8
-    linewidth = 2.0
-    # Styling for model predictions
+
+    multfac = 10
+
+    dz = 0.2
+
+    # ymin = 3e-3 * multfac
+
+    ymin = 1.0
+    shade_colors = ("#f5f5f5", "#eeeeee")
+    lams = {1: 1.1, 2: 1.8}
+    color_map = {"DESILS": "C2", "HSC": "#E45DA8"}
+    cat_display = {"DESILS": r"DESI-LS ($z_{\rm AB}<22$)", "HSC": r"HSC ($18<i_{\rm AB}<25$)"}
+
     model_styles = {
-        "constant": dict(color="k", linestyle="-", label=r"IGL prediction; $b_I=1$"),
-        "linear":   dict(color="k", linestyle="--", label=r"IGL prediction; $b_I=1+0.6z$"),
-        "quadratic": dict(color="k", linestyle=":", label=r"IGL prediction; $b_I=(1+z)^2$"),
+        "constant": dict(color="k", linestyle="-",  label=r"IGL 2h prediction; $b_I=1$"),
+        "linear":   dict(color="k", linestyle="--", label=r"$b_I=1+0.6z$"),
+        "quadratic":dict(color="k", linestyle=":",  label=r"$b_I=(1+z)^2$"),
     }
 
-    cat_display = {"DESILS": "DESI-LS", "HSC": "HSC"}
-    lams = {1: 1.1, 2: 1.8}
-    shade_colors = ("#f5f5f5", "#eeeeee")
+    ls_didz = np.load('data/jordan_mocks/mock_dIdz_LS_zbins_unmasked_dz=0.2_091625.npz')
+    zedges, all_mock_dI_dz = ls_didz['zedges'], ls_didz['all_mock_dI_dz']
+    zcenter = 0.5 * (zedges[:-1] + zedges[1:])
 
-    # Compute model predictions for each b_I variant
-    model_preds = {}
-    for bi_model in ("constant", "linear", "quadratic"):
-        model_preds[bi_model] = {}
+    all_galautodivs = []
+
+    # Precompute model predictions
+    model_preds = {m: {} for m in ("constant", "linear", "quadratic")}
+    for bi_model in model_preds:
         for cat in args.cat:
             res = results_full.get(cat)
-            if not res:
+            if res is None:
                 continue
-            zbinedges = res["zbinedges"]
-            inst_list = list(res["inst_list"])
-            preds = _compute_igl_a2h_predictions(
-                cat, zbinedges, inst_list,
+            preds, galautodiv = _compute_igl_a2h_predictions(
+                cat,
+                res["zbinedges"],
+                list(res["inst_list"]),
                 jmock_basedir=args.igl_pred_basedir,
                 bias_cache_fpath=args.bias_cache_fpath,
                 headstr=None,
                 bi_model=bi_model,
-                a2h_cache_fpath=getattr(args, "mock_a2h_cache", None)
+                a2h_cache_fpath=getattr(args, "mock_a2h_cache", None),
             )
-            model_preds[bi_model][cat] = preds
 
-    # Exclude HSC z<0.2 predictions (unreliable)
-    for bi_model in ("constant", "linear", "quadratic"):
-        if "HSC" in model_preds[bi_model] and model_preds[bi_model]["HSC"] is not None:
-            model_preds[bi_model]["HSC"][:, 0] = np.nan
-
-    for panel_idx, (cat, inst) in enumerate(panel_info):
-        row = panel_idx // n_cols
-        col = panel_idx % n_cols
-        ax = axes[row, col]
-
-        res = results_full.get(cat)
-        if not res:
-            continue
-
-        zbinedges = res["zbinedges"]
-        z_centers = 0.5 * (zbinedges[:-1] + zbinedges[1:])
-        inst_list = list(res["inst_list"])
-        inst_idx = inst_list.index(inst)
-
-        # Add redshift bin shading
-        for j in range(len(zbinedges) - 1):
-            z0, z1 = zbinedges[j], zbinedges[j + 1]
-            shade = shade_colors[j % 2]
-            ax.axvspan(z0, z1, color=shade, alpha=0.22, zorder=0)
-
-        # Add grey overlay shading for HSC z<0.2 bin to indicate omitted measurements
-        if cat == "HSC":
-            z0_omit, z1_omit = zbinedges[0], zbinedges[1]
-            ax.axvspan(z0_omit, z1_omit, color="#a9a9a9", alpha=0.25, zorder=1, linewidth=2, edgecolor="grey")
-
-        # Extract A_2h data
-        n_params = res["params"].shape[-1]
-        A_2h = res["params"][inst_idx, :, 0]  # A_2h is always at index 0
-        A_2h_lo = res.get("params_16")
-        A_2h_hi = res.get("params_84")
-        A_2h_95 = res.get("params_95")
-
-        if A_2h_lo is not None and A_2h_hi is not None:
-            yerr_lo = A_2h - A_2h_lo[inst_idx, :, 0]
-            yerr_hi = A_2h_hi[inst_idx, :, 0] - A_2h
-            yerr = np.array([yerr_lo, yerr_hi])
-        else:
-            yerr_lo = res["params_err"][inst_idx, :, 0]
-            yerr = np.array([yerr_lo, yerr_lo])
-
-        # Exclude HSC z<0.2 data (unreliable)
-        if cat == "HSC":
-            A_2h[0] = np.nan
-            yerr[:, 0] = np.nan
-            if A_2h_95 is not None:
-                A_2h_95[inst_idx, 0, 0] = np.nan
-
-        # Identify upper limits
-        is_ul = (A_2h - 2 * yerr[0]) <= 0
-        is_det = ~is_ul
-
-        # Plot detections (black)
+            print('gal auto div is ', galautodiv)
+            all_galautodivs.append(galautodiv*dz)
 
 
-        if cat=='HSC':
-            color_plot = "#E45DA8"
-        else:
-            color_plot = 'C2'
+            if bi_model == "constant":
+                # For constant b_I=1, the predictions are just the mock dI/dz values
+                model_preds[bi_model][cat] = np.median(all_mock_dI_dz, axis=2)
+            elif bi_model == "linear":
+                model_preds[bi_model][cat] = np.median(all_mock_dI_dz, axis=2) * (1 + zcenter[:,None] * 0.6)
+            elif bi_model == "quadratic":
+                model_preds[bi_model][cat] = np.median(all_mock_dI_dz, axis=2) * (1 + zcenter[:,None]) ** 2
 
+            print('model preds for bias model', bi_model, 'is', model_preds[bi_model][cat])
+            # print(preds.shape, galautodiv.shape)
+            # model_preds[bi_model][cat] = preds
 
-        if np.any(is_det):
-            ax.errorbar(z_centers[is_det], A_2h[is_det],
-                       yerr=np.array([yerr[0][is_det], yerr[1][is_det]]),
-                       marker="o", color=color_plot, linestyle='None',
-                       markersize=5, capsize=3, label="Data" if panel_idx == 0 else None)
+    # Mask HSC z<0.2 predictions
+    for bi_model in model_preds:
+        if model_preds[bi_model].get("HSC") is not None:
+            model_preds[bi_model]["HSC"][:,0] = np.nan
 
+    for band_idx, inst in enumerate(inst_order):
+        ax = axes[band_idx]
+        ax.set_yscale("log")
 
-        ymin = 3e-3
+        drew_bin_shading = False
+        xlim_set = (0., 1.0)
 
-        # Plot upper limits (black downward arrows ending at 10^-2)
-        if np.any(is_ul):
-            ul_vals = A_2h_95[inst_idx, :, 0][is_ul] if A_2h_95 is not None else A_2h[is_ul] + 2 * yerr[1][is_ul]
-            xs_ul = z_centers[is_ul]
-            # Plot horizontal bar at top of each UL (wider capsize)
-            ax.plot(xs_ul, ul_vals, marker='_', color=color_plot, markersize=12,
-                   markeredgewidth=2, linestyle='none', alpha=0.85, label='CIBER (this work)' if panel_idx == 0 else None)
-            # Draw arrow from UL position down to 10^-2
-            for x, y_top in zip(xs_ul, ul_vals):
-                ax.annotate('', xy=(x, ymin), xytext=(x, y_top),
-                           arrowprops=dict(arrowstyle='-|>', color=color_plot, alpha=0.85, lw=2.5, mutation_scale=15))
-
-        # Overlay model predictions
-        for bi_idx, bi_model in enumerate(("constant", "linear", "quadratic")):
-            pred_arr = model_preds[bi_model][cat]
-            if pred_arr is None:
+        for tracer_idx, cat in enumerate(args.cat):
+            res = results_full.get(cat)
+            if res is None:
                 continue
-            preds = pred_arr[inst_idx, :]
-            st = model_styles[bi_model]
-            ax.plot(z_centers, preds, color=st["color"], linestyle=st["linestyle"],
-                   linewidth=2.0, alpha=plot_alpha, marker='.', label=st["label"] if panel_idx == 0 else None, markersize=10)
 
-        # Panel title in top-left corner
-        title_text = 'CIBER '+str(lams.get(inst, '?'))+' $\\mu$m $\\times$ '+cat_display.get(cat, cat)
-        ax.text(0.02, 0.95, title_text, transform=ax.transAxes,
-                fontsize=15, verticalalignment='top', color=color_plot)
+            inst_list = list(res["inst_list"])
+            if inst not in inst_list:
+                continue
+            inst_idx = inst_list.index(inst)
+
+            zbinedges = res["zbinedges"]
+            z_centers = 0.5 * (zbinedges[:-1] + zbinedges[1:])
+            dz_shift = 0.04 * (tracer_idx - (len(args.cat) - 1) / 2.0)
+            z_plot = z_centers + dz_shift
+            color_plot = color_map.get(cat, "k")
+
+            # Data vectors
+            A_2h = np.array(res["params"][inst_idx, :, 0], dtype=float)
+            A_2h_16 = res.get("params_16")
+            A_2h_84 = res.get("params_84")
+            A_2h_95 = res.get("params_95")
+
+            if A_2h_16 is not None and A_2h_84 is not None:
+                yerr_lo = A_2h - A_2h_16[inst_idx, :, 0]
+                yerr_hi = A_2h_84[inst_idx, :, 0] - A_2h
+            else:
+                yerr_lo = np.array(res["params_err"][inst_idx, :, 0], dtype=float)
+                yerr_hi = yerr_lo.copy()
+
+            # Exclude HSC first bin
+            if cat == "HSC":
+                A_2h[0] = np.nan
+                yerr_lo[0] = np.nan
+                yerr_hi[0] = np.nan
+                if A_2h_95 is not None:
+                    A_2h_95[inst_idx, 0, 0] = np.nan
+
+            is_valid = np.isfinite(A_2h) & np.isfinite(yerr_lo) & np.isfinite(yerr_hi)
+            is_ul = is_valid & ((A_2h - 2.0 * yerr_lo) <= 0.0)
+            is_det = is_valid & ~is_ul
+
+            # Detections
+            if np.any(is_det):
+                ax.errorbar(
+                    z_plot[is_det], A_2h[is_det] / all_galautodivs[tracer_idx][inst_idx, is_det],
+                    yerr=np.array([yerr_lo[is_det] / all_galautodivs[tracer_idx][inst_idx, is_det],
+                                    yerr_hi[is_det] / all_galautodivs[tracer_idx][inst_idx, is_det]]),
+                    fmt="o", color=color_plot, markerfacecolor=color_plot, markeredgecolor=color_plot,
+                    linestyle="None", markersize=7, capsize=6, capthick=2,
+                    label=f"This work" if band_idx == 0 and tracer_idx == 0 else None,
+                )
+
+            # Upper limits
+            if np.any(is_ul):
+                ul_vals = A_2h_95[inst_idx, :, 0][is_ul] / all_galautodivs[tracer_idx][inst_idx, is_ul] if A_2h_95 is not None else (A_2h[is_ul] + 2.0 * yerr_hi[is_ul]) / all_galautodivs[tracer_idx][inst_idx, is_ul]
+                xs_ul = z_plot[is_ul]
+
+                ax.plot(xs_ul, ul_vals, marker="_", color=color_plot, markersize=12,
+                        markeredgewidth=2, linestyle="none", alpha=0.85)
+
+                for x, y_top in zip(xs_ul, ul_vals):
+                    if np.isfinite(y_top) and y_top > ymin:
+                        ax.annotate(
+                            "", xy=(x, ymin), xytext=(x, y_top),
+                            arrowprops=dict(arrowstyle="-|>", color=color_plot, alpha=0.85, lw=2.5, mutation_scale=15),
+                        )
+
+            # Model curves
+            if tracer_idx == 0:
+                for bi_model in ("constant", "linear", "quadratic"):
+                    pred_arr = model_preds[bi_model].get(cat)
+
+                    if pred_arr is None:
+                        continue
+                    # preds = pred_arr[inst_idx, :]
+                    preds = pred_arr[:, inst_idx]
+
+                    print(f"[plot_a2h_vs_redshift] plotting model {bi_model} for {cat} band {inst}: preds={preds}")
+                    st = model_styles[bi_model]
+                    ax.plot(
+                        z_centers, preds,
+                        color='grey', linestyle=st["linestyle"], linewidth=2.0, alpha=plot_alpha,
+                        marker=None,
+                        label=st["label"] if (band_idx == 0 and tracer_idx == 0) else None,
+                    )
+
+        # Panel text
+        for i, cat_txt in enumerate(["DESILS", "HSC"]):
+            ax.text(
+                0.4, 0.95 - 0.12 * i,
+                fr"CIBER {lams[inst]:.1f} $\mu$m $\times$ {cat_display[cat_txt]}",
+                transform=ax.transAxes, color=color_map[cat_txt], fontsize=14, va="top", ha="left"
+            )
 
         ax.grid(True, alpha=0.3)
-        ax.set_xlim(zbinedges[0], zbinedges[-1])
-        ax.set_ylim(ymin, 1.0)
-        ax.set_yscale('log')
+        if xlim_set is not None:
+            ax.set_xlim(*xlim_set)
+        ax.set_ylim(ymin, 300.0)
         ax.tick_params(labelsize=13)
 
-    # Delete unused subplots
-    for idx in range(n_panels, len(axes.flat)):
-        fig.delaxes(axes.flat[idx])
+    # axes[0].set_ylabel(r"$A_{\rm 2h}^{\rm Ig}=b_g \frac{dN}{dz} b_I \frac{dI}{dz}$", fontsize=16)
+    # axes[1].set_ylabel(r"$A_{\rm 2h}^{\rm Ig}=b_g \frac{dN}{dz} b_I \frac{dI}{dz}$", fontsize=16)
 
-    # Add shared legend above top row
-    handles, labels = axes[0, 0].get_legend_handles_labels()
-    fig.legend(handles, labels, loc='upper center', bbox_to_anchor=(0.55, 1.1),
-               ncol=2, fontsize=16, frameon=True)
+    axes[0].set_ylabel(r"$b_I \times dI/dz$", fontsize=18)
+    axes[1].set_ylabel(r"$b_I \times dI/dz$", fontsize=18)
 
-    # Set axis labels on outer edges
-    for row in range(n_rows):
-        axes[row, 0].set_ylabel(r"$A_{2h}^{Ig}=b_g \frac{dN}{dz} b_I \frac{dI}{dz}$", fontsize=16)
-    for col in range(n_cols):
-        axes[n_rows - 1, col].set_xlabel("Redshift", fontsize=16)
+    ax_twin = axes[0].twinx()
+    ax_twin.set_yticks([])
+    ax_twin.set_ylabel('[nW m$^{-2}$ sr$^{-1}$]', fontsize=16)
+    ax_twin = axes[1].twinx()
+    ax_twin.set_yticks([])
+    ax_twin.set_ylabel('[nW m$^{-2}$ sr$^{-1}$]', fontsize=16)
 
-    # Adjust layout manually
-    fig.subplots_adjust(left=0.12, right=0.98, top=0.92, bottom=0.12, hspace=0.1, wspace=0.1)
+    axes[1].set_xlabel("Redshift (z)", fontsize=14)
+
+    handles, labels = axes[0].get_legend_handles_labels()
+    fig.legend(handles, labels, loc="upper center", bbox_to_anchor=(0.52, 1.02), ncol=2, fontsize=14, frameon=True)
+
+    fig.subplots_adjust(wspace=0.02, hspace=0.02)
 
     stem = figdir / f"a2h_vs_redshift_lMax={lMax}"
     _savefig(fig, stem, args.fig_fmt)
     plt.close(fig)
-
 
 def _plot_di_dz_upper_limits(args: argparse.Namespace) -> None:
     """Plot dI/dz upper limits derived from A_2h vs redshift.
@@ -3768,7 +4547,7 @@ def _plot_di_dz_upper_limits(args: argparse.Namespace) -> None:
 
         # Panel title in top-left corner
         title_text = 'CIBER '+str(lams.get(inst, '?'))+' $\\mu$m $\\times$ '+cat_display.get(cat, cat)
-        ax.text(0.02, 0.95, title_text, transform=ax.transAxes,
+        ax.text(0.4, 0.95, title_text, transform=ax.transAxes,
                 fontsize=15, verticalalignment='top')
 
         ax.grid(True, alpha=0.3)
@@ -4218,14 +4997,25 @@ def _plot_redshift_panels_2x2(args: argparse.Namespace) -> None:
     zbinedges = desils_results['zbinedges']
     lams = {1: 1.1, 2: 1.8}
 
+    # colors = {
+    #     'data': 'k',
+    #     'total': 'r',
+    #     'two_halo': 'b',
+    #     'one_halo': 'g',
+    #     'shot_noise': 'grey',
+    #     'igl': 'magenta',
+    # }
+
     colors = {
-        'data': 'k',
-        'total': 'r',
-        'two_halo': 'b',
-        'one_halo': 'g',
-        'shot_noise': 'grey',
-        'igl': 'magenta',
+        "data": "#000000",
+        "igl": "#595959",
+        "total": "red",      # strong red-orange
+        "two_halo": "blue",      # muted blue
+        # "one_halo": "#E6AC00",      # green (CB-safe shade)
+        "one_halo": "#C28B1E",
+        "shot_noise": "grey",       # warm orange
     }
+
 
     # Load bias cache and build mock pred fpaths (auto-detect from defaults if not provided)
     bias_cache = None
@@ -4297,15 +5087,16 @@ def _plot_redshift_panels_2x2(args: argparse.Namespace) -> None:
                     b_g=b_g,
                     cat="DESILS" if row == 0 else "HSC",
                     zbinedges_plot=zbinedges,
+                    sigma_damp_fixed_map=_parse_sigma_damp_fixed_mapping(args),
                 )
 
         # Add shared legend above all panels
         handles = [
             plt.errorbar([0], [0], yerr=[0.], color=colors['data'], marker='o', capsize=2.5, markersize=3, linestyle='none', label='Data ('+str(z_low)+'$ < z_{\\rm phot} < $'+str(z_high)+')'),
-            plt.Line2D([0], [0], linewidth=2.0, linestyle='solid', color='k', alpha=0.6, label='IGL prediction'),
-            plt.Line2D([0], [0], color=colors['total'], linewidth=2, label='Best-fit model'),
+            plt.Line2D([0], [0], linewidth=3.0, linestyle='solid', color='k', alpha=0.6, label='IGL prediction (2h+1h+P)'),
+            plt.Line2D([0], [0], color=colors['total'], linewidth=2.5, label='Best-fit model'),
             plt.Line2D([0], [0], color=colors['two_halo'], linestyle='dashdot', linewidth=1.5, alpha=0.7, label='Two-halo'),
-            plt.Line2D([0], [0], color=colors['one_halo'], linewidth=1.2, alpha=0.7, label='One-halo'),
+            plt.Line2D([0], [0], color=colors['one_halo'], linewidth=1.2, alpha=0.7, linestyle='solid', label='One-halo'),
             plt.Line2D([0], [0], color=colors['shot_noise'], linewidth=1.2, linestyle='dashed', alpha=0.7, label='Poisson level'),
         ]
         # if bias_cache is not None:
@@ -4337,7 +5128,8 @@ def _plot_redshift_panels_2x2(args: argparse.Namespace) -> None:
 
 def _plot_2x2_spectrum_panel(ax, results, inst_idx, z_idx, lMax, colors, lams,
                               title="", chi2_reduced=None,
-                              igl_pred_fpath=None, b_g=None, cat=None, zbinedges_plot=None):
+                              igl_pred_fpath=None, b_g=None, cat=None, zbinedges_plot=None,
+                              sigma_damp_fixed_map=None, show_1h_iglpred=False):
     """Plot a single spectrum panel into a pre-existing axis for the 2x2 figure.
 
     Mirrors the uncertainty band logic of plot_fit_fixed_1h_templates as called
@@ -4366,6 +5158,10 @@ def _plot_2x2_spectrum_panel(ax, results, inst_idx, z_idx, lMax, colors, lams,
     pnf_bin     = pnf[inst_idx, z_idx] if pnf is not None else None
     use_damping = (pnf_bin is not None and
                    any('damp' in str(p).lower() for p in pnf_bin))
+    sigma_damp_fixed_map = _parse_sigma_damp_fixed_mapping(results) if sigma_damp_fixed_map is None else sigma_damp_fixed_map
+    sigma_damp_fixed_for_inst = sigma_damp_fixed_map.get(int(results.get('inst_list', [1])[inst_idx]), None)
+    if sigma_damp_fixed_for_inst is not None:
+        use_damping = True
 
     use_powerlaw_2h = bool(results.get('use_powerlaw_2h', True))
     alpha_2h_fixed  = float(results.get('alpha_2h_fixed', -1.5))
@@ -4392,10 +5188,13 @@ def _plot_2x2_spectrum_panel(ax, results, inst_idx, z_idx, lMax, colors, lams,
         "params_err": params_err,
         "use_astrometry_damping": use_damping,
         "samples": samples_bin if samples_bin is not None and len(np.asarray(samples_bin).shape) > 0 else None,
+        "param_names_fitted": pnf_bin,
         "onehalo_mode": bool(results.get("onehalo_mode", False)),
         "onehalo_output_dir": results.get("onehalo_output_dir", ""),
         "onehalo_generate_type": results.get("onehalo_generate_type", "bulk"),
         "onehalo_fsat_model": results.get("onehalo_fsat_model", "single"),
+        "onehalo_population": results.get("onehalo_population", "combined"),
+        "onehalo_fit_popmix": bool(results.get("onehalo_fit_popmix", False)),
         "inst": int(results.get("inst_list", [1])[inst_idx]),
         "cat": cat,
     }
@@ -4414,12 +5213,32 @@ def _plot_2x2_spectrum_panel(ax, results, inst_idx, z_idx, lMax, colors, lams,
     # ------------------------------------------------------------------ #
     # Build components
     # ------------------------------------------------------------------ #
-    if use_damping:
-        # params = [A_2h, A_1h, mu_1h, sigma_1h, A_shot, sigma_damp]
-        components = model.model_components(ell_m, *params[:5], sigma_damp=params[5], z_bin_index=z_idx)
-    else:
-        # params = [A_2h, A_1h, mu_1h, sigma_1h, A_shot]
-        components = model.model_components(ell_m, *params[:5], z_bin_index=z_idx)
+    use_popmix = bool(fit_result.get("onehalo_fit_popmix", False))
+    f_pop_med = resolve_full_param_value(
+        params,
+        pnf_bin,
+        "f_pop",
+        use_astrometry_damping=use_damping,
+        use_onehalo_popmix=use_popmix,
+    ) if use_popmix else None
+    sigma_damp_med = (
+        sigma_damp_fixed_for_inst
+        if sigma_damp_fixed_for_inst is not None
+        else resolve_full_param_value(
+            params,
+            pnf_bin,
+            "sigma_damp",
+            use_astrometry_damping=use_damping,
+            use_onehalo_popmix=use_popmix,
+        )
+    ) if use_damping else None
+    components = model.model_components(
+        ell_m,
+        *params[:5],
+        sigma_damp=sigma_damp_med,
+        z_bin_index=z_idx,
+        f_pop=f_pop_med,
+    )
 
     # ------------------------------------------------------------------ #
     # Uncertainty bands: sample-driven percentiles first, params_err fallback.
@@ -4429,33 +5248,36 @@ def _plot_2x2_spectrum_panel(ax, results, inst_idx, z_idx, lMax, colors, lams,
     if samples_bin is not None:
         s = np.asarray(samples_bin, dtype=float)
         if s.ndim == 2 and s.shape[0] > 1:
-            nfull = 6 if use_damping else 5
+            nfull = 5 + (1 if use_popmix else 0) + (1 if use_damping else 0)
             if s.shape[1] == nfull:
                 sfull = s
             else:
-                sfull = np.tile(np.asarray(params[:nfull], dtype=float), (s.shape[0], 1))
-                if use_damping and s.shape[1] >= 3:
-                    sfull[:, 0] = s[:, 0]
-                    sfull[:, 1] = s[:, 1]
-                    sfull[:, 4] = s[:, 2]
-                    if s.shape[1] >= 4:
-                        sfull[:, 5] = s[:, 3]
-                elif (not use_damping) and s.shape[1] >= 3:
-                    sfull[:, 0] = s[:, 0]
-                    sfull[:, 1] = s[:, 1]
-                    sfull[:, 4] = s[:, 2]
+                sfull = expand_fit_samples_to_full_vector(
+                    s,
+                    np.asarray(params[:nfull], dtype=float),
+                    param_names_fitted=pnf_bin,
+                    use_astrometry_damping=use_damping,
+                    use_onehalo_popmix=use_popmix,
+                )
 
             c2h = np.zeros((sfull.shape[0], ell_m.size))
             c1h = np.zeros((sfull.shape[0], ell_m.size))
             csh = np.zeros((sfull.shape[0], ell_m.size))
             ctot = np.zeros((sfull.shape[0], ell_m.size))
+
             for ii in range(sfull.shape[0]):
-                sd_i = sfull[ii, 5] if use_damping else None
+                f_pop_i = sfull[ii, 5] if (use_popmix and sfull.shape[1] > 5) else None
+                if use_damping:
+                    damp_idx = 6 if use_popmix else 5
+                    sd_i = sfull[ii, damp_idx] if sfull.shape[1] > damp_idx else None
+                else:
+                    sd_i = None
                 cc = model.model_components(
                     ell_m,
                     sfull[ii, 0], sfull[ii, 1], sfull[ii, 2], sfull[ii, 3], sfull[ii, 4],
                     sigma_damp=sd_i,
                     z_bin_index=z_idx,
+                    f_pop=f_pop_i,
                 )
                 c2h[ii] = cc['two_halo']
                 c1h[ii] = cc['one_halo']
@@ -4501,7 +5323,20 @@ def _plot_2x2_spectrum_panel(ax, results, inst_idx, z_idx, lMax, colors, lams,
                                                components['two_halo'] +
                                                components['one_halo'] +
                                                components['shot_noise'])
-            damping_factor = model.astrometry_damping_component(ell_m, params[5])
+            damping_factor = model.astrometry_damping_component(
+                ell_m,
+                (
+                    sigma_damp_fixed_for_inst
+                    if sigma_damp_fixed_for_inst is not None
+                    else resolve_full_param_value(
+                        params,
+                        pnf_bin,
+                        "sigma_damp",
+                        use_astrometry_damping=use_damping,
+                        use_onehalo_popmix=use_popmix,
+                    )
+                ) if use_damping else None,
+            )
             dl_total_upper = (dl_2h_upper + dl_1h_upper + dl_shot_upper) * damping_factor
             dl_total_lower = np.maximum(0, (dl_2h_lower + dl_1h_lower + dl_shot_lower) * damping_factor)
         else:
@@ -4525,9 +5360,9 @@ def _plot_2x2_spectrum_panel(ax, results, inst_idx, z_idx, lMax, colors, lams,
     # ------------------------------------------------------------------ #
     # Plot model components + uncertainty bands
     # ------------------------------------------------------------------ #
-    ax.loglog(ell_m, components['total'],      color=colors['total'],      lw=2.0, zorder=6)
+    ax.loglog(ell_m, components['total'],      color=colors['total'],      lw=2.5, zorder=6)
     ax.loglog(ell_m, components['two_halo'],   color=colors['two_halo'],   lw=1.2, alpha=0.7, linestyle='dashdot', zorder=6)
-    ax.loglog(ell_m, components['one_halo'],   color=colors['one_halo'],   lw=1.2, alpha=0.7, zorder=6)
+    ax.loglog(ell_m, components['one_halo'],   color=colors['one_halo'],   lw=1.2, alpha=0.7, zorder=6, linestyle='solid')
     ax.loglog(ell_m, components['shot_noise'], color=colors['shot_noise'], lw=1.2, alpha=0.7, linestyle='dashed', zorder=6)
 
     if uncertainty_bands is not None:
@@ -4574,7 +5409,11 @@ def _plot_2x2_spectrum_panel(ax, results, inst_idx, z_idx, lMax, colors, lams,
 
 
             ax.plot(ell_igl, dl_igl, color='k',
-                    linewidth=2.5, linestyle='solid', alpha=0.5, zorder=5)
+                    linewidth=3.0, linestyle='solid', alpha=0.5, zorder=10)
+
+            if show_1h_iglpred:
+                ax.plot(ell_igl, dl_1h_interp, color='k',
+                        linewidth=1.5, linestyle='dashed', alpha=0.5, zorder=5)
         except Exception as e:
             print(f"[_plot_2x2_spectrum_panel] IGL overlay failed: {e}")
 
@@ -5885,10 +6724,10 @@ def parse_args() -> argparse.Namespace:
         nargs="+",
         choices=["run_auto", "run_cross", "plot_auto", "plot_cross", "plot_components",
                  "plot_compare_cats", "plot_fit_spectra", "plot_spectra_summary",
-                 "plot_corner", "plot_corr_a1h_a2h", "plot_sigma_damp", "plot_chi2_1h",
+                 "plot_fpop_vs_redshift", "plot_corner", "plot_corr_a1h_a2h", "plot_sigma_damp", "plot_chi2_1h",
                  "plot_chi2_2h", "plot_redshift_panels_2x2", "plot_a1h_vs_redshift",
                  "plot_a1h_vs_redshift_three_row", "plot_a1h_vs_redshift_alternate_layout", "plot_a1h_vs_redshift_mag_comparison",
-                 "plot_a1h_band_ratio_vs_redshift", "plot_parameter_consistency_vs_lmax",
+                 "plot_a1h_model_pred_vs_redshift", "plot_a1h_band_ratio_vs_redshift", "plot_parameter_consistency_vs_lmax",
                  "plot_a2h_vs_redshift", "plot_di_dz_upper_limits", "plot_d_ell_1h_evolution",
                  "plot_r1h_ratio", "plot_ihl_and_dell_combined",
                  "make_chi2_table", "make_amplitude_table", 
@@ -5936,7 +6775,7 @@ def parse_args() -> argparse.Namespace:
 
     # MCMC settings
     parser.add_argument("--nwalkers", type=int, default=32, help="MCMC walkers")
-    parser.add_argument("--nsteps1", type=int, default=2000, help="MCMC steps stage 1")
+    parser.add_argument("--nsteps1", type=int, default=1000, help="MCMC steps stage 1")
     parser.add_argument("--nsteps2", type=int, default=4000, help="MCMC steps stage 2")
     parser.add_argument("--nburn1", type=int, default=500, help="Burn-in stage 1")
     parser.add_argument("--nburn2", type=int, default=1000, help="Burn-in stage 2")
@@ -6012,6 +6851,18 @@ def parse_args() -> argparse.Namespace:
         default=1.0,
         help="Scale factor applied to the NFW concentration when loading one-halo templates; use a value != 1.0 to select concentration-specific saved files",
     )
+    parser.add_argument(
+        "--onehalo-population",
+        default="combined",
+        choices=["combined", "pop0", "pop1"],
+        help="Population template to use when loading precomputed one-halo spectra. 'combined' uses the existing weighted combination, while 'pop0'/'pop1' select a single population and fall back to the previous z-bin when that population is missing.",
+    )
+    parser.add_argument(
+        "--onehalo-fit-popmix",
+        action="store_true",
+        default=False,
+        help="Fit an additional one-halo population-mix parameter f_pop using pop0/pop1 templates when available.",
+    )
 
     # plot_components / plot_compare_cats specific
     parser.add_argument(
@@ -6025,6 +6876,12 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=50000,
         help="Fixed lMax used for plot_compare_cats",
+    )
+    parser.add_argument(
+        "--ell-eval-1h",
+        type=float,
+        default=10000.0,
+        help="Multipole at which to evaluate the one-halo power in the 1h comparison figure",
     )
 
     parser.add_argument("--overwrite", action="store_true", help="Recompute fits even if output .npz exists")
@@ -6051,10 +6908,10 @@ def parse_args() -> argparse.Namespace:
 # ---------------------------------------------------------------------------
 
 _ALL_MODES = ["run_auto", "run_cross", "plot_auto", "plot_cross", "plot_components",
-              "plot_compare_cats", "plot_fit_spectra", "plot_spectra_summary", "plot_corner",
+              "plot_compare_cats", "plot_fit_spectra", "plot_spectra_summary", "plot_fpop_vs_redshift", "plot_corner",
               "plot_corr_a1h_a2h", "plot_sigma_damp", "plot_chi2_1h", "plot_chi2_2h",
               "plot_redshift_panels_2x2", "plot_a1h_vs_redshift", "plot_a1h_vs_redshift_three_row",
-              "plot_a1h_vs_redshift_alternate_layout", "plot_a1h_vs_redshift_mag_comparison", "plot_a1h_band_ratio_vs_redshift",
+              "plot_a1h_vs_redshift_alternate_layout", "plot_a1h_vs_redshift_mag_comparison", "plot_a1h_model_pred_vs_redshift", "plot_a1h_band_ratio_vs_redshift",
               "plot_d_ell_1h_evolution", "plot_parameter_consistency_vs_lmax",
               "plot_r1h_ratio", "plot_ihl_and_dell_combined",
               "make_chi2_table", "make_amplitude_table", "param_priors_table"]
@@ -6085,6 +6942,8 @@ def main() -> None:
         _plot_fit_spectra(args)
     if "plot_spectra_summary" in modes:
         _plot_spectra_summary(args)
+    if "plot_fpop_vs_redshift" in modes:
+        _plot_fpop_vs_redshift(args)
     if "plot_corner" in modes:
         _plot_corner(args)
     if "plot_compare_cats" in modes:
@@ -6107,6 +6966,8 @@ def main() -> None:
         _plot_a1h_vs_redshift_three_row(args)
     if "plot_a1h_vs_redshift_alternate_layout" in modes:
         _plot_a1h_vs_redshift_alternate_layout(args)
+    if "plot_a1h_model_pred_vs_redshift" in modes:
+        _plot_a1h_model_pred_vs_redshift(args, ell_eval=args.ell_eval_1h)
     if "plot_a1h_band_ratio_vs_redshift" in modes:
         _plot_a1h_band_ratio_vs_redshift(args)
     if "plot_d_ell_1h_evolution" in modes:

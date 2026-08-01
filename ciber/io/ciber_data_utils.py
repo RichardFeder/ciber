@@ -168,6 +168,20 @@ def load_satellite_corrected_prediction(npz_path, survey, **kwargs):
 
 '''---------------------- loading functions ----------------------'''
 
+def _pad_diagnostic_vector(values, n_expected):
+	"""Pad or truncate diagnostic values to a target length."""
+	arr = np.asarray(values, dtype=float)
+	if arr.ndim == 0:
+		arr = np.array([arr], dtype=float)
+	if arr.size == 0:
+		return np.full(n_expected, np.nan, dtype=float)
+	if arr.size >= n_expected:
+		return arr[:n_expected]
+	out = np.full(n_expected, np.nan, dtype=float)
+	out[:arr.size] = arr
+	return out
+
+
 def save_fit_results_npz(all_fit_results_mcmc, zbinedges, inst_list,
 						 save_path, dataset_name='HSC'):
 	"""Save MCMC fit results to .npz file for easy loading and comparison."""
@@ -197,6 +211,9 @@ def save_fit_results_npz(all_fit_results_mcmc, zbinedges, inst_list,
 	param_names_fitted_array = np.empty((n_inst, n_zbins), dtype=object)
 	cov_matrix_array = np.empty((n_inst, n_zbins), dtype=object)
 	acceptance_fraction_array = np.full((n_inst, n_zbins), np.nan)
+	mcmc_tau_array = np.full((n_inst, n_zbins, n_params), np.nan)
+	mcmc_rhat_array = np.full((n_inst, n_zbins, n_params), np.nan)
+	mcmc_ess_array = np.full((n_inst, n_zbins, n_params), np.nan)
 
 	sample_result = all_fit_results_mcmc[sample_key]['fit_result']
 	# use_ihl_templates is True only if templates are actually present (not None)
@@ -239,6 +256,18 @@ def save_fit_results_npz(all_fit_results_mcmc, zbinedges, inst_list,
 			param_names_fitted_array[i, zidx] = fit_result.get('param_names_fitted', None)
 			cov_matrix_array[i, zidx] = fit_result.get('cov_matrix', None)
 			acceptance_fraction_array[i, zidx] = fit_result.get('acceptance_fraction', np.nan)
+			mcmc_tau_array[i, zidx, :] = _pad_diagnostic_vector(
+				fit_result.get('mcmc_tau', np.full(len(fit_result.get('params', [])), np.nan)),
+				n_params,
+			)
+			mcmc_rhat_array[i, zidx, :] = _pad_diagnostic_vector(
+				fit_result.get('mcmc_rhat', np.full(len(fit_result.get('params', [])), np.nan)),
+				n_params,
+			)
+			mcmc_ess_array[i, zidx, :] = _pad_diagnostic_vector(
+				fit_result.get('mcmc_ess', np.full(len(fit_result.get('params', [])), np.nan)),
+				n_params,
+			)
 
 	np.savez(
 		save_path,
@@ -265,6 +294,9 @@ def save_fit_results_npz(all_fit_results_mcmc, zbinedges, inst_list,
 		param_names_fitted=param_names_fitted_array,
 		cov_matrix=cov_matrix_array,
 		acceptance_fraction=acceptance_fraction_array,
+		mcmc_tau=mcmc_tau_array,
+		mcmc_rhat=mcmc_rhat_array,
+		mcmc_ess=mcmc_ess_array,
 		use_ihl_templates=model_config['use_ihl_templates'],
 		use_powerlaw_2h=model_config['use_powerlaw_2h'],
 		alpha_2h_fixed=model_config['alpha_2h_fixed'],
@@ -276,6 +308,8 @@ def save_fit_results_npz(all_fit_results_mcmc, zbinedges, inst_list,
 		onehalo_output_dir=sample_result.get('onehalo_output_dir', ''),
 		onehalo_generate_type=sample_result.get('onehalo_generate_type', 'bulk'),
 		onehalo_fsat_model=sample_result.get('onehalo_fsat_model', 'single'),
+		onehalo_population=sample_result.get('onehalo_population', 'combined'),
+		onehalo_fit_popmix=sample_result.get('onehalo_fit_popmix', False),
 	)
 
 	print(f"✓ Saved fit results to: {save_path}")
@@ -339,6 +373,12 @@ def load_fit_results_npz(load_path):
 		results['cov_matrix'] = data['cov_matrix']
 	if 'acceptance_fraction' in data:
 		results['acceptance_fraction'] = data['acceptance_fraction']
+	if 'mcmc_tau' in data:
+		results['mcmc_tau'] = data['mcmc_tau']
+	if 'mcmc_rhat' in data:
+		results['mcmc_rhat'] = data['mcmc_rhat']
+	if 'mcmc_ess' in data:
+		results['mcmc_ess'] = data['mcmc_ess']
 
 	if 'use_ihl_templates' in data:
 		results['use_ihl_templates'] = bool(data['use_ihl_templates'])
@@ -358,6 +398,10 @@ def load_fit_results_npz(load_path):
 		results['onehalo_generate_type'] = str(data['onehalo_generate_type'])
 	if 'onehalo_fsat_model' in data:
 		results['onehalo_fsat_model'] = str(data['onehalo_fsat_model'])
+	if 'onehalo_population' in data:
+		results['onehalo_population'] = str(data['onehalo_population'])
+	if 'onehalo_fit_popmix' in data:
+		results['onehalo_fit_popmix'] = bool(data['onehalo_fit_popmix'])
 	if 'template_names' in data:
 		template_names_array = data['template_names']
 		if template_names_array.ndim == 0:
