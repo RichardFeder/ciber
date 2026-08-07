@@ -322,15 +322,16 @@ def generate_full_masks_050823(cbps, ifield_list, sim_idxs, masktail, inst = 1, 
 							  use_inst_mask = True, mag_lim_Vega=17.5, save_mask = True, \
 							  datestr = '062322', datestr_trilegal='062422', convert_AB_to_Vega = True, \
 							 dm = 3., a1=160., b1=3.632, c1=8.0, intercept_mag=16.0, \
-							 include_ff_mask = False, interp_mask_fn_fpaths=None, interp_mask_fn_fpaths_1=None, interp_mask_fn_fpaths_2=None, max_depth=8, \
-							 mag_depth_obs=17.0, cib_file_mode='cib_with_tracer', dx=0., dy=0., interp_maskfn=None, plot=True, \
+							 interp_mask_fn_fpaths=None, interp_mask_fn_fpaths_1=None, interp_mask_fn_fpaths_2=None, max_depth=8, \
+							 cib_file_mode='cib_with_tracer', dx=0., dy=0., interp_maskfn=None, plot=True, \
 							m_min_thresh=None, radcap=200., inst_mag_mask=None, \
-							twomass_only=False, generate_shotnoise_cat=False, add_spitzer_Lmask=False, mag_key_sdwfs='CH1_mag_auto', mag_lim_sdwfs=18.0, mag_lim_yPS=18.5, \
+							twomass_only=False, add_spitzer_Lmask=False, mag_lim_sdwfs=18.0, mag_lim_yPS=18.5, \
 							add_wise_Lmask=False, mag_lim_wise=16.0, \
 							fudge_fac=None, min_mag_fudge=14, max_mag_fudge=16.0, wcs_headers=None, mask_cat_fpaths=None, mode='Zemcov+14', \
 							apply_mask_errs=False, mask_err_vs_mag_fpath=None, mask_transition_mag=14, min_radius=None, \
-							add_flamingos=False, twomass_max_mag=None, irac_ch_mask=None, sdwfs_fixed_radius=14.0, \
-							persistence_mask=False, persistence_src_mag_max=10):
+							add_flamingos=False, twomass_max_mag=None, sdwfs_fixed_radius=14.0, \
+							persistence_mask=False, persistence_src_mag_max=10, 
+							mask_cmgs=False, cmg_cat_fpaths=None, cmg_fixed_radius=14.0):
 
 	if twomass_only:
 		generate_starmask = True 
@@ -696,12 +697,12 @@ def generate_full_masks_050823(cbps, ifield_list, sim_idxs, masktail, inst = 1, 
 				# 				   interp_max_mag = max_mag, interp_min_mag=min_mag, mode=mode, mask_transition_mag=mask_transition_mag, \
 				# 				   min_radius=min_radius)
 
-				galmask_J, radii_gals_J = mask_from_cat(cat_df = gal_cat_df, mag_lim_min=1, inst=inst,\
+				galmask_J, _ = mask_from_cat(cat_df = gal_cat_df, mag_lim_min=1, inst=inst,\
 						mag_lim=16.0, interp_maskfn=interp_maskfn_1, magstr='J_Vega_predict', Vega_to_AB=0., dimx=cbps.dimx, dimy=cbps.dimy, plot=False, \
 								   interp_max_mag = max_mag, interp_min_mag=min_mag, mode=mode, mask_transition_mag=mask_transition_mag, \
 								   min_radius=min_radius)
 
-				galmask_H, radii_gals_H = mask_from_cat(cat_df = gal_cat_df, mag_lim_min=1, inst=inst,\
+				galmask_H, _ = mask_from_cat(cat_df = gal_cat_df, mag_lim_min=1, inst=inst,\
 						mag_lim=15.5, interp_maskfn=interp_maskfn_2, magstr='H_Vega_predict', Vega_to_AB=0., dimx=cbps.dimx, dimy=cbps.dimy, plot=False, \
 								   interp_max_mag = max_mag, interp_min_mag=min_mag, mode=mode, mask_transition_mag=mask_transition_mag, \
 								   min_radius=min_radius)
@@ -734,6 +735,15 @@ def generate_full_masks_050823(cbps, ifield_list, sim_idxs, masktail, inst = 1, 
 				# else:
 				# 	print('radii gals is ', radii_gals, 'and galmask is ', galmask)
 
+			if mask_cmgs and cmg_cat_fpaths[fieldidx] is not None:
+				print('masking cmgs from ', cmg_cat_fpaths[fieldidx])
+				cmg_cat_df = pd.read_csv(cmg_cat_fpaths[fieldidx])
+
+				print('fixed radius is ', cmg_fixed_radius)
+				cmg_mask, radii_cmg = mask_from_cat(cat_df = cmg_cat_df, mag_lim_min=0, inst=inst,\
+										mag_lim=mag_lim_Vega, radii=cmg_fixed_radius*np.ones_like(cmg_cat_df[magkey]),\
+								  magstr=magkey, Vega_to_AB=0., dimx=cbps.dimx, dimy=cbps.dimy, plot=False)
+				joint_mask *= cmg_mask
 
 			if add_spitzer_Lmask and ifield in [6, 7]:
 

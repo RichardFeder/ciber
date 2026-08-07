@@ -253,7 +253,8 @@ def ciber_gal_cross(inst_list, ifield_list_use, catname, addstr=None, randstr=No
 			   include_ff_errors=True,
 			   observed_run_name = 'observed_Jlt16.0_Hlt15.5_072424_quadoff_grad_fcsub_order2',
 			   tailstr_save=None, save_ciber_map=False,
-			   noisemodl_basepath=None, intensity_map_addstr=None):
+			   noisemodl_basepath=None, intensity_map_addstr=None, 
+			   add_cmg_mask=False):
 	
 	
 	cbps = CIBER_PS_pipeline()
@@ -364,6 +365,12 @@ def ciber_gal_cross(inst_list, ifield_list_use, catname, addstr=None, randstr=No
 			flight_im -= dc_template*cbps.cal_facs[inst]
 			mask_fpath = fpath_dict['mask_base_path']+'/'+mask_tail+'/joint_mask_ifield'+str(ifield)+'_inst'+str(inst)+'_observed_'+mask_tail+'.fits'
 			mask = fits.open(mask_fpath)[1].data   
+
+			if add_cmg_mask:
+				print('Adding CMG mask for ifield', ifield, 'inst', inst)
+				cmg_mask_fpath = fpath_dict['mask_base_path']+'/cmgmask/joint_mask_ifield'+str(ifield)+'_inst'+str(inst)+'_observed_cmgmask.fits'
+				cmg_mask = fits.open(cmg_mask_fpath)[1].data
+				mask *= cmg_mask
 
 			if catname=='HSC':
 				

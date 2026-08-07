@@ -1428,11 +1428,10 @@ def run_cross_redshift(args: argparse.Namespace) -> List[GeneratedFigure]:
     bias_cache = str(getattr(args, "bias_cache_fpath", "") or "").strip() or None
 
     fig_fine, fig_coarse = gen_cross_spectrum_plots_vs_z(
-        plot_fine=True,
+        plot_fine=False,
         plot_coarse=True,
         bias_cache_fpath=bias_cache,
-        onehalo_output_dir=args.omnibus_onehalo_output_dir,
-        mode='auto'
+        onehalo_output_dir=args.omnibus_onehalo_output_dir
     )
 
     out: List[GeneratedFigure] = []
@@ -7017,8 +7016,15 @@ def _compare_desils_with_without_cmgs_plot(
     bottom_row_height: float = 0.5,
     shot_ell_min: float = 5.0e4,
     shot_ell_max: float = 8.0e4,
+    onehalo_output_dir: Optional[str] = None,
+    onehalo_fsat_model: str = "fsatdouble",
+    onehalo_mag_min: float = 16.0,
+    onehalo_mag_cut: float = 22.0,
+    onehalo_z0: float = 0.05,
+    onehalo_logM_min: Optional[float] = 13.5,
 ):
     import matplotlib.pyplot as plt
+    from ciber.plotting.gal_plotting_fns import load_onehalo_spectrum
 
     colors = ["C2", "#8A2BE2", "#2F4F4F"]
 
@@ -7105,9 +7111,78 @@ def _compare_desils_with_without_cmgs_plot(
 
     ax[0, 0].legend(loc=2, ncol=3, bbox_to_anchor=bbox_to_anchor, fontsize=16)
 
+    # Load and overlay one-halo predictions if requested
+    onehalo_gal_auto = None
+    onehalo_clig = [None, None]
+    if onehalo_output_dir is not None:
+        print(f"DEBUG: Attempting to load one-halo predictions from {onehalo_output_dir}")
+        try:
+            # Load galaxy auto one-halo prediction
+            print(f"DEBUG: Loading galaxy auto (gg mode)...")
+            oh_gal = load_onehalo_spectrum(
+                onehalo_output_dir,
+                onehalo_fsat_model,
+                "sdss_z",
+                inst=1,
+                mag_min=onehalo_mag_min,
+                mag_cut=onehalo_mag_cut,
+                z0=onehalo_z0,
+                mode="gg",
+                generate_type="bulk",
+                logM_min=onehalo_logM_min,
+            )
+            if oh_gal is not None:
+                print(f"DEBUG: Loaded galaxy auto, ell shape: {oh_gal['ell_arr'].shape}")
+                onehalo_gal_auto = {
+                    "ell": oh_gal["ell_arr"],
+                    "dl": oh_gal["dl_spectrum"],
+                }
+            else:
+                print(f"DEBUG: Failed to load galaxy auto (returned None)")
+
+            # Load CIBER × galaxy cross one-halo predictions for each instrument
+            for idx, inst in enumerate(inst_list):
+                print(f"DEBUG: Loading CIBER x galaxy cross (Ig mode) for TM{inst}...")
+                oh_cross = load_onehalo_spectrum(
+                    onehalo_output_dir,
+                    onehalo_fsat_model,
+                    "sdss_z",
+                    inst=inst,
+                    mag_min=onehalo_mag_min,
+                    mag_cut=onehalo_mag_cut,
+                    z0=onehalo_z0,
+                    mode="Ig",
+                    generate_type="bulk",
+                    logM_min=onehalo_logM_min,
+                )
+                if oh_cross is not None:
+                    print(f"DEBUG: Loaded cross TM{inst}, ell shape: {oh_cross['ell_arr'].shape}")
+                    onehalo_clig[idx] = {
+                        "ell": oh_cross["ell_arr"],
+                        "dl": oh_cross["dl_spectrum"],
+                    }
+                else:
+                    print(f"DEBUG: Failed to load cross TM{inst} (returned None)")
+        except Exception as e:
+            print(f"Warning: Could not load one-halo predictions: {e}")
+            import traceback
+            traceback.print_exc()
+    else:
+        print("DEBUG: onehalo_output_dir is None, skipping one-halo loading")
+
     # Add thin dashed shot-noise guide curves in top row using high-ell averages.
     for cidx, c in enumerate(colors):
         ax[0, 0].plot(lb, pf * clg_shot_levels[cidx], linestyle="--", linewidth=0.9, color=c, alpha=0.9)
+    
+    # Overlay one-halo predictions if available
+    if onehalo_gal_auto is not None:
+        print(f"DEBUG: Plotting galaxy auto one-halo curve")
+        ell_1h = onehalo_gal_auto["ell"]
+        dl_1h = onehalo_gal_auto["dl"]
+        # pf_1h = ell_1h * (ell_1h + 1) / (2 * np.pi)
+        ax[0, 0].plot(ell_1h, dl_1h, color="k", linestyle=":", linewidth=2.0, label="1h prediction", alpha=0.8)
+    else:
+        print(f"DEBUG: No galaxy auto one-halo curve to plot")
 
     for idx, inst in enumerate(inst_list):
         ax[0, inst].errorbar(
@@ -7157,6 +7232,16 @@ def _compare_desils_with_without_cmgs_plot(
                 color=c,
                 alpha=0.9,
             )
+
+        # Overlay one-halo cross prediction if available
+        if onehalo_clig[idx] is not None:
+            print(f"DEBUG: Plotting cross one-halo curve for TM{inst}")
+            ell_1h = onehalo_clig[idx]["ell"]
+            dl_1h = onehalo_clig[idx]["dl"]
+            # pf_1h = ell_1h * (ell_1h + 1) / (2 * np.pi)
+            ax[0, inst].plot(ell_1h, dl_1h, color="k", linestyle=":", linewidth=2.0, alpha=0.8)
+        else:
+            print(f"DEBUG: No cross one-halo curve for TM{inst}")
 
     for x in range(3):
         ax[1, x].set_xlabel("$\\ell$", fontsize=labfs)
@@ -7327,7 +7412,26 @@ def run_compare_desils_cmgs(args: argparse.Namespace) -> List[GeneratedFigure]:
     clres["clg_full"] = np.array(clg_full)
     clres["clgerr_full"] = np.array(clgerr_full)
 
-    fig = _compare_desils_with_without_cmgs_plot(clres, show=args.show)
+    # Prepare one-halo overlay parameters if available
+    onehalo_kwargs = {}
+    if hasattr(args, "onehalo_output_dir") and args.onehalo_output_dir is not None:
+        print(f"DEBUG: Loading one-halo predictions from {args.onehalo_output_dir}")
+        onehalo_kwargs["onehalo_output_dir"] = args.onehalo_output_dir
+        if hasattr(args, "onehalo_fsat_model"):
+            onehalo_kwargs["onehalo_fsat_model"] = args.onehalo_fsat_model
+        if hasattr(args, "onehalo_mag_min"):
+            onehalo_kwargs["onehalo_mag_min"] = args.onehalo_mag_min
+        if hasattr(args, "onehalo_mag_cut"):
+            onehalo_kwargs["onehalo_mag_cut"] = args.onehalo_mag_cut
+        if hasattr(args, "onehalo_z0"):
+            onehalo_kwargs["onehalo_z0"] = args.onehalo_z0
+        if hasattr(args, "onehalo_logM_min"):
+            onehalo_kwargs["onehalo_logM_min"] = args.onehalo_logM_min
+        print(f"DEBUG: one-halo kwargs = {onehalo_kwargs}")
+    else:
+        print("DEBUG: No onehalo_output_dir provided or is None")
+
+    fig = _compare_desils_with_without_cmgs_plot(clres, show=args.show, **onehalo_kwargs)
     return [GeneratedFigure("compare-desils-cmgs", fig, "ciber_desils_cmgs")]
 
 
@@ -8717,9 +8821,43 @@ def build_parser() -> argparse.ArgumentParser:
         help="Disable saving intermediate fit/corner figures from model stages",
     )
 
-    subparsers.add_parser(
+    p_cmgs = subparsers.add_parser(
         "compare-desils-cmgs",
         help="Generate DESI-LS with/without CMGs comparison figure",
+    )
+    p_cmgs.add_argument(
+        "--onehalo-output-dir",
+        default=None,
+        help="Directory containing one-halo bulk predictions (e.g., data/jordan_mocks/v3/fov_10.0/onehalo_predict)",
+    )
+    p_cmgs.add_argument(
+        "--onehalo-fsat-model",
+        default="double",
+        help="Fsat model used in one-halo predictions (default: fsatdouble)",
+    )
+    p_cmgs.add_argument(
+        "--onehalo-mag-min",
+        type=float,
+        default=16.0,
+        help="Minimum magnitude used in one-halo predictions (default: 16.0)",
+    )
+    p_cmgs.add_argument(
+        "--onehalo-mag-cut",
+        type=float,
+        default=22.0,
+        help="Magnitude cut used in one-halo predictions (default: 22.0)",
+    )
+    p_cmgs.add_argument(
+        "--onehalo-z0",
+        type=float,
+        default=0.05,
+        help="Redshift parameter z0 used in one-halo predictions (default: 0.05)",
+    )
+    p_cmgs.add_argument(
+        "--onehalo-logM-min",
+        type=float,
+        default=13.5,
+        help="Minimum log halo mass used in one-halo predictions (default: 13.5)",
     )
 
     p_param = subparsers.add_parser(

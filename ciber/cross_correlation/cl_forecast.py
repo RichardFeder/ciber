@@ -347,22 +347,15 @@ class ciber_cl_forecast():
         term4 = self.clI_auto/nbar_sr
         term5 = self.nlI_auto*self.clg_sn
     
-#         terms = [term1, term2, term3]
         terms = np.array([term1, term2, term3, term4, term5])
-        # terms = [term1, term2, term4]
         
         dclsq = inverse_nl*(term1+term2+term3+term4+term5)
 
         dclsq_terms = np.array([inverse_nl*term for term in terms])
 
-        # dclsq = inverse_nl*(term1+term2+term4)
         
         labels = ['$\\propto (C_{\\ell}^{I\\times g})^2$', '$\\propto C_{\\ell}^{I}C_{\\ell}^g$', '$\\propto N_{\\ell}^{I}C_{\\ell}^g$', \
                  '$\\propto C_{\\ell}^{I} \\overline{n}^{-1}$', '$\\propto N_{\\ell}^{I}\\overline{n}^{-1}$']
-
-        # labels = ['$(C_{\\ell}^{I\\times g})^2$', '$C_{\\ell}^{I}C_{\\ell}^g$', \
-        #          '$C_{\\ell}^{I} \\overline{n}^{-1}$']
-
 
         dcl_bandpowers, lEdges = self.perl_to_bandpowers(np.sqrt(dclsq))
 

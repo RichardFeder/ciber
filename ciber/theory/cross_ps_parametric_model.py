@@ -703,28 +703,27 @@ class CrossPowerSpectrumModel:
         return np.asarray(ordered, dtype=float)
 
     def _onehalo_template_component(self, ell, amplitude, mu_1h=None, sigma_1h=None, z_bin_index=None, f_pop=None):
-        """Evaluate the one-halo term from either a fixed template or a lognormal fallback."""
+        """Evaluate the one-halo term from a fixed template (no lognormal fallback)."""
         if not self.use_one_halo:
             return np.zeros_like(ell, dtype=float)
 
         template_data = self._get_onehalo_template(z_bin_index=z_bin_index)
-        if template_data is not None:
-            dl_template = template_data['dl_spectrum']
-            dl_pop0 = template_data.get('dl_spectrum_pop0')
-            dl_pop1 = template_data.get('dl_spectrum_pop1')
-            if dl_pop0 is not None and dl_pop1 is not None and f_pop is not None:
-                f_use = float(np.clip(f_pop, 0.0, 1.0))
-                dl_template = (1.0 - f_use) * dl_pop0 + f_use * dl_pop1
-            return self.ihl_template_component(
-                ell,
-                amplitude,
-                template_data['ell_arr'],
-                dl_template,
-            )
+        if template_data is None:
+            raise ValueError(f"One-halo template required but not found for z_bin_index={z_bin_index}. "
+                           "Ensure template is properly attached via attach_onehalo_template_to_model().")
 
-        if mu_1h is None or sigma_1h is None:
-            raise ValueError("mu_1h and sigma_1h are required when no one-halo template is provided")
-        return self.lognormal_component(ell, amplitude, mu_1h, sigma_1h)
+        dl_template = template_data['dl_spectrum']
+        dl_pop0 = template_data.get('dl_spectrum_pop0')
+        dl_pop1 = template_data.get('dl_spectrum_pop1')
+        if dl_pop0 is not None and dl_pop1 is not None and f_pop is not None:
+            f_use = float(np.clip(f_pop, 0.0, 1.0))
+            dl_template = (1.0 - f_use) * dl_pop0 + f_use * dl_pop1
+        return self.ihl_template_component(
+            ell,
+            amplitude,
+            template_data['ell_arr'],
+            dl_template,
+        )
 
     def _build_fit_config(self, z_value=None, inst=None, verbose=True, z_bin_index=None):
         fixed_mu_sigma = (self.mu_1h_fixed is not None and self.sigma_1h_fixed is not None)
@@ -2237,7 +2236,7 @@ def _extract_plot_config(fit_result, model):
 
 
 def attach_onehalo_template_to_model(model, fit_result, z_bin_index=None, use_default_if_missing=False, zbinedges=None):
-    """Attach a fixed one-halo template to the model from saved fit metadata when available.
+    """Attach a fixed one-halo template to the model from saved fit metadata (no silent fallback).
     
     Parameters
     ----------
@@ -2248,29 +2247,35 @@ def attach_onehalo_template_to_model(model, fit_result, z_bin_index=None, use_de
     z_bin_index : int, optional
         Index of the redshift bin in the current context
     use_default_if_missing : bool, optional
-        If True, use default paths; if False, return None on missing data
+        If True, use default paths; if False, raises on missing data
     zbinedges : array_like, optional
         Redshift bin edges for the current context.
         If provided, used to select the correct fine-mode spectrum.
+    
+    Raises
+    ------
+    RuntimeError
+        If use_default_if_missing=False and template cannot be loaded
     """
     if not getattr(model, 'use_one_halo', False):
         return None
 
-    resolved_template = None
-    try:
-        resolved_template = resolve_onehalo_template_from_fit_result(
-            fit_result,
-            onehalo_output_dir=fit_result.get('onehalo_output_dir'),
-            z_bin_index=z_bin_index,
-            inst=fit_result.get('inst'),
-            cat=fit_result.get('cat', 'HSC'),
-            use_default_if_missing=use_default_if_missing,
-            zbinedges=zbinedges,
-        )
-    except Exception:
-        resolved_template = None
+    resolved_template = resolve_onehalo_template_from_fit_result(
+        fit_result,
+        onehalo_output_dir=fit_result.get('onehalo_output_dir'),
+        z_bin_index=z_bin_index,
+        inst=fit_result.get('inst'),
+        cat=fit_result.get('cat', 'HSC'),
+        use_default_if_missing=use_default_if_missing,
+        zbinedges=zbinedges,
+    )
 
     if resolved_template is None:
+        if not use_default_if_missing:
+            raise RuntimeError(
+                f"Could not resolve one-halo template for z_bin_index={z_bin_index} "
+                f"(use_default_if_missing=False). Check fit_result metadata and onehalo output directory."
+            )
         return None
 
     existing_template = getattr(model, 'onehalo_template_1h_dl', None)

@@ -67,12 +67,14 @@ from ciber.theory.cross_ps_parametric_model import (
     expand_fit_samples_to_full_vector,
 )
 from ciber.theory.onehalo_predict import load_onehalo_results
+from ciber.theory.halo_bias import make_bias_cache, tinker10_bias_M_camb
 from ciber.io.ciber_data_utils import load_fit_results_npz
 from ciber.plotting.gal_plotting_fns import (
     plot_amplitude_comparison,
     plot_chi2_comparison,
     plot_cross_fit_components_from_file,
     plot_amplitude_chi2_by_instrument,
+    smooth_mock_cross_with_bias,
 )
 
 # ---------------------------------------------------------------------------
@@ -528,6 +530,7 @@ def _compute_igl_a2h_predictions(cat, zbinedges, inst_list,
 
     # Galaxy bias per z-bin
     if cat == "DESILS":
+        # bias_cache_fpath = 'data/'
         if bias_cache_fpath is not None and os.path.exists(bias_cache_fpath):
             cache = np.load(bias_cache_fpath, allow_pickle=False)
             coeffs = np.asarray(cache["coarse_poly_coeffs"])
@@ -574,23 +577,49 @@ def _compute_igl_a2h_predictions(cat, zbinedges, inst_list,
                 continue
             d = np.load(fpath)
             lb_m = np.asarray(d["lb"], dtype=float)
+            # print('lb m:', lb_m)
             cl_m = np.asarray(d["cross"], dtype=float)
             pf_m = lb_m * (lb_m + 1.0) / (2.0 * np.pi)
             dl_m = pf_m * cl_m
 
+            
             # process galaxy auto to get divisor for A2h^IG
+            # from ciber.plotting.gal_plotting_fns import _load_smooth_prediction
+            # ell_smooth, dl_smooth = _load_smooth_prediction(
+            #     pred_path, z_center, bias_cache, cat_idx, 1,
+            #     xlim, mode='auto', bias_model=bias_model, 
+            #     bias_cache_scheme=bias_cache_scheme,
+            #     tl_pix_correct=False, 
+            #     rescale_gal_auto_bias=rescale_gal_auto_bias)
+
+            lb_smooth = np.logspace(np.log10(100), np.log10(1e5), 2000)
+
+            ell_smooth, dl_smooth = smooth_mock_cross_with_bias(
+			        fpath, z_centers[zidx], np.sqrt(b_g[zidx]), ell_eval=lb_smooth, mode='auto')
+
             cl_g_nobias = np.asarray(d["gal_auto"], dtype=float)
             dl_g_nobias = pf_m * cl_g_nobias
-            shot_mask = (lb_m >= 30000.) & (lb_m <= 80000.) & np.isfinite(dl_m)
-            pf_shot = lb_m[shot_mask] * (lb_m[shot_mask] + 1.0) / (2.0 * np.pi)
-            A_shot = float(np.nanmean(dl_g_nobias[shot_mask] / pf_shot)) if shot_mask.any() else 0.0
-            ell_norm = 300.
-            which_lb_m = np.argmin(np.abs(lb_m - ell_norm))
+
+            # print('dl_smooth:', dl_smooth)
+
+            # print('dl_g_nobias', dl_g_nobias)
+            shot_mask = (lb_smooth >= 30000.) & (lb_smooth <= 80000.) & np.isfinite(dl_smooth)
+            pf_smooth = lb_smooth * (lb_smooth + 1.0) / (2.0 * np.pi)
+            pf_shot = lb_smooth[shot_mask] * (lb_smooth[shot_mask] + 1.0) / (2.0 * np.pi)
+            A_shot = float(np.nanmean(dl_smooth[shot_mask] / pf_shot)) if shot_mask.any() else 0.0
+            ell_norm = 200.
+            which_lb_m = np.argmin(np.abs(lb_smooth - ell_norm))
 
             # amplitude of sn subtracted ps at ell=300
             # A_2h_matter = float(dl_g_nobias[which_lb_m] - A_shot * pf_m[which_lb_m]) if np.isfinite(dl_g_nobias[which_lb_m]) else 0.0
-            A_2h_matter = float(dl_g_nobias[which_lb_m]) if np.isfinite(dl_g_nobias[which_lb_m]) else 0.0
+            # A_2h_matter = float(dl_g_nobias[which_lb_m]) if np.isfinite(dl_g_nobias[which_lb_m]) else 0.0
+            
+            
+            # A_2h_matter = float(np.mean(dl_g_nobias - A_shot * pf_m)[which_lb_m]) if np.isfinite(dl_g_nobias[which_lb_m]) else 0.0
+            A_2h_smooth = float((dl_smooth - A_shot * pf_smooth)[which_lb_m]) if np.isfinite(dl_smooth[which_lb_m]) else 0.0
 
+            # A_2h_smooth = float(dl_smooth[which_lb_m]) if np.isfinite(dl_smooth[which_lb_m]) else 0.0
+            print('A2hmatter, A2hsmooth:', 0.0, np.sqrt(b_g[zidx]) * A_2h_smooth)
             # A_2h_matter = max(float(np.nanmax(dl_g_nobias[twoh_mask] - A_shot * pf_m[twoh_mask])), 0.0) if twoh_mask.any() else 0.0
 
             # Estimate shot noise from high-ell tail
@@ -609,7 +638,7 @@ def _compute_igl_a2h_predictions(cat, zbinedges, inst_list,
 
             a2h_arr[inst_idx, zidx] = b_g[zidx] * _bi_function(bi_model, z_centers[zidx]) * max(A_2h_raw, 0.0)
 
-            a2h_gal_auto[inst_idx, zidx] = np.sqrt(b_g[zidx]) * A_2h_matter
+            a2h_gal_auto[inst_idx, zidx] = np.sqrt(b_g[zidx]) * A_2h_smooth
 
 
     bi_str = f" [b_I model: {bi_model}]" if bi_model != "constant" else ""
@@ -645,18 +674,6 @@ def _run_cross_fits(args: argparse.Namespace) -> None:
         if args.combined_zbin else args.zbinedges
 
     # Load effective mu_1h/sigma_1h from cache when using combined z-bin
-    mu_1h_override = None
-    sigma_1h_override = None
-    if args.combined_zbin:
-        try:
-            from ciber.theory.ihl_1h_template_cache import OneHaloTemplateCache
-            cache = OneHaloTemplateCache()
-            mu_1h_override, sigma_1h_override = cache.get_effective_lognormal_params(slope=1.0)
-            print(f"[run_cross] Using effective 1h params from cache: "
-                  f"mu_1h={mu_1h_override:.4f} (ell_peak≈{np.exp(mu_1h_override):.0f}), "
-                  f"sigma_1h={sigma_1h_override:.4f}")
-        except Exception as e:
-            print(f"[run_cross] Warning: Could not load effective 1h params from cache: {e}")
 
     for cat in args.cat:
         ifield_list = _ifield_list(cat, args)
@@ -698,8 +715,6 @@ def _run_cross_fits(args: argparse.Namespace) -> None:
                 use_ihl_1h_params=True,
                 fix_ihl_1h_shape=True,
                 ihl_1h_params_path=args.ihl_params,
-                mu_1h_fixed_override=mu_1h_override,
-                sigma_1h_fixed_override=sigma_1h_override,
                 fitstr=fitstr_to_use,
                 save_figs=True,
                 use_astrometry_damping=args.use_damping,
@@ -1234,6 +1249,155 @@ def _plot_fpop_vs_redshift(args: argparse.Namespace) -> None:
             stem = _build_plot_path_with_model(stem, args=args, results=results)
             _savefig(fig, stem, args.fig_fmt)
             plt.close(fig)
+
+
+def _plot_fpop_consistency_vs_lmax(args: argparse.Namespace) -> None:
+	"""Plot fitted f_pop versus redshift, with different curves for each lmax value.
+	
+	Shows how the fitted f_pop parameter varies across different lmax values,
+	helping assess consistency of the population mixing parameter.
+	"""
+	figdir = Path(args.figdir) / args.fitstr_cross / "popmix"
+	figdir.mkdir(parents=True, exist_ok=True)
+	lams = {1: 1.1, 2: 1.8}
+	lmax_list = args.lmax if hasattr(args, 'lmax') else [50000]
+	
+	# Use a colormap for different lmax values
+	colors_lmax = plt.cm.tab10(np.linspace(0, 1, len(lmax_list)))
+	markers_lmax = ['o', 's', '^', 'd', 'v', '<', '>', 'p', '*', 'X']
+	
+	for cat in args.cat:
+		headstr = args.headstr if cat == "HSC" else None
+		
+		# Collect data for all lmax values first
+		all_data = {}  # lmax -> {inst_idx: {'zcenters', 'fitted', 'fitted_lo', 'fitted_hi'}}
+		zbinedges = None
+		inst_list = None
+		
+		for lMax_idx, lMax in enumerate(lmax_list):
+			results = _load_cross_results_merged_jh14(
+				args.datadir_cross, cat, headstr, args.fitstr_cross, lMax, maskstr=args.maskstr
+			)
+			if results is None:
+				fpath = _cross_fpath(args.datadir_cross, cat, headstr, args.fitstr_cross, lMax, maskstr=args.maskstr)
+				print(f"[plot_fpop_consistency_vs_lmax] missing {fpath}, skipping lMax={lMax}")
+				continue
+			if not bool(results.get("onehalo_fit_popmix", False)):
+				print(f"[plot_fpop_consistency_vs_lmax] {cat} lMax={lMax} has no popmix fit, skipping")
+				continue
+			
+			if zbinedges is None:
+				zbinedges = np.asarray(results.get("zbinedges", np.array([0.0, 0.2, 0.4, 0.6, 0.8, 1.0])), dtype=float)
+				inst_list = list(results.get("inst_list", [1, 2]))
+			
+			all_data[lMax] = {}
+			
+			for inst_idx, inst in enumerate(inst_list):
+				zcenters = 0.5 * (zbinedges[:-1] + zbinedges[1:])
+				fitted = []
+				fitted_lo = []
+				fitted_hi = []
+				
+				for z_idx in range(len(zcenters)):
+					params = np.asarray(results["params"], dtype=float)
+					params_err = np.asarray(results.get("params_err", np.full_like(params, np.nan)), dtype=float)
+					params_16 = np.asarray(results.get("params_16", params - params_err), dtype=float)
+					params_84 = np.asarray(results.get("params_84", params + params_err), dtype=float)
+					pnf = results.get("param_names_fitted", None)
+					pnf_bin = pnf[inst_idx, z_idx] if pnf is not None else None
+					
+					n_params_stored = int(np.sum(~np.isnan(params[inst_idx, z_idx, :])))
+					params_i = params[inst_idx, z_idx, :n_params_stored]
+					params_16_i = params_16[inst_idx, z_idx, :n_params_stored]
+					params_84_i = params_84[inst_idx, z_idx, :n_params_stored]
+					pnf_bin_i = pnf_bin[:n_params_stored] if pnf_bin is not None else None
+					
+					use_damping = bool(results.get("use_astrometry_damping", False))
+					if pnf_bin_i is not None:
+						use_damping = use_damping or any("damp" in str(p).lower() for p in pnf_bin_i)
+					
+					med = resolve_full_param_value(
+						params_i, pnf_bin_i, "f_pop",
+						use_astrometry_damping=use_damping,
+						use_onehalo_popmix=True,
+					)
+					lo = resolve_full_param_value(
+						params_16_i, pnf_bin_i, "f_pop",
+						use_astrometry_damping=use_damping,
+						use_onehalo_popmix=True,
+					)
+					hi = resolve_full_param_value(
+						params_84_i, pnf_bin_i, "f_pop",
+						use_astrometry_damping=use_damping,
+						use_onehalo_popmix=True,
+					)
+					
+					fitted.append(float(med))
+					fitted_lo.append(float(lo))
+					fitted_hi.append(float(hi))
+				
+				all_data[lMax][inst_idx] = {
+					'zcenters': zcenters,
+					'fitted': np.asarray(fitted, dtype=float),
+					'fitted_lo': np.asarray(fitted_lo, dtype=float),
+					'fitted_hi': np.asarray(fitted_hi, dtype=float),
+				}
+		
+		# Plot consistency across lmax for each instrument
+		if len(all_data) == 0:
+			print(f"[plot_fpop_consistency_vs_lmax] No valid data for {cat}, skipping")
+			continue
+		
+		fig, axes = plt.subplots(1, len(inst_list), figsize=(5 * len(inst_list), 4), sharey=True)
+		if len(inst_list) == 1:
+			axes = [axes]
+		
+		for inst_idx, inst in enumerate(inst_list):
+			ax = axes[inst_idx]
+			
+			for lmax_color_idx, (lMax, data_by_inst) in enumerate(all_data.items()):
+				if inst_idx not in data_by_inst:
+					continue
+				
+				data = data_by_inst[inst_idx]
+				zcenters = data['zcenters']
+				fitted = data['fitted']
+				fitted_lo = data['fitted_lo']
+				fitted_hi = data['fitted_hi']
+				
+				yerr = [
+					np.clip(fitted - fitted_lo, 0.0, None),
+					np.clip(fitted_hi - fitted, 0.0, None)
+				]
+				
+				marker = markers_lmax[lmax_color_idx % len(markers_lmax)]
+				ax.errorbar(
+					zcenters, fitted, yerr=yerr,
+					fmt=marker,
+					color=colors_lmax[lmax_color_idx],
+					ecolor=colors_lmax[lmax_color_idx],
+					capsize=3, markersize=6,
+					label=f'ℓ_max={lMax}',
+					alpha=0.8, zorder=5,
+				)
+			
+			ax.set_xticks(zbinedges[:-1] + np.diff(zbinedges) / 2)
+			ax.set_xlim([zbinedges[0], zbinedges[-1]])
+			ax.set_ylim([0.0, 1.05])
+			ax.set_xlabel(r'$z$', fontsize=12)
+			if inst_idx == 0:
+				ax.set_ylabel(r'$f_{\rm pop}$', fontsize=12)
+			ax.set_title(f"CIBER {lams[int(inst)]} μm × {cat}", fontsize=12)
+			ax.grid(True, alpha=0.25)
+			ax.axhline(0.5, color='gray', linestyle=':', lw=1.0, alpha=0.5)
+			ax.legend(loc='best', fontsize=9, ncol=1)
+		
+		fig.suptitle(f"Popmix f_pop vs redshift across ℓ_max values, {cat}", fontsize=13)
+		fig.tight_layout(rect=[0, 0, 1, 0.97])
+		stem = figdir / f"{cat}_popmix_fpop_consistency_vs_lmax"
+		stem = _build_plot_path_with_model(stem, args=args, results=None)
+		_savefig(fig, stem, args.fig_fmt)
+		plt.close(fig)
 
 
 def _plot_spectra_summary(args: argparse.Namespace) -> None:
@@ -2779,7 +2943,7 @@ def _plot_a1h_vs_redshift_alternate_layout(args: argparse.Namespace) -> None:
 
 
 
-def _plot_a1h_model_pred_vs_redshift(args: argparse.Namespace, ell_eval: float = 10000.0, ylim: tuple = (4e-3, 5)) -> None:
+def _plot_a1h_model_pred_vs_redshift(args: argparse.Namespace, ell_eval: float = 10000.0, ylim: tuple = (1e-3, 5)) -> None:
     """Compare fitted one-halo power versus model-predicted one-halo power vs redshift.
 
     The figure mirrors the structure of the existing spectrum-panel plotting helpers:
@@ -2827,6 +2991,8 @@ def _plot_a1h_model_pred_vs_redshift(args: argparse.Namespace, ell_eval: float =
                 print(f"[plot_a1h_model_pred_vs_redshift] missing {fpath.name}")
                 continue
 
+            print(f'A_1h values: {res["params"][band_idx, :, 1]}') 
+
             inst_list = list(res["inst_list"])
             if inst not in inst_list:
                 continue
@@ -2868,7 +3034,8 @@ def _plot_a1h_model_pred_vs_redshift(args: argparse.Namespace, ell_eval: float =
             fit_vals = np.full(n_zbins, np.nan)
             fit_lo = np.full(n_zbins, np.nan)
             fit_hi = np.full(n_zbins, np.nan)
-            pred_vals = np.full(n_zbins, np.nan)
+            pred_vals = np.full((2, n_zbins), np.nan)
+
 
             for zbin_idx in range(n_zbins):
                 if cat == "HSC" and zbin_idx == 0:
@@ -3062,34 +3229,37 @@ def _plot_a1h_model_pred_vs_redshift(args: argparse.Namespace, ell_eval: float =
                         population = getattr(args, "onehalo_population", fit_result.get("onehalo_population", "combined"))
                         concentration_scale = float(fit_result.get("onehalo_concentration_scale", 1.0))
 
-                        oh_data_Ig = load_onehalo_spectrum(
-                            onehalo_output_dir,
-                            fsat_model,
-                            bandstr_select,
-                            inst=int(inst),
-                            mag_min=18.0,
-                            mag_cut=mag_cut,
-                            z0=0.05,
-                            mode="Ig",
-                            generate_type=generate_type,
-                            concentration_scale=concentration_scale,
-                            population=population,
-                        )
-                        if oh_data_Ig is not None:
-                            ell_1h = np.asarray(oh_data_Ig["ell_arr"], dtype=float)
-                            dl_1h = np.asarray(oh_data_Ig["dl_spectrum"], dtype=float)
-                            if dl_1h.ndim == 1:
-                                dl_1h_zbin = dl_1h
-                            elif dl_1h.ndim >= 2:
-                                dl_1h_zbin = dl_1h[zbin_idx]
-                            else:
-                                dl_1h_zbin = np.array([], dtype=float)
+                        for k, fsatmod in enumerate(['double', 'single']):
 
-                            if zbin_idx == 0:
-                                dl_1h_zbin *= 0.25
 
-                            if ell_1h.size > 0 and dl_1h_zbin.size > 0:
-                                pred_vals[zbin_idx] = float(np.interp(ell_eval, ell_1h, dl_1h_zbin))
+                            oh_data_Ig = load_onehalo_spectrum(
+                                onehalo_output_dir,
+                                fsatmod,
+                                bandstr_select,
+                                inst=int(inst),
+                                mag_min=18.0,
+                                mag_cut=mag_cut,
+                                z0=0.05,
+                                mode="Ig",
+                                generate_type=generate_type,
+                                concentration_scale=concentration_scale,
+                                population='combined',
+                            )
+                            if oh_data_Ig is not None:
+                                ell_1h = np.asarray(oh_data_Ig["ell_arr"], dtype=float)
+                                dl_1h = np.asarray(oh_data_Ig["dl_spectrum"], dtype=float)
+                                if dl_1h.ndim == 1:
+                                    dl_1h_zbin = dl_1h
+                                elif dl_1h.ndim >= 2:
+                                    dl_1h_zbin = dl_1h[zbin_idx]
+                                else:
+                                    dl_1h_zbin = np.array([], dtype=float)
+
+                                if zbin_idx == 0:
+                                    dl_1h_zbin *= 0.25
+
+                                if ell_1h.size > 0 and dl_1h_zbin.size > 0:
+                                    pred_vals[k, zbin_idx] = float(np.interp(ell_eval, ell_1h, dl_1h_zbin))
                 except Exception as exc:
                     pass
 
@@ -3156,19 +3326,34 @@ def _plot_a1h_model_pred_vs_redshift(args: argparse.Namespace, ell_eval: float =
 
 
             if np.any(valid_pred):
-                ax.plot(
-                    z_centers_shifted[valid_pred], pred_vals[valid_pred],
-                    color=colors[cat],
-                    linestyle='--',
-                    marker='^',
-                    linewidth=1.8,
-                    markersize=4,
-                    alpha=0.95,
-                    label=f"IGL one-halo prediction" if tracer_idx == 0 and band_idx == 0 else None,
-                )
+
+                labels = ['IGL 1h prediction (fiducial)', '$L\\propto M$']
+                line_styles = ['--', 'dotted']
+                markers = ['^', 's']
+                alphas = [0.8, 0.7]
+                
+                for k in range(pred_vals.shape[0]):
+                    valid_pred_k = valid_pred[k, :]
+                    if not np.any(valid_pred_k):
+                        continue
+                    
+                    # Only show label for first tracer and first band to avoid legend clutter
+                    show_label = (tracer_idx == 0 and band_idx == 0)
+                    label_str = labels[k] if show_label else None
+                    
+                    ax.plot(
+                        z_centers_shifted[valid_pred_k], pred_vals[k, valid_pred_k],
+                        color=colors[cat],
+                        linestyle=line_styles[k],
+                        marker=markers[k],
+                        linewidth=1.8,
+                        markersize=5,
+                        alpha=alphas[k],
+                        label=label_str,
+                    )
 
         if band_idx==0:
-            ax.legend(fontsize=16, loc=2, bbox_to_anchor=(0.02, 1.25), ncols=2)
+            ax.legend(fontsize=16, loc=2, bbox_to_anchor=(-0.15, 1.25), ncols=3)
 
         cat_display = {"DESILS": "DESI-LS ($z_{\\rm AB} < 22$)", "HSC": "HSC ($18 < i_{\\rm AB} < 25$)"}
         for tracer_idx, (cat, headstr, tracer_label) in enumerate(tracer_defs):
@@ -3783,6 +3968,8 @@ def _plot_ihl_and_dell_combined(args: argparse.Namespace) -> None:
     """Generates two separate figures:
     1. IHL auto-spectrum (square, equal width/height)
     2. D_ell evolution 2×3 grid (2 bands × 3 catalogs) with shared colorbar
+
+    This function is deprecated and uses the legacy lognormal templates
 
     Figure 1: IHL auto-spectrum 1h D_ℓ^{II,1h}(ℓ) templates for each z-bin.
     Figure 2: D_ell evolution
@@ -4410,7 +4597,7 @@ def _plot_a2h_vs_redshift(args: argparse.Namespace) -> None:
         return
 
     # --- 2-panel layout (like a1h): one panel per band ---
-    fig, axes = plt.subplots(2, 1, figsize=(8, 6), sharex=True, sharey=True)
+    fig, axes = plt.subplots(2, 1, figsize=(8, 6.5), sharex=True, sharey=True)
     inst_order = [1, 2]
 
     plot_alpha = 0.8
@@ -4433,54 +4620,61 @@ def _plot_a2h_vs_redshift(args: argparse.Namespace) -> None:
         "quadratic":dict(color="k", linestyle=":",  label=r"$b_I=(1+z)^2$"),
     }
 
+
+    linestyles = ['-', '--', ':', '-.']
+
+    tinker_bias_cache = np.load('data/tinker_halo_bias.npz')
+    logM_vals, _, bias = tinker_bias_cache['logM_fixed'], tinker_bias_cache['z_centers'], tinker_bias_cache['b_of_z']
+
+
     ls_didz = np.load('data/jordan_mocks/mock_dIdz_LS_zbins_unmasked_dz=0.2_091625.npz')
     zedges, all_mock_dI_dz = ls_didz['zedges'], ls_didz['all_mock_dI_dz']
     zcenter = 0.5 * (zedges[:-1] + zedges[1:])
 
     all_galautodivs = []
 
-    # Precompute model predictions
-    model_preds = {m: {} for m in ("constant", "linear", "quadratic")}
-    for bi_model in model_preds:
-        for cat in args.cat:
-            res = results_full.get(cat)
-            if res is None:
-                continue
-            preds, galautodiv = _compute_igl_a2h_predictions(
-                cat,
-                res["zbinedges"],
-                list(res["inst_list"]),
-                jmock_basedir=args.igl_pred_basedir,
-                bias_cache_fpath=args.bias_cache_fpath,
-                headstr=None,
-                bi_model=bi_model,
-                a2h_cache_fpath=getattr(args, "mock_a2h_cache", None),
-            )
 
-            print('gal auto div is ', galautodiv)
-            all_galautodivs.append(galautodiv*dz)
+    for cat in args.cat:
+        res = results_full.get(cat)
+        if res is None:
+            continue
+        _, galautodiv = _compute_igl_a2h_predictions(
+            cat,
+            res["zbinedges"],
+            list(res["inst_list"]),
+            jmock_basedir=args.igl_pred_basedir,
+            bias_cache_fpath=args.bias_cache_fpath,
+            headstr=None,
+            bi_model='constant',
+            a2h_cache_fpath=getattr(args, "mock_a2h_cache", None),
+        )
+
+        all_galautodivs.append(galautodiv*dz)
 
 
-            if bi_model == "constant":
-                # For constant b_I=1, the predictions are just the mock dI/dz values
-                model_preds[bi_model][cat] = np.median(all_mock_dI_dz, axis=2)
-            elif bi_model == "linear":
-                model_preds[bi_model][cat] = np.median(all_mock_dI_dz, axis=2) * (1 + zcenter[:,None] * 0.6)
-            elif bi_model == "quadratic":
-                model_preds[bi_model][cat] = np.median(all_mock_dI_dz, axis=2) * (1 + zcenter[:,None]) ** 2
-
-            print('model preds for bias model', bi_model, 'is', model_preds[bi_model][cat])
-            # print(preds.shape, galautodiv.shape)
-            # model_preds[bi_model][cat] = preds
-
-    # Mask HSC z<0.2 predictions
-    for bi_model in model_preds:
-        if model_preds[bi_model].get("HSC") is not None:
-            model_preds[bi_model]["HSC"][:,0] = np.nan
+    all_galautodivs = np.array(all_galautodivs)
+    print('all gal auto divs shape is ', np.array(all_galautodivs).shape)
 
     for band_idx, inst in enumerate(inst_order):
         ax = axes[band_idx]
         ax.set_yscale("log")
+
+        for midx, logM in enumerate(logM_vals):
+            pred = np.mean(all_mock_dI_dz, axis=2)[:,band_idx]*bias[midx, :]
+            ax.plot(
+                zcenter, pred,
+                color='grey', linestyle=linestyles[midx], linewidth=2.5, alpha=plot_alpha,
+                marker=None,
+                label=f"log $M_{{200}}/M_{{\odot}}={logM:.1f}$",
+            )
+
+        pred_tSZ = np.mean(all_mock_dI_dz, axis=2)[:,band_idx]*(3.0+0.5*zcenter)
+        ax.plot(
+            zcenter, pred_tSZ,
+            color='y', linestyle=linestyles[-1], linewidth=2.5, alpha=plot_alpha,
+            marker=None,
+            label=f"tSZ-like bias (Chiang+20)",
+        )
 
         drew_bin_shading = False
         xlim_set = (0., 1.0)
@@ -4507,11 +4701,12 @@ def _plot_a2h_vs_redshift(args: argparse.Namespace) -> None:
             A_2h_84 = res.get("params_84")
             A_2h_95 = res.get("params_95")
 
+            err_inflate = 1.2  # Inflate errors by 20%
             if A_2h_16 is not None and A_2h_84 is not None:
-                yerr_lo = A_2h - A_2h_16[inst_idx, :, 0]
-                yerr_hi = A_2h_84[inst_idx, :, 0] - A_2h
+                yerr_lo = np.abs(A_2h - A_2h_16[inst_idx, :, 0]) * err_inflate
+                yerr_hi = np.abs(A_2h_84[inst_idx, :, 0] - A_2h) * err_inflate
             else:
-                yerr_lo = np.array(res["params_err"][inst_idx, :, 0], dtype=float)
+                yerr_lo = np.array(res["params_err"][inst_idx, :, 0], dtype=float) * err_inflate
                 yerr_hi = yerr_lo.copy()
 
             # Exclude HSC first bin
@@ -4529,9 +4724,9 @@ def _plot_a2h_vs_redshift(args: argparse.Namespace) -> None:
             # Detections
             if np.any(is_det):
                 ax.errorbar(
-                    z_plot[is_det], A_2h[is_det] / all_galautodivs[tracer_idx][inst_idx, is_det],
-                    yerr=np.array([yerr_lo[is_det] / all_galautodivs[tracer_idx][inst_idx, is_det],
-                                    yerr_hi[is_det] / all_galautodivs[tracer_idx][inst_idx, is_det]]),
+                    z_plot[is_det], A_2h[is_det] / all_galautodivs[tracer_idx, inst_idx, is_det],
+                    yerr=np.array([yerr_lo[is_det] / all_galautodivs[tracer_idx, inst_idx, is_det],
+                                    yerr_hi[is_det] / all_galautodivs[tracer_idx, inst_idx, is_det]]),
                     fmt="o", color=color_plot, markerfacecolor=color_plot, markeredgecolor=color_plot,
                     linestyle="None", markersize=7, capsize=6, capthick=2,
                     label=f"This work" if band_idx == 0 and tracer_idx == 0 else None,
@@ -4539,7 +4734,7 @@ def _plot_a2h_vs_redshift(args: argparse.Namespace) -> None:
 
             # Upper limits
             if np.any(is_ul):
-                ul_vals = A_2h_95[inst_idx, :, 0][is_ul] / all_galautodivs[tracer_idx][inst_idx, is_ul] if A_2h_95 is not None else (A_2h[is_ul] + 2.0 * yerr_hi[is_ul]) / all_galautodivs[tracer_idx][inst_idx, is_ul]
+                ul_vals = A_2h_95[inst_idx, :, 0][is_ul] / all_galautodivs[tracer_idx, inst_idx, is_ul] if A_2h_95 is not None else (A_2h[is_ul] + 2.0 * yerr_hi[is_ul]) / all_galautodivs[tracer_idx, is_ul]
                 xs_ul = z_plot[is_ul]
 
                 ax.plot(xs_ul, ul_vals, marker="_", color=color_plot, markersize=12,
@@ -4553,28 +4748,28 @@ def _plot_a2h_vs_redshift(args: argparse.Namespace) -> None:
                         )
 
             # Model curves
-            if tracer_idx == 0:
-                for bi_model in ("constant", "linear", "quadratic"):
-                    pred_arr = model_preds[bi_model].get(cat)
+            # if tracer_idx == 0:
+            #     for bi_model in ("constant", "linear", "quadratic"):
+            #         pred_arr = model_preds[bi_model].get(cat)
 
-                    if pred_arr is None:
-                        continue
-                    # preds = pred_arr[inst_idx, :]
-                    preds = pred_arr[:, inst_idx]
+            #         if pred_arr is None:
+            #             continue
+            #         # preds = pred_arr[inst_idx, :]
+            #         preds = pred_arr[:, inst_idx]
 
-                    print(f"[plot_a2h_vs_redshift] plotting model {bi_model} for {cat} band {inst}: preds={preds}")
-                    st = model_styles[bi_model]
-                    ax.plot(
-                        z_centers, preds,
-                        color='grey', linestyle=st["linestyle"], linewidth=2.0, alpha=plot_alpha,
-                        marker=None,
-                        label=st["label"] if (band_idx == 0 and tracer_idx == 0) else None,
-                    )
+            #         print(f"[plot_a2h_vs_redshift] plotting model {bi_model} for {cat} band {inst}: preds={preds}")
+            #         st = model_styles[bi_model]
+            #         ax.plot(
+            #             z_centers, preds,
+            #             color='grey', linestyle=st["linestyle"], linewidth=2.0, alpha=plot_alpha,
+            #             marker=None,
+            #             label=st["label"] if (band_idx == 0 and tracer_idx == 0) else None,
+            #         )
 
         # Panel text
         for i, cat_txt in enumerate(["DESILS", "HSC"]):
             ax.text(
-                0.4, 0.95 - 0.12 * i,
+                0.4, 0.95 - 0.11 * i,
                 fr"CIBER {lams[inst]:.1f} $\mu$m $\times$ {cat_display[cat_txt]}",
                 transform=ax.transAxes, color=color_map[cat_txt], fontsize=14, va="top", ha="left"
             )
@@ -4582,7 +4777,7 @@ def _plot_a2h_vs_redshift(args: argparse.Namespace) -> None:
         ax.grid(True, alpha=0.3)
         if xlim_set is not None:
             ax.set_xlim(*xlim_set)
-        ax.set_ylim(ymin, 300.0)
+        ax.set_ylim(ymin, 600.0)
         ax.tick_params(labelsize=13)
 
     # axes[0].set_ylabel(r"$A_{\rm 2h}^{\rm Ig}=b_g \frac{dN}{dz} b_I \frac{dI}{dz}$", fontsize=16)
@@ -4601,7 +4796,7 @@ def _plot_a2h_vs_redshift(args: argparse.Namespace) -> None:
     axes[1].set_xlabel("Redshift (z)", fontsize=14)
 
     handles, labels = axes[0].get_legend_handles_labels()
-    fig.legend(handles, labels, loc="upper center", bbox_to_anchor=(0.52, 1.02), ncol=2, fontsize=14, frameon=True)
+    fig.legend(handles, labels, loc="upper center", bbox_to_anchor=(0.52, 1.07), ncol=2, fontsize=14, frameon=True)
 
     fig.subplots_adjust(wspace=0.02, hspace=0.02)
 
@@ -4964,16 +5159,18 @@ def _plot_parameter_consistency_vs_lmax(args: argparse.Namespace) -> None:
 
         # Generate figure
         stem = figdir / f"parameter_consistency_vs_lmax_{args.fitstr_cross}_{cat}"
+        lmax_diag = getattr(args, 'lmax_diagnostic', 5000)
         plot_amplitude_chi2_by_instrument(
             all_configs,
             inst_list=(1, 2),
             figsize=(8.5, 7),
             save_path=str(stem.with_suffix(f'.{args.fig_fmt}')),
             legend_ncol=2,
-            bbox_to_anchor=(0.5, 1.12),
+            bbox_to_anchor=(0.5, 1.1),
             use_cmap=True,
             cmap_name=cmap_name,
             x_offset_scale=0.03,
+            lmax_diagnostic=lmax_diag,
         )
         print(f"[plot_parameter_consistency_vs_lmax] generated {stem.with_suffix(f'.{args.fig_fmt}')}")
 
@@ -5523,9 +5720,17 @@ def _plot_2x2_spectrum_panel(ax, results, inst_idx, z_idx, lMax, colors, lams,
             dl_2h_upper = (params[0] + params_err[0]) * pf * np.interp(ell_m, model.lb, model.cl_2h_pred)
             dl_2h_lower = max(0, params[0] - params_err[0]) * pf * np.interp(ell_m, model.lb, model.cl_2h_pred)
 
-        # 1-halo bounds (amplitude only, shape params fixed at best-fit)
-        dl_1h_upper = model.lognormal_component(ell_m, params[1] + params_err[1], params[2], params[3])
-        dl_1h_lower = model.lognormal_component(ell_m, max(0, params[1] - params_err[1]), params[2], params[3])
+        if fit_result.get('onehalo_mode', False):
+            # Template-based one-halo: scale the best-fit component by amplitude error fraction
+            # (mu_1h and sigma_1h are not meaningful fitted parameters when templates are used)
+            if params[1] > 0:
+                amplitude_frac_upper = (params[1] + params_err[1]) / params[1]
+                amplitude_frac_lower = max(0, params[1] - params_err[1]) / params[1]
+            else:
+                amplitude_frac_upper = 1.0
+                amplitude_frac_lower = 0.0
+            dl_1h_upper = components['one_halo'] * amplitude_frac_upper
+            dl_1h_lower = components['one_halo'] * amplitude_frac_lower
 
         # Shot noise bounds
         dl_shot_upper = model.shot_noise_component(ell_m, params[4] + params_err[4])
@@ -6938,7 +7143,7 @@ def parse_args() -> argparse.Namespace:
         nargs="+",
         choices=["run_auto", "run_cross", "plot_auto", "plot_cross", "plot_components",
                  "plot_compare_cats", "plot_fit_spectra", "plot_spectra_summary",
-                 "plot_fpop_vs_redshift", "plot_corner", "plot_corner_overlay", "plot_corr_a1h_a2h", "plot_sigma_damp", "plot_chi2_1h",
+                 "plot_fpop_vs_redshift", "plot_fpop_consistency_vs_lmax", "plot_corner", "plot_corner_overlay", "plot_corr_a1h_a2h", "plot_sigma_damp", "plot_chi2_1h",
                  "plot_chi2_2h", "plot_redshift_panels_2x2", "plot_a1h_vs_redshift",
                  "plot_a1h_vs_redshift_three_row", "plot_a1h_vs_redshift_alternate_layout", "plot_a1h_vs_redshift_mag_comparison",
                  "plot_a1h_model_pred_vs_redshift", "plot_a1h_band_ratio_vs_redshift", "plot_parameter_consistency_vs_lmax",
@@ -7097,6 +7302,12 @@ def parse_args() -> argparse.Namespace:
         default=10000.0,
         help="Multipole at which to evaluate the one-halo power in the 1h comparison figure",
     )
+    parser.add_argument(
+        "--lmax-diagnostic",
+        type=int,
+        default=5000,
+        help="Multipole at which to evaluate one-halo power for diagnostic plots (plot_parameter_consistency_vs_lmax). Default: 5000. Set to None to use fitted A_1h amplitude instead.",
+    )
 
     parser.add_argument("--overwrite", action="store_true", help="Recompute fits even if output .npz exists")
     parser.add_argument("--mock-basepath", default=None,
@@ -7122,7 +7333,7 @@ def parse_args() -> argparse.Namespace:
 # ---------------------------------------------------------------------------
 
 _ALL_MODES = ["run_auto", "run_cross", "plot_auto", "plot_cross", "plot_components",
-              "plot_compare_cats", "plot_fit_spectra", "plot_spectra_summary", "plot_fpop_vs_redshift", "plot_corner", "plot_corner_overlay",
+              "plot_compare_cats", "plot_fit_spectra", "plot_spectra_summary", "plot_fpop_vs_redshift", "plot_fpop_consistency_vs_lmax", "plot_corner", "plot_corner_overlay",
               "plot_corr_a1h_a2h", "plot_sigma_damp", "plot_chi2_1h", "plot_chi2_2h",
               "plot_redshift_panels_2x2", "plot_a1h_vs_redshift", "plot_a1h_vs_redshift_three_row",
               "plot_a1h_vs_redshift_alternate_layout", "plot_a1h_vs_redshift_mag_comparison", "plot_a1h_model_pred_vs_redshift", "plot_a1h_band_ratio_vs_redshift",
@@ -7158,6 +7369,8 @@ def main() -> None:
         _plot_spectra_summary(args)
     if "plot_fpop_vs_redshift" in modes:
         _plot_fpop_vs_redshift(args)
+    if "plot_fpop_consistency_vs_lmax" in modes:
+        _plot_fpop_consistency_vs_lmax(args)
     if "plot_corner" in modes:
         _plot_corner(args)
     if "plot_corner_overlay" in modes:
